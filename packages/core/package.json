@@ -1,0 +1,38 @@
+{
+  "name": "@c1rcle/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    },
+    "./config": {
+      "types": "./src/config/index.ts",
+      "import": "./src/config/index.ts"
+    },
+    "./domain": {
+      "types": "./src/domain/index.ts",
+      "import": "./src/domain/index.ts"
+    },
+    "./domain/ports": {
+      "types": "./src/domain/ports/index.ts",
+      "import": "./src/domain/ports/index.ts"
+    },
+    "./application": {
+      "types": "./src/application/index.ts",
+      "import": "./src/application/index.ts"
+    },
+    "./infrastructure/memory": {
+      "types": "./src/infrastructure/memory/memory-repositories.ts",
+      "import": "./src/infrastructure/memory/memory-repositories.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "build": "tsc -p tsconfig.build.json"
+  }
+}

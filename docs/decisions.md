@@ -1,0 +1,97 @@
+# C1RCLE-BACKEND — Decisions Log
+
+> Every architectural decision that must survive a session: the **problem**,
+> the **options**, the **choice**, and the **why**. Append on change — do not
+> rewrite history.
+
+## D-001 · Auth = Better Auth (library), not hand-rolled JWT, not Firebase
+- **Date / Status:** 2026-08-07 · confirmed by user
+- **Context:** The old backend did Firebase ID-token verification (T15). The
+  user's confirmed decision for this repo is a full auth *library*.
+- **Choice:** `better-auth`, cookie-based sessions (httpOnly, SameSite,
+  Secure-in-prod, rotation enabled) as the durable credential;
+  short-lived access token returned to the client in memory.
+- **Why it helps the frontend:** session-store keeps the access token
+  in-memory only (XSS-safe); page reload restores the session from the
+  httpOnly cookie — the "no session breakage" requirement.
+- **To respect when implementing (B10):**
+  - `POST /api/v2/auth/login` sets the cookie AND returns
+    `{ user, accessToken, expiresAt }`.
+  - `POST /api/v2/auth/refresh` verifies cookie, rotates, returns the same
+    shape (reload-restore path).
+  - `POST /api/v2/auth/logout` destroys session + clears cookie.
+  - `GET /api/v2/auth/session` → current session or 401.
+  - Frontend contract stays fixed: `Session { user, expiresAt }`,
+    `Authorization: Bearer <accessToken>`.
+
+## D-002 · Repository-first storage (in-memory → Firestore → Postgres)
+
+- **Date / Status:** 2026-08-07 · **chosen** (B12)
+- **Options considered:** Firestore (old stack) vs PostgreSQL (dream plan).
+- **Choice:** Nothing in shipped code depends on a concrete store. The domain
+  depends on `interface …Repository` (T07). First real adapter = **Firestore**
+  (mirrors the old repo's proven patterns, fastest parity); Postgres is the
+  destination per the dream plan and slots in behind the same interfaces and
+  the same contract suite.
+- **Now:** `packages/core/src/infrastructure/memory/memory-repositories.ts`
+  is the dev/test/parity adapter. Revisit in B12 to add the Firestore adapter
+  + transactional outbox writes + compare-and-set.
+
+## D-003 · Contracts are backend-owned; frontend copies are parity-checked
+
+- **Date / Status:** 2026-08-07 · **chosen**
+- **Choice:** `packages/contracts` is the single source. It must mirror
+  `C1RCLE-FRONTEND/packages/types` + `api-client/src/schemas.ts` **1:1**.
+  A parity script (`scripts/contract-parity.mjs`, planned) diffs JSON
+  shape/snapshots between the repos. When they drift → **fail**, fix
+  frontend copy, no silent divergence.
+- **Why:** two repos, one wire contract, no published package yet.
+
+## D-004 · Error envelope single-sourced in `packages/contracts`
+
+- **Date / Status:** 2026-08-07 · **chosen**
+- **Choice:** `buildV2ErrorResponse`, `STATUS_CODE_TO_ERROR_CODE`, and
+  `zodToFieldErrors` live in `packages/contracts/src/index.ts` (not duplicated
+  in the gateway). The gateway maps `DomainError`→HTTP via
+  `plugins/error-handler.ts`. V1's flat `{ success, error }` shape is **not**
+  ported (fresh V2 only).
+- **Why it helps the frontend:** the frontend `statusToErrorCode` map and the
+  `{ code, message, status, requestId, fieldErrors }` parse match backend
+  exactly; only one place to keep in sync.
+
+## D-005 · Route = thin. Service = decisions. Model = rules.
+
+- **Date / Status:** 2026-08-07 · **chosen (architecture rule 3)**
+- **Choice:** route files only: validate → auth → policy/scope → ONE service
+  call → serialize. No `.collection(`/`.doc(`, no inline business enums, no
+  `process.env`. Enforced by `scripts/check-boundaries.mjs` + eslint
+  `no-restricted-*`.
+
+## D-006 · BLOCKED slices are absent, not stubbed (404, never 501)
+
+- **Date / Status:** 2026-08-07 · **chosen**
+- **Choice:** anything not in the route manifest (orders, payments, refunds,
+  payouts, door, webhooks, admin, …) is simply **not registered**. Fastify's
+  `setNotFoundHandler` returns the canonical 404 envelope. A test asserts no
+  501 exists. (Registration authority pattern mirrors thec1rcle T14.)
+
+## D-007 · Page-based pagination on the wire (mirror frontend)
+
+- **Date / Status:** 2026-08-07 · **chosen**
+- **Choice:** repositories stay **cursor**-based (T07, faithful port) but the
+  gateway adapts to **page-based `PageInfo{page,pageSize,total,hasNextPage}`**
+  (B05 — the frontend shape). No cursor leaks to the client; no hidden
+  offset issues.
+
+## Open questions (resolve before they block)
+
+1. **Frontend env injection** for preview/prod (`NEXT_PUBLIC_API_BASE_URL`
+   staging URL) — confirm with backend deploy target when wiring (B14).
+2. **Org scoping shape** — manifest wins: org-scoped resources nested under
+   `/organizations/:organizationId/...`. Confirm the exact frontend paths at
+   B11.
+3. **Access-token mechanism** — Better Auth's own session/token strategy vs a
+   backend-issued signed token, whichever keeps the frontend
+   `{ user, accessToken, expiresAt }` contract whole (B10).
+4. Idempotency+ optimistic lock TTLs (`Idemop-Key` 24h, Redis fast path) —
+   implement at B08.

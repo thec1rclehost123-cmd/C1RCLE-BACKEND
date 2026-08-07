@@ -1,0 +1,39 @@
+{
+  "name": "c1rcle-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "C1RCLE V2 Backend - Fastify API Gateway + modular core serving the C1RCLE-FRONTEND monorepo.",
+  "packageManager": "pnpm@11.20.0",
+  "engines": {
+    "node": "^22.13.0 || >=24.0.0"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "boundaries": "node scripts/check-boundaries.mjs",
+    "contract-parity": "node scripts/contract-parity.mjs",
+    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm boundaries && pnpm test && pnpm build"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.30.0",
+    "eslint": "^9.30.0",
+    "eslint-config-prettier": "^10.1.0",
+    "eslint-import-resolver-node": "^0.3.9",
+    "eslint-import-resolver-typescript": "^4.4.0",
+    "eslint-plugin-import-x": "^4.9.0",
+    "eslint-plugin-turbo": "^2.10.0",
+    "eslint-plugin-unused-imports": "^4.1.0",
+    "globals": "^16.0.0",
+    "jiti": "^2.7.0",
+    "prettier": "^3.9.0",
+    "turbo": "^2.10.0",
+    "typescript": "^5.9.0",
+    "typescript-eslint": "^8.40.0",
+    "vitest": "^4.1.0"
+  }
+}
