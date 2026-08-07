@@ -24,6 +24,10 @@
       "types": "./src/application/index.ts",
       "import": "./src/application/index.ts"
     },
+    "./infrastructure": {
+      "types": "./src/infrastructure/index.ts",
+      "import": "./src/infrastructure/index.ts"
+    },
     "./infrastructure/memory": {
       "types": "./src/infrastructure/memory/memory-repositories.ts",
       "import": "./src/infrastructure/memory/memory-repositories.ts"

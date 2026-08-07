@@ -1,4 +1,7 @@
 import { internalRoutes } from './internal/index.js';
+import partnerEventRoutes from './partner/events.js';
+import partnerOrganizationRoutes from './partner/organizations.js';
+import partnerVenueRoutes from './partner/venues.js';
 
 import type { FastifyInstance } from 'fastify';
 
@@ -13,7 +16,14 @@ export async function registerV2Routes(app: FastifyInstance): Promise<void> {
     async (v2) => {
       await internalRoutes(v2);
       // TODO(B10): auth routes (login/refresh/logout/session)
-      // TODO(B11): organizations/venues/events route modules
+      await v2.register(
+        async (partner) => {
+          await partnerOrganizationRoutes(partner);
+          await partnerVenueRoutes(partner);
+          await partnerEventRoutes(partner);
+        },
+        { prefix: '/partner' },
+      );
     },
     { prefix: '/api/v2' },
   );

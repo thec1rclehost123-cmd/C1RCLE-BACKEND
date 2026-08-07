@@ -6,6 +6,7 @@ import { getGatewayConfig, type GatewayConfig } from './config/index.js';
 import { redactPaths } from './lib/logger-config.js';
 import { genReqId, onRequestHook } from './lib/request-tracing.js';
 import { errorHandler } from './plugins/error-handler.js';
+import validateV2Plugin from './plugins/validate-v2.js';
 import { registerV2Routes } from './routes/v2/route-manifest.js';
 
 export interface BuildAppOptions {
@@ -49,6 +50,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     });
 
   app.addHook('onRequest', onRequestHook);
+
+  await app.register(validateV2Plugin);
 
   app.setErrorHandler((error, request, reply) => {
     errorHandler(logger, error, request, reply);
