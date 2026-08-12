@@ -5,3 +5,5 @@ export * from './models/organization.js';
 export * from './models/venue.js';
 export * from './models/event.js';
 export * from './models/event-catalog.js';
+export * from './events/domain-events.js';
+export * from './ports/index.js';

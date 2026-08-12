@@ -1,26 +1,33 @@
-import Fastify from 'fastify';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import validateV2Plugin from '../../../plugins/validate-v2.js';
+import { buildTestApp, signInPartner, type Partner } from '../../../test-utils/app-harness.js';
 
-import partnerEventRoutes from './events.js';
+import type { FastifyInstance } from 'fastify';
 
-async function buildServer() {
-  const server = Fastify({ logger: false });
-  await server.register(validateV2Plugin);
-  await server.register(partnerEventRoutes);
-  return server;
-}
+/**
+ * ─── B05: the four validation layers, behind the real auth stack ─────────────
+ * body · params · query · headers, each failing as 422 with `fieldErrors`,
+ * plus a create whose response passes the response schema.
+ */
 
-const VALID_HEADERS = { 'x-organization-id': 'org_1' };
+let app: FastifyInstance;
+let partner: Partner;
+
+beforeEach(async () => {
+  app = await buildTestApp();
+  partner = await signInPartner(app);
+});
+
+afterEach(async () => {
+  await app.close();
+});
 
 describe('V2 partners events slice — validation layers', () => {
   it('rejects bad body with 422 + fieldErrors (body layer)', async () => {
-    const server = await buildServer();
-    const response = await server.inject({
+    const response = await app.inject({
       method: 'POST',
-      url: '/events',
-      headers: VALID_HEADERS,
+      url: '/api/v2/partner/events',
+      headers: partner.write(),
       payload: { title: '', venueId: 'bad id!', startAt: 'not-a-date' },
     });
     const body = response.json();
@@ -30,15 +37,13 @@ describe('V2 partners events slice — validation layers', () => {
     expect(body.fieldErrors).toHaveProperty('title');
     expect(body.fieldErrors).toHaveProperty('venueId');
     expect(body.fieldErrors).toHaveProperty('startAt');
-    await server.close();
   });
 
   it('rejects unknown body keys with 422 (strict body)', async () => {
-    const server = await buildServer();
-    const response = await server.inject({
+    const response = await app.inject({
       method: 'POST',
-      url: '/events',
-      headers: VALID_HEADERS,
+      url: '/api/v2/partner/events',
+      headers: partner.write(),
       payload: {
         title: 'Night',
         venueId: 'ven_1',
@@ -48,71 +53,66 @@ describe('V2 partners events slice — validation layers', () => {
     });
     expect(response.statusCode).toBe(422);
     expect(response.json().fieldErrors).toHaveProperty('_root');
-    await server.close();
   });
 
   it('rejects bad params with 422 + fieldErrors (params layer)', async () => {
-    const server = await buildServer();
-    const response = await server.inject({
+    const response = await app.inject({
       method: 'GET',
-      url: '/events/not@valid',
-      headers: VALID_HEADERS,
+      url: '/api/v2/partner/events/not@valid',
+      headers: partner.read(),
     });
     expect(response.statusCode).toBe(422);
     expect(response.json().fieldErrors).toHaveProperty('eventId');
-    await server.close();
   });
 
   it('rejects bad query with 422 + fieldErrors (query layer)', async () => {
-    const server = await buildServer();
-    const response = await server.inject({
+    const response = await app.inject({
       method: 'GET',
-      url: '/events?limit=9999',
-      headers: VALID_HEADERS,
+      url: '/api/v2/partner/events?limit=9999',
+      headers: partner.read(),
     });
     expect(response.statusCode).toBe(422);
     expect(response.json().fieldErrors).toHaveProperty('limit');
-    await server.close();
   });
 
-  it('rejects missing/bad headers with 422 + fieldErrors (headers layer)', async () => {
-    const server = await buildServer();
-    const response = await server.inject({ method: 'POST', url: '/events', payload: {} });
-    expect(response.statusCode).toBe(422);
-    expect(response.json().fieldErrors).toHaveProperty('x-organization-id');
-    await server.close();
+  it('rejects a missing organization header with 403 before any validation', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v2/partner/events',
+      headers: { authorization: partner.bearer },
+      payload: {},
+    });
+    // Tenancy is resolved before the payload is even looked at.
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ code: 'forbidden' });
   });
 
   it('creates an event and returns a response that passes the response schema', async () => {
-    const server = await buildServer();
-    const response = await server.inject({
+    const response = await app.inject({
       method: 'POST',
-      url: '/events',
-      headers: VALID_HEADERS,
+      url: '/api/v2/partner/events',
+      headers: partner.write(),
       payload: { title: 'Sky Night', venueId: 'ven_1', startAt: '2026-08-01T18:00:00Z' },
     });
     expect(response.statusCode).toBe(201);
     const body = response.json();
     expect(body).toMatchObject({
       title: 'Sky Night',
-      organizationId: 'org_1',
+      organizationId: partner.organizationId,
       status: 'draft',
       isPublic: false,
       version: 1,
     });
     expect(typeof body.id).toBe('string');
-    await server.close();
   });
 
   it('GET one returns 404 with V2 shape for unknown id', async () => {
-    const server = await buildServer();
-    const response = await server.inject({
+    const response = await app.inject({
       method: 'GET',
-      url: '/events/nope_1',
-      headers: VALID_HEADERS,
+      url: '/api/v2/partner/events/nope_1',
+      headers: partner.read(),
     });
     expect(response.statusCode).toBe(404);
     expect(response.json()).toMatchObject({ code: 'not_found', status: 404 });
-    await server.close();
   });
 });

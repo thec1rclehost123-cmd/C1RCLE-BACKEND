@@ -17,7 +17,8 @@
     "format:check": "prettier --check .",
     "boundaries": "node scripts/check-boundaries.mjs",
     "contract-parity": "node scripts/contract-parity.mjs",
-    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm boundaries && pnpm test && pnpm build"
+    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm boundaries && pnpm test && pnpm build",
+    "check:all": "pnpm check && pnpm contract-parity"
   },
   "devDependencies": {
     "@eslint/js": "^9.30.0",

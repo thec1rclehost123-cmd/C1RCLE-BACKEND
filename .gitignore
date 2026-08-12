@@ -7,3 +7,9 @@ coverage/
 .env
 .env.local
 .temp
+# Local durable storage (STORAGE_DRIVER=sqlite)
+.data/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm

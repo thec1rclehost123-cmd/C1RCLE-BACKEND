@@ -28,10 +28,17 @@
       "types": "./src/infrastructure/index.ts",
       "import": "./src/infrastructure/index.ts"
     },
+    "./infrastructure/sqlite": {
+      "types": "./src/infrastructure/sqlite/sqlite-repositories.ts",
+      "import": "./src/infrastructure/sqlite/sqlite-repositories.ts"
+    },
     "./infrastructure/memory": {
       "types": "./src/infrastructure/memory/memory-repositories.ts",
       "import": "./src/infrastructure/memory/memory-repositories.ts"
     }
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

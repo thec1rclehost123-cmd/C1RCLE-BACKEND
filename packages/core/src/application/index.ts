@@ -29,3 +29,6 @@ export type {
   CommissionTerms,
 } from './event-catalog/event-catalog-service.js';
 export { AnalyticsService } from './analytics/analytics-service.js';
+export { EventBus, OutboxRelay } from './outbox/event-bus.js';
+export type { EventHandler } from './outbox/event-bus.js';
+export { registerAuditConsumer, AUDIT_CONSUMER, AUDITED_EVENTS } from './outbox/audit-consumer.js';

@@ -10,6 +10,7 @@ import { ForbiddenError } from '../domain/errors.js';
 import type { CoreConfig } from '../config/index.js';
 import type { EntityId } from '../domain/identity.js';
 import type { OrganizationRole, Capability } from '../domain/models/organization.js';
+import type { AuditRepository, OutboxWriter, UnitOfWork } from '../domain/ports/outbox.js';
 import type {
   OrganizationRepository,
   VenueRepository,
@@ -42,7 +43,16 @@ export interface ServiceDeps {
     events: EventRepository;
     catalog: EventCatalogRepository;
     analytics: AnalyticsReadModelRepository;
+    audit: AuditRepository;
   };
+  /**
+   * Domain events are published through the outbox in the same unit of work as
+   * the business write (T11). Required, not optional: a silently absent outbox
+   * would mean writes that produce no event — exactly the failure mode the
+   * pattern exists to prevent (rule 9, fail closed).
+   */
+  outbox: OutboxWriter;
+  unitOfWork: UnitOfWork;
 }
 
 /**

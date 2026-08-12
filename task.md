@@ -26,6 +26,24 @@ design authority, port the verified pure logic into `C1RCLE-BACKEND`, and keep
 the parity step in place. Do not advance a B-task whose T-design gate is not
 met; do not invent gateway behavior here that contradicts the T-series.
 
+### ⚠️ CORRECTION (2026-08-12): the T-series reference is NOT in this checkout
+
+The section below was written from a `thec1rcle` checkout that is **not the one
+on this machine**. Verified today: no branch of the local `thec1rcle` clone
+contains `packages/core/src/application/`, `domain/ports/`,
+`docs/V2-Partners_Frontend/`, or any of the `t05/t07/t08` suites — and no commit
+in its history ever added them (`git log --all -S"createCoreConfig"` is empty).
+
+Consequences, all of which shaped the work:
+
+- The T05/T07/T08 test suites **could not be ported**; the equivalents in
+  `packages/core` were written fresh against the code that is actually here.
+- **B13's parity harness cannot run as specified.** It compares this V2 against
+  "the frozen T01–T08 services", which are not present. Only the *contract*
+  half of B13 exists (`scripts/contract-parity.mjs`, frontend ↔ backend).
+- Treat the list below as provenance for the ported source, not as evidence of
+  passing tests. The counts in it are unverifiable here.
+
 ### Verified T-series state (checked 2026-08-07 — do not re-do)
 
 `thec1rcle` V2 work is FURTHER along than its own checkboxes suggest. Confirmed
@@ -324,8 +342,10 @@ build) green on the skeleton; health endpoints respond with the V2 envelope.
       reject; **and a parity test** that diffs these schemas' JSON snapshots
       against the frontend's (see §7).
 
-**Exit gate:** contracts build + snapshot tests green; parity test proves
-frontend `@c1rcle/types` shapes match this package today.
+**Exit gate:** ✅ `packages/contracts/src/contracts.test.ts` (12) green;
+`node scripts/contract-parity.mjs` runs the SAME fixtures through the
+frontend's compiled schemas and this package's — 33 checks, behavioural not
+textual, and verified to fail on a real constraint change.
 
 ## B03 — Error envelope + status→code mapping
 
@@ -383,8 +403,10 @@ booking,notification,webhook}.ts`. Re-run the T05 FSM tests here.
       implementation (prevents logic leaking into later slices).
 - [ ] Unit tests: valid/invalid transitions, idempotent transitions.
 
-**Exit gate:** FSM + model tests green; `pnpm lint` clean; no infra imports
-in `packages/core/src/domain/**` (guardrail enforced).
+**Exit gate:** ✅ `packages/core/src/domain/domain.test.ts` (25) green — the
+transition table is asserted exhaustively (every from×to pair). Guardrails
+clean. ⚠️ Skeleton ports for payment/inventory/booking/notification/webhook
+were NOT ported: they do not exist in the local frozen checkout.
 
 ## B05 — Validation schemas (all four layers)
 
@@ -432,7 +454,9 @@ failure produces the V2 envelope.
 - [ ] Unit test: domain aggregates + repos round-trip through Memory
       repositories.
 
-**Exit gate:** repo-port tests green with zero infra imports.
+**Exit gate:** ✅ one contract suite
+(`packages/core/src/infrastructure/repository-contract.ts`) runs against BOTH
+the memory and SQLite adapters — 11 cases × 2 engines.
 
 ## B07 — Application services
 
@@ -458,8 +482,9 @@ failure produces the V2 envelope.
 - [ ] Every service unit-tested with Memory repositories; no `process.env`,
       no Fastify, no Firebase imports anywhere in `application/`.
 
-**Exit gate:** all service tests green; guardrail (no env/fastify/firebase in
-application) enforced.
+**Exit gate:** ✅ `packages/core/src/application/services.test.ts` (14) green;
+guardrails clean. Found and fixed: `publish()` could never succeed (no
+`review → published` edge existed) — see D-012.
 
 ## B08 — Idempotency + optimistic locking
 
@@ -473,19 +498,30 @@ application) enforced.
 
 **Tasks:**
 
-- [ ] Generalize the old `idempotency-service` pattern: key =
+- [x] Generalize the old `idempotency-service` pattern: key =
       `{idempotencyKey, actorId, commandName}`, first response stored + replayed,
-      TTL 24h (Redis fast path when present, durable store as authority).
-- [ ] `Idempotency-Key` required on POST/PATCH/PUT for manifest routes marked
-      `REQUIRED`; 409 on key reuse with different body; replay on same key.
-- [ ] `If-Match: "version"` required on PATCH/PUT (manifest `expectedVersion:
-  REQUIRED`); body `version` ignored; version conflict → 409 `conflict`
-      with current version in error details.
-- [ ] Tests: duplicate request → identical response, no second write;
+      TTL 24h — `IdempotencyStore` port (`packages/core/src/domain/ports/
+idempotency.ts`) + `MemoryIdempotencyStore`. Redis fast path / durable
+      authority land with the B12 adapters, behind this same port.
+- [x] `Idempotency-Key` required on POST/PATCH/PUT for manifest routes marked
+      `REQUIRED` (enforced by the route header schema → 422 `fieldErrors`);
+      409 on key reuse with different body; replay on same key
+      (`plugins/idempotency.ts`).
+- [x] `If-Match: "version"` required on PATCH/PUT (manifest `expectedVersion:
+  REQUIRED`); a body `version` is rejected by the strict schema (the header
+      is the only authority); version conflict → 409 `conflict` with
+      `details.currentVersion` for the refetch-and-retry loop.
+- [x] Tests: duplicate request → identical response, no second write;
       concurrent same-key → one winner; concurrent updates → one 409, retry
-      after refetch succeeds.
+      after refetch succeeds (`plugins/idempotency.test.ts` 7,
+      `routes/v2/partner/optimistic-locking.test.ts` 5).
 
-**Exit gate:** retry/concurrency tests show exactly one business result.
+**Exit gate:** ✅ retry/concurrency tests show exactly one business result —
+`pnpm check` green (26 tests).
+
+> **Carried forward:** the store is in-memory, so replay records do not survive
+> a restart and are not shared across instances. B12 must implement the durable
+> adapter behind `IdempotencyStore` before this is production-safe.
 
 ---
 
@@ -516,7 +552,11 @@ react without service-to-service calls.
 - [ ] Tests: publish → consumers run once; consumer failure → retry, no
       duplicate side effects; kill-after-commit does not lose the row.
 
-**Exit gate:** one publish produces exactly one audit record even under retry.
+**Exit gate:** ✅ `packages/core/src/application/outbox/outbox.test.ts` (8) —
+one publish → exactly one audit record across repeated drains; a partial
+consumer failure re-runs ONLY the failed consumer; a poisoned row dead-letters
+after 10 attempts with its error trail intact; a failed unit of work leaves no
+event behind.
 
 ---
 
@@ -559,9 +599,15 @@ react without service-to-service calls.
       IDOR matrix (cross-org denied); header-vs-path org mismatch → 403;
       rate-limit bucket.
 
-**Exit gate:** a browser can log in, reload, and still be authenticated
-(cookie restore), and the in-memory access token never appears in
-localStorage. IDOR + rate-limit tests green.
+**Exit gate:** ✅ `apps/api-gateway/src/auth/auth.test.ts` (14) — sign-up /
+login / refresh-from-cookie-alone (the reload path) / session / logout-revokes;
+httpOnly asserted on the cookie; forged bearer rejected; cross-tenant access
+403 before any service call; header-vs-path mismatch 403; login throttled with
+`Retry-After`. `accessToken` IS the Better Auth session token (D-001 resolved).
+
+> ⚠️ Sessions live in Better Auth's **memory** adapter, so they do not survive
+> a restart and are not shared across instances. Swapping that adapter is the
+> remaining step before this is production-ready.
 
 ## B11 — v2 route modules (thin)
 
@@ -597,8 +643,16 @@ localStorage. IDOR + rate-limit tests green.
 - [ ] Route tests with MemoryRepository-backed services: happy paths, 404,
       403 IDOR, 409 version/idempotency, 422 validation — all V2 envelope.
 
-**Exit gate:** `pnpm boundaries` green; v2 route tests green; every registered
-route has an ACTIVE manifest entry and vice-versa; BLOCKED paths 404.
+**Exit gate:** ✅ `route-manifest.test.ts` diffs the declared manifest against
+what Fastify actually registered **in both directions**, asserts every BLOCKED
+path 404s, and asserts nothing anywhere answers 501. Plus
+`partner-journey.test.ts`: org → venue → slot request → event → review →
+publish → previews end to end.
+
+**Still missing from the slice:** organization *invitations* (no domain model
+exists — members are added directly), venue calendar / availability / menu
+(no domain support yet). Paths stayed under `/api/v2/partner/*` rather than the
+manifest's org-nested shape — open question 2, unchanged.
 
 ---
 
@@ -626,8 +680,14 @@ route has an ACTIVE manifest entry and vice-versa; BLOCKED paths 404.
       inside the transaction).
 - [ ] Indexed queries, bounded page size; no N+1 (batch/multi-get).
 
-**Exit gate:** repository contract suite passes against Memory AND the real
-adapter (same suite, swapped dependency).
+**Exit gate:** ✅ the same contract suite passes against Memory AND SQLite
+(`repositories.test.ts`), and `durable-storage.test.ts` drives the real HTTP
+surface and then reads the rows back off disk. `STORAGE_DRIVER=memory|sqlite`
+selects the engine; production fails startup on `memory`.
+
+> **First adapter is SQLite, not Firestore — see D-010.** Firestore cannot be
+> executed here (no credentials, no emulator) and untested storage code is
+> worse than none. Slot-requests, catalog and analytics remain on memory.
 
 ## B13 — Parity tests (V2 vs previous service behavior)
 

@@ -33,17 +33,23 @@ C1RCLE-FRONTEND (React/Next 16, Expo)
 apps/api-gateway  (Fastify 5, port 8080)
   ├─ lib/request-tracing.ts   → mint/echo x-request-id (request.id)
   ├─ plugins/error-handler.ts → canonical V2 error envelope
-  ├─ routes/v2/route-manifest.ts → registered routes (manifest authority)
-  │    └─ routes/v2/internal/*  (health/version/readiness — ACTIVE)
-  │    └─ (TODO B10) auth · (TODO B11) org/venue/event route modules
-  │         └─ thin route = validate → auth → policy → ONE service call → serialize
+  ├─ plugins/rate-limit → auth → rbac → cache → idempotency   (in this order)
+  ├─ routes/v2/route-manifest.ts → DECLARED routes; a test diffs declaration
+  │    │                            against registration in both directions
+  │    ├─ routes/v2/internal/*  (health/version/readiness — no auth)
+  │    ├─ routes/v2/auth.ts     (login · refresh · logout · session · sign-up)
+  │    └─ routes/v2/partner/*   (organizations · venues · events)
+  │         └─ thin route = rate-limit → authenticate → permission → validate
+  │                         → idempotency → ONE service call → validate response
   └─ config/index.ts         (SOLE process.env owner; validated, fails fast)
-        ▼ (injects CoreConfig + repositories + logger)
+        ▼ (injects CoreConfig + repositories + outbox + logger)
 packages/core  (@c1rcle/core — pure TypeScript, zero infra imports)
   ├─ application/*.ts        (services orchestrate; throw typed DomainError)
   ├─ domain/models/*.ts      (aggregates + explicit FSMs; versioned entities)
-  ├─ domain/ports/repos.ts   (repository INTERFACES — storage-agnostic)
-  └─ infrastructure/memory/  (in-memory adapter — dev/test; Firestore/Postgres later)
+  ├─ domain/ports/*.ts       (repository · idempotency · outbox INTERFACES)
+  ├─ application/outbox/     (EventBus + OutboxRelay + audit consumer)
+  ├─ infrastructure/memory/  (dev/test adapter)
+  └─ infrastructure/sqlite/  (DURABLE adapter — same ports, same contract suite)
 packages/contracts           (zod wire schemas + error envelope — mirrors frontend 1:1)
 ```
 
@@ -82,6 +88,13 @@ ever reads `process.env`; no frontend code ever runs a query.**
 | `src/application/context.ts` | `ActorContext{userId,organizationId,role,capabilities}` + `ServiceDeps` (config+logger+repos, all injected) + `requireOrgAccess` which throws `ForbiddenError` on cross-tenant access. |
 | `src/application/*/*-service.ts` | One service per use-case: list/create/get/update/invite (organizations), venue/profile/calendar/slot-requests, event lifecycle (review/publish/pause/resume/cancel/duplicate), event-catalog, analytics (read-model-only, always precomputed). Services throw typed domain errors; **never return raw HTTP**. |
 | `src/infrastructure/memory/memory-repositories.ts` | In-memory adapters implementing each port (Map-backed, cursor slice). Zero infra imports — the parity / dev / test storage until a real adapter (Firestore first, Postgres later) lands (B12). |
+| `src/domain/events/domain-events.ts` | Versioned domain events. `schemaVersion` is explicit so a consumer can refuse a payload it does not understand rather than mis-read it. |
+| `src/domain/ports/idempotency.ts` | `IdempotencyStore` + the key triple `{actorId, commandName, idempotencyKey}` — a client key alone can never address a stored response. |
+| `src/domain/ports/outbox.ts` | `OutboxWriter`/`OutboxReader`/`UnitOfWork` + `AuditRepository`. The event commits in the SAME unit of work as the write it describes. |
+| `src/application/outbox/event-bus.ts` | In-process bus + relay. Remembers `(eventId, consumer)` pairs that succeeded, so a retry re-runs only the consumers that actually failed. DLQ after 10 attempts. |
+| `src/application/outbox/audit-consumer.ts` | Rule 13: audit writes go through the repository, never a route. Uses the event id as the audit id, so replay cannot fork the trail. |
+| `src/infrastructure/repository-contract.ts` | **One suite, every adapter.** What makes "storage is an implementation detail" a fact instead of a claim. |
+| `src/infrastructure/sqlite/sqlite-repositories.ts` | Durable adapters on Node's built-in `node:sqlite`. Keyset pagination (never offset); `runInTransaction` is a real SQL transaction, so business row + outbox row commit or roll back together. |
 | `src/telemetry/logger.ts` | `Logger` port + `noopLogger` + `createLogger`. Domain depends ONLY on this interface (never pino/Sentry/Fastify). Log level/redaction configured by the adapter (DI), never by `package.json/core`. |
 
 ### 3.3 `apps/api-gateway` — transport (validates, decides, enforces)
@@ -97,6 +110,18 @@ ever reads `process.env`; no frontend code ever runs a query.**
 | `src/routes/v2/route-manifest.ts` | The single registration authority (T14 pattern). Right now registers `internalRoutes` under `/api/v2/internal`. **BLOCKED slices (orders/payments/…) exist here only as `TODO` comments — they are absent, so they 404 by absence, never a 501 stub.** |
 | `src/routes/v2/internal/index.ts` | `/health`, `/version`, `/readiness` (no auth). Return the V2 success shape. Known: version hard-coded in dev (no `process.env` in routes — the guardrail would flag it). |
 | `src/app.test.ts` | Boot smoke tests: health 200, x-request-id echo, **blocked path → 404 with V2 envelope**, version string. These encode the "404 never 501" rule. |
+
+### 3.3b New gateway files (B08–B12)
+
+| File | Why |
+|---|---|
+| `src/auth/auth-instance.ts` | Better Auth with the bearer plugin: the httpOnly cookie and the in-memory token are the SAME credential, so there is one thing to revoke and one authority to verify. |
+| `src/auth/auth-context.ts` | Verify credential → resolve requested tenant → **prove membership** → derive role from the membership. `X-Organization-Id` is a request to act in a tenant, never proof of it. |
+| `src/plugins/rbac.ts` | Role→permission table (default deny) + ABAC: the `:organizationId` in the PATH must equal the actor's verified organization. |
+| `src/plugins/rate-limit.ts` | Compound key IP+user+org. IP alone punishes a NAT; user alone lets anonymous floods through. |
+| `src/plugins/idempotency.ts` | Replay / reuse-409 / one-winner. Stores only 2xx, so a failed command leaves the key retryable instead of poisoned for 24h. |
+| `src/plugins/cache.ts` | Tenant-scoped keys from the VERIFIED actor (a forged header cannot address an entry); `NO_STORE` classes are never written. |
+| `src/test-utils/app-harness.ts` | Test doubles live only here (rule 10); excluded from the build. |
 
 ### 3.4 Root tooling (why)
 
@@ -164,34 +189,71 @@ The frontend never instantiates a database or fetches raw. **It sends one
 
 ## 6. Status ledger (what's built vs pending)
 
-### Built (matches `pnpm check` = green)
-- [x] `apps/api-gateway` Fastify 5 factory + `x-request-id` + redaction + V2 error envelope + internal health/version/readiness + 404-not-501.
-- [x] `packages/contracts` + `packages/core` monorepo wiring (turbo build/lint/typecheck/test).
-- [x] Contract schemas + error envelope (mirrors frontend).
-- [x] Config (fail-closed, injected), telemetry port, boundary/guardrail script.
-- [x] Domain models + FSM + error types + versioning.
-- [x] Repository interfaces (T07) + in-memory adapters.
-- [x] Application services: organizations/venues/events/event-catalog/analytics (+ `ActorContext`, lazy DI via `ServiceDeps`).
-- [x] `pnpm check` — format → lint → typecheck → boundaries → test → build; `app.test.ts` smoke tests pass (health 200, x-request-id echo, blocked→404).
+> Verified by `pnpm check` on 2026-08-12: **133 tests** green
+> (contracts 12 · core 69 · gateway 52), boundary guardrails clean, build clean,
+> plus `node scripts/contract-parity.mjs` — 33 cross-repo checks clean.
 
-### Pending (order from `task.md`)
-- [ ] B09 Outbox + event bus skeleton (publish→audit once, retry-safe).
-- [ ] B10 Auth: Better Auth (httpOnly refresh cookie + bearer) — login/refresh/logout/session, RBAC+ABAC, rate-limit, cache plugin. (The sessions backend face + frontend bridge `{ user, accessToken, expiresAt }`.)
-- [ ] B11 Vanity route modules: organizations /venues/events files wired through the services. Part of the live surface (`# §5`.
-- [ ] B12 storage adapters (Firestore first behind ports, transactional outbox+optimistic lock).
-- [ ] B13 parity harness vs frozen `thec1rcle` reference + contract parity script.
-- [ ] B14/B15 frontend switch + old-backend freeze/removal (after zero-use proof).
+### Built
 
----
+| Task | What landed | Proof |
+|---|---|---|
+| B01 | Monorepo, Fastify factory, config as sole env reader, boundary guardrail | `pnpm check` |
+| B02 | Contracts package + **behavioural** cross-repo parity script | `contracts.test.ts` (12), `contract-parity.mjs` (33) |
+| B03 | Flat error envelope, status→code table, `zodToFieldErrors` | `contracts.test.ts` |
+| B04 | Domain models + FSM + versioning | `domain.test.ts` (25), transition table asserted exhaustively |
+| B05 | Validation across body/params/query/headers + response | `events.test.ts` |
+| B06 | Repository ports + **one contract suite, two engines** | `repositories.test.ts` (22) |
+| B07 | Application services | `services.test.ts` (14) |
+| B08 | Idempotency (replay / reuse-409 / one-winner) + `If-Match` locking | `idempotency.test.ts` (7), `optimistic-locking.test.ts` (5) |
+| B09 | Outbox + event bus + audit consumer + DLQ | `outbox.test.ts` (8) |
+| B10 | Better Auth, membership-verified tenancy, RBAC+ABAC, rate limit, cache | `auth.test.ts` (14) |
+| B11 | Event actions/previews, members, venue profile + slot-requests, declarative manifest | `route-manifest.test.ts` (5), `partner-journey.test.ts` (3) |
+| B12 | SQLite adapters behind the ports; gateway runs on disk | `durable-storage.test.ts` (2) |
+
+### Pending, and why
+
+- **B13 parity harness — blocked as specified.** It compares this V2 against the
+  frozen T01–T08 services, which do not exist in the local `thec1rcle` checkout
+  (no branch, no commit in history). The contract half is done; the behavioural
+  half has no reference implementation to compare against.
+- **B14 frontend switch — not started.** Requires editing `C1RCLE-FRONTEND`
+  (token provider, `onUnauthorized` → refresh, first real screens).
+- **B15 V1 freeze/removal — blocked by definition.** Needs 7 days of zero-traffic
+  evidence against a running V1.
+
+### Known gaps inside "built"
+
+1. **Sessions are not durable.** Better Auth still uses its memory adapter, so a
+   restart logs everyone out and instances do not share sessions. Business data
+   *is* durable on SQLite; credentials are not.
+2. **Idempotency records are not durable** either (`MemoryIdempotencyStore`), so
+   replay protection resets on restart.
+3. **Partial storage migration.** Slot-requests, event-catalog and analytics are
+   still memory-only; their SQLite adapters land with the slices that need them.
+4. **No invitations model.** `organization-invitations.*` cannot be implemented
+   until the domain has one — members are added directly today.
+5. **Paths are `/api/v2/partner/*`**, not the manifest's org-nested shape
+   (open question 2).
+6. **The relay is driven manually.** `services.relay.drain()` has no scheduler; a
+   worker process owns it from the next slice.
 
 ## 7. How to run / verify (from `C1RCLE-BACKEND/`)
 
 ```bash
-pnpm check                  # format:check → lint → typecheck → boundaries → test → build
-pnpm dev                   # turbo dev (api-gateway on :8080, tsx watch)
-pnpm boundaries            # architecture guardrails
-node scripts/check-boundaries.mjs   # the same, direct
+pnpm check           # format:check → lint → typecheck → boundaries → test → build
+pnpm check:all       # the above + cross-repo contract parity
+pnpm contract-parity # frontend ↔ backend contract drift (needs C1RCLE-FRONTEND)
+pnpm dev             # turbo dev (api-gateway on :8080, tsx watch)
+pnpm boundaries      # architecture guardrails
 ```
+
+Run on durable storage:
+
+```bash
+STORAGE_DRIVER=sqlite SQLITE_PATH=.data/c1rcle.sqlite pnpm dev
+```
+
+`STORAGE_DRIVER=memory` is refused in production (fail closed).
 
 Smoke (backend): boot → `GET http://localhost:8080/api/v2/internal/health`
 => `{ ok: true, uptimeMs }`; `GET /api/v2/internal/version`; any other

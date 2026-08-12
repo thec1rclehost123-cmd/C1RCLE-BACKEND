@@ -83,6 +83,86 @@
   (B05 — the frontend shape). No cursor leaks to the client; no hidden
   offset issues.
 
+## D-008 · Idempotency: key triple, 2xx-only storage, schema-enforced requirement
+
+- **Date / Status:** 2026-08-11 · **chosen** (B08 / T09)
+- **Choice:**
+  - Record key is `{ actorId, commandName, idempotencyKey }`. A client key alone
+    never addresses a stored response, so a leaked or guessed key cannot replay
+    another actor's command, nor a different command of the same actor.
+  - **Only 2xx responses are stored.** A failed command produced no durable
+    business result, so its key is released and stays retryable — otherwise a
+    transient 500 or a 422 would poison the key for 24 hours.
+  - The stored body is replayed **byte-for-byte** (serialized string, not a
+    re-serialized object), so a retry cannot observe a different id or ordering.
+  - **Requiredness lives in the route's header schema, not the plugin.** A
+    missing `Idempotency-Key` is therefore a normal 422 with `fieldErrors`,
+    identical in shape to every other header failure. The plugin owns only
+    replay semantics.
+  - A concurrent second attempt on an in-flight key gets **409**, not a wait.
+- **Now:** `MemoryIdempotencyStore` (dev/test). **Not durable** — records are
+  lost on restart and not shared between instances. B12 must add the durable
+  adapter (Firestore authority, Redis fast path) behind `IdempotencyStore`
+  before this is production-safe.
+
+## D-009 · `If-Match` is the only version authority
+
+- **Date / Status:** 2026-08-11 · **chosen** (B08 / T10)
+- **Choice:** `If-Match` is **required** on every partner PATCH (manifest
+  `expectedVersion: REQUIRED`). Write bodies are `.strict()` and have no
+  `version` field, so a client sending one gets a 422 rather than having it
+  silently ignored — stricter than T10's "body version is ignored", and it
+  surfaces the mistake instead of hiding it.
+- **Why:** before this, `if-match` was optional on venues and events, and the
+  service skips its version check when `expectedVersion` is null — so two of
+  three resources silently permitted lost updates.
+- **Conflict shape:** 409 `conflict` with
+  `details: { expectedVersion, currentVersion }`, which is what makes the
+  refetch-and-retry loop mechanical for the client.
+
+## D-010 · First durable adapter is SQLite, not Firestore (amends D-002)
+
+- **Date / Status:** 2026-08-12 · **chosen** (B12)
+- **Context:** D-002 chose "Firestore first" for parity with the old stack. A
+  Firestore adapter cannot be executed here: it needs project credentials or an
+  emulator, neither of which this environment has. Shipping storage code that
+  no test has ever run is worse than shipping none.
+- **Choice:** the first durable adapter is **SQLite via Node's built-in
+  `node:sqlite`** — no new dependency, and the repository contract suite runs
+  it in CI exactly as it runs the memory adapter.
+- **What this does NOT change:** the ports. `packages/core/src/infrastructure/
+repository-contract.ts` is one suite run against every adapter, so Firestore
+  or Postgres slot in behind the same assertions the day their infrastructure
+  exists. D-002's principle — nothing in shipped code depends on a concrete
+  store — is now enforced by a test rather than asserted in prose.
+- **Selected by config:** `STORAGE_DRIVER=memory|sqlite`. Production **fails
+  startup** on `memory` (fail closed — a production process must not hold
+  business data in RAM).
+- **Still on memory:** slot-requests, event-catalog, analytics and the Better
+  Auth session store. Their SQLite adapters land with the slices that need
+  them; sessions therefore do not survive a restart yet.
+
+## D-011 · The error envelope is flat everywhere
+
+- **Date / Status:** 2026-08-12 · **chosen** (bug fix found in B11)
+- **Context:** routes sent `{ code, message, status, requestId }` while the
+  gateway's `setNotFoundHandler` and `setErrorHandler` wrapped the same body in
+  `{ error: … }`. The frontend's `ApiClientError` parses the flat shape, so it
+  would have failed to parse precisely the errors it most needs — 404s and
+  unhandled 5xx.
+- **Choice:** one flat envelope from every path. A test asserts `body.error` is
+  absent on a 404.
+
+## D-012 · `publish` walks the FSM instead of widening it
+
+- **Date / Status:** 2026-08-12 · **chosen** (bug fix found in B07 tests)
+- **Context:** `EVENT_TRANSITIONS` has no `review → published` edge, and
+  nothing else reached `scheduled`, so an event sent to review could never be
+  published. The API surface had no route that could rescue it.
+- **Choice:** `EventService.publish` walks `review → scheduled → published`,
+  one validated edge at a time. The table stays the single authority, and
+  `draft → published` remains illegal: review is not skippable.
+
 ## Open questions (resolve before they block)
 
 1. **Frontend env injection** for preview/prod (`NEXT_PUBLIC_API_BASE_URL`
@@ -90,8 +170,9 @@
 2. **Org scoping shape** — manifest wins: org-scoped resources nested under
    `/organizations/:organizationId/...`. Confirm the exact frontend paths at
    B11.
-3. **Access-token mechanism** — Better Auth's own session/token strategy vs a
-   backend-issued signed token, whichever keeps the frontend
-   `{ user, accessToken, expiresAt }` contract whole (B10).
+3. ~~**Access-token mechanism**~~ — **resolved (B10):** `accessToken` IS the
+   Better Auth session token. The httpOnly cookie and the in-memory bearer are
+   the same credential, so there is exactly one thing to revoke and one
+   authority to verify. Rotation happens on refresh.
 4. Idempotency+ optimistic lock TTLs (`Idemop-Key` 24h, Redis fast path) —
    implement at B08.

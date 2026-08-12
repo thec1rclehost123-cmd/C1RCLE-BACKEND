@@ -2,18 +2,20 @@ import { buildV2ErrorResponse } from '@c1rcle/contracts';
 import {
   opaqueIdSchema,
   idempotencyKeySchema,
-  paginationQuerySchema,
   versionHeaderSchema,
+  paginationQuerySchema,
   eventDtoSchema,
   paginatedSchema,
 } from '@c1rcle/contracts/client';
 import { z } from 'zod';
 
+import type { ActorContext } from '@c1rcle/core/application';
 import type { Event } from '@c1rcle/core/domain';
 
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
-import { createV2Services } from '../../../lib/v2-services.js';
+import { getV2Services } from '../../../lib/v2-services.js';
 
+import type { Permission } from '../../../plugins/rbac.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 /**
@@ -24,7 +26,12 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
  * memory-backed until the Firestore V2 adapters land).
  */
 
-const services = createV2Services();
+/**
+ * Resolved per call, not captured at import time: a module-level binding would
+ * freeze the first bundle and leave the auth plugin checking membership against
+ * a different store than the routes write to.
+ */
+const services = () => getV2Services();
 
 const eventIdParam = z.object({ eventId: opaqueIdSchema });
 
@@ -40,28 +47,45 @@ const createEventBody = z
   })
   .strict();
 
-const createEventHeaders = z.looseObject({
+/** Read headers: no command safety applies to a GET. */
+const eventHeaders = z.looseObject({
   'x-organization-id': opaqueIdSchema,
-  'idempotency-key': idempotencyKeySchema.optional(),
-  'if-match': versionHeaderSchema.optional(),
+});
+
+/** Write headers — manifest `events.create` is `idempotency: REQUIRED` (T09). */
+const createEventHeaders = eventHeaders.extend({
+  'idempotency-key': idempotencyKeySchema,
 });
 
 const eventListSchema = paginatedSchema(eventDtoSchema);
+
+/** Preview surface: the event plus the visibility a guest would get. */
+const eventPreviewSchema = z.object({ event: eventDtoSchema, isPublic: z.boolean() });
+
+/** Action headers: idempotent by contract; If-Match added per action. */
+const actionHeaders = eventHeaders.extend({ 'idempotency-key': idempotencyKeySchema });
+
+const cancelBody = z.object({ reason: z.string().min(1).max(500).optional() }).strict();
 
 export default async function partnerEventRoutes(fastify: FastifyInstance) {
   // ── LIST ──────────────────────────────────────────────────────────────────
   fastify.get(
     '/events',
     {
-      preHandler: fastify.validateV2({
-        querystring: paginationQuerySchema,
-        headers: createEventHeaders,
-      }),
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.authenticate(),
+        fastify.requirePermission('event.read'),
+        fastify.validateV2({
+          querystring: paginationQuerySchema,
+          headers: eventHeaders,
+        }),
+      ],
     },
     async (request, reply) => {
       const query = request.query as z.infer<typeof paginationQuerySchema>;
-      const actor = services.actor(request);
-      const page = await services.events.list(actor, {
+      const actor = services().actor(request);
+      const page = await services().events.list(actor, {
         limit: query.limit,
         cursor: query.cursor ?? null,
       });
@@ -85,17 +109,24 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
   fastify.get(
     '/events/:eventId',
     {
-      preHandler: fastify.validateV2({
-        params: eventIdParam,
-        headers: createEventHeaders,
-      }),
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.authenticate(),
+        fastify.requirePermission('event.read'),
+        fastify.validateV2({
+          params: eventIdParam,
+          headers: eventHeaders,
+        }),
+      ],
     },
     async (request, reply) => {
       const { eventId } = request.params as z.infer<typeof eventIdParam>;
-      const actor = services.actor(request);
-      const event = await services.events.get(actor, eventId).catch((error: unknown) => {
-        return mapDomainError(reply, request, eventId, error, { hideForbidden: true });
-      });
+      const actor = services().actor(request);
+      const event = await services()
+        .events.get(actor, eventId)
+        .catch((error: unknown) => {
+          return mapDomainError(reply, request, eventId, error, { hideForbidden: true });
+        });
       if (event === undefined) return reply;
       const validated = validateV2Response(reply, request, eventDtoSchema, eventToDto(event));
       if (validated === undefined) return reply;
@@ -107,16 +138,22 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
   fastify.post(
     '/events',
     {
-      preHandler: fastify.validateV2({
-        body: createEventBody,
-        headers: createEventHeaders,
-      }),
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.authenticate(),
+        fastify.requirePermission('event.create'),
+        fastify.validateV2({
+          body: createEventBody,
+          headers: createEventHeaders,
+        }),
+        fastify.idempotent('events.create'),
+      ],
     },
     async (request, reply) => {
       const body = request.body as z.infer<typeof createEventBody>;
-      const actor = services.actor(request);
-      const event = await services.events
-        .create(actor, {
+      const actor = services().actor(request);
+      const event = await services()
+        .events.create(actor, {
           venueId: body.venueId,
           title: body.title,
           summary: body.summary,
@@ -130,6 +167,131 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
       const validated = validateV2Response(reply, request, eventDtoSchema, eventToDto(event));
       if (validated === undefined) return reply;
       return reply.status(201).send(validated);
+    },
+  );
+
+  // ── PREVIEWS (what a guest would see) ─────────────────────────────────────
+  fastify.get(
+    '/events/:eventId/previews',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.authenticate(),
+        fastify.requirePermission('event.read'),
+        fastify.validateV2({ params: eventIdParam, headers: eventHeaders }),
+      ],
+    },
+    async (request, reply) => {
+      const { eventId } = request.params as z.infer<typeof eventIdParam>;
+      const actor = services().actor(request);
+      // Ownership first: previewing must not become a public read of a draft.
+      const owned = await services()
+        .events.get(actor, eventId)
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, eventId, error, { hideForbidden: true }),
+        );
+      if (owned === undefined) return reply;
+
+      const payload = { event: eventToDto(owned), isPublic: owned.isPublic };
+      const validated = validateV2Response(reply, request, eventPreviewSchema, payload);
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  // ── LIFECYCLE ACTIONS ─────────────────────────────────────────────────────
+  // Every action is idempotent (T09) and version-locked (T10): a retried
+  // publish produces one published event, and a stale client cannot move an
+  // event someone else already advanced.
+  registerAction(fastify, 'review', 'event.update', (actor, eventId) =>
+    services().events.review(actor, eventId),
+  );
+  registerAction(fastify, 'publish', 'event.publish', (actor, eventId) =>
+    services().events.publish(actor, eventId),
+  );
+  registerAction(fastify, 'pause-sales', 'event.update', (actor, eventId) =>
+    services().events.pauseSales(actor, eventId),
+  );
+  registerAction(fastify, 'resume-sales', 'event.update', (actor, eventId) =>
+    services().events.resumeSales(actor, eventId),
+  );
+  registerAction(
+    fastify,
+    'cancel',
+    'event.cancel',
+    (actor, eventId, body) =>
+      services().events.cancel(actor, eventId, body.reason ?? 'Cancelled by the organizer'),
+    cancelBody,
+  );
+  registerAction(
+    fastify,
+    'duplicate',
+    'event.create',
+    (actor, eventId) => services().events.duplicate(actor, eventId),
+    undefined,
+    // A duplicate creates a NEW event, so there is no version to match on.
+    { requireVersion: false, successStatus: 201 },
+  );
+}
+
+/** POST /events/:eventId/<action> — one shape for every lifecycle command. */
+function registerAction(
+  fastify: FastifyInstance,
+  action: string,
+  permission: Permission,
+  run: (actor: ActorContext, eventId: string, body: { reason?: string }) => Promise<Event>,
+  bodySchema?: z.ZodType,
+  options: { requireVersion?: boolean; successStatus?: number } = {},
+): void {
+  const requireVersion = options.requireVersion ?? true;
+  const headers = requireVersion
+    ? actionHeaders.extend({ 'if-match': versionHeaderSchema })
+    : actionHeaders;
+
+  fastify.post(
+    `/events/:eventId/${action}`,
+    {
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.authenticate(),
+        fastify.requirePermission(permission),
+        fastify.validateV2({ params: eventIdParam, headers, body: bodySchema }),
+        fastify.idempotent(`events.${action}`),
+      ],
+    },
+    async (request, reply) => {
+      const { eventId } = request.params as z.infer<typeof eventIdParam>;
+      const actor = services().actor(request);
+      const body = (request.body ?? {}) as { reason?: string };
+
+      if (requireVersion) {
+        const expected = Number.parseInt(request.v2Headers?.['if-match'] ?? '', 10);
+        const current = await services()
+          .events.get(actor, eventId)
+          .catch((error: unknown) => mapDomainError(reply, request, eventId, error));
+        if (current === undefined) return reply;
+        if (current.version !== expected) {
+          reply.status(409).send(
+            buildV2ErrorResponse({
+              status: 409,
+              code: 'conflict',
+              message: `Version conflict: expected ${expected}, current ${current.version}`,
+              requestId: request.id,
+              details: { expectedVersion: expected, currentVersion: current.version },
+            }),
+          );
+          return reply;
+        }
+      }
+
+      const updated = await run(actor, eventId, body).catch((error: unknown) =>
+        mapDomainError(reply, request, eventId, error),
+      );
+      if (updated === undefined) return reply;
+
+      const validated = validateV2Response(reply, request, eventDtoSchema, eventToDto(updated));
+      if (validated === undefined) return reply;
+      return reply.status(options.successStatus ?? 200).send(validated);
     },
   );
 }
@@ -200,12 +362,19 @@ export function mapDomainError(
     return undefined;
   }
   if (known?.code === 'version_conflict') {
+    // T10: the client must be able to refetch and retry, so the conflict
+    // carries the version it sent and the version that actually won.
+    const conflict = error as { expectedVersion?: number; currentVersion?: number };
     reply.status(409).send(
       buildV2ErrorResponse({
         status: 409,
         message: known.message ?? 'Version conflict',
         code: 'conflict',
         requestId: request.id,
+        details: {
+          expectedVersion: conflict.expectedVersion,
+          currentVersion: conflict.currentVersion,
+        },
       }),
     );
     return undefined;

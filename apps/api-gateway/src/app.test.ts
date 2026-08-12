@@ -29,9 +29,11 @@ describe('app bootstrap + internal routes', () => {
     const res = await app.inject({ method: 'POST', url: '/api/v2/organizations/org_1/payments' });
     expect(res.statusCode).toBe(404);
     const body = res.json();
-    expect(body.error).toBeDefined();
-    expect(body.error.code).toBe('not_found');
-    expect(body.error.requestId).toBeDefined();
+    // Flat envelope — the same shape every route sends, and the only shape the
+    // frontend's ApiClientError can parse.
+    expect(body).toMatchObject({ code: 'not_found', status: 404 });
+    expect(body.requestId).toBeDefined();
+    expect(body.error).toBeUndefined();
     await app.close();
   });
 

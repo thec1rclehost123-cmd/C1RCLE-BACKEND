@@ -74,7 +74,8 @@ export function errorHandler(
     } else {
       logger.warn('domain_error', { requestId, code: error.code });
     }
-    void reply.status(mapped.status).send({ error: body });
+    // Flat envelope — same shape every route sends (see app.ts notFound).
+    void reply.status(mapped.status).send(body);
     return;
   }
 
@@ -93,5 +94,5 @@ export function errorHandler(
     message: status >= 500 ? 'Internal server error' : (raw.message ?? 'Request failed'),
     requestId,
   });
-  void reply.status(status).send({ error: body });
+  void reply.status(status).send(body);
 }
