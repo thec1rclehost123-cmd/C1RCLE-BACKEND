@@ -6,7 +6,10 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { getGatewayConfig, type GatewayConfig } from './config/index.js';
 import { redactPaths } from './lib/logger-config.js';
 import { genReqId, onRequestHook } from './lib/request-tracing.js';
+import cachePlugin from './plugins/cache.js';
 import { errorHandler } from './plugins/error-handler.js';
+import rateLimitPlugin from './plugins/rate-limit.js';
+import rbacPlugin from './plugins/rbac.js';
 import validateV2Plugin from './plugins/validate-v2.js';
 import { registerV2Routes } from './routes/v2/route-manifest.js';
 
@@ -65,6 +68,18 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   await app.register(validateV2Plugin);
 
+  // B10: RBAC (`requirePermission`), rate limiting (`rateLimit`), and response
+  // caching (`cached`) — ported from Sagar's parallel B10 work (this repo had
+  // deferred all three). Decorators only at this point; `rateLimit` is
+  // applied to the auth routes (routes/v2/auth/index.ts, the
+  // credential-stuffing surface). `requirePermission`/`cached` are registered
+  // and available but not yet wired into the partner routes — see
+  // docs/roadmap/phase-00-foundation.md for why that's a deliberate, tracked
+  // follow-up rather than a rushed per-route mapping.
+  await app.register(rbacPlugin);
+  await app.register(rateLimitPlugin);
+  await app.register(cachePlugin);
+
   app.setErrorHandler((error, request, reply) => {
     errorHandler(logger, error, request, reply);
   });
@@ -75,7 +90,9 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       message: `Route ${request.method} ${request.url} not found`,
       requestId: request.id,
     });
-    void reply.status(404).send({ error: body });
+    // Flat envelope — see plugins/error-handler.ts for why this must never be
+    // wrapped in `{ error: body }`.
+    void reply.status(404).send(body);
   });
 
   await registerV2Routes(app);

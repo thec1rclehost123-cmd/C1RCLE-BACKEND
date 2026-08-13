@@ -76,7 +76,13 @@ export function errorHandler(
     } else {
       logger.warn('domain_error', { requestId, code: error.code });
     }
-    void reply.status(mapped.status).send({ error: body });
+    // Flat envelope, matching every route-level error send (`buildV2ErrorResponse`
+    // sent directly) — wrapping in `{ error: body }` here only, as this file
+    // used to, meant the frontend's ApiClientError parser saw two different
+    // shapes depending on which code path produced the error. Independently
+    // found and fixed by both this session and Sagar's parallel B10 work
+    // (their D-011) — see docs/architecture/decisions.md.
+    void reply.status(mapped.status).send(body);
     return;
   }
 
@@ -95,5 +101,5 @@ export function errorHandler(
     message: status >= 500 ? 'Internal server error' : (raw.message ?? 'Request failed'),
     requestId,
   });
-  void reply.status(status).send({ error: body });
+  void reply.status(status).send(body);
 }

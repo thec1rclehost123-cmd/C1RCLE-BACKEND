@@ -29,9 +29,11 @@ describe('app bootstrap + internal routes', () => {
     const res = await app.inject({ method: 'POST', url: '/api/v2/organizations/org_1/payments' });
     expect(res.statusCode).toBe(404);
     const body = res.json();
-    expect(body.error).toBeDefined();
-    expect(body.error.code).toBe('not_found');
-    expect(body.error.requestId).toBeDefined();
+    // Flat envelope — matches every route-level error send. A wrapped
+    // `{ error: {...} }` shape here would encode the bug this session (and
+    // independently, Sagar's parallel B10 work) found and fixed.
+    expect(body.code).toBe('not_found');
+    expect(body.requestId).toBeDefined();
     await app.close();
   });
 

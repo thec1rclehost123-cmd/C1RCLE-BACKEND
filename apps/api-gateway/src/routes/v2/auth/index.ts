@@ -34,7 +34,12 @@ export default async function authRoutes(
 
   fastify.post(
     '/signup',
-    { preHandler: fastify.validateV2({ body: signupRequestSchema }) },
+    {
+      preHandler: [
+        fastify.validateV2({ body: signupRequestSchema }),
+        fastify.rateLimit('SENSITIVE_COMMAND'),
+      ],
+    },
     async (request, reply) => {
       if (!auth) return sendAuthUnavailable(reply, request);
       const body = request.body as z.infer<typeof signupRequestSchema>;
@@ -62,7 +67,12 @@ export default async function authRoutes(
 
   fastify.post(
     '/login',
-    { preHandler: fastify.validateV2({ body: loginRequestSchema }) },
+    {
+      preHandler: [
+        fastify.validateV2({ body: loginRequestSchema }),
+        fastify.rateLimit('SENSITIVE_COMMAND'),
+      ],
+    },
     async (request, reply) => {
       if (!auth) return sendAuthUnavailable(reply, request);
       const body = request.body as z.infer<typeof loginRequestSchema>;
@@ -84,21 +94,25 @@ export default async function authRoutes(
   // rather than rotating the token string (see phase-00 Session Log) — this
   // route re-validates the httpOnly cookie and returns the (possibly now
   // longer-lived) session, which is what "no session breakage on reload" needs.
-  fastify.post('/refresh', async (request, reply) => {
-    if (!auth) return sendAuthUnavailable(reply, request);
-    const session = await auth.api
-      .getSession({ headers: toWebHeaders(request.headers) })
-      .catch(() => null);
-    if (!session?.user) return sendUnauthorized(reply, request);
-    const payload = {
-      user: toUserDto(session.user),
-      accessToken: session.session.token,
-      expiresAt: toUnixMs(session.session.expiresAt),
-    };
-    const validated = validateV2Response(reply, request, authBridgeResponseSchema, payload);
-    if (validated === undefined) return reply;
-    return reply.status(200).send(validated);
-  });
+  fastify.post(
+    '/refresh',
+    { preHandler: fastify.rateLimit('SENSITIVE_COMMAND') },
+    async (request, reply) => {
+      if (!auth) return sendAuthUnavailable(reply, request);
+      const session = await auth.api
+        .getSession({ headers: toWebHeaders(request.headers) })
+        .catch(() => null);
+      if (!session?.user) return sendUnauthorized(reply, request);
+      const payload = {
+        user: toUserDto(session.user),
+        accessToken: session.session.token,
+        expiresAt: toUnixMs(session.session.expiresAt),
+      };
+      const validated = validateV2Response(reply, request, authBridgeResponseSchema, payload);
+      if (validated === undefined) return reply;
+      return reply.status(200).send(validated);
+    },
+  );
 
   fastify.post('/logout', async (request, reply) => {
     if (!auth) return sendAuthUnavailable(reply, request);
@@ -110,20 +124,24 @@ export default async function authRoutes(
     return reply.status(204).send();
   });
 
-  fastify.get('/session', async (request, reply) => {
-    if (!auth) return sendAuthUnavailable(reply, request);
-    const session = await auth.api
-      .getSession({ headers: toWebHeaders(request.headers) })
-      .catch(() => null);
-    if (!session?.user) return sendUnauthorized(reply, request);
-    const payload = {
-      user: toUserDto(session.user),
-      expiresAt: toUnixMs(session.session.expiresAt),
-    };
-    const validated = validateV2Response(reply, request, sessionSchema, payload);
-    if (validated === undefined) return reply;
-    return reply.status(200).send(validated);
-  });
+  fastify.get(
+    '/session',
+    { preHandler: fastify.rateLimit('AUTH_READ') },
+    async (request, reply) => {
+      if (!auth) return sendAuthUnavailable(reply, request);
+      const session = await auth.api
+        .getSession({ headers: toWebHeaders(request.headers) })
+        .catch(() => null);
+      if (!session?.user) return sendUnauthorized(reply, request);
+      const payload = {
+        user: toUserDto(session.user),
+        expiresAt: toUnixMs(session.session.expiresAt),
+      };
+      const validated = validateV2Response(reply, request, sessionSchema, payload);
+      if (validated === undefined) return reply;
+      return reply.status(200).send(validated);
+    },
+  );
 
   void noContentSchema; // reserved for the 204 logout response's (absent) body
 }

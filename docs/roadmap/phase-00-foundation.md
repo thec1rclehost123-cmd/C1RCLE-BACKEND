@@ -234,3 +234,59 @@ reach the generic fallback unrecognized (not checked exhaustively this pass).
     plugin, organization invitations route, venue menu/availability routes,
     the review→published FSM gap. All tracked above or in
     `phase-01-partner-dashboards.md`.
+
+- 2026-08-13 (same day, follow-up) — **Reconciled with a parallel session's
+  independent B08–B12 work.** After the above was committed, a push revealed
+  `origin/main` had moved: a different contributor (Sagar) had independently
+  built the same B08–B12 scope and pushed directly, with real architectural
+  differences (SQLite instead of Firestore, plus RBAC/rate-limit/cache
+  plugins and 133 tests this session had deferred). Full account in
+  `docs/architecture/decisions.md` D-011. A raw `git merge` was attempted and
+  aborted (the two branches renamed the same core abstractions — event bus,
+  outbox, service locator — differently enough that auto-resolution risked
+  broken code); reconciliation was done by hand instead.
+  - **Ported onto this session's Firestore foundation** (kept per explicit
+    user instruction: "keep the stack we have such as firestore"):
+    `plugins/{rbac,rate-limit,cache}.ts` (adapted to read `request.actor`/
+    `request.authUser`, now also populated by `plugins/auth.ts`'s existing
+    hook), rate-limiting wired onto the auth routes (`SENSITIVE_COMMAND` on
+    signup/login/refresh, `AUTH_READ` on session), `scripts/contract-parity.mjs`
+    (runs clean — 33/33 checks pass against the real `C1RCLE-FRONTEND`
+    contract), and two independently-found bug fixes (flat error envelope,
+    `publish()` FSM walk — D-009/D-010).
+  - **Still available, not yet applied:** `requirePermission` (RBAC) and
+    `cached` decorators are registered but not wired into the partner routes
+    — needs a careful per-route permission/cache-class mapping that wasn't
+    rushed under time pressure. Do this properly in Phase 1, not by copying
+    Sagar's `Permission`/`CacheClass` enums verbatim without checking they
+    cover every route this repo actually has (they were sized to Sagar's own
+    route set, which is a subset of this repo's — e.g. no venue
+    calendar/slot-request-accept/reject entries).
+  - **Deliberately not ported:** the SQLite adapter
+    (`infrastructure/sqlite/`, real working code, 462 lines,
+    `node:sqlite`-based, keyset-paginated) and the accompanying
+    `repository-contract.ts` multi-adapter test pattern. Not a rejection of
+    the work — a time/risk call. A future session should: (1) read
+    `git show 80cca2c:packages/core/src/infrastructure/sqlite/
+sqlite-repositories.ts` and the sibling `repository-contract.ts`, (2) port
+    them as a **third** `STORAGE_DRIVER=sqlite` option alongside
+    `memory`/`firestore` (not a replacement), (3) adapt the pagination glue
+    since this repo's `paginateQuery` is offset-based, not keyset-based, and
+    (4) run the ported repository-contract suite against all three adapters.
+  - **Verification after reconciliation:** `pnpm check` green; live smoke
+    test re-run against real Firestore (see Verification section above) to
+    confirm the ported plugins didn't regress the signup→login→org→venue→
+    event→publish chain — including `publish()` from `review` status, which
+    correctly walked review→scheduled→published (version 2→4 in one call).
+  - **One more real bug found by the smoke test itself:** the auth
+    `onRequest` hook (`plugins/auth.ts`) runs before any route's
+    `validateV2` preHandler, so it read the raw, unvalidated
+    `X-Organization-Id` header before any schema check ran. A header value
+    containing `/` (a valid Firestore document-ID path separator) crashed
+    `organizations.getMember()` into an unhandled 500 instead of a 422 —
+    found because the smoke-test script itself used a placeholder value
+    containing a slash. Fixed: the hook now validates the header against the
+    same shape as `opaqueIdSchema` before ever calling into storage, and
+    wraps the repository call in a catch that fails closed (no membership)
+    rather than letting a storage-layer exception become an unhandled 500.
+    Re-verified: full chain green afterward.

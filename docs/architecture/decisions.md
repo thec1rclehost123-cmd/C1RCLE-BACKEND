@@ -122,6 +122,72 @@
   project — D-002's "Firestore first" choice, exercised now instead of
   deferred, with V1/V2 collections kept fully separate per architecture rule 8.
 
+## D-009 · The error envelope is flat everywhere
+
+- **Date / Status:** 2026-08-13 · **chosen** (bug fix, found independently in
+  two parallel sessions working this repo — see D-011 below)
+- **Context:** routes sent `buildV2ErrorResponse(...)` directly (flat
+  `{ status, code, message, requestId }`), but `app.ts`'s `setNotFoundHandler`
+  and `plugins/error-handler.ts`'s global handler both wrapped the same body
+  in `{ error: {...} }`. The frontend's `ApiClientError` parses the flat
+  shape, so it would have failed to parse precisely the errors it most needs
+  to understand — every 404 and every unhandled 5xx.
+- **Choice:** one flat envelope from every path, no exceptions. `app.test.ts`
+  now asserts the flat shape directly (`body.code`, not `body.error.code`).
+
+## D-010 · `publish()` walks the FSM instead of widening the transition table
+
+- **Date / Status:** 2026-08-13 · **chosen** (bug fix — also found
+  independently in the parallel session, see D-011)
+- **Context:** `EVENT_TRANSITIONS` has no `review → published` edge, and
+  nothing in the documented lifecycle actions (`review/publish/pause-sales/
+  resume-sales/cancel/duplicate`) reaches `scheduled` on its own — so an
+  event sent to review could never actually be published. This was flagged
+  as an open finding in `docs/roadmap/phase-00-foundation.md` needing "a
+  product decision, not a silent fix."
+- **Choice:** `EventService.publish()` walks `review → scheduled →
+  published`, one validated FSM edge at a time, inside the same service
+  call. The transition table itself is unchanged — `draft → published`
+  stays illegal (review is not skippable) because the `scheduled` step only
+  runs when the event is currently `review`.
+
+## D-011 · Reconciled with a parallel session's independent B08–B12 work
+
+- **Date / Status:** 2026-08-13 · confirmed by user
+- **Context:** While this session was mid-flight, a different contributor
+  (Sagar, `rautsagar1625@gmail.com`, co-authored with Claude Opus 5) pushed
+  an independent, thorough implementation of the same B08–B12 scope directly
+  to `origin/main` (commit `80cca2c`). It diverged architecturally in real
+  ways: SQLite (`node:sqlite`) instead of Firestore for durable storage
+  (their own note: chosen because Firestore credentials weren't available to
+  them — this session had and used them), plus RBAC/rate-limit/cache
+  plugins and a much larger test suite (133 tests) that this session had
+  deferred. It also independently found and fixed the same two bugs as
+  D-009/D-010, which is reassuring cross-validation that both were real.
+- **Choice, given "keep the stack we have (Firestore)" and "best of both":**
+  kept this session's Firestore-backed foundation as the base (live-verified,
+  matches D-002's original choice) rather than rebasing onto SQLite. Ported
+  onto it, reviewed and adapted rather than blindly merged: the RBAC
+  (`plugins/rbac.ts`), rate-limit (`plugins/rate-limit.ts`), and cache
+  (`plugins/cache.ts`) plugins; the `scripts/contract-parity.mjs` script;
+  both independently-found bug fixes (D-009, D-010).
+- **Deliberately NOT ported this pass:** the SQLite adapter itself
+  (`infrastructure/sqlite/`, 462 lines, keyset pagination — a different
+  scheme than this repo's offset-based `paginateQuery`) and Sagar's
+  `repository-contract.ts` multi-adapter test-suite pattern. A rushed port of
+  a storage engine under time pressure is exactly the kind of change that
+  should not be rushed; this is tracked as real, available, valuable work
+  for a future session in `docs/roadmap/phase-00-foundation.md`, not
+  silently dropped. `requirePermission`/`cached` are registered and
+  available but not yet wired into partner routes for the same reason —
+  wiring RBAC permissions to the wrong routes is worse than not wiring them
+  yet.
+- **A raw `git merge` was attempted first and aborted** — the two branches
+  renamed the same core abstractions (event bus, outbox, service locator)
+  differently enough that automatic conflict resolution risked producing
+  inconsistent code. Reconciliation was done by hand-reviewing and adapting
+  Sagar's additions onto this session's foundation instead.
+
 ## Open questions (resolve before they block)
 
 1. **Frontend env injection** for preview/prod (`NEXT_PUBLIC_API_BASE_URL`

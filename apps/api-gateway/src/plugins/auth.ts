@@ -96,12 +96,36 @@ export default fp(async (fastify: FastifyInstance, options: AuthContextPluginOpt
       .getSession({ headers: toWebHeaders(request.headers) })
       .catch(() => null);
     if (!sessionResult?.user?.id) return;
-    request.user = { uid: sessionResult.user.id };
+    const user = sessionResult.user as { id: string; role?: string | null };
+    request.user = { uid: user.id };
+    // Also populated for plugins/rbac.ts + plugins/rate-limit.ts + plugins/cache.ts
+    // (ported from Sagar's parallel B10 work), which read `request.authUser`/
+    // `request.actor` rather than `request.user`/`request.authContext`.
+    request.authUser = { id: user.id, platformRole: user.role ?? 'guest' };
 
     const organizationId = request.headers['x-organization-id'];
-    if (typeof organizationId !== 'string' || organizationId.length === 0) return;
+    // Matches `opaqueIdSchema` (packages/contracts). This hook is a global
+    // `onRequest` — it runs before any route's `validateV2` preHandler, so an
+    // unvalidated header reaches the repository layer first. A malformed id
+    // (e.g. containing `/`) is a valid Firestore *path separator*, so
+    // `getMember` → `.doc(organizationId)` throws instead of returning null —
+    // an unhandled 500 for what should be a 422. Reject the shape here too,
+    // before it ever reaches storage; the route's own schema still produces
+    // the real 422 the client sees.
+    if (
+      typeof organizationId !== 'string' ||
+      organizationId.length === 0 ||
+      !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(organizationId)
+    ) {
+      return;
+    }
 
-    const member = await organizations.getMember(organizationId, sessionResult.user.id);
+    const member = await organizations
+      .getMember(organizationId, user.id)
+      .catch((error: unknown) => {
+        fastify.log.warn({ err: error, organizationId }, 'organization membership lookup failed');
+        return null;
+      });
     if (!member) return;
     request.authContext = {
       activeMembership: {
@@ -109,6 +133,13 @@ export default fp(async (fastify: FastifyInstance, options: AuthContextPluginOpt
         role: member.role,
         capabilities: member.capabilities,
       },
+    };
+    request.actor = {
+      userId: user.id,
+      organizationId,
+      role: member.role,
+      capabilities: member.capabilities,
+      platformRole: user.role ?? 'guest',
     };
   });
 });
@@ -123,5 +154,14 @@ declare module 'fastify' {
         capabilities: Capability[];
       };
     } | null;
+    /** Populated alongside `user`/`authContext` — see the onRequest hook above. */
+    authUser?: { id: string; platformRole: string };
+    actor?: {
+      userId: string;
+      organizationId: string;
+      role: OrganizationRole;
+      capabilities: readonly Capability[];
+      platformRole: string;
+    };
   }
 }

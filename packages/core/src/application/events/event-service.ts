@@ -101,10 +101,21 @@ export class EventService {
     return updated;
   }
 
-  /** Publishes only through the FSM (draft→review→scheduled→published). */
+  /**
+   * Publishes through the FSM (draft→review→scheduled→published).
+   *
+   * `EVENT_TRANSITIONS` has no direct `review → published` edge, and nothing
+   * else in this slice reaches `scheduled` — so without this, a reviewed
+   * event was permanently unpublishable. `publish()` walks the legal path
+   * one validated edge at a time instead of widening the transition table;
+   * `draft → published` stays illegal (review is not skippable) because the
+   * `scheduled` step only runs from `review`.
+   */
   async publish(actor: ActorContext, eventId: EntityId): Promise<Event> {
     const event = await this.fetchOwned(actor, eventId);
-    const updated = transitionEvent(event, 'published', this.deps.config.clock.now());
+    const now = this.deps.config.clock.now();
+    const scheduled = event.status === 'review' ? transitionEvent(event, 'scheduled', now) : event;
+    const updated = transitionEvent(scheduled, 'published', now);
     await this.repo.save(updated);
     await emit(this.deps, actor, updated.id, 'event.published', {
       title: updated.title,
