@@ -83,7 +83,8 @@ ever reads `process.env`; no frontend code ever runs a query.**
 | `src/domain/ports/repositories.ts` | **The T07 contract.** Interface-only (`OrganizationRepository`, `VenueRepository`, `SlotRequestRepository`, ..., `AnalyticsReadModelRepository`) with cursor pagination, `TxContext` on writes, and **zero Firestore/Postgres types in signatures** — storage stays swappable (Firestore now, Postgres later). |
 | `src/application/context.ts` | `ActorContext{userId,organizationId,role,capabilities}` + `ServiceDeps` (config+logger+repos, all injected) + `requireOrgAccess` which throws `ForbiddenError` on cross-tenant access. |
 | `src/application/*/*-service.ts` | One service per use-case: list/create/get/update/invite (organizations), venue/profile/calendar/slot-requests, event lifecycle (review/publish/pause/resume/cancel/duplicate), event-catalog, analytics (read-model-only, always precomputed). Services throw typed domain errors; **never return raw HTTP**. |
-| `src/infrastructure/memory/memory-repositories.ts` | In-memory adapters implementing each port (Map-backed, cursor slice). Zero infra imports — the parity / dev / test storage until a real adapter (Firestore first, Postgres later) lands (B12). |
+| `src/infrastructure/memory/memory-repositories.ts` | In-memory adapters implementing each port (Map-backed, cursor slice). Zero infra imports — the default for `pnpm test`/CI (`STORAGE_DRIVER=memory`), and still where Postgres would slot in later per `docs/architecture/decisions.md` D-002. |
+| `src/infrastructure/firestore/*.ts` | The real (B12) adapter set — one file per port, same shape as the memory adapters, selected via `STORAGE_DRIVER=firestore`. `client.ts` is the only place `firebase-admin` is imported (guardrail-exempted directory, see §3.4). No transactional compare-and-set yet — writes are read-check-write, same race characteristics as the memory adapter; a real limitation, not hidden. |
 | `src/telemetry/logger.ts` | `Logger` port + `noopLogger` + `createLogger`. Domain depends ONLY on this interface (never pino/Sentry/Fastify). Log level/redaction configured by the adapter (DI), never by `package.json/core`. |
 
 ### 3.3 `apps/api-gateway` — transport (validates, decides, enforces)
@@ -95,8 +96,11 @@ ever reads `process.env`; no frontend code ever runs a query.**
 | `src/config/index.ts` | **THE ONLY `process.env` reader (guardrail-enforced).** zod-validates (`PORT`, `HOST`, `LOG_LEVEL`, `REDIS_URL`, `FIRESTORE_PROJECT_ID`) on cold start; invalid → `GatewayConfigError` (fail fast) before any route serves. |
 | `src/lib/request-tracing.ts` | `genReqId`: echo a valid client `x-request-id`, else mint UUID. `onRequestHook` puts it on `reply`. This is the `requestId` that travels back into every frontend `ApiClientError.requestId` and every log line. |
 | `src/lib/logger-config.ts` | `redactPaths` (authorization/cookie/x-api-key, `*razorpay_*`, `*secret`, `*token*`, `*refreshToken*`) — **secrets never hit logs**. Also the canonical field names (`requestId`, `userId`, `organizationId`, `clientIp`, `route`, `method`, `statusCode`, `durationMs`). |
-| `src/plugins/error-handler.ts` | Maps `DomainError`→`(status,code,message)` (403 forbidden, 404 not_found for all *-not-found, 409 conflict for VersionConflict + StateTransition, 400 validation for InvalidOperation, else 500). **5xx internals never leak** (`body.message = 'Internal server error'` after logging). Everything not a domain error falls back to Fastify status + code map. |
-| `src/routes/v2/route-manifest.ts` | The single registration authority (T14 pattern). Right now registers `internalRoutes` under `/api/v2/internal`. **BLOCKED slices (orders/payments/…) exist here only as `TODO` comments — they are absent, so they 404 by absence, never a 501 stub.** |
+| `src/plugins/error-handler.ts` | Maps `DomainError`→`(status,code,message)` (403 forbidden, 404 not_found for all *-not-found, 409 conflict for VersionConflict + StateTransition, 400 validation for InvalidOperation, else 500). **5xx internals never leak** (`body.message = 'Internal server error'` after logging). Everything not a domain error falls back to Fastify status + code map. Note: route files also have their own local error mapper (`mapDomainError` in `events.ts`, reused by `organizations.ts`/`venues.ts`) that runs *before* this one for caught errors — keep both in sync when adding a new domain error code (a past gap here caused a silently-swallowed 500, see `docs/roadmap/phase-00-foundation.md`). |
+| `src/plugins/auth.ts` | B10 — builds the Better Auth instance (Firestore-backed, `STORAGE_DRIVER=firestore` only) and a global `onRequest` hook that resolves the session + real organization membership into `request.user`/`request.authContext`, which `lib/v2-services.ts`'s `buildActorContext` reads. No-ops on the memory driver. |
+| `src/routes/v2/auth/index.ts` | B10 — `signup/login/refresh/logout/session` routes. Calls `auth.api.*` directly (not proxied through Better Auth's own HTTP handler) so the response body is exactly the frontend contract, never Better Auth's native shape. |
+| `src/routes/v2/route-manifest.ts` | The single registration authority (T14 pattern). Registers `internalRoutes`, `auth/*` (B10), and `partner/{organizations,venues,events}` (B11) directly under `/api/v2` — no `/partner` path prefix (see `docs/architecture/decisions.md` "Open questions" #2, now resolved). **Still-BLOCKED slices (orders/payments/…) exist nowhere in this file** — they are absent, so they 404 by absence, never a 501 stub. |
+| `src/routes/v2/partner/{organizations,venues,events}.ts` | B11 — thin routes per T16: validate → actor → one service call → serialize. Full current route list and what's deliberately not registered (invitations, venue menu/availability) are in `docs/roadmap/phase-00-foundation.md` §C, not repeated here. |
 | `src/routes/v2/internal/index.ts` | `/health`, `/version`, `/readiness` (no auth). Return the V2 success shape. Known: version hard-coded in dev (no `process.env` in routes — the guardrail would flag it). |
 | `src/app.test.ts` | Boot smoke tests: health 200, x-request-id echo, **blocked path → 404 with V2 envelope**, version string. These encode the "404 never 501" rule. |
 
@@ -164,30 +168,25 @@ The frontend never instantiates a database or fetches raw. **It sends one
 
 ---
 
-## 6. Status ledger (what's built vs pending)
+## 6. Status (what's built vs pending)
 
-### Built (matches `pnpm check` = green)
-- [x] `apps/api-gateway` Fastify 5 factory + `x-request-id` + redaction + V2 error envelope + internal health/version/readiness + 404-not-501.
-- [x] `packages/contracts` + `packages/core` monorepo wiring (turbo build/lint/typecheck/test).
-- [x] Contract schemas + error envelope (mirrors frontend).
-- [x] Config (fail-closed, injected), telemetry port, boundary/guardrail script.
-- [x] Domain models + FSM + error types + versioning.
-- [x] Repository interfaces (T07) + in-memory adapters.
-- [x] Application services: organizations/venues/events/event-catalog/analytics (+ `ActorContext`, lazy DI via `ServiceDeps`).
-- [x] `pnpm check` — format → lint → typecheck → boundaries → test → build; `app.test.ts` smoke tests pass (health 200, x-request-id echo, blocked→404).
+**This section deliberately does not list individual items.** Keeping a
+second detailed built/pending list here means two places to update and two
+places that can silently disagree — exactly the kind of drift that already
+happened once in this file (an earlier version of this ledger claimed B09
+was "pending" after it had shipped). There is now exactly one place status
+is tracked:
 
-### Built (Phase 0 — done 2026-08-13, live-verified against real Firestore; see `docs/roadmap/phase-00-foundation.md` for the full account)
-- [x] B09 Outbox + event bus skeleton — `InProcessEventBus` + `MemoryOutboxStore`, wired in `lib/v2-services.ts`.
-- [x] B10 Auth: Better Auth (`plugins/auth.ts`, `routes/v2/auth/*`) — signup/login/refresh/logout/session, real org-membership-based actor resolution, Bearer session token, CORS for the frontend origins. **Not done:** dedicated rate-limit and cache plugins (see `docs/roadmap/phase-00-foundation.md` §B).
-- [x] B11 route modules: organizations (list/get/create/update/members), venues (list/get/create/update/profile/calendar/slot-requests+accept/reject), events (list/get/create/update/previews/lifecycle actions) — all live under the nested `/api/v2/organizations/...` shape (the old `/partner` prefix is gone).
-- [x] B12 storage adapters: Firestore adapters for all 7 repository ports (`packages/core/src/infrastructure/firestore/`), selected via `STORAGE_DRIVER`. Transactional compare-and-set is not implemented (services do read-check-write, same race characteristics as the memory adapter) — noted as a real limitation, not silently claimed as done.
+→ **`docs/roadmap/ROADMAP.md`** — the phase-by-phase status table.
+→ **`docs/roadmap/phase-00-foundation.md`** — the full account of what
+  Phase 0 (this repo's foundation: auth, persistence, the partner-slice
+  routes) actually shipped, what was deliberately left out and why, and
+  every open finding.
 
-### Pending (see `docs/roadmap/ROADMAP.md` for everything beyond this slice)
-- [ ] B13 parity harness vs frozen `thec1rcle` reference + contract parity script.
-- [ ] B14/B15 frontend switch + old-backend freeze/removal (after zero-use proof).
-- [ ] Organization invitations, venue menu/availability routes — blocked on domain modeling, not routing (see `docs/roadmap/phase-00-foundation.md` §C).
-- [ ] Event `review → published` FSM gap — needs a product decision (see `docs/roadmap/phase-00-foundation.md` §C).
-- [ ] Phases 1–8 (partner dashboards, KYC/onboarding, event-catalog, guest checkout/tickets, door/scanner/cover-wallet, finance/ledger/payouts, admin console, social) — see `docs/roadmap/ROADMAP.md`, scope added 2026-08-13 per D-008.
+If you're about to build something, check the roadmap for whether it's
+already done before writing new code — the architecture below (layers,
+files, security rules) doesn't change phase to phase, but *what's wired up*
+does.
 
 ---
 

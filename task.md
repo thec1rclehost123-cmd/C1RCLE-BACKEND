@@ -64,43 +64,22 @@ logger redaction, the shared zod client schemas. **Never port:** V1 routes,
 legacy engines (promoter-engine, heat-sorting), Firebase/Host patterns,
 `apps/partner-dashboard` or old frontend glue, .env-reading domain code.
 
-### Verified B-series state (checked 2026-08-13 — do not re-do)
+### Current status: do not trust the B01–B15 checkboxes below
 
-> **The checkboxes throughout this file (B01–B15 below) are historical and
-> partially stale.** As with the T-series above, code is further along than
-> its own checkboxes. **`docs/roadmap/ROADMAP.md` and
-> `docs/roadmap/phase-00-foundation.md` are the current, authoritative record
-> of what's implemented vs remaining** — read those first; treat an unchecked
-> box below as "needs verification against the roadmap," not as "not done."
+This file's checkboxes are the **original design plan**, frozen at however
+they looked when last hand-edited — they are not kept in sync with reality
+and will drift further as more phases land. **Do not update them here** and
+do not infer status from them. There is exactly one current, maintained
+status source:
 
-Confirmed live, green, and **live-verified against the real `thec1rcle-india`
-Firestore project** (not just typechecked) as of 2026-08-13:
+→ **`docs/roadmap/ROADMAP.md`** (phase-by-phase table) →
+  **`docs/roadmap/phase-00-foundation.md`** (this file's B01–B15 scope, in
+  full — what shipped, what was deliberately deferred and why, bugs found
+  via live testing, open findings). Phase 0 = done, live-verified against
+  real Firestore, as of 2026-08-13. Phases beyond it are in the roadmap's
+  other phase files, not in this file at all.
 
-- **B01–B03** (scaffold, contracts, error envelope) — done.
-- **B04–B08** (domain models/FSM, validation, repository ports, application
-  services, idempotency+optimistic-locking) — done.
-- **B09** (outbox + event bus skeleton) — done (`InProcessEventBus` +
-  `MemoryOutboxStore`, wired in `lib/v2-services.ts`).
-- **B10** (Better Auth) — done: signup/login/refresh/logout/session live,
-  real org-membership actor resolution, CORS for the frontend origins.
-  **Not done:** dedicated rate-limit and cache plugins.
-- **B11** (v2 route modules) — done for the frozen slice: organizations
-  (incl. members), venues (incl. profile/calendar/slot-requests+accept/
-  reject), events (incl. update/previews/lifecycle actions), all under the
-  nested `/api/v2/organizations/...` path shape (§5 below, `/partner` prefix
-  removed). **Not done:** organization invitations, venue menu/availability
-  (blocked on domain modeling — see `docs/roadmap/phase-00-foundation.md` §C).
-- **B12** (storage adapters) — Firestore adapters done for all 7 repository
-  ports, selected via `STORAGE_DRIVER`. **Not done:** transactional
-  compare-and-set (services do read-check-write, same race characteristics
-  as the memory adapter — a real, documented limitation, not silently
-  claimed as solved).
-- **B13–B15** (parity harness, frontend switch, old-backend removal) — not
-  started.
-
-Full account, bugs found via live testing, and open findings (a real FSM gap
-in the event lifecycle, a route-level error-mapping bug) are in
-`docs/roadmap/phase-00-foundation.md`.
+Read the roadmap before starting work described anywhere below.
 
 ---
 

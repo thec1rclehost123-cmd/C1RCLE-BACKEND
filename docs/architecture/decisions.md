@@ -23,6 +23,12 @@
   - `GET /api/v2/auth/session` → current session or 401.
   - Frontend contract stays fixed: `Session { user, expiresAt }`,
     `Authorization: Bearer <accessToken>`.
+- **Implemented 2026-08-13 (B10):** all four routes live in
+  `plugins/auth.ts`/`routes/v2/auth/index.ts`, backed by `better-auth-firestore`
+  (same project as D-002's Firestore adapter). Access token = Better Auth's
+  own session token (Bearer plugin), not a separate JWT — see "Open
+  questions" #3 below, now resolved. Full account:
+  `docs/roadmap/phase-00-foundation.md`.
 
 ## D-002 · Repository-first storage (in-memory → Firestore → Postgres)
 
@@ -34,8 +40,13 @@
   destination per the dream plan and slots in behind the same interfaces and
   the same contract suite.
 - **Now:** `packages/core/src/infrastructure/memory/memory-repositories.ts`
-  is the dev/test/parity adapter. Revisit in B12 to add the Firestore adapter
-  + transactional outbox writes + compare-and-set.
+  is the dev/test/parity adapter (still the default, `STORAGE_DRIVER=memory`).
+- **Implemented 2026-08-13 (B12), partially:** Firestore adapters for all 7
+  repository ports (`packages/core/src/infrastructure/firestore/`), selected
+  via `STORAGE_DRIVER=firestore`. **Not done:** transactional outbox writes
+  and compare-and-set — writes are read-check-write today, same race
+  characteristics as the memory adapter. Real limitation, not silently
+  claimed as solved; revisit before this matters under real concurrent load.
 
 ## D-003 · Contracts are backend-owned; frontend copies are parity-checked
 
@@ -114,12 +125,19 @@
 ## Open questions (resolve before they block)
 
 1. **Frontend env injection** for preview/prod (`NEXT_PUBLIC_API_BASE_URL`
-   staging URL) — confirm with backend deploy target when wiring (B14).
-2. **Org scoping shape** — manifest wins: org-scoped resources nested under
-   `/organizations/:organizationId/...`. Confirm the exact frontend paths at
-   B11.
-3. **Access-token mechanism** — Better Auth's own session/token strategy vs a
-   backend-issued signed token, whichever keeps the frontend
-   `{ user, accessToken, expiresAt }` contract whole (B10).
-4. Idempotency+ optimistic lock TTLs (`Idemop-Key` 24h, Redis fast path) —
-   implement at B08.
+   staging URL) — still open, confirm with backend deploy target when
+   wiring (B14, not started).
+
+Resolved since this list was written (kept here so the resolution is
+traceable, not deleted):
+
+2. ~~**Org scoping shape**~~ — resolved 2026-08-13 (B11): manifest won,
+   org-scoped resources are nested under `/organizations/:organizationId/...`,
+   no `/partner` prefix. Live in `routes/v2/route-manifest.ts`.
+3. ~~**Access-token mechanism**~~ — resolved 2026-08-13 (B10): Better Auth's
+   own session token, exposed via the Bearer plugin's `set-auth-token`
+   header — no separate backend-issued JWT. Live in `plugins/auth.ts`.
+4. ~~**Idempotency + optimistic lock TTLs**~~ — resolved (B08, predates this
+   session's other work but was still marked open here): `Idempotency-Key`
+   24h TTL, `If-Match` version-based optimistic lock. Live in
+   `lib/v2-idempotency.ts` / `application/idempotency/idempotency-service.ts`.
