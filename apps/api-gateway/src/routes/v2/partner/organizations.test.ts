@@ -13,6 +13,7 @@ async function buildServer() {
 }
 
 const VALID_HEADERS = { 'x-organization-id': 'org_1' };
+const CREATE_HEADERS = { 'x-organization-id': 'org_1', 'idempotency-key': 'idem-org-1' };
 
 describe('V2 partners organizations slice', () => {
   it('creates an organization and returns the canonical DTO', async () => {
@@ -20,7 +21,7 @@ describe('V2 partners organizations slice', () => {
     const response = await server.inject({
       method: 'POST',
       url: '/organizations',
-      headers: VALID_HEADERS,
+      headers: CREATE_HEADERS,
       payload: { name: 'Skyline Events', slug: 'skyline-events' },
     });
     expect(response.statusCode).toBe(201);
@@ -41,7 +42,7 @@ describe('V2 partners organizations slice', () => {
     const response = await server.inject({
       method: 'POST',
       url: '/organizations',
-      headers: VALID_HEADERS,
+      headers: CREATE_HEADERS,
       payload: { name: 'X', slug: 'x-events', hackerField: 'leak' },
     });
     expect(response.statusCode).toBe(422);

@@ -4,7 +4,9 @@
  *
  * 1. `process.env` reads are only allowed in the gateway config module.
  * 2. `fetch(` (network calls) only inside the gateway transport (lib/plugins).
- * 3. Firestore/database SDK imports never appear in domain/application code.
+ * 3. Firestore/database SDK imports never appear in domain/application code
+ *    — the one exemption is `packages/core/src/infrastructure/firestore/**`,
+ *    the B12 storage adapter layer, which exists specifically to own this.
  * 4. `.collection(` / `.doc(` never appear in route files.
  *
  * Exit code 0 = clean. Exit 1 = violation found (CI fails).
@@ -18,6 +20,7 @@ const SRC = join(ROOT, 'apps', 'api-gateway', 'src');
 
 const GATEWAY_CONFIG = join(SRC, 'config');
 const GATEWAY_LIB = join(SRC, 'lib');
+const FIRESTORE_ADAPTER_DIR = join(ROOT, 'packages', 'core', 'src', 'infrastructure', 'firestore');
 
 const violations = [];
 
@@ -73,6 +76,7 @@ walk(SRC, (file) => {
 for (const dir of ['packages', 'apps']) {
   walk(join(ROOT, dir), (file) => {
     if (isInside(file, join(ROOT, 'apps', 'api-gateway', 'src', 'lib'))) return;
+    if (isInside(file, FIRESTORE_ADAPTER_DIR)) return;
     const src = stripComments(readFileSync(file, 'utf8'));
     for (const sdk of [
       'firebase-admin',

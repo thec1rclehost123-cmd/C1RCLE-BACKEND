@@ -31,6 +31,8 @@ export interface TxContext {
 /** Standard paginated read outcome. `nextCursor` is null when exhausted. */
 export interface Page<TItem> {
   items: TItem[];
+  /** True total before paging (V1-proven `total`; 0 when the source lacks a count). */
+  total: number;
   nextCursor: Cursor | null;
 }
 
@@ -107,6 +109,20 @@ export interface EventCatalogRepository {
 }
 
 // ─── Analytics read model ────────────────────────────────────────────────────
+// Field names are the V1-proven dashboard contract (`analytics-engine.js` /
+// `analytics.ts`): `totalTicketsSold`, `totalCheckIns`, `topEvents`,
+// `ticketsSold`, `occupancyRate`, `sellThroughRate`, `noShowRate`, ... Money is
+// paise in V2 (V1 emitted whole rupees — converted at the adapter boundary).
+
+export interface TopEvent {
+  eventId: EntityId;
+  title: string;
+  /** Paise (V1: whole rupees). */
+  revenuePaise: number;
+  tickets: number;
+  /** ISO-8601 event date. */
+  date: string;
+}
 
 export interface OrganizationOverview {
   organizationId: EntityId;
@@ -114,18 +130,35 @@ export interface OrganizationOverview {
   /** Cached, precomputed at write time — never a per-request scan. */
   publishedEvents: number;
   totalRevenuePaise: number;
+  totalTicketsSold: number;
+  totalCheckIns: number;
+  /** Top events by revenue (V1-proven `topEvents` shape). */
+  topEvents: TopEvent[];
   /** `null` when the org has no finished events yet. */
   lastEventAt: string | null;
 }
 
 export interface EventAnalytics {
   eventId: EntityId;
+  totalRevenuePaise: number;
   ticketsSold: number;
-  revenuePaise: number;
-  capacitySoldRatio: number | null;
-  checkIns: number;
-  /** Ratios 0..1 (precomputed at event end). */
-  grossConversionRate: number;
+  totalCheckIns: number;
+  /** Venue-reported capacity (V1 `capacity` on the analytics doc). */
+  capacity: number;
+  /** Event-page views (V1 `views`). */
+  views: number;
+  /** Guest-list signups (V1 `guestlistSignups`). */
+  guestlistSignups: number;
+  /** Paise (V1: whole rupees). */
+  avgTicketPricePaise: number;
+  /** Ratios 0..1, precomputed at write time (V1 computed same names). */
+  occupancyRate: number;
+  sellThroughRate: number;
+  refundAmountPaise: number;
+  refundRate: number;
+  noShowRate: number;
+  repeatGuests: number;
+  conversionRate: number;
 }
 
 /** Read-model access. Writes happen through projections/workers, not routes. */

@@ -29,3 +29,8 @@ export type {
   CommissionTerms,
 } from './event-catalog/event-catalog-service.js';
 export { AnalyticsService } from './analytics/analytics-service.js';
+export { IdempotencyService } from './idempotency/idempotency-service.js';
+export type { IdempotentCommand, IdempotentResult } from './idempotency/idempotency-service.js';
+export { InProcessEventBus } from './events/event-bus.js';
+export type { EventHandler } from './events/event-bus.js';
+export { createAuditConsumer, createProjectionConsumer } from './events/audit-consumers.js';

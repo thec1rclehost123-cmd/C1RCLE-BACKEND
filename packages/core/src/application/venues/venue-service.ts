@@ -9,7 +9,7 @@ import {
   createSlotRequest,
   transitionSlotRequest,
 } from '../../domain/models/venue.js';
-import { requireOrgAccess } from '../context.js';
+import { requireOrgAccess, emit } from '../context.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type {
@@ -29,6 +29,10 @@ import type { ActorContext, ServiceDeps } from '../context.js';
 export interface CreateVenueCommand {
   name: string;
   slug: string;
+  /** V1-proven create fields: public description, capacity, city (top-level). */
+  description?: string;
+  capacity?: number | null;
+  city?: string | null;
 }
 
 export interface UpdateVenueCommand {
@@ -58,9 +62,16 @@ export class VenueService {
       ownerId: actor.userId,
       name: command.name,
       slug: command.slug,
+      description: command.description,
+      capacity: command.capacity ?? null,
+      city: command.city ?? null,
       now: this.deps.config.clock.now(),
     });
     await this.repo.save(venue);
+    await emit(this.deps, actor, venue.id, 'venue.created', {
+      name: venue.public.name,
+      slug: venue.public.slug,
+    });
     return venue;
   }
 
@@ -80,6 +91,10 @@ export class VenueService {
     const updated = updateVenue(venue, command.update, this.deps.config.clock.now());
     if (updated === venue) return venue;
     await this.repo.save(updated);
+    await emit(this.deps, actor, updated.id, 'venue.updated', {
+      name: updated.public.name,
+      slug: updated.public.slug,
+    });
     return updated;
   }
 

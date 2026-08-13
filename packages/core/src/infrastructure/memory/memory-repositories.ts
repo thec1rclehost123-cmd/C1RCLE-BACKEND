@@ -222,5 +222,5 @@ function serializeSlice<TItem>(all: TItem[], query: PaginationQuery): Page<TItem
   const start = query.cursor ? Number.parseInt(query.cursor, 10) || 0 : 0;
   const items = all.slice(start, start + limit);
   const nextCursor = start + limit < all.length ? String(start + limit) : null;
-  return { items, nextCursor };
+  return { items, total: all.length, nextCursor };
 }

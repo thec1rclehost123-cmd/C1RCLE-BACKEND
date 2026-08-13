@@ -6,6 +6,7 @@ import {
   createPromoterAssignment,
   endPromoterAssignment,
   type PromoDiscountType,
+  type PromoType,
   type TicketTier,
   type PromoCode,
   type TablePackage,
@@ -20,20 +21,29 @@ import type { ActorContext, ServiceDeps } from '../context.js';
 export interface CreateTierCommand {
   eventId: EntityId;
   name: string;
+  description?: string;
+  entryType?: string;
+  currency?: string;
   priceInPaise: number;
   quantity: number;
   salesStartAt?: string | null;
   salesEndAt?: string | null;
+  minPerOrder?: number | null;
+  maxPerOrder?: number | null;
 }
 
 export interface CreatePromotionCommand {
   eventId: EntityId | null;
   code: string;
+  name?: string;
+  type?: PromoType;
   discountType: PromoDiscountType;
   discountValue: number;
-  maxUses?: number | null;
-  validFrom?: string | null;
-  validUntil?: string | null;
+  tierIds?: EntityId[];
+  maxRedemptions?: number | null;
+  maxPerUser?: number | null;
+  startsAt?: string | null;
+  endsAt?: string | null;
 }
 
 export interface CreateTableCommand {
@@ -75,10 +85,15 @@ export class EventCatalogService {
       eventId: command.eventId,
       organizationId: actor.organizationId,
       name: command.name,
+      description: command.description,
+      entryType: command.entryType,
+      currency: command.currency,
       priceInPaise: command.priceInPaise,
       quantity: command.quantity,
       salesStartAt: command.salesStartAt ?? null,
       salesEndAt: command.salesEndAt ?? null,
+      minPerOrder: command.minPerOrder ?? null,
+      maxPerOrder: command.maxPerOrder ?? null,
       now: this.deps.config.clock.now(),
     });
     await this.repo.saveTier(tier);
@@ -97,11 +112,15 @@ export class EventCatalogService {
       eventId: command.eventId,
       organizationId: actor.organizationId,
       code: command.code,
+      name: command.name,
+      type: command.type,
       discountType: command.discountType,
       discountValue: command.discountValue,
-      maxUses: command.maxUses ?? null,
-      validFrom: command.validFrom ?? null,
-      validUntil: command.validUntil ?? null,
+      tierIds: command.tierIds,
+      maxRedemptions: command.maxRedemptions ?? null,
+      maxPerUser: command.maxPerUser ?? null,
+      startsAt: command.startsAt ?? null,
+      endsAt: command.endsAt ?? null,
       now: this.deps.config.clock.now(),
     });
     await this.repo.savePromo(promo);

@@ -19,13 +19,21 @@ export interface TicketTier extends VersionedEntity {
   eventId: EntityId;
   organizationId: EntityId;
   name: string;
-  /** Price in rupees (integer paise avoided to keep money as integers). */
+  description: string;
+  /** Entry class shown to guests (V1 `entryType`, default 'general'). */
+  entryType: string;
+  /** ISO 4217; V1 default 'INR'. */
+  currency: string;
+  /** Price in paise. */
   priceInPaise: number;
   /** Live sellable quantity; runs through inventory-service at sell time. */
   quantity: number;
   status: TicketTierStatus;
   salesStartAt: string | null;
   salesEndAt: string | null;
+  /** Per-order purchase bounds (V1 `minPerOrder`/`maxPerOrder`). */
+  minPerOrder: number | null;
+  maxPerOrder: number | null;
 }
 
 export interface CreateTicketTierInput {
@@ -33,10 +41,15 @@ export interface CreateTicketTierInput {
   eventId: EntityId;
   organizationId: EntityId;
   name: string;
+  description?: string;
+  entryType?: string;
+  currency?: string;
   priceInPaise: number;
   quantity: number;
   salesStartAt?: string | null;
   salesEndAt?: string | null;
+  minPerOrder?: number | null;
+  maxPerOrder?: number | null;
   now?: Date;
 }
 
@@ -45,16 +58,30 @@ export function createTicketTier(input: CreateTicketTierInput): TicketTier {
     throw new InvalidOperationError('Ticket tier quantity cannot be negative');
   if (input.priceInPaise < 0)
     throw new InvalidOperationError('Ticket tier price cannot be negative');
+  if (
+    input.minPerOrder !== undefined &&
+    input.maxPerOrder !== undefined &&
+    input.minPerOrder !== null &&
+    input.maxPerOrder !== null &&
+    input.minPerOrder > input.maxPerOrder
+  ) {
+    throw new InvalidOperationError('minPerOrder cannot exceed maxPerOrder');
+  }
   return {
     id: input.id,
     eventId: input.eventId,
     organizationId: input.organizationId,
     name: input.name,
+    description: input.description ?? '',
+    entryType: input.entryType ?? 'general',
+    currency: input.currency ?? 'INR',
     priceInPaise: input.priceInPaise,
     quantity: input.quantity,
     status: 'active',
     salesStartAt: input.salesStartAt ?? null,
     salesEndAt: input.salesEndAt ?? null,
+    minPerOrder: input.minPerOrder ?? null,
+    maxPerOrder: input.maxPerOrder ?? null,
     ...newVersionedEntity(input.now ?? new Date()),
   };
 }
@@ -62,7 +89,19 @@ export function createTicketTier(input: CreateTicketTierInput): TicketTier {
 export function updateTicketTier(
   tier: TicketTier,
   changes: Partial<
-    Pick<TicketTier, 'name' | 'priceInPaise' | 'quantity' | 'salesStartAt' | 'salesEndAt'>
+    Pick<
+      TicketTier,
+      | 'name'
+      | 'description'
+      | 'entryType'
+      | 'currency'
+      | 'priceInPaise'
+      | 'quantity'
+      | 'salesStartAt'
+      | 'salesEndAt'
+      | 'minPerOrder'
+      | 'maxPerOrder'
+    >
   >,
   now?: Date,
 ): TicketTier {
@@ -75,19 +114,38 @@ export function updateTicketTier(
 // ─── Promo codes ──────────────────────────────────────────────────────────────
 
 export type PromoDiscountType = 'percent' | 'fixed';
+/** V1-proven audience classes (`promo-service.js`): public, private, per-use. */
+export type PromoType = 'public' | 'private' | 'single_use' | 'multi_use';
 
+/**
+ * Promo code. Field names are the V1-proven contract from `thec1rcle`
+ * `promo-service.js` (`maxRedemptions`, `redemptionCount`, `startsAt`,
+ * `endsAt`, `tierIds`, `maxPerUser`, `type`, `name`) — checkout/orders slice
+ * validates against these exact names. Money (`discountValue`) is paise in V2
+ * (V1 used rupees; converted at the Firestore adapter boundary, B12).
+ */
 export interface PromoCode extends VersionedEntity {
   id: EntityId;
   eventId: EntityId | null;
   organizationId: EntityId;
+  /** Normalized uppercase — unique per (organization, event). */
   code: string;
+  /** Display name; defaults to the code when not provided (V1 behavior). */
+  name: string;
+  type: PromoType;
   discountType: PromoDiscountType;
   /** Percent (0–100) when `percent`; paise when `fixed`. */
   discountValue: number;
-  maxUses: number | null;
-  usedCount: number;
-  validFrom: string | null;
-  validUntil: string | null;
+  /** Empty = applies to all tiers (V1 semantics). */
+  tierIds: EntityId[];
+  /** Total allowed redemptions; null = unlimited. */
+  maxRedemptions: number | null;
+  /** Per-user redemption cap; null = unlimited. */
+  maxPerUser: number | null;
+  /** Cumulative redemptions (incremented by the redemption consumer). */
+  redemptionCount: number;
+  startsAt: string | null;
+  endsAt: string | null;
   isActive: boolean;
 }
 
@@ -96,11 +154,15 @@ export interface CreatePromoCodeInput {
   eventId: EntityId | null;
   organizationId: EntityId;
   code: string;
+  name?: string;
+  type?: PromoType;
   discountType: PromoDiscountType;
   discountValue: number;
-  maxUses?: number | null;
-  validFrom?: string | null;
-  validUntil?: string | null;
+  tierIds?: EntityId[];
+  maxRedemptions?: number | null;
+  maxPerUser?: number | null;
+  startsAt?: string | null;
+  endsAt?: string | null;
   now?: Date;
 }
 
@@ -111,28 +173,38 @@ export function createPromoCode(input: CreatePromoCodeInput): PromoCode {
   if (input.discountType === 'fixed' && input.discountValue < 0) {
     throw new InvalidOperationError('Fixed discount cannot be negative');
   }
+  const code = input.code.toUpperCase().trim();
+  const trimmedName = input.name?.trim();
+  // Falls back to `code` for both "not provided" and "provided but blank"
+  // (V1-proven behavior) — explicit comparison rather than `||`/`??` so an
+  // all-whitespace name still falls through (`??` alone would keep `''`).
+  const name = trimmedName === undefined || trimmedName === '' ? code : trimmedName;
   return {
     id: input.id,
     eventId: input.eventId,
     organizationId: input.organizationId,
-    code: input.code.toUpperCase().trim(),
+    code,
+    name,
+    type: input.type ?? 'private',
     discountType: input.discountType,
     discountValue: input.discountValue,
-    maxUses: input.maxUses ?? null,
-    usedCount: 0,
-    validFrom: input.validFrom ?? null,
-    validUntil: input.validUntil ?? null,
+    tierIds: input.tierIds ?? [],
+    maxRedemptions: input.maxRedemptions ?? null,
+    maxPerUser: input.maxPerUser ?? null,
+    redemptionCount: 0,
+    startsAt: input.startsAt ?? null,
+    endsAt: input.endsAt ?? null,
     isActive: true,
     ...newVersionedEntity(input.now ?? new Date()),
   };
 }
 
-/** Records one redemption (saturated at never above maxUses). */
+/** Records one redemption (saturated at never above maxRedemptions). */
 export function markPromoUsed(promo: PromoCode, now?: Date): PromoCode {
-  if (promo.maxUses !== null && promo.usedCount >= promo.maxUses) {
+  if (promo.maxRedemptions !== null && promo.redemptionCount >= promo.maxRedemptions) {
     throw new InvalidOperationError('Promo code usage limit reached');
   }
-  return bumpVersion({ ...promo, usedCount: promo.usedCount + 1 }, now ?? new Date());
+  return bumpVersion({ ...promo, redemptionCount: promo.redemptionCount + 1 }, now ?? new Date());
 }
 
 // ─── Table packages ───────────────────────────────────────────────────────────

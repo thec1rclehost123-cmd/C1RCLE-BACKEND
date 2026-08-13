@@ -49,7 +49,10 @@ export type OrganizationStatus = 'active' | 'suspended' | 'archived';
 export interface OrganizationSettings {
   /** Owned/branding info shared with partner surfaces. */
   name?: string;
+  /** IANA timezone; V1 proven default 'Asia/Kolkata'. */
   timezone?: string;
+  /** ISO 4217 default currency for pricing; V1 proven default 'INR'. */
+  defaultCurrency?: string;
 }
 
 export interface CreateOrganizationInput {

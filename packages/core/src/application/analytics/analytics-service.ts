@@ -31,6 +31,9 @@ export class AnalyticsService {
         totalEvents: 0,
         publishedEvents: 0,
         totalRevenuePaise: 0,
+        totalTicketsSold: 0,
+        totalCheckIns: 0,
+        topEvents: [],
         lastEventAt: null,
       };
     }

@@ -31,6 +31,10 @@
     "./infrastructure/memory": {
       "types": "./src/infrastructure/memory/memory-repositories.ts",
       "import": "./src/infrastructure/memory/memory-repositories.ts"
+    },
+    "./infrastructure/firestore": {
+      "types": "./src/infrastructure/firestore/index.ts",
+      "import": "./src/infrastructure/firestore/index.ts"
     }
   },
   "scripts": {
@@ -38,5 +42,8 @@
     "lint": "eslint .",
     "test": "vitest run",
     "build": "tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.0.0"
   }
 }

@@ -1,5 +1,6 @@
 import { buildV2ErrorResponse } from '@c1rcle/contracts';
 import { createLogger, type Logger } from '@c1rcle/core';
+import cors from '@fastify/cors';
 import Fastify, { type FastifyInstance } from 'fastify';
 
 import { getGatewayConfig, type GatewayConfig } from './config/index.js';
@@ -50,6 +51,17 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     });
 
   app.addHook('onRequest', onRequestHook);
+
+  // B10: cookie-based sessions require CORS credentials — the frontend apps
+  // run on different ports (3000-3002) than this gateway (8080). Different
+  // ports are still "same-site" for the SameSite cookie attribute (it only
+  // considers scheme + registrable domain), so this is sufficient in local
+  // dev without SameSite=None; prod cross-domain needs revisiting (see
+  // docs/architecture/decisions.md D-001).
+  await app.register(cors, {
+    origin: ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:3002'],
+    credentials: true,
+  });
 
   await app.register(validateV2Plugin);
 

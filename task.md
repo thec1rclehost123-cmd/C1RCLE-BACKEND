@@ -64,6 +64,44 @@ logger redaction, the shared zod client schemas. **Never port:** V1 routes,
 legacy engines (promoter-engine, heat-sorting), Firebase/Host patterns,
 `apps/partner-dashboard` or old frontend glue, .env-reading domain code.
 
+### Verified B-series state (checked 2026-08-13 — do not re-do)
+
+> **The checkboxes throughout this file (B01–B15 below) are historical and
+> partially stale.** As with the T-series above, code is further along than
+> its own checkboxes. **`docs/roadmap/ROADMAP.md` and
+> `docs/roadmap/phase-00-foundation.md` are the current, authoritative record
+> of what's implemented vs remaining** — read those first; treat an unchecked
+> box below as "needs verification against the roadmap," not as "not done."
+
+Confirmed live, green, and **live-verified against the real `thec1rcle-india`
+Firestore project** (not just typechecked) as of 2026-08-13:
+
+- **B01–B03** (scaffold, contracts, error envelope) — done.
+- **B04–B08** (domain models/FSM, validation, repository ports, application
+  services, idempotency+optimistic-locking) — done.
+- **B09** (outbox + event bus skeleton) — done (`InProcessEventBus` +
+  `MemoryOutboxStore`, wired in `lib/v2-services.ts`).
+- **B10** (Better Auth) — done: signup/login/refresh/logout/session live,
+  real org-membership actor resolution, CORS for the frontend origins.
+  **Not done:** dedicated rate-limit and cache plugins.
+- **B11** (v2 route modules) — done for the frozen slice: organizations
+  (incl. members), venues (incl. profile/calendar/slot-requests+accept/
+  reject), events (incl. update/previews/lifecycle actions), all under the
+  nested `/api/v2/organizations/...` path shape (§5 below, `/partner` prefix
+  removed). **Not done:** organization invitations, venue menu/availability
+  (blocked on domain modeling — see `docs/roadmap/phase-00-foundation.md` §C).
+- **B12** (storage adapters) — Firestore adapters done for all 7 repository
+  ports, selected via `STORAGE_DRIVER`. **Not done:** transactional
+  compare-and-set (services do read-check-write, same race characteristics
+  as the memory adapter — a real, documented limitation, not silently
+  claimed as solved).
+- **B13–B15** (parity harness, frontend switch, old-backend removal) — not
+  started.
+
+Full account, bugs found via live testing, and open findings (a real FSM gap
+in the event lifecycle, a route-level error-mapping bug) are in
+`docs/roadmap/phase-00-foundation.md`.
+
 ---
 
 ## 0. Context that must survive any session loss
@@ -473,15 +511,15 @@ application) enforced.
 
 **Tasks:**
 
-- [ ] Generalize the old `idempotency-service` pattern: key =
+- [x] Generalize the old `idempotency-service` pattern: key =
       `{idempotencyKey, actorId, commandName}`, first response stored + replayed,
       TTL 24h (Redis fast path when present, durable store as authority).
-- [ ] `Idempotency-Key` required on POST/PATCH/PUT for manifest routes marked
+- [x] `Idempotency-Key` required on POST/PATCH/PUT for manifest routes marked
       `REQUIRED`; 409 on key reuse with different body; replay on same key.
-- [ ] `If-Match: "version"` required on PATCH/PUT (manifest `expectedVersion:
+- [x] `If-Match: "version"` required on PATCH/PUT (manifest `expectedVersion:
   REQUIRED`); body `version` ignored; version conflict → 409 `conflict`
       with current version in error details.
-- [ ] Tests: duplicate request → identical response, no second write;
+- [x] Tests: duplicate request → identical response, no second write;
       concurrent same-key → one winner; concurrent updates → one 409, retry
       after refetch succeeds.
 
@@ -611,7 +649,7 @@ route has an ACTIVE manifest entry and vice-versa; BLOCKED paths 404.
 > **Hand-in-hand (T18):** T18 planned Firestore adapters for the old repo.
 > Here they are implemented fresh behind the ported repo interfaces — same
 > contract suite against Memory AND the real adapter. Record the chosen
-> adapter in `docs/decisions.md`.
+> adapter in `docs/architecture/decisions.md`.
 
 **Tasks:**
 
@@ -733,7 +771,7 @@ admin, social, campaigns, notifications, public discovery.
 
 ---
 
-## 6. Open decisions to confirm (resolve in `docs/decisions.md`)
+## 6. Open decisions to confirm (resolve in `docs/architecture/decisions.md`)
 
 1. **Storage:** Firestore-first (reuse old pattern) vs PostgreSQL now vs
    in-memory+one real adapter. (B12.)

@@ -6,10 +6,12 @@
  */
 
 import { ForbiddenError } from '../domain/errors.js';
+import { domainEvent, type DomainEventType, type EventPayloads } from '../domain/events.js';
 
 import type { CoreConfig } from '../config/index.js';
 import type { EntityId } from '../domain/identity.js';
 import type { OrganizationRole, Capability } from '../domain/models/organization.js';
+import type { OutboxWriter } from '../domain/ports/outbox.js';
 import type {
   OrganizationRepository,
   VenueRepository,
@@ -34,6 +36,8 @@ export interface ActorContext {
 export interface ServiceDeps {
   config: CoreConfig;
   logger: Logger;
+  /** T12 outbox: domain events appended in the same unit of work as writes. */
+  outbox: OutboxWriter;
   repositories: {
     organizations: OrganizationRepository;
     venues: VenueRepository;
@@ -53,4 +57,30 @@ export function requireOrgAccess(actor: ActorContext, organizationId: EntityId):
   if (actor.organizationId !== organizationId) {
     throw new ForbiddenError('Cross-tenant access denied');
   }
+}
+
+/**
+ * Appends a domain event to the outbox in the same unit of work as the
+ * service write (T12). Id + clock come from the injected config. Awaited so
+ * the row is durably stored before the bus can drain it.
+ */
+export async function emit<TType extends DomainEventType>(
+  deps: ServiceDeps,
+  actor: ActorContext,
+  aggregateId: EntityId,
+  type: TType,
+  payload: EventPayloads[TType],
+): Promise<void> {
+  const occurredAt = deps.config.clock.now().getTime();
+  await deps.outbox.append(
+    domainEvent({
+      id: deps.config.ids(),
+      type,
+      aggregateId,
+      organizationId: actor.organizationId,
+      actorId: actor.userId,
+      payload,
+      occurredAt,
+    }),
+  );
 }

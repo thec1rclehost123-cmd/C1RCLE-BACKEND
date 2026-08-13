@@ -13,14 +13,15 @@ async function buildServer() {
 }
 
 const VALID_HEADERS = { 'x-organization-id': 'org_1' };
+const CREATE_HEADERS = { 'x-organization-id': 'org_1', 'idempotency-key': 'idem-event-1' };
 
 describe('V2 partners events slice — validation layers', () => {
   it('rejects bad body with 422 + fieldErrors (body layer)', async () => {
     const server = await buildServer();
     const response = await server.inject({
       method: 'POST',
-      url: '/events',
-      headers: VALID_HEADERS,
+      url: '/organizations/org_1/events',
+      headers: CREATE_HEADERS,
       payload: { title: '', venueId: 'bad id!', startAt: 'not-a-date' },
     });
     const body = response.json();
@@ -37,8 +38,8 @@ describe('V2 partners events slice — validation layers', () => {
     const server = await buildServer();
     const response = await server.inject({
       method: 'POST',
-      url: '/events',
-      headers: VALID_HEADERS,
+      url: '/organizations/org_1/events',
+      headers: CREATE_HEADERS,
       payload: {
         title: 'Night',
         venueId: 'ven_1',
@@ -67,7 +68,7 @@ describe('V2 partners events slice — validation layers', () => {
     const server = await buildServer();
     const response = await server.inject({
       method: 'GET',
-      url: '/events?limit=9999',
+      url: '/organizations/org_1/events?limit=9999',
       headers: VALID_HEADERS,
     });
     expect(response.statusCode).toBe(422);
@@ -77,7 +78,11 @@ describe('V2 partners events slice — validation layers', () => {
 
   it('rejects missing/bad headers with 422 + fieldErrors (headers layer)', async () => {
     const server = await buildServer();
-    const response = await server.inject({ method: 'POST', url: '/events', payload: {} });
+    const response = await server.inject({
+      method: 'POST',
+      url: '/organizations/org_1/events',
+      payload: {},
+    });
     expect(response.statusCode).toBe(422);
     expect(response.json().fieldErrors).toHaveProperty('x-organization-id');
     await server.close();
@@ -87,8 +92,8 @@ describe('V2 partners events slice — validation layers', () => {
     const server = await buildServer();
     const response = await server.inject({
       method: 'POST',
-      url: '/events',
-      headers: VALID_HEADERS,
+      url: '/organizations/org_1/events',
+      headers: CREATE_HEADERS,
       payload: { title: 'Sky Night', venueId: 'ven_1', startAt: '2026-08-01T18:00:00Z' },
     });
     expect(response.statusCode).toBe(201);

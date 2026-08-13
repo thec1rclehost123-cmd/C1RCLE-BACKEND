@@ -201,4 +201,30 @@ export default tseslint.config(
       'no-restricted-globals': 'off',
     },
   },
+  /* B12: the Firestore adapter layer is the one place `.collection(`/`.doc(`
+   * calls are legitimate — it IS the repository port implementation the rule
+   * above protects everywhere else. process.env stays banned here too (same
+   * as `scripts/check-boundaries.mjs` Rule 3's directory exemption). */
+  {
+    files: ['packages/core/src/infrastructure/firestore/**'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "MemberExpression[object.name='process'][property.name='env']",
+          message:
+            'ARCHITECTURE: direct process.env access is forbidden outside apps/api-gateway/src/config.',
+        },
+      ],
+    },
+  },
+  /* Opt-in integration tests read real credentials from env by design (see
+   * the file header) — matches check-boundaries.mjs's own test-file exemption. */
+  {
+    files: ['**/*.integration.test.ts'],
+    rules: {
+      'no-restricted-syntax': 'off',
+      '@typescript-eslint/no-non-null-assertion': 'off',
+    },
+  },
 );

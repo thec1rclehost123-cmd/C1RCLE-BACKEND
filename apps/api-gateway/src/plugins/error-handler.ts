@@ -8,6 +8,7 @@ import {
   TicketTierNotFoundError,
   PromoterAssignmentNotFoundError,
   ForbiddenError,
+  UnauthorizedError,
   VersionConflictError,
   StateTransitionError,
   InvalidOperationError,
@@ -26,6 +27,7 @@ export function mapDomainError(error: DomainError): {
   status: number;
   code: ApiErrorCode;
 } {
+  if (error instanceof UnauthorizedError) return { status: 401, code: 'unauthorized' };
   if (error instanceof ForbiddenError) return { status: 403, code: 'forbidden' };
   if (error instanceof VersionConflictError) return { status: 409, code: 'conflict' };
   if (

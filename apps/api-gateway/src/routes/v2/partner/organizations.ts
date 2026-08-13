@@ -3,12 +3,15 @@ import {
   idempotencyKeySchema,
   paginationQuerySchema,
   organizationDtoSchema,
+  organizationMemberDtoSchema,
+  inviteMemberSchema,
   paginatedSchema,
 } from '@c1rcle/contracts/client';
 import { z } from 'zod';
 
 import type { Organization, OrganizationRole } from '@c1rcle/core/domain';
 
+import { isIdempotencyConflict, runIdempotent } from '../../../lib/v2-idempotency.js';
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
 
@@ -47,6 +50,7 @@ const orgHeaders = z.looseObject({
 });
 
 const orgListSchema = paginatedSchema(organizationDtoSchema);
+const memberListSchema = paginatedSchema(organizationMemberDtoSchema);
 
 export default async function partnerOrganizationRoutes(fastify: FastifyInstance) {
   // ── LIST (active memberships only) ────────────────────────────────────────
@@ -68,7 +72,7 @@ export default async function partnerOrganizationRoutes(fastify: FastifyInstance
         pageInfo: {
           page: 1,
           pageSize: query.limit,
-          total: items.length,
+          total: page.total,
           hasNextPage: page.nextCursor !== null,
         },
       };
@@ -104,41 +108,66 @@ export default async function partnerOrganizationRoutes(fastify: FastifyInstance
     },
   );
 
-  // ── CREATE ────────────────────────────────────────────────────────────────
+  // ── CREATE (idempotent: manifest organizations.create REQUIRED) ────────────
   fastify.post(
     '/organizations',
     {
-      preHandler: fastify.validateV2({ body: createOrganizationBody, headers: orgHeaders }),
+      preHandler: fastify.validateV2({
+        body: createOrganizationBody,
+        headers: orgHeaders.extend({ 'idempotency-key': idempotencyKeySchema }),
+      }),
     },
     async (request, reply) => {
       const body = request.body as z.infer<typeof createOrganizationBody>;
       const actor = services.actor(request);
-      const org = await services.organizations
-        .create(actor, {
-          name: body.name,
-          slug: body.slug,
-          settings: body.settings,
-        })
-        .catch((error: unknown) => mapDomainError(reply, request, 'new_org', error));
-      if (org === undefined) return reply;
-      const validated = validateV2Response(
-        reply,
+      const v2Headers = request.v2Headers ?? {};
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
         request,
-        organizationDtoSchema,
-        organizationToDto(org, actor.userId),
-      );
-      if (validated === undefined) return reply;
-      return reply.status(201).send(validated);
+        actorId: actor.userId,
+        commandName: 'organizations.create',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: {}, body },
+        run: async () => {
+          const org = await services.organizations.create(actor, {
+            name: body.name,
+            slug: body.slug,
+            settings: body.settings,
+          });
+          const validated = validateV2Response(
+            reply,
+            request,
+            organizationDtoSchema,
+            organizationToDto(org, actor.userId),
+          );
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 201, body: validated };
+        },
+      }).catch((error: unknown) => {
+        if (isIdempotencyConflict(error)) {
+          return mapDomainError(reply, request, 'new_org', error, {
+            conflictId: v2Headers['idempotency-key'],
+          });
+        }
+        return mapDomainError(reply, request, 'new_org', error);
+      });
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
     },
   );
 
-  // ── UPDATE (PATCH, optimistic-locked via If-Match) ────────────────────────
+  // ── UPDATE (PATCH, optimistic-locked + idempotent) ─────────────────────────
   fastify.patch(
     '/organizations/:organizationId',
     {
       preHandler: fastify.validateV2({
         params: organizationIdParam,
-        headers: orgHeaders.extend({ 'if-match': z.string().regex(/^[1-9][0-9]*$/) }),
+        headers: orgHeaders.extend({
+          'idempotency-key': idempotencyKeySchema,
+          'if-match': z
+            .string()
+            .regex(/^[1-9][0-9]*$/, 'If-Match must be a positive integer version'),
+        }),
         body: z
           .object({
             name: z.string().min(1).max(200).optional(),
@@ -170,18 +199,122 @@ export default async function partnerOrganizationRoutes(fastify: FastifyInstance
       const expectedVersion = v2Headers['if-match']
         ? Number.parseInt(v2Headers['if-match'], 10)
         : null;
-      const org = await services.organizations
-        .update(actor, { actor, organizationId, expectedVersion, props: body })
-        .catch((error: unknown) => mapDomainError(reply, request, organizationId, error));
-      if (org === undefined) return reply;
-      const validated = validateV2Response(
-        reply,
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
         request,
-        organizationDtoSchema,
-        organizationToDto(org, actor.userId),
-      );
+        actorId: actor.userId,
+        commandName: 'organizations.update',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { organizationId }, body },
+        run: async () => {
+          const org = await services.organizations.update(actor, {
+            actor,
+            organizationId,
+            expectedVersion,
+            props: body,
+          });
+          const validated = validateV2Response(
+            reply,
+            request,
+            organizationDtoSchema,
+            organizationToDto(org, actor.userId),
+          );
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
+        },
+      }).catch((error: unknown) => {
+        if (isIdempotencyConflict(error)) {
+          return mapDomainError(reply, request, organizationId, error, {
+            conflictId: v2Headers['idempotency-key'],
+          });
+        }
+        return mapDomainError(reply, request, organizationId, error);
+      });
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
+
+  // ── MEMBERS (task.md §5; "invitations" is not registered — the domain
+  // model has no distinct pending-invitation concept yet, only immediate
+  // membership via `inviteMember`; see docs/roadmap/phase-01-partner-dashboards.md) ──
+  fastify.get(
+    '/organizations/:organizationId/members',
+    {
+      preHandler: fastify.validateV2({
+        params: organizationIdParam,
+        querystring: paginationQuerySchema,
+        headers: orgHeaders,
+      }),
+    },
+    async (request, reply) => {
+      const { organizationId } = request.params as z.infer<typeof organizationIdParam>;
+      const query = request.query as z.infer<typeof paginationQuerySchema>;
+      const actor = services.actor(request);
+      const page = await services.organizations
+        .listMembers(actor, organizationId, { limit: query.limit, cursor: query.cursor ?? null })
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, organizationId, error, { hideForbidden: true }),
+        );
+      if (page === undefined) return reply;
+      const payload = {
+        items: page.items,
+        pageInfo: {
+          page: 1,
+          pageSize: query.limit,
+          total: page.total,
+          hasNextPage: page.nextCursor !== null,
+        },
+      };
+      const validated = validateV2Response(reply, request, memberListSchema, payload);
       if (validated === undefined) return reply;
       return reply.send(validated);
+    },
+  );
+
+  fastify.post(
+    '/organizations/:organizationId/members',
+    {
+      preHandler: fastify.validateV2({
+        params: organizationIdParam,
+        body: inviteMemberSchema,
+        headers: orgHeaders.extend({ 'idempotency-key': idempotencyKeySchema }),
+      }),
+    },
+    async (request, reply) => {
+      const { organizationId } = request.params as z.infer<typeof organizationIdParam>;
+      const body = request.body as z.infer<typeof inviteMemberSchema>;
+      const actor = services.actor(request);
+      const v2Headers = request.v2Headers ?? {};
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: actor.userId,
+        commandName: 'organizations.inviteMember',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { organizationId }, body },
+        run: async () => {
+          const org = await services.organizations.inviteMember(actor, {
+            organizationId,
+            userId: body.userId,
+            role: body.role,
+            capabilities: body.capabilities,
+          });
+          const member = org.members.find((m) => m.userId === body.userId);
+          const validated = validateV2Response(reply, request, organizationMemberDtoSchema, member);
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 201, body: validated };
+        },
+      }).catch((error: unknown) => {
+        if (isIdempotencyConflict(error)) {
+          return mapDomainError(reply, request, organizationId, error, {
+            conflictId: v2Headers['idempotency-key'],
+          });
+        }
+        return mapDomainError(reply, request, organizationId, error);
+      });
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
     },
   );
 }

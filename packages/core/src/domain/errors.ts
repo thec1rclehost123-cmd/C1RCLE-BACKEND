@@ -58,6 +58,13 @@ export class ForbiddenError extends DomainError {
   }
 }
 
+/** No valid session (B10) — distinct from `ForbiddenError` (valid session, wrong scope). */
+export class UnauthorizedError extends DomainError {
+  constructor(message = 'Authentication required') {
+    super(message, 'unauthorized');
+  }
+}
+
 export class VersionConflictError extends DomainError {
   constructor(expectedVersion: number, currentVersion: number) {
     super(
@@ -87,5 +94,23 @@ export class StateTransitionError extends DomainError {
 export class InvalidOperationError extends DomainError {
   constructor(message: string) {
     super(message, 'invalid_operation');
+  }
+}
+
+export class IdempotencyConflictError extends DomainError {
+  constructor(idempotencyKey: string) {
+    super(
+      `Idempotency-Key ${idempotencyKey} was already used with a different request`,
+      'idempotency_conflict',
+    );
+  }
+}
+
+export class IdempotencyInFlightError extends DomainError {
+  constructor(idempotencyKey: string) {
+    super(
+      `Request with Idempotency-Key ${idempotencyKey} is already in flight`,
+      'idempotency_in_flight',
+    );
   }
 }

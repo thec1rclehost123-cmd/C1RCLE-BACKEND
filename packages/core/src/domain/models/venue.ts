@@ -67,6 +67,10 @@ export interface CreateVenueInput {
   ownerId: EntityId;
   name: string;
   slug: string;
+  /** V1-proven create fields (previous backend always wrote these at create). */
+  description?: string;
+  capacity?: number | null;
+  city?: string | null;
   now?: Date;
 }
 
@@ -79,11 +83,11 @@ export function createVenue(input: CreateVenueInput): Venue {
     public: {
       name: input.name,
       slug: input.slug,
-      description: '',
+      description: input.description ?? '',
       photoUrl: null,
-      address: {},
+      address: input.city === undefined || input.city === null ? {} : { city: input.city },
       facilities: [],
-      capacity: null,
+      capacity: input.capacity ?? null,
       settings: { showGuestList: false, activityEnabled: false },
     },
     private: {

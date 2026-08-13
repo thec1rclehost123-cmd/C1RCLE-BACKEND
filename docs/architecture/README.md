@@ -35,7 +35,8 @@ apps/api-gateway  (Fastify 5, port 8080)
   ├─ plugins/error-handler.ts → canonical V2 error envelope
   ├─ routes/v2/route-manifest.ts → registered routes (manifest authority)
   │    └─ routes/v2/internal/*  (health/version/readiness — ACTIVE)
-  │    └─ (TODO B10) auth · (TODO B11) org/venue/event route modules
+  │    └─ routes/v2/auth/*  (B10, live) · routes/v2/partner/*  (B11, live —
+  │         org/venue/event + members/profile/calendar/slot-requests/lifecycle)
   │         └─ thin route = validate → auth → policy → ONE service call → serialize
   └─ config/index.ts         (SOLE process.env owner; validated, fails fast)
         ▼ (injects CoreConfig + repositories + logger)
@@ -43,7 +44,8 @@ packages/core  (@c1rcle/core — pure TypeScript, zero infra imports)
   ├─ application/*.ts        (services orchestrate; throw typed DomainError)
   ├─ domain/models/*.ts      (aggregates + explicit FSMs; versioned entities)
   ├─ domain/ports/repos.ts   (repository INTERFACES — storage-agnostic)
-  └─ infrastructure/memory/  (in-memory adapter — dev/test; Firestore/Postgres later)
+  └─ infrastructure/{memory,firestore}/  (B12 — memory for dev/test;
+       Firestore live behind `STORAGE_DRIVER=firestore`, same interfaces)
 packages/contracts           (zod wire schemas + error envelope — mirrors frontend 1:1)
 ```
 
@@ -174,13 +176,18 @@ The frontend never instantiates a database or fetches raw. **It sends one
 - [x] Application services: organizations/venues/events/event-catalog/analytics (+ `ActorContext`, lazy DI via `ServiceDeps`).
 - [x] `pnpm check` — format → lint → typecheck → boundaries → test → build; `app.test.ts` smoke tests pass (health 200, x-request-id echo, blocked→404).
 
-### Pending (order from `task.md`)
-- [ ] B09 Outbox + event bus skeleton (publish→audit once, retry-safe).
-- [ ] B10 Auth: Better Auth (httpOnly refresh cookie + bearer) — login/refresh/logout/session, RBAC+ABAC, rate-limit, cache plugin. (The sessions backend face + frontend bridge `{ user, accessToken, expiresAt }`.)
-- [ ] B11 Vanity route modules: organizations /venues/events files wired through the services. Part of the live surface (`# §5`.
-- [ ] B12 storage adapters (Firestore first behind ports, transactional outbox+optimistic lock).
+### Built (Phase 0 — done 2026-08-13, live-verified against real Firestore; see `docs/roadmap/phase-00-foundation.md` for the full account)
+- [x] B09 Outbox + event bus skeleton — `InProcessEventBus` + `MemoryOutboxStore`, wired in `lib/v2-services.ts`.
+- [x] B10 Auth: Better Auth (`plugins/auth.ts`, `routes/v2/auth/*`) — signup/login/refresh/logout/session, real org-membership-based actor resolution, Bearer session token, CORS for the frontend origins. **Not done:** dedicated rate-limit and cache plugins (see `docs/roadmap/phase-00-foundation.md` §B).
+- [x] B11 route modules: organizations (list/get/create/update/members), venues (list/get/create/update/profile/calendar/slot-requests+accept/reject), events (list/get/create/update/previews/lifecycle actions) — all live under the nested `/api/v2/organizations/...` shape (the old `/partner` prefix is gone).
+- [x] B12 storage adapters: Firestore adapters for all 7 repository ports (`packages/core/src/infrastructure/firestore/`), selected via `STORAGE_DRIVER`. Transactional compare-and-set is not implemented (services do read-check-write, same race characteristics as the memory adapter) — noted as a real limitation, not silently claimed as done.
+
+### Pending (see `docs/roadmap/ROADMAP.md` for everything beyond this slice)
 - [ ] B13 parity harness vs frozen `thec1rcle` reference + contract parity script.
 - [ ] B14/B15 frontend switch + old-backend freeze/removal (after zero-use proof).
+- [ ] Organization invitations, venue menu/availability routes — blocked on domain modeling, not routing (see `docs/roadmap/phase-00-foundation.md` §C).
+- [ ] Event `review → published` FSM gap — needs a product decision (see `docs/roadmap/phase-00-foundation.md` §C).
+- [ ] Phases 1–8 (partner dashboards, KYC/onboarding, event-catalog, guest checkout/tickets, door/scanner/cover-wallet, finance/ledger/payouts, admin console, social) — see `docs/roadmap/ROADMAP.md`, scope added 2026-08-13 per D-008.
 
 ---
 
@@ -198,20 +205,23 @@ Smoke (backend): boot → `GET http://localhost:8080/api/v2/internal/health`
 `/api/v2/*` → 404 canonical envelope.
 
 Frontend smoke (from `C1RCLE-FRONTEND/`): `pnpm dev` → partner-dashboard on
-localhost:3001, log in → create org → venue → event on the new backend (after
-B10/B11).
+localhost:3001, log in → create org → venue → event on the new backend.
 
 ---
 
 ## 8. Related documents
 
-- `task.md` — the B-series execution plan (with live T↔B hand-in-hand map).
-- `docs/decisions.md` — decision log (D-001 … D-007 + open questions).
-- `docs/v2-reference/` — **self-contained copy** of the authoritative V2
+See `docs/README.md` for the full documentation map. Most relevant from here:
+
+- `task.md` (repo root) — the original B-series execution plan (with live T↔B hand-in-hand map). Historical record of Phase 0's design; current status lives in `docs/roadmap/`, not here.
+- `docs/architecture/decisions.md` — decision log (D-001 … D-008 + open questions).
+- `docs/roadmap/ROADMAP.md` — the full-platform phased roadmap and the source of truth for **what's implemented vs remaining** (Phase 0 = this slice, done; Phases 1–8 = everything beyond it). Read this before starting any work not covered by `task.md`'s B-series.
+- `docs/reference/` — **self-contained copy** of the authoritative V2
   docs from the frozen `thec1rcle` repo (`docs/V2-Partners_Frontend/*`):
   - `task.md` — T-series (gateway build authority)
   - `route-manifest.ts` + `API_V2_ROUTE_MANIFEST.md` — route surface + policies
   - `API_ROUTE_CATALOG.generated.md` — generated route catalog
   - `MASTER_LAUNCH_IMPLEMENTATION_PLAN.md`, `Dream Architecture Implementation Plan.md`,
     `chatgpt_response.md` — destination architecture + rationale
+  - `frontend-api-map.md` — the current `C1RCLE-FRONTEND` route/contract mapping
 - `C1RCLE-FRONTEND/packages/types/*`, `packages/api-client/src/*`, `packages/auth/src/session-store.ts` — the fixed contract this backend satisfies.

@@ -11,7 +11,7 @@ import {
   removeMember,
   suspendOrganization,
 } from '../../domain/models/organization.js';
-import { requireOrgAccess } from '../context.js';
+import { requireOrgAccess, emit } from '../context.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type {
@@ -63,6 +63,10 @@ export class OrganizationService {
     });
     await this.repo.save(org);
     this.deps.logger.info('organization.created', { organizationId: org.id });
+    await emit(this.deps, actor, org.id, 'organization.created', {
+      name: org.name,
+      slug: org.slug,
+    });
     return org;
   }
 
@@ -109,6 +113,10 @@ export class OrganizationService {
     const updated = updateOrganization(org, command.props, this.deps.config.clock.now());
     if (updated === org) return org; // no-op, no write
     await this.repo.save(updated);
+    await emit(this.deps, actor, updated.id, 'organization.updated', {
+      name: updated.name,
+      slug: updated.slug,
+    });
     return updated;
   }
 

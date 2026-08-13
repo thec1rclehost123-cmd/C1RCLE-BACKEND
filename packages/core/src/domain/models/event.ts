@@ -63,6 +63,12 @@ export interface Event extends VersionedEntity {
   id: EntityId;
   organizationId: EntityId;
   venueId: EntityId | null;
+  /**
+   * URL-safe public identifier — V1 events always carried one and the public
+   * surface addresses events by `idOrSlug`. Server-derived at create
+   * (`slugify(title)`), overridable via update.
+   */
+  slug: string;
   title: string;
   /** Public blurb shown to guests. */
   summary: string;
@@ -91,10 +97,21 @@ export interface CreateEventInput {
   title: string;
   summary?: string;
   description?: string;
+  imageUrl?: string | null;
   startAt: string;
   endAt?: string | null;
   tags?: string[];
   now?: Date;
+}
+
+/** Slugify like V1 (`events.ts` slug convention): lowercase, `-` for spaces. */
+export function slugifyEventTitle(title: string): string {
+  return title
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
 }
 
 export function createEvent(input: CreateEventInput): Event {
@@ -103,12 +120,13 @@ export function createEvent(input: CreateEventInput): Event {
     id: input.id,
     organizationId: input.organizationId,
     venueId: input.venueId,
+    slug: slugifyEventTitle(input.title) || input.id,
     title: input.title,
     status: 'draft',
     isPublic: false,
     summary: input.summary ?? '',
     description: input.description ?? '',
-    imageUrl: null,
+    imageUrl: input.imageUrl ?? null,
     startAt: input.startAt,
     endAt: input.endAt ?? null,
     tags: input.tags ?? [],
@@ -120,6 +138,7 @@ export function createEvent(input: CreateEventInput): Event {
 }
 
 interface EventChanges {
+  slug?: string;
   title?: string;
   summary?: string;
   description?: string;

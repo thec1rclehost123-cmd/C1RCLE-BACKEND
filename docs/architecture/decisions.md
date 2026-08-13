@@ -83,6 +83,34 @@
   (B05 — the frontend shape). No cursor leaks to the client; no hidden
   offset issues.
 
+## D-008 · Scope expanded to a phased full-platform roadmap
+
+- **Date / Status:** 2026-08-13 · confirmed by user
+- **Context:** Every prior doc in this repo (`task.md`, `docs/reference/frontend-api-map.md`)
+  froze the build to "Auth + Organizations + Venues + Events; everything else
+  BLOCKED, never registered, never stubbed." That framing was correct for
+  getting a first slice shipped, but it described BLOCKED as permanent
+  ("no manifest entry exists ... they are BLOCKED, not planned"), which no
+  longer reflects the user's intent once the frozen slice is complete.
+- **Choice:** Build toward full v1↔v2 parity, phased across sessions. The
+  phase breakdown, endpoint lists, v1 business-logic references, and
+  Firestore collection plans live in `docs/roadmap/ROADMAP.md` and its
+  per-phase files — that directory is now the source of truth for scope
+  beyond the original frozen slice, superseding the "BLOCKED forever"
+  language in `docs/reference/frontend-api-map.md`.
+- **What does NOT change:** D-006 (BLOCKED slices stay absent/404, never
+  stubbed) still applies *within* whichever phase is currently in flight — a
+  phase not yet started still 404s by absence. This decision only changes
+  what "eventually planned" means; it does not authorize speculative stub
+  routes ahead of their phase landing.
+- **Persistence tie-in:** the same session decided to wire the first real
+  storage adapter (B12) now rather than later, reusing the existing
+  `thec1rcle-india` Firebase project's service-account credentials (found at
+  `thec1rcle/apps/api-gateway/.env.development`) rather than provisioning a
+  new project. V2 data lives in new `v2_*`-prefixed collections in that same
+  project — D-002's "Firestore first" choice, exercised now instead of
+  deferred, with V1/V2 collections kept fully separate per architecture rule 8.
+
 ## Open questions (resolve before they block)
 
 1. **Frontend env injection** for preview/prod (`NEXT_PUBLIC_API_BASE_URL`
