@@ -1,6 +1,6 @@
 # Phase 3 — Event-catalog & scheduling
 
-**Status:** not started · **Depends on:** Phase 0
+**Status:** done (2026-08-13) · **Depends on:** Phase 0
 
 The cheapest phase to build: `EventCatalogService` (tiers/promotions/tables/
 promoter-assignments, create+list+end) and `VenueCalendarService`/
@@ -50,4 +50,28 @@ promoter-assignments, create+list+end) and `VenueCalendarService`/
 
 ## Session Log
 
-(none yet)
+- 2026-08-13 — **Phase complete.** As the doc predicted, this was routes only:
+  `EventCatalogService` already existed and was tested, so nothing in
+  `packages/core` changed.
+  - **Routes added** (all under `/api/v2`, org-scoped through the service's own
+    `assertEventOwned`, so a cross-tenant event id reads as 404):
+    `GET|POST /events/:eventId/ticket-tiers`, `…/promo-codes`,
+    `…/table-packages`, `…/promoter-assignments`, and
+    `POST /promoter-assignments/:assignmentId/end`.
+  - **Contracts added:** tier/promo/table/assignment DTOs + create schemas.
+    Money is integer paise everywhere; promo `code` normalizes to uppercase so
+    `early25` and `EARLY25` cannot become two codes.
+  - **Commission terms are frozen into the assignment** at creation time
+    (`terms.version`), so a later rate change never rewrites what a past order
+    earned. Default rate is v1's 15% when a caller supplies none.
+  - **Ending an assignment is `POST …/end`, not `DELETE`** — the row survives
+    as the record of what a promoter earned while assigned.
+  - 15 route tests: serialization, tenancy (404 on another tenant's event),
+    idempotent replay, and schema rejection of negative prices / zero capacity
+    / unknown discount types / >100% rates.
+
+**Not in this phase, still open:** the pricing/redemption *runtime* v1 logic
+this doc describes (`getEffectivePrice` scheduled-price windows, promo
+redemption race protection, table→booking assignment, per-order commission
+calculation). Those belong to Phase 4's checkout path — they are consumption
+rules, not catalog CRUD, and there is no order to apply them to yet.

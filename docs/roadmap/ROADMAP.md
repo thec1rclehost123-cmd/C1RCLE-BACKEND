@@ -35,7 +35,7 @@
 | 0 | Foundation — Firestore persistence, Better Auth, close out Org/Venue/Event routes, path-shape fix | **done** (2026-08-13, live-verified against real Firestore) | [phase-00-foundation.md](phase-00-foundation.md) |
 | 1 | Partner dashboards — Host/Venue/Promoter overview+events+finance+analytics, RBAC/tab-visibility, partnerships | not started | [phase-01-partner-dashboards.md](phase-01-partner-dashboards.md) |
 | 2 | KYC / Onboarding — document upload, admin approval workflow, verification provider | not started | [phase-02-kyc-onboarding.md](phase-02-kyc-onboarding.md) |
-| 3 | Event-catalog & scheduling — ticket tiers/promo/tables/promoter-assignment routes, slot-requests, calendar | not started | [phase-03-event-catalog-scheduling.md](phase-03-event-catalog-scheduling.md) |
+| 3 | Event-catalog & scheduling — ticket tiers/promo/tables/promoter-assignment routes, slot-requests, calendar | **done** (2026-08-13) | [phase-03-event-catalog-scheduling.md](phase-03-event-catalog-scheduling.md) |
 | 4 | Guest checkout & tickets — discovery/directory, pricing, Razorpay checkout, promo codes, entitlement/QR, wallet | not started | [phase-04-guest-checkout-tickets.md](phase-04-guest-checkout-tickets.md) |
 | 5 | Door / Scanner / Cover-wallet — entitlement scan + magic-ticket QR, walk-in/dine-in, cover-charge wallet | not started | [phase-05-door-scanner-cover-wallet.md](phase-05-door-scanner-cover-wallet.md) |
 | 6 | Finance / Ledger / Payouts — settlement engine, bank accounts, disputes, T+3 batch | not started | [phase-06-finance-ledger-payouts.md](phase-06-finance-ledger-payouts.md) |
