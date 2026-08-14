@@ -9,7 +9,8 @@
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "seed:admin": "tsx --env-file-if-exists=.env.local src/scripts/seed-platform-admin.ts"
   },
   "dependencies": {
     "@c1rcle/contracts": "workspace:^",

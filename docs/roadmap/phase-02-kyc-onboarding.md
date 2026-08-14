@@ -98,10 +98,26 @@ the organization with the plan's fee and the single capability applied for).
 - **`v2_verification_attempts` sub-collection shape.** Stored flat with a
   `userId` field rather than v1's `{userId}/attempts/{id}` nesting — a flat
   collection is what `countSince` can aggregate server-side.
-- **Bootstrapping the first admin.** Provisioning is TIER3 and needs two
-  existing admins, so the very first `super` must be seeded out of band. That
-  is the correct shape (no self-service path to platform authority) but it does
-  need a documented seed step before this goes live.
+_(Bootstrapping the first admin was on this list and is now done — see below.)_
+
+## Bootstrapping the first platform admin
+
+Provisioning an admin through the API is TIER3 under dual control, so the very
+first `super` cannot be created through the API at all. Break the cycle once,
+from outside:
+
+```
+pnpm --filter api-gateway seed:admin -- --user-id <betterAuthUserId> --email <email>
+```
+
+`--user-id` must be the **Better Auth user id** of an account that already
+exists — admin records are keyed by it, so a typo produces an admin record no
+session will ever match. `--role` defaults to `super`.
+
+The script refuses to run on `STORAGE_DRIVER=memory` (it would report success
+and change nothing) and refuses when an active admin already exists unless
+`--force` is passed. Every seed writes an `ADMIN_SEED` audit record marked as
+out-of-band, so it does not read as a normal provisioning in the trail.
 
 ## Session Log
 
