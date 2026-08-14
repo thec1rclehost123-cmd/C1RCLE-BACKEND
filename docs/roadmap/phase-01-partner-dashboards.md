@@ -1,6 +1,6 @@
 # Phase 1 — Partner dashboards (Host / Venue / Promoter)
 
-**Status:** not started · **Depends on:** Phase 0 (done 2026-08-13 — auth + org/venue/event routes live)
+**Status:** substantially done (2026-08-13) — finance endpoints blocked on Phase 6 · **Depends on:** Phase 0
 
 ## Carried over from Phase 0 (see phase-00-foundation.md §C for full context)
 
@@ -173,10 +173,28 @@ DTOs (careful: promoter finance is private, never shown to venue/host).
       It belongs to Phase 4's public routes.
   - **Analytics routes built** — `GET /organizations/:id/analytics/overview`
     and `GET /events/:eventId/analytics`, read-model only.
-  - **Still not started in this phase:** promoter *connections* (the
-    promoter↔host/venue graph, distinct from the venue↔host partnerships now
-    built), and the Host/Venue/Promoter overview + finance dashboard
-    endpoints
+  - **Promoter connections built** — the promoter↔host/venue graph, kept
+    separate from partnerships because the parties and allowed actions differ.
+    v1's asymmetry is preserved and tested: the RECIPIENT approves/rejects,
+    only the PROMOTER revokes (withdrawing is not the counterparty refusing
+    you). v1's own "BUG-2" fix is kept: a live connection blocks on pending OR
+    active, not pending alone.
+
+### What is left in this phase, and why
+
+- **Finance dashboard endpoints are BLOCKED on Phase 6, not skipped.** There
+  is no ledger yet, so a `/finance` route could only return invented numbers —
+  precisely what rule 10 forbids. The phase doc's own warning ("promoter
+  finance is private, never shown to venue/host") is a *ledger* access rule; it
+  cannot be honoured before the ledger exists. Build these immediately after
+  Phase 6.
+- **Overview endpoints** are served today by
+  `GET /organizations/:id/analytics/overview` (read-model). Richer per-role
+  overviews (Host vs Venue vs Promoter shapes) need the same read model
+  extended with per-capability projections — additive work, not a redesign.
+- **`PartnerEventSummary` / `PartnerEventDetail`** contracts are not yet
+  written: the existing `eventDtoSchema` covers what the dashboard needs today,
+  and inventing narrower DTOs before a screen consumes them would be guesswork.
     (Host/Venue/Promoter overview, events, finance, analytics) plus their
     `PartnerEventSummary`/`PartnerEventDetail`/`PartnerAnalyticsSummary`
     contracts.

@@ -746,3 +746,43 @@ export const createReferralLinkSchema = z
   })
   .strict();
 export type CreateReferralLinkRequest = z.infer<typeof createReferralLinkSchema>;
+
+/* ─── Promoter connections (Phase 1) ───────────────────────────────────────── */
+
+export const promoterConnectionStatusSchema = z.enum([
+  'pending',
+  'active',
+  'rejected',
+  'blocked',
+  'revoked',
+]);
+
+export const promoterConnectionDtoSchema = z.object({
+  id: opaqueIdSchema,
+  promoterId: opaqueIdSchema,
+  targetId: opaqueIdSchema,
+  targetType: z.enum(['host', 'venue']),
+  initiatedBy: z.enum(['promoter', 'target']),
+  status: promoterConnectionStatusSchema,
+  message: z.string().nullable(),
+  resolutionReason: z.string().nullable(),
+  resolvedAt: z.iso.datetime().nullable(),
+  version: z.number().int().positive(),
+  createdAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+});
+export type PromoterConnectionDto = z.infer<typeof promoterConnectionDtoSchema>;
+
+/**
+ * `initiatedBy` says which side the CALLER is; the caller's own organization
+ * is taken from the session, so only the counterparty is named here.
+ */
+export const requestConnectionSchema = z
+  .object({
+    counterpartyId: opaqueIdSchema,
+    targetType: z.enum(['host', 'venue']),
+    initiatedBy: z.enum(['promoter', 'target']),
+    message: z.string().max(1000).optional(),
+  })
+  .strict();
+export type RequestConnectionRequest = z.infer<typeof requestConnectionSchema>;

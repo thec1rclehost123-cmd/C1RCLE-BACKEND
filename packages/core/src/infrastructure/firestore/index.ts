@@ -10,3 +10,4 @@ export * from './firestore-invitation-repository.js';
 export * from './firestore-idempotency-store.js';
 export * from './firestore-partnership-repository.js';
 export * from './firestore-referral-link-repository.js';
+export * from './firestore-promoter-connection-repository.js';

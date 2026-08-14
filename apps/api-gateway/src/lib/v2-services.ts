@@ -4,6 +4,7 @@ import {
   VenueService,
   PartnershipService,
   ReferralLinkService,
+  PromoterConnectionService,
   VenueCalendarService,
   VenueSlotRequestService,
   EventService,
@@ -21,6 +22,7 @@ import {
   MemoryInvitationRepository,
   MemoryPartnershipRepository,
   MemoryReferralLinkRepository,
+  MemoryPromoterConnectionRepository,
   MemoryVenueRepository,
   MemorySlotRequestRepository,
   MemoryVenueSlotRepository,
@@ -36,6 +38,7 @@ import {
   FirestoreInvitationRepository,
   FirestorePartnershipRepository,
   FirestoreReferralLinkRepository,
+  FirestorePromoterConnectionRepository,
   FirestoreVenueRepository,
   FirestoreSlotRequestRepository,
   FirestoreVenueSlotRepository,
@@ -65,6 +68,7 @@ export interface PartnerV2Services {
   venues: VenueService;
   partnerships: PartnershipService;
   referralLinks: ReferralLinkService;
+  promoterConnections: PromoterConnectionService;
   venueCalendar: VenueCalendarService;
   venueSlotRequests: VenueSlotRequestService;
   events: EventService;
@@ -131,6 +135,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     venues: new VenueService(deps),
     partnerships: new PartnershipService(deps),
     referralLinks: new ReferralLinkService(deps),
+    promoterConnections: new PromoterConnectionService(deps),
     venueCalendar: new VenueCalendarService(deps),
     venueSlotRequests: new VenueSlotRequestService(deps),
     events: new EventService(deps),
@@ -181,6 +186,7 @@ function buildRepositories(gw: GatewayConfig): ServiceDeps['repositories'] {
       invitations: new MemoryInvitationRepository(),
       partnerships: new MemoryPartnershipRepository(),
       referralLinks: new MemoryReferralLinkRepository(),
+      promoterConnections: new MemoryPromoterConnectionRepository(),
       venues: new MemoryVenueRepository(),
       slotRequests: new MemorySlotRequestRepository(),
       venueSlots: new MemoryVenueSlotRepository(),
@@ -208,6 +214,7 @@ function buildRepositories(gw: GatewayConfig): ServiceDeps['repositories'] {
     invitations: new FirestoreInvitationRepository(db),
     partnerships: new FirestorePartnershipRepository(db),
     referralLinks: new FirestoreReferralLinkRepository(db),
+    promoterConnections: new FirestorePromoterConnectionRepository(db),
     venues: new FirestoreVenueRepository(db),
     slotRequests: new FirestoreSlotRequestRepository(db),
     venueSlots: new FirestoreVenueSlotRepository(db),

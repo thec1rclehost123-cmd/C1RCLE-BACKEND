@@ -16,6 +16,7 @@ import type {
   InvitationRepository,
   OrganizationRepository,
   PartnershipRepository,
+  PromoterConnectionRepository,
   ReferralLinkRepository,
   VenueRepository,
   SlotRequestRepository,
@@ -46,6 +47,7 @@ export interface ServiceDeps {
     invitations: InvitationRepository;
     partnerships: PartnershipRepository;
     referralLinks: ReferralLinkRepository;
+    promoterConnections: PromoterConnectionRepository;
     venues: VenueRepository;
     slotRequests: SlotRequestRepository;
     venueSlots: VenueSlotRepository;

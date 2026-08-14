@@ -11,6 +11,7 @@ import partnerEventCatalogRoutes from './partner/event-catalog.js';
 import partnerEventRoutes from './partner/events.js';
 import partnerOrganizationRoutes from './partner/organizations.js';
 import partnerPartnershipRoutes from './partner/partnerships.js';
+import promoterConnectionRoutes from './partner/promoter-connections.js';
 import partnerReferralLinkRoutes from './partner/referral-links.js';
 import partnerVenueRoutes from './partner/venues.js';
 
@@ -69,6 +70,7 @@ export async function registerV2Routes(app: FastifyInstance): Promise<void> {
       await partnerPartnershipRoutes(v2);
       await partnerAnalyticsRoutes(v2);
       await partnerReferralLinkRoutes(v2);
+      await promoterConnectionRoutes(v2);
     },
     { prefix: '/api/v2' },
   );

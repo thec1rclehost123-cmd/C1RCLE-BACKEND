@@ -22,6 +22,7 @@ import type {
   OrganizationMember,
 } from '../models/organization.js';
 import type { Partnership } from '../models/partnership.js';
+import type { PromoterConnection } from '../models/promoter-connection.js';
 import type { ReferralLink } from '../models/referral-link.js';
 import type { Venue, VenueSlot, SlotRequest } from '../models/venue.js';
 
@@ -91,6 +92,17 @@ export interface ReferralLinkRepository {
   listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<ReferralLink>>;
   listByPromoter(promoterId: EntityId, query: PaginationQuery): Promise<Page<ReferralLink>>;
   save(link: ReferralLink, tx?: TxContext | null): Promise<void>;
+}
+
+/** The promoter↔host/venue graph, addressed by pair and by either side. */
+export interface PromoterConnectionRepository {
+  getById(connectionId: EntityId): Promise<PromoterConnection | null>;
+  findByPair(promoterId: EntityId, targetId: EntityId): Promise<PromoterConnection | null>;
+  listForOrganization(
+    organizationId: EntityId,
+    query: PaginationQuery,
+  ): Promise<Page<PromoterConnection>>;
+  save(connection: PromoterConnection, tx?: TxContext | null): Promise<void>;
 }
 
 export interface InvitationRepository {
