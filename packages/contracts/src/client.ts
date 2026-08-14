@@ -663,3 +663,52 @@ export const partnerAccessDtoSchema = z.object({
   tabVisibility: z.record(z.string(), z.boolean()).nullable(),
 });
 export type PartnerAccessDto = z.infer<typeof partnerAccessDtoSchema>;
+
+/* ─── Partner analytics (Phase 1) ──────────────────────────────────────────── */
+
+export const topEventDtoSchema = z.object({
+  eventId: opaqueIdSchema,
+  title: z.string(),
+  revenuePaise: z.number().int().nonnegative(),
+  tickets: z.number().int().nonnegative(),
+  date: z.iso.datetime(),
+});
+
+/**
+ * Read-model only: every value is precomputed at write time. Nothing here is
+ * scanned per request, which is why a dashboard can load it cheaply.
+ */
+export const organizationOverviewDtoSchema = z.object({
+  organizationId: opaqueIdSchema,
+  totalEvents: z.number().int().nonnegative(),
+  publishedEvents: z.number().int().nonnegative(),
+  totalRevenuePaise: z.number().int().nonnegative(),
+  totalTicketsSold: z.number().int().nonnegative(),
+  totalCheckIns: z.number().int().nonnegative(),
+  topEvents: z.array(topEventDtoSchema),
+  /** null until the organization has a finished event. */
+  lastEventAt: z.iso.datetime().nullable(),
+});
+export type OrganizationOverviewDto = z.infer<typeof organizationOverviewDtoSchema>;
+
+/** Ratios are 0..1, not percentages — the UI decides how to render them. */
+const ratio = () => z.number().min(0).max(1);
+
+export const eventAnalyticsDtoSchema = z.object({
+  eventId: opaqueIdSchema,
+  totalRevenuePaise: z.number().int().nonnegative(),
+  ticketsSold: z.number().int().nonnegative(),
+  totalCheckIns: z.number().int().nonnegative(),
+  capacity: z.number().int().nonnegative(),
+  views: z.number().int().nonnegative(),
+  guestlistSignups: z.number().int().nonnegative(),
+  avgTicketPricePaise: z.number().int().nonnegative(),
+  occupancyRate: ratio(),
+  sellThroughRate: ratio(),
+  refundAmountPaise: z.number().int().nonnegative(),
+  refundRate: ratio(),
+  noShowRate: ratio(),
+  repeatGuests: z.number().int().nonnegative(),
+  conversionRate: ratio(),
+});
+export type EventAnalyticsDto = z.infer<typeof eventAnalyticsDtoSchema>;
