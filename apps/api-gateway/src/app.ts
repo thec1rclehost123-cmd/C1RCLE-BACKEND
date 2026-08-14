@@ -6,6 +6,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { getGatewayConfig, type GatewayConfig } from './config/index.js';
 import { redactPaths } from './lib/logger-config.js';
 import { genReqId, onRequestHook } from './lib/request-tracing.js';
+import { createV2Services } from './lib/v2-services.js';
 import cachePlugin from './plugins/cache.js';
 import { errorHandler } from './plugins/error-handler.js';
 import rateLimitPlugin from './plugins/rate-limit.js';
@@ -76,7 +77,13 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   // and available but not yet wired into the partner routes — see
   // docs/roadmap/phase-00-foundation.md for why that's a deliberate, tracked
   // follow-up rather than a rushed per-route mapping.
-  await app.register(rbacPlugin);
+  // The RBAC plugin must resolve identity through the SAME path the routes do,
+  // or policy would be evaluated against a different actor than the service
+  // acts as (and would 401 everything on the memory driver).
+  const v2Services = createV2Services();
+  await app.register(rbacPlugin, {
+    resolveActor: (request) => v2Services.actor(request),
+  });
   await app.register(rateLimitPlugin);
   await app.register(cachePlugin);
 

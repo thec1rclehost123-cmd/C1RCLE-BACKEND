@@ -188,6 +188,131 @@
   inconsistent code. Reconciliation was done by hand-reviewing and adapting
   Sagar's additions onto this session's foundation instead.
 
+## D-012 · Policy order: rate-limit → validate → authorize → cache
+
+- **Date / Status:** 2026-08-13 · **chosen** (closes the "registered but not
+  wired" gap left by D-011)
+- **Context:** `requirePermission` and `cached` were registered as decorators
+  but referenced by **no partner route** — policy that exists, typechecks and
+  denies nobody. Partner routes also had no rate limiting at all (only the auth
+  routes did).
+- **Choice:** every partner route now declares
+  `rateLimit → validateV2 → requirePermission → cached`, in that order:
+  - **rate-limit first** — cheapest, and it must protect the work that follows.
+  - **validate before authorize** — a missing `X-Organization-Id` should answer
+    "you omitted a required header" (422), not a bare 403 that hides the real
+    problem. It is also safer: ABAC compares `params.organizationId`, and that
+    param should be schema-validated before it is trusted.
+  - **cache last** — never serve a cached body to a caller policy would refuse.
+- **Behaviour change:** reading an organization the caller is not scoped to now
+  returns **403 at the policy layer** instead of 404 from the service. This is
+  not an existence oracle: the answer is identical whether or not that
+  organization exists, so the IDOR guarantee is unchanged — it is simply
+  enforced one layer earlier. `organizations.test.ts` records the new contract.
+- **Permissions added** for routes this repo has that the ported enum did not
+  cover: `venue.schedule` (accept/reject a slot request) and
+  `slot-request.create` (the host side of the same conversation).
+- **Guarded by** `plugins/rbac.test.ts` — asserts real denials, plus that no
+  declared permission is unreachable (dead policy that can only ever deny).
+
+## D-013 · Invitations are a first-class aggregate, addressed by email
+
+- **Date / Status:** 2026-08-13 · **chosen** (closes the Phase 0 carry-over)
+- **Context:** `inviteMember` added a member immediately, so there was no
+  "pending" state to list and `GET /organizations/:id/invitations` could not be
+  built without returning a hardcoded empty array — which rule 10 forbids.
+- **Choice:** `OrganizationInvitation` is its own aggregate with its own state
+  machine (`pending → accepted | revoked | expired`, all terminal), stored in
+  its own repository. Key points:
+  - **Addressed by email, not user id** — the whole purpose is inviting someone
+    who may not have an account yet. Emails are normalized (trimmed,
+    lower-cased) so `A@x.com` and `a@x.com` cannot both be pending.
+  - **Expiry is evaluated on read** (`effectiveInvitationStatus`), not by a
+    sweeper job, so a lapsed invitation is never usable even if no cleanup ran.
+  - **One pending invitation per address per org** — two live invitations would
+    let one person join with whichever role they happened to click.
+  - **Owner cannot be invited** — ownership is transferred deliberately, never
+    granted by accepting a link. Enforced in the domain *and* at the schema.
+  - **Acceptance requires `pending`.** The generic same-state transition is a
+    no-op, which would have let a second `accept` silently grant a duplicate
+    membership — possibly to a different user. Caught by
+    `packages/core/src/domain/invitation.test.ts`; guarded explicitly now.
+  - `inviteMember` (immediate membership by user id) stays for the internal
+    case where the user is already known.
+- **Routes:** `GET|POST /organizations/:organizationId/invitations`,
+  `POST /invitations/:invitationId/{revoke,accept}`. Accept carries no
+  `requirePermission`: membership of the target org is exactly what it grants.
+
+## D-014 · Availability is derived, never stored
+
+- **Date / Status:** 2026-08-13 · **chosen** (closes the Phase 0 carry-over)
+- **Context:** `GET /venues/:venueId/availability` was left unregistered
+  because "no distinct availability computation exists beyond the calendar's
+  raw slot list."
+- **Choice:** `computeVenueAvailability` derives the summary from the same
+  slots the calendar route returns. It is **not** stored: a persisted summary
+  would be a second source of truth that goes stale the moment a slot changes.
+  Two judgements worth keeping:
+  - **`cancelled` slots are excluded, not counted as unavailable.** A cancelled
+    slot no longer exists; it is not one that is taken.
+  - **An empty window is NOT `fullyBooked`.** Nothing published is a different
+    answer from everything taken, and conflating them would tell a host their
+    venue is busy when its calendar is blank.
+- **Cached** with the `AVAILABILITY` class (30s) — cheap to recompute, and the
+  response echoes the requested window so a cached body is self-describing.
+- **Still not registered:** `/venues/:venueId/menu`. There is no `menu` field
+  anywhere in `VenuePublicProfile`/`VenuePrivateProfile`, so the route would
+  have nothing real to return. Tracked in Phase 1.
+
+## D-015 · Compare-and-set closes the lost-update race (completes D-002)
+
+- **Date / Status:** 2026-08-13 · **chosen**
+- **Context:** D-002 admitted the gap plainly: Firestore writes were
+  read-check-write with "same race characteristics as the memory adapter."
+  Services check `expectedVersion` and then save, which is not atomic — two
+  callers can both read version 1, both pass the check, and both write version
+  2, the second erasing the first. `If-Match` looked enforced while lost
+  updates happened anyway.
+- **Choice:** enforce it in the adapter, where atomicity actually exists, using
+  an invariant the domain already guarantees: `bumpVersion` always increments
+  by exactly one, so **a write of version N must find N-1 in storage**.
+  - Firestore: the check and the write run inside `runTransaction`.
+  - Memory: the same rule, with no `await` between read and write.
+  - Version 1 is exempt — a create has no predecessor, ids are generated, and
+    keeping creates a plain `set` leaves seeding idempotent.
+  - A missing row under version > 1 is also a conflict: the state the caller
+    decided against is gone, which is the same failure as a stale version.
+- **Why this shape:** it makes a lost update impossible even for a service that
+  forgets to check `expectedVersion`. Correctness stops depending on every
+  future call site remembering.
+- **Both drivers enforce it identically**, which is what lets one suite prove
+  the behaviour for both — a memory adapter that quietly allowed lost updates
+  would make every test passing on it worthless as evidence about production.
+- **Guarded by** `packages/core/src/infrastructure/compare-and-set.test.ts`.
+
+## D-016 · Durable idempotency, and the menu as public-profile data
+
+- **Date / Status:** 2026-08-13 · **chosen**
+- **Sessions were already durable** — worth stating because an earlier note in
+  this repo claimed otherwise: `plugins/auth.ts` has used `better-auth-firestore`
+  since Phase 0. The in-memory session store belonged to the parallel
+  implementation reconciled away in D-011, not to this codebase.
+- **Idempotency:** `FirestoreIdempotencyStore` replaces the memory store on the
+  firestore driver. The memory store loses every record on restart and shares
+  nothing between instances, so replay protection silently stopped working
+  exactly when it mattered most — a deploy mid-retry, or a second instance
+  behind a load balancer, turning a client's retry into a second business
+  result. `claim` uses Firestore's `create()` (which fails when the document
+  exists) so the winner is decided atomically, not by a read-then-write.
+  An expired record is treated as absent, so an abandoned claim cannot block a
+  key forever.
+- **Menu:** `VenueMenu` is part of `VenuePublicProfile` — it is menu copy a
+  guest reads, not commercial terms. Prices are integer paise like every other
+  money field, and `null` is allowed ("market price" is a real menu concept).
+  `PUT` replaces the menu **wholesale**: a merge could not express removing an
+  item, which is the edit a venue makes most often.
+- Both are covered by `idempotency-store-contract.test.ts` and `menu.test.ts`.
+
 ## Open questions (resolve before they block)
 
 1. **Frontend env injection** for preview/prod (`NEXT_PUBLIC_API_BASE_URL`

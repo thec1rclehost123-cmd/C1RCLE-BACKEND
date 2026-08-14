@@ -1,3 +1,4 @@
+import { compareAndSet } from './compare-and-set.js';
 import { sliceArray, paginateQuery } from './pagination.js';
 
 import type { EntityId } from '../../domain/identity.js';
@@ -51,7 +52,8 @@ export class FirestoreOrganizationRepository implements OrganizationRepository {
   }
 
   async save(org: Organization, _tx?: TxContext | null): Promise<void> {
-    await this.collection.doc(org.id).set(toDoc(org));
+    // Compare-and-set: a write of version N must find N-1 (see compare-and-set.ts).
+    await compareAndSet(this.db, this.collection, org, toDoc);
   }
 
   async delete(organizationId: EntityId, _tx?: TxContext | null): Promise<void> {

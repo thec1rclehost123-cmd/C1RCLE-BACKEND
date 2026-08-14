@@ -16,7 +16,11 @@ import type {
   PromoterAssignment,
 } from '../models/event-catalog.js';
 import type { Event } from '../models/event.js';
-import type { Organization, OrganizationMember } from '../models/organization.js';
+import type {
+  Organization,
+  OrganizationInvitation,
+  OrganizationMember,
+} from '../models/organization.js';
 import type { Venue, VenueSlot, SlotRequest } from '../models/venue.js';
 
 /** Opaque cursor into a paginated result set. */
@@ -53,6 +57,26 @@ export interface OrganizationRepository {
   getMember(organizationId: EntityId, userId: EntityId): Promise<OrganizationMember | null>;
   save(org: Organization, tx?: TxContext | null): Promise<void>;
   delete(organizationId: EntityId, tx?: TxContext | null): Promise<void>;
+}
+
+/**
+ * Pending invitations live beside the organization rather than inside it: they
+ * are addressed by email (the invitee may have no account yet) and they
+ * outlive nothing — an accepted one stays as the audit trail of how a member
+ * joined.
+ */
+export interface InvitationRepository {
+  getById(invitationId: EntityId): Promise<OrganizationInvitation | null>;
+  listByOrganization(
+    organizationId: EntityId,
+    query: PaginationQuery,
+  ): Promise<Page<OrganizationInvitation>>;
+  /** Used to refuse a second pending invitation for the same address. */
+  findPendingByEmail(
+    organizationId: EntityId,
+    email: string,
+  ): Promise<OrganizationInvitation | null>;
+  save(invitation: OrganizationInvitation, tx?: TxContext | null): Promise<void>;
 }
 
 // ─── Venue ───────────────────────────────────────────────────────────────────

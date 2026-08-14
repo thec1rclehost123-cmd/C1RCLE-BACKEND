@@ -148,9 +148,12 @@ surfaced.
   match `task.md` §5 exactly (needed a real code change — `requirePathOrg`
   guard added, mirroring the existing `venues.ts` pattern). Resolves
   `docs/architecture/decisions.md` open question #2.
-- **Finding, not yet resolved:** with only the 6 documented lifecycle
-  actions, an event can never actually reach `published` through the
-  documented API alone — `publish()` only accepts the `scheduled → published`
+- **Finding — RESOLVED 2026-08-13 (see `docs/architecture/decisions.md` D-010).**
+  `EventService.publish()` now walks `review → scheduled → published`, one
+  validated FSM edge at a time, so no product decision is outstanding and the
+  transition table is unchanged. The original finding is kept below for the
+  reasoning trail. ~~With only the 6 documented lifecycle actions, an event can
+  never actually reach `published` through the documented API alone — `publish()` only accepts the `scheduled → published`
   transition, but nothing in the 6 actions (`review/publish/pause-sales/
   resume-sales/cancel/duplicate`) produces `scheduled` from `review`. Either
   the FSM needs `review → published` allowed directly, or a `schedule`/
@@ -158,8 +161,8 @@ surfaced.
   explicit approval step between submitted and scheduled — see
   `phase-02-kyc-onboarding.md`'s admin-approval notes for the closest
   precedent). Confirmed via live testing, not guessed — needs a product
-  decision, not a silent fix. **Do not paper over this by loosening the FSM
-  without deciding which is intended.**
+  decision, not a silent fix.~~ The chosen answer was the walk, not a looser
+  table — `draft → published` is still illegal.
 
 ## D. Contracts additions (`packages/contracts`)
 
@@ -191,6 +194,45 @@ reach the generic fallback unrecognized (not checked exhaustively this pass).
 2. `RUN_FIRESTORE_TESTS=1 pnpm --filter @c1rcle/core test -- firestore-repositories` — 3/3 green against the real `thec1rcle-india` project (`v2_organizations`/`v2_venues`/`v2_events`).
 3. `pnpm check` (format → lint → typecheck → boundaries → test → build) — fully green.
 4. Manual, live: `pnpm dev` on `:8080` with `STORAGE_DRIVER=firestore` → curl signup → login → `GET /session` (Bearer) → create org → IDOR check (wrong org id → 404) → create venue → create event → event previews → review → publish (correctly 409, see FSM finding above). Killed and restarted the process mid-sequence and re-fetched the org — data survived (real persistence, not memory).
+
+## Carry-overs closed after the phase (2026-08-13, follow-up session)
+
+Four of the items this phase deliberately deferred are now done — see
+`docs/architecture/decisions.md` D-012…D-014:
+
+- **RBAC/rate-limit/cache actually enforce.** `requirePermission` and `cached`
+  were registered but referenced by no partner route, and partner routes had no
+  rate limiting at all. Every partner route now declares
+  `rateLimit → validateV2 → requirePermission → cached` (D-012). Two permissions
+  were added for routes the ported enum did not cover (`venue.schedule`,
+  `slot-request.create`), and `plugins/rbac.test.ts` asserts real denials.
+- **Organization invitations** — real `OrganizationInvitation` aggregate with
+  its own state machine, repository (memory + Firestore), and four routes
+  (D-013). Replaces the "hardcoded empty list would violate rule 10" blocker.
+- **Venue availability** — derived from calendar slots, not stored (D-014).
+- **Test coverage restored** — the domain/FSM and contract suites deleted
+  during the D-011 reconciliation are back (they are what caught the
+  `publish()` gap originally), plus new suites for RBAC, invitations and
+  availability. 110 tests green.
+
+Also closed in the same follow-up:
+
+- **Venue menu** — `VenueMenu` on the public profile + `GET`/`PUT` routes
+  (D-016). Every route `task.md` §5 lists is now registered.
+- **Compare-and-set** — the D-002 lost-update race is closed in both adapters
+  (D-015). Optimistic locking is now genuinely enforced, not just checked.
+- **Durable idempotency** — `FirestoreIdempotencyStore`, so replay protection
+  survives a restart and is shared between instances (D-016).
+
+**Correction (same session):** an earlier draft of this note claimed Better
+Auth sessions were still in-memory. That was wrong — it described a different
+(now-deleted) parallel implementation, not this code. `plugins/auth.ts` uses
+`better-auth-firestore` against `v2_auth_*` collections, so sessions have been
+durable since Phase 0 landed. Business data, idempotency records, audit trail
+and credentials are all durable on the firestore driver.
+
+Nothing from this phase's original scope is now outstanding. The remaining
+work is Phases 1–8.
 
 ## Session Log
 

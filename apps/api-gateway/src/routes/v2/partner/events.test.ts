@@ -1,16 +1,10 @@
-import Fastify from 'fastify';
 import { describe, expect, it } from 'vitest';
 
-import validateV2Plugin from '../../../plugins/validate-v2.js';
+import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 
 import partnerEventRoutes from './events.js';
 
-async function buildServer() {
-  const server = Fastify({ logger: false });
-  await server.register(validateV2Plugin);
-  await server.register(partnerEventRoutes);
-  return server;
-}
+const buildServer = () => buildPartnerTestServer({ routes: [partnerEventRoutes] });
 
 const VALID_HEADERS = { 'x-organization-id': 'org_1' };
 const CREATE_HEADERS = { 'x-organization-id': 'org_1', 'idempotency-key': 'idem-event-1' };

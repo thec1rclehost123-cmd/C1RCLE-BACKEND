@@ -1,3 +1,4 @@
+import { compareAndSet } from './compare-and-set.js';
 import { paginateQuery } from './pagination.js';
 
 import type { EntityId } from '../../domain/identity.js';
@@ -32,7 +33,8 @@ export class FirestoreSlotRequestRepository implements SlotRequestRepository {
   }
 
   async save(request: SlotRequest, _tx?: TxContext | null): Promise<void> {
-    await this.collection.doc(request.id).set(toDoc(request));
+    // Compare-and-set: a write of version N must find N-1 (see compare-and-set.ts).
+    await compareAndSet(this.db, this.collection, request, toDoc);
   }
 }
 

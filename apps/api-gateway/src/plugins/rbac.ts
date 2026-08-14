@@ -1,6 +1,7 @@
 import { buildV2ErrorResponse } from '@c1rcle/contracts';
 import fp from 'fastify-plugin';
 
+import type { ActorContext } from '@c1rcle/core/application';
 import type { OrganizationRole } from '@c1rcle/core/domain';
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -29,11 +30,15 @@ export type Permission =
   | 'venue.read'
   | 'venue.create'
   | 'venue.manage'
+  /** Resolve a slot request (accept/reject) — the venue owns its calendar. */
+  | 'venue.schedule'
   | 'event.read'
   | 'event.create'
   | 'event.update'
   | 'event.publish'
-  | 'event.cancel';
+  | 'event.cancel'
+  /** Ask a venue for a slot — the host side of the same conversation. */
+  | 'slot-request.create';
 
 const READ_ONLY: readonly Permission[] = ['organization.read', 'venue.read', 'event.read'];
 
@@ -50,11 +55,13 @@ export const ROLE_PERMISSIONS: Readonly<Record<OrganizationRole, readonly Permis
     'venue.read',
     'venue.create',
     'venue.manage',
+    'venue.schedule',
     'event.read',
     'event.create',
     'event.update',
     'event.publish',
     'event.cancel',
+    'slot-request.create',
   ],
   admin: [
     'organization.read',
@@ -63,20 +70,24 @@ export const ROLE_PERMISSIONS: Readonly<Record<OrganizationRole, readonly Permis
     'venue.read',
     'venue.create',
     'venue.manage',
+    'venue.schedule',
     'event.read',
     'event.create',
     'event.update',
     'event.publish',
     'event.cancel',
+    'slot-request.create',
   ],
   manager: [
     'organization.read',
     'venue.read',
     'venue.manage',
+    'venue.schedule',
     'event.read',
     'event.create',
     'event.update',
     'event.publish',
+    'slot-request.create',
   ],
   member: READ_ONLY,
 };
@@ -85,15 +96,36 @@ export function roleHasPermission(role: OrganizationRole, permission: Permission
   return ROLE_PERMISSIONS[role].includes(permission);
 }
 
-export default fp(
-  async (fastify: FastifyInstance) => {
+export interface RbacPluginOptions {
+  /**
+   * Resolves the acting identity. MUST be the same resolver the routes use
+   * (`services.actor`), or policy would be checked against a different actor
+   * than the one the service later acts as — the two must never disagree.
+   *
+   * On `STORAGE_DRIVER=memory` the auth hook never populates `request.actor`
+   * (there is no real session), so reading that field alone would 401 every
+   * request on the test/dev driver while silently passing on firestore.
+   */
+  resolveActor?: (request: FastifyRequest) => ActorContext;
+}
+
+export default fp<RbacPluginOptions>(
+  async (fastify: FastifyInstance, options: RbacPluginOptions) => {
     /**
      * Builds a preHandler enforcing one permission plus the tenant-scope rule.
      * Runs AFTER the auth hook, which is what populates `request.actor`.
      */
     fastify.decorate('requirePermission', (permission: Permission) => {
       return async (request: FastifyRequest, reply: FastifyReply) => {
-        const actor = request.actor;
+        let actor = request.actor as ActorContext | undefined;
+        if (!actor && options.resolveActor) {
+          try {
+            actor = options.resolveActor(request);
+          } catch {
+            // Resolver throws Unauthorized/Forbidden on the firestore driver.
+            return deny(reply, request, 401, 'unauthorized', 'Authentication required');
+          }
+        }
         if (!actor) {
           // Ordering bug, not a client error: fail closed and say so in the logs.
           fastify.log.error(

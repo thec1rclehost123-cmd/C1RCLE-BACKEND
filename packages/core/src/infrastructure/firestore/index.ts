@@ -6,3 +6,5 @@ export * from './firestore-venue-slot-repository.js';
 export * from './firestore-event-repository.js';
 export * from './firestore-event-catalog-repository.js';
 export * from './firestore-analytics-read-model-repository.js';
+export * from './firestore-invitation-repository.js';
+export * from './firestore-idempotency-store.js';

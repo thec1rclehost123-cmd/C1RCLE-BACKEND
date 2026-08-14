@@ -16,6 +16,7 @@ import { createCoreConfig } from '@c1rcle/core/config';
 import { UnauthorizedError } from '@c1rcle/core/domain';
 import {
   MemoryOrganizationRepository,
+  MemoryInvitationRepository,
   MemoryVenueRepository,
   MemorySlotRequestRepository,
   MemoryVenueSlotRepository,
@@ -26,7 +27,9 @@ import {
   MemoryOutboxStore,
   MemoryAuditRepository,
   getFirestoreClient,
+  FirestoreIdempotencyStore,
   FirestoreOrganizationRepository,
+  FirestoreInvitationRepository,
   FirestoreVenueRepository,
   FirestoreSlotRequestRepository,
   FirestoreVenueSlotRepository,
@@ -36,7 +39,7 @@ import {
 } from '@c1rcle/core/infrastructure';
 
 import type { ServiceDeps, ActorContext } from '@c1rcle/core/application';
-import type { OrganizationRole, Capability } from '@c1rcle/core/domain';
+import type { IdempotencyStore, OrganizationRole, Capability } from '@c1rcle/core/domain';
 
 import { getGatewayConfig, GatewayConfigError } from '../config/index.js';
 
@@ -59,7 +62,7 @@ export interface PartnerV2Services {
   events: EventService;
   catalog: EventCatalogService;
   analytics: AnalyticsService;
-  /** T09 idempotency (memory store until B12 durable adapters land). */
+  /** T09 idempotency — durable on the firestore driver, in-memory on `memory`. */
   idempotency: IdempotencyService;
   /** Builds the service actor from the authenticated request state. */
   actor(request: FastifyRequest): ActorContext;
@@ -123,7 +126,9 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     events: new EventService(deps),
     catalog: new EventCatalogService(deps),
     analytics: new AnalyticsService(deps),
-    idempotency: new IdempotencyService(new MemoryIdempotencyStore(), logger),
+    // Replay protection must outlive the process: a restart mid-retry with an
+    // in-memory store turns a client's retry into a second business result.
+    idempotency: new IdempotencyService(buildIdempotencyStore(), logger),
     actor: buildActorContext,
     repos: () => repositories,
     /** T13 audit trail surfaced to routes/tests (B09 slice consumer). */
@@ -137,10 +142,33 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
  * only place in the gateway that knows Firestore exists (routes/services
  * never do, per the T07 repository-port boundary).
  */
+/**
+ * Idempotency storage per driver. The memory store is fine for tests and local
+ * dev; anything real needs the durable one, or a restart silently drops every
+ * in-flight claim and stored response.
+ */
+function buildIdempotencyStore(): IdempotencyStore {
+  const gw = getGatewayConfig();
+  if (gw.STORAGE_DRIVER === 'memory') return new MemoryIdempotencyStore();
+  if (!gw.FIREBASE_CLIENT_EMAIL || !gw.FIREBASE_PRIVATE_KEY) {
+    throw new GatewayConfigError(
+      'STORAGE_DRIVER=firestore requires FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY',
+    );
+  }
+  return new FirestoreIdempotencyStore(
+    getFirestoreClient({
+      projectId: gw.FIRESTORE_PROJECT_ID,
+      clientEmail: gw.FIREBASE_CLIENT_EMAIL,
+      privateKey: gw.FIREBASE_PRIVATE_KEY,
+    }),
+  );
+}
+
 function buildRepositories(gw: GatewayConfig): ServiceDeps['repositories'] {
   if (gw.STORAGE_DRIVER === 'memory') {
     return {
       organizations: new MemoryOrganizationRepository(),
+      invitations: new MemoryInvitationRepository(),
       venues: new MemoryVenueRepository(),
       slotRequests: new MemorySlotRequestRepository(),
       venueSlots: new MemoryVenueSlotRepository(),
@@ -165,6 +193,7 @@ function buildRepositories(gw: GatewayConfig): ServiceDeps['repositories'] {
   });
   return {
     organizations: new FirestoreOrganizationRepository(db),
+    invitations: new FirestoreInvitationRepository(db),
     venues: new FirestoreVenueRepository(db),
     slotRequests: new FirestoreSlotRequestRepository(db),
     venueSlots: new FirestoreVenueSlotRepository(db),

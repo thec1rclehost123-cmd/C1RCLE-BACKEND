@@ -1,3 +1,4 @@
+import { compareAndSet } from './compare-and-set.js';
 import { paginateQuery } from './pagination.js';
 
 import type { EntityId } from '../../domain/identity.js';
@@ -42,7 +43,8 @@ export class FirestoreEventRepository implements EventRepository {
   }
 
   async save(event: Event, _tx?: TxContext | null): Promise<void> {
-    await this.collection.doc(event.id).set(toDoc(event));
+    // Compare-and-set: a write of version N must find N-1 (see compare-and-set.ts).
+    await compareAndSet(this.db, this.collection, event, toDoc);
   }
 
   async delete(eventId: EntityId, _tx?: TxContext | null): Promise<void> {

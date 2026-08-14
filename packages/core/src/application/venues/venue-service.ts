@@ -8,6 +8,8 @@ import {
   updateVenue,
   createSlotRequest,
   transitionSlotRequest,
+  computeVenueAvailability,
+  updateVenueMenu,
 } from '../../domain/models/venue.js';
 import { requireOrgAccess, emit } from '../context.js';
 
@@ -18,6 +20,9 @@ import type {
   VenuePublicProfile,
   VenuePrivateProfile,
   SlotRequest,
+  VenueAvailability,
+  VenueMenu,
+  VenueMenuSection,
 } from '../../domain/models/venue.js';
 import type {
   VenueRepository,
@@ -98,6 +103,32 @@ export class VenueService {
     return updated;
   }
 
+  /**
+   * The menu is part of the public profile, but it gets its own read/write
+   * pair because it is edited on its own screen and changes far more often
+   * than the rest of the profile.
+   */
+  async getMenu(actor: ActorContext, venueId: EntityId): Promise<VenueMenu> {
+    const venue = await this.fetchOwned(actor, venueId);
+    return venue.public.menu;
+  }
+
+  async updateMenu(
+    actor: ActorContext,
+    command: { venueId: EntityId; expectedVersion: number | null; sections: VenueMenuSection[] },
+  ): Promise<Venue> {
+    const venue = await this.fetchOwned(actor, command.venueId);
+    if (command.expectedVersion !== null && venue.version !== command.expectedVersion) {
+      throw new VersionConflictError(command.expectedVersion, venue.version);
+    }
+    const updated = updateVenueMenu(venue, {
+      sections: command.sections,
+      now: this.deps.config.clock.now(),
+    });
+    await this.deps.repositories.venues.save(updated);
+    return updated;
+  }
+
   async getPublicProfile(actor: ActorContext, venueId: EntityId): Promise<VenuePublicProfile> {
     const venue = await this.fetchOwned(actor, venueId);
     return venue.public;
@@ -135,6 +166,21 @@ export class VenueCalendarService {
       throw new VenueNotFoundError(venueId);
     }
     return this.deps.repositories.venueSlots.listSlots(venueId, from, to);
+  }
+
+  /**
+   * Derived availability for a window. Deliberately computed from the same
+   * slots `getSlots` returns rather than stored separately — one source of
+   * truth, so a slot change can never leave a stale summary behind.
+   */
+  async getAvailability(
+    actor: ActorContext,
+    venueId: EntityId,
+    from: string,
+    to: string,
+  ): Promise<VenueAvailability> {
+    const slots = await this.getSlots(actor, venueId, from, to);
+    return computeVenueAvailability({ venueId, from, to, slots });
   }
 }
 

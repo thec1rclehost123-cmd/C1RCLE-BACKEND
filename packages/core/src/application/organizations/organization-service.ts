@@ -1,6 +1,7 @@
 import {
   OrganizationNotFoundError,
   ForbiddenError,
+  InvalidOperationError,
   VersionConflictError,
 } from '../../domain/errors.js';
 import {
@@ -10,12 +11,17 @@ import {
   updateMemberRole,
   removeMember,
   suspendOrganization,
+  acceptInvitation,
+  createInvitation,
+  normalizeEmail,
+  revokeInvitation,
 } from '../../domain/models/organization.js';
 import { requireOrgAccess, emit } from '../context.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type {
   Organization,
+  OrganizationInvitation,
   OrganizationMember,
   OrganizationProps,
   Capability,
@@ -42,6 +48,19 @@ export interface UpdateOrganizationCommand {
   /** Expected version for optimistic locking; `null` skips the check. */
   expectedVersion: number | null;
   props: OrganizationProps;
+}
+
+export interface CreateInvitationCommand {
+  organizationId: EntityId;
+  email: string;
+  role: OrganizationMember['role'];
+  capabilities?: Capability[];
+}
+
+export interface AcceptInvitationCommand {
+  invitationId: EntityId;
+  /** The user accepting — taken from the session, never from the request body. */
+  userId: EntityId;
 }
 
 export class OrganizationService {
@@ -145,6 +164,101 @@ export class OrganizationService {
     const updated = removeMember(org, userId, this.deps.config.clock.now());
     await this.repo.save(updated);
     return updated;
+  }
+
+  /* ─── Invitations ────────────────────────────────────────────────────────
+   * A pending invitation is the state between "invited" and "joined".
+   * `inviteMember` (immediate membership) stays for the internal case where
+   * the user id is already known; invitations are for people who may not have
+   * an account yet, so they are addressed by email.
+   */
+
+  async listInvitations(actor: ActorContext, organizationId: EntityId, query: PaginationQuery) {
+    requireOrgAccess(actor, organizationId);
+    return this.deps.repositories.invitations.listByOrganization(organizationId, query);
+  }
+
+  async createInvitation(
+    actor: ActorContext,
+    command: CreateInvitationCommand,
+  ): Promise<OrganizationInvitation> {
+    requireOrgAccess(actor, command.organizationId);
+    const org = await this.repo.getById(command.organizationId);
+    if (!org) throw new OrganizationNotFoundError(command.organizationId);
+
+    const email = normalizeEmail(command.email);
+    // Two live invitations for one address would let the same person join
+    // twice with different roles depending on which link they clicked.
+    const existing = await this.deps.repositories.invitations.findPendingByEmail(
+      command.organizationId,
+      email,
+    );
+    if (existing) {
+      throw new InvalidOperationError('An invitation for this email is already pending');
+    }
+
+    const invitation = createInvitation({
+      id: this.deps.config.ids(),
+      organizationId: command.organizationId,
+      email,
+      role: command.role,
+      capabilities: command.capabilities,
+      invitedBy: actor.userId,
+      now: this.deps.config.clock.now(),
+    });
+    await this.deps.repositories.invitations.save(invitation);
+    this.deps.logger.info('organization.invitation_created', {
+      organizationId: org.id,
+      invitationId: invitation.id,
+    });
+    return invitation;
+  }
+
+  async revokeInvitation(
+    actor: ActorContext,
+    invitationId: EntityId,
+  ): Promise<OrganizationInvitation> {
+    const invitation = await this.fetchOwnedInvitation(actor, invitationId);
+    const revoked = revokeInvitation(invitation, this.deps.config.clock.now());
+    await this.deps.repositories.invitations.save(revoked);
+    return revoked;
+  }
+
+  /**
+   * Accepts an invitation, adding the member and closing the invitation
+   * together. The two writes are ordered so a failure leaves the invitation
+   * still pending (retryable) rather than a member with no record of joining.
+   */
+  async acceptInvitation(
+    actor: ActorContext,
+    command: AcceptInvitationCommand,
+  ): Promise<Organization> {
+    const invitation = await this.deps.repositories.invitations.getById(command.invitationId);
+    // Cross-tenant and missing collapse to the same answer — no oracle.
+    if (!invitation) throw new OrganizationNotFoundError(command.invitationId);
+
+    const org = await this.repo.getById(invitation.organizationId);
+    if (!org) throw new OrganizationNotFoundError(invitation.organizationId);
+
+    const result = acceptInvitation(org, invitation, command.userId, this.deps.config.clock.now());
+    await this.repo.save(result.organization);
+    await this.deps.repositories.invitations.save(result.invitation);
+    this.deps.logger.info('organization.invitation_accepted', {
+      organizationId: org.id,
+      invitationId: invitation.id,
+    });
+    return result.organization;
+  }
+
+  private async fetchOwnedInvitation(
+    actor: ActorContext,
+    invitationId: EntityId,
+  ): Promise<OrganizationInvitation> {
+    const invitation = await this.deps.repositories.invitations.getById(invitationId);
+    if (!invitation || invitation.organizationId !== actor.organizationId) {
+      throw new OrganizationNotFoundError(invitationId);
+    }
+    return invitation;
   }
 
   async suspend(actor: ActorContext, organizationId: EntityId): Promise<Organization> {

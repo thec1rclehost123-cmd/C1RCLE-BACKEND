@@ -1,3 +1,4 @@
+import { VersionConflictError } from '../../domain/errors.js';
 /**
  * ─── In-memory repository implementations ─────────────────────────────────────
  * Real implementations of the T07 repository ports for development and the v2
@@ -30,6 +31,31 @@ import type {
   VenueSlotRepository,
 } from '../../domain/ports/repositories.js';
 
+/**
+ * Compare-and-set for the memory driver — the same invariant the Firestore
+ * adapter enforces (`compare-and-set.ts`): a write of version N must find N-1.
+ *
+ * Keeping both drivers identical is what lets one contract suite prove the
+ * behaviour for both; a memory adapter that quietly allowed lost updates would
+ * make every test that passes on it meaningless as evidence about production.
+ *
+ * The read and the write happen with no `await` between them, so on one event
+ * loop exactly one of two concurrent writers can win.
+ */
+function casSet<T extends { id: EntityId; version: number }>(
+  store: Map<EntityId, T>,
+  next: T,
+): void {
+  if (next.version > 1) {
+    const stored = store.get(next.id);
+    const storedVersion = stored?.version ?? 0;
+    if (storedVersion !== next.version - 1) {
+      throw new VersionConflictError(next.version - 1, storedVersion);
+    }
+  }
+  store.set(next.id, next);
+}
+
 export class MemoryOrganizationRepository implements OrganizationRepository {
   orgs = new Map<EntityId, Organization>();
 
@@ -56,7 +82,7 @@ export class MemoryOrganizationRepository implements OrganizationRepository {
   }
 
   async save(org: Organization, _tx?: TxContext | null): Promise<void> {
-    this.orgs.set(org.id, org);
+    casSet(this.orgs, org);
   }
 
   async delete(organizationId: EntityId, _tx?: TxContext | null): Promise<void> {
@@ -84,7 +110,7 @@ export class MemoryVenueRepository implements VenueRepository {
   }
 
   async save(venue: Venue, _tx?: TxContext | null): Promise<void> {
-    this.venues.set(venue.id, venue);
+    casSet(this.venues, venue);
   }
 }
 
@@ -101,7 +127,7 @@ export class MemorySlotRequestRepository implements SlotRequestRepository {
   }
 
   async save(request: SlotRequest, _tx?: TxContext | null): Promise<void> {
-    this.requests.set(request.id, request);
+    casSet(this.requests, request);
   }
 }
 
@@ -140,7 +166,7 @@ export class MemoryEventRepository implements EventRepository {
   }
 
   async save(event: Event, _tx?: TxContext | null): Promise<void> {
-    this.events.set(event.id, event);
+    casSet(this.events, event);
   }
 
   async delete(eventId: EntityId, _tx?: TxContext | null): Promise<void> {

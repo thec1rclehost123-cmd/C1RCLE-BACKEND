@@ -1,24 +1,12 @@
-import Fastify from 'fastify';
 import { describe, expect, it } from 'vitest';
 
-import validateV2Plugin from '../../../plugins/validate-v2.js';
+import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 
 import partnerOrganizationRoutes from './organizations.js';
 import partnerVenueRoutes from './venues.js';
 
-async function buildOrgServer() {
-  const server = Fastify({ logger: false });
-  await server.register(validateV2Plugin);
-  await server.register(partnerOrganizationRoutes);
-  return server;
-}
-
-async function buildVenueServer() {
-  const server = Fastify({ logger: false });
-  await server.register(validateV2Plugin);
-  await server.register(partnerVenueRoutes);
-  return server;
-}
+const buildOrgServer = () => buildPartnerTestServer({ routes: [partnerOrganizationRoutes] });
+const buildVenueServer = () => buildPartnerTestServer({ routes: [partnerVenueRoutes] });
 
 const HEADERS = (key: string) => ({
   'x-organization-id': 'org_1',

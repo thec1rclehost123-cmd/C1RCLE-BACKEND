@@ -19,8 +19,70 @@ export interface VenuePublicProfile {
   address: VenueAddress;
   facilities: string[];
   capacity: number | null;
+  /**
+   * Food/drink offering shown to guests. Public by nature: it is menu copy,
+   * not commercial terms — pricing that must not leak belongs on the private
+   * profile, not here.
+   */
+  menu: VenueMenu;
   /** Public-facing config (guest list toggle etc.). */
   settings: VenuePublicSettings;
+}
+
+/**
+ * ─── Menu ─────────────────────────────────────────────────────────────────────
+ * Deliberately a flat list of named sections rather than a deep catalogue:
+ * this is the display menu a guest reads, not the inventory the kitchen runs.
+ * Ticketed products live in the event catalog, priced in paise.
+ */
+export interface VenueMenu {
+  sections: VenueMenuSection[];
+  /** ISO-8601; lets a client show "updated on …" without another read. */
+  updatedAt: string | null;
+}
+
+export interface VenueMenuSection {
+  name: string;
+  items: VenueMenuItem[];
+}
+
+export interface VenueMenuItem {
+  name: string;
+  description?: string;
+  /** Integer paise, matching every other money field in the system. */
+  pricePaise: number | null;
+  /** Dietary/allergen tags — presentation only, never a business rule. */
+  tags: string[];
+}
+
+export const EMPTY_MENU: VenueMenu = { sections: [], updatedAt: null };
+
+export interface UpdateMenuInput {
+  sections: VenueMenuSection[];
+  now?: Date;
+}
+
+/**
+ * Replaces the menu wholesale. A partial merge would make removing an item
+ * impossible to express, which is the operation a venue most often wants.
+ */
+export function updateVenueMenu(venue: Venue, input: UpdateMenuInput): Venue {
+  const now = input.now ?? new Date();
+  for (const section of input.sections) {
+    for (const item of section.items) {
+      if (item.pricePaise !== null && item.pricePaise !== undefined && item.pricePaise < 0) {
+        throw new InvalidOperationError(`Menu item "${item.name}" cannot have a negative price`);
+      }
+    }
+  }
+  const stamped = bumpVersion(venue, now);
+  return {
+    ...stamped,
+    public: {
+      ...venue.public,
+      menu: { sections: input.sections, updatedAt: now.toISOString() },
+    },
+  };
 }
 
 export interface VenuePrivateProfile {
@@ -87,6 +149,7 @@ export function createVenue(input: CreateVenueInput): Venue {
       photoUrl: null,
       address: input.city === undefined || input.city === null ? {} : { city: input.city },
       facilities: [],
+      menu: EMPTY_MENU,
       capacity: input.capacity ?? null,
       settings: { showGuestList: false, activityEnabled: false },
     },
@@ -194,4 +257,92 @@ export function createSlotRequest(input: {
     message: input.message,
     ...newVersionedEntity(input.now ?? new Date()),
   };
+}
+
+/* ─── Availability ─────────────────────────────────────────────────────────── */
+
+/**
+ * A derived, guest-facing view of a venue's calendar: how much of a window is
+ * actually bookable. This is a *computation over slots*, not stored state —
+ * storing it would create a second source of truth that drifts the moment a
+ * slot changes.
+ *
+ * `cancelled` slots are excluded entirely rather than counted as unavailable:
+ * a cancelled slot is one that no longer exists, not one that is taken.
+ */
+export interface VenueAvailability {
+  venueId: EntityId;
+  from: string;
+  to: string;
+  openSlots: number;
+  bookedSlots: number;
+  blockedSlots: number;
+  /** Total minutes across open slots — the practical "how much can I book". */
+  openMinutes: number;
+  /** True when nothing in the window can be booked. */
+  fullyBooked: boolean;
+  slots: VenueAvailabilitySlot[];
+}
+
+export interface VenueAvailabilitySlot {
+  id: EntityId;
+  label: string;
+  startTime: string;
+  endTime: string;
+  status: Exclude<VenueSlotStatus, 'cancelled'>;
+  capacityFor: number | null;
+}
+
+export function computeVenueAvailability(input: {
+  venueId: EntityId;
+  from: string;
+  to: string;
+  slots: readonly VenueSlot[];
+}): VenueAvailability {
+  const live = input.slots.filter((slot) => slot.status !== 'cancelled');
+
+  let openSlots = 0;
+  let bookedSlots = 0;
+  let blockedSlots = 0;
+  let openMinutes = 0;
+
+  for (const slot of live) {
+    if (slot.status === 'open') {
+      openSlots++;
+      openMinutes += slotMinutes(slot);
+    } else if (slot.status === 'booked') {
+      bookedSlots++;
+    } else {
+      blockedSlots++;
+    }
+  }
+
+  return {
+    venueId: input.venueId,
+    from: input.from,
+    to: input.to,
+    openSlots,
+    bookedSlots,
+    blockedSlots,
+    openMinutes,
+    // A window with no slots at all is not "fully booked" — there is simply
+    // nothing published yet, which is a different thing to tell a caller.
+    fullyBooked: live.length > 0 && openSlots === 0,
+    slots: live.map((slot) => ({
+      id: slot.id,
+      label: slot.label,
+      startTime: slot.startTime,
+      endTime: slot.endTime,
+      status: slot.status as Exclude<VenueSlotStatus, 'cancelled'>,
+      capacityFor: slot.capacityFor,
+    })),
+  };
+}
+
+/** Duration in whole minutes; a non-positive or unparseable range counts as 0. */
+function slotMinutes(slot: VenueSlot): number {
+  const start = Date.parse(slot.startTime);
+  const end = Date.parse(slot.endTime);
+  if (Number.isNaN(start) || Number.isNaN(end) || end <= start) return 0;
+  return Math.round((end - start) / 60_000);
 }

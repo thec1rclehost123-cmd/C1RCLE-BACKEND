@@ -13,6 +13,7 @@ import type { EntityId } from '../domain/identity.js';
 import type { OrganizationRole, Capability } from '../domain/models/organization.js';
 import type { OutboxWriter } from '../domain/ports/outbox.js';
 import type {
+  InvitationRepository,
   OrganizationRepository,
   VenueRepository,
   SlotRequestRepository,
@@ -40,6 +41,7 @@ export interface ServiceDeps {
   outbox: OutboxWriter;
   repositories: {
     organizations: OrganizationRepository;
+    invitations: InvitationRepository;
     venues: VenueRepository;
     slotRequests: SlotRequestRepository;
     venueSlots: VenueSlotRepository;

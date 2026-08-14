@@ -7,6 +7,9 @@ import {
   createVenueSchema,
   venueProfileDtoSchema,
   venueSlotDtoSchema,
+  venueAvailabilityDtoSchema,
+  venueMenuDtoSchema,
+  updateVenueMenuSchema,
   slotRequestDtoSchema,
   createSlotRequestSchema,
   paginatedSchema,
@@ -105,11 +108,15 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
   fastify.get(
     '/organizations/:organizationId/venues',
     {
-      preHandler: fastify.validateV2({
-        params: orgIdParam,
-        querystring: paginationQuerySchema,
-        headers: venueHeaders,
-      }),
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({
+          params: orgIdParam,
+          querystring: paginationQuerySchema,
+          headers: venueHeaders,
+        }),
+        fastify.requirePermission('venue.read'),
+      ],
     },
     async (request, reply) => {
       const { organizationId } = request.params as z.infer<typeof orgIdParam>;
@@ -140,11 +147,15 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
   fastify.post(
     '/organizations/:organizationId/venues',
     {
-      preHandler: fastify.validateV2({
-        params: orgIdParam,
-        body: createVenueBody,
-        headers: venueHeaders.extend({ 'idempotency-key': idempotencyKeySchema }),
-      }),
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({
+          params: orgIdParam,
+          body: createVenueBody,
+          headers: venueHeaders.extend({ 'idempotency-key': idempotencyKeySchema }),
+        }),
+        fastify.requirePermission('venue.create'),
+      ],
     },
     async (request, reply) => {
       const { organizationId } = request.params as z.infer<typeof orgIdParam>;
@@ -188,7 +199,11 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
   fastify.get(
     '/venues/:venueId',
     {
-      preHandler: fastify.validateV2({ params: venueIdParam, headers: venueHeaders }),
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({ params: venueIdParam, headers: venueHeaders }),
+        fastify.requirePermission('venue.read'),
+      ],
     },
     async (request, reply) => {
       const { venueId } = request.params as z.infer<typeof venueIdParam>;
@@ -209,11 +224,15 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
   fastify.patch(
     '/venues/:venueId',
     {
-      preHandler: fastify.validateV2({
-        params: venueIdParam,
-        headers: updateVenueHeaders,
-        body: updateVenueBody,
-      }),
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({
+          params: venueIdParam,
+          headers: updateVenueHeaders,
+          body: updateVenueBody,
+        }),
+        fastify.requirePermission('venue.manage'),
+      ],
     },
     async (request, reply) => {
       const { venueId } = request.params as z.infer<typeof venueIdParam>;
@@ -254,12 +273,9 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
   );
 
   // ── PROFILE (owner-scoped: public + private fields together) ─────────────
-  // task.md §5 also lists `/venues/:venueId/menu` and `/venues/:venueId/
-  // availability` — not registered: the domain model has no `menu` field on
-  // `VenuePublicProfile` and no distinct "availability" computation beyond
-  // the calendar's slot list yet (see docs/roadmap/phase-01-partner-dashboards.md).
-  // Adding fake routes ahead of real domain support would violate rule 10
-  // ("no mocks in shipped code").
+  // `/menu` and `/availability` are both registered below — the domain gained
+  // a real `menu` field and a real availability derivation
+  // (docs/architecture/decisions.md D-014/D-016), so neither is a stub.
   fastify.get(
     '/venues/:venueId/profile',
     { preHandler: fastify.validateV2({ params: venueIdParam, headers: venueHeaders }) },
@@ -284,11 +300,15 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
   fastify.patch(
     '/venues/:venueId/profile',
     {
-      preHandler: fastify.validateV2({
-        params: venueIdParam,
-        headers: updateVenueHeaders,
-        body: updateVenueBody,
-      }),
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({
+          params: venueIdParam,
+          headers: updateVenueHeaders,
+          body: updateVenueBody,
+        }),
+        fastify.requirePermission('venue.manage'),
+      ],
     },
     async (request, reply) => {
       const { venueId } = request.params as z.infer<typeof venueIdParam>;
@@ -335,11 +355,15 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
   fastify.get(
     '/venues/:venueId/calendar',
     {
-      preHandler: fastify.validateV2({
-        params: venueIdParam,
-        querystring: calendarQuery,
-        headers: venueHeaders,
-      }),
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({
+          params: venueIdParam,
+          querystring: calendarQuery,
+          headers: venueHeaders,
+        }),
+        fastify.requirePermission('venue.read'),
+      ],
     },
     async (request, reply) => {
       const { venueId } = request.params as z.infer<typeof venueIdParam>;
@@ -357,15 +381,138 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
     },
   );
 
+  // ── MENU (public profile sub-resource; PUT replaces wholesale) ────────────
+  fastify.get(
+    '/venues/:venueId/menu',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({ params: venueIdParam, headers: venueHeaders }),
+        fastify.requirePermission('venue.read'),
+        fastify.cached('VENUE_PROFILE'),
+      ],
+    },
+    async (request, reply) => {
+      const { venueId } = request.params as z.infer<typeof venueIdParam>;
+      const actor = services.actor(request);
+      const menu = await services.venues
+        .getMenu(actor, venueId)
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, venueId, error, { hideForbidden: true }),
+        );
+      if (menu === undefined) return reply;
+      const validated = validateV2Response(reply, request, venueMenuDtoSchema, menu);
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  fastify.put(
+    '/venues/:venueId/menu',
+    {
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({
+          params: venueIdParam,
+          headers: updateVenueHeaders,
+          body: updateVenueMenuSchema,
+        }),
+        fastify.requirePermission('venue.manage'),
+      ],
+    },
+    async (request, reply) => {
+      const { venueId } = request.params as z.infer<typeof venueIdParam>;
+      const body = request.body as z.infer<typeof updateVenueMenuSchema>;
+      const actor = services.actor(request);
+      const v2Headers = request.v2Headers ?? {};
+      const expectedVersion = v2Headers['if-match']
+        ? Number.parseInt(v2Headers['if-match'], 10)
+        : null;
+
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: actor.userId,
+        commandName: 'venue-menu.update',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { venueId }, body },
+        run: async () => {
+          const venue = await services.venues.updateMenu(actor, {
+            venueId,
+            expectedVersion,
+            sections: body.sections,
+          });
+          const validated = validateV2Response(
+            reply,
+            request,
+            venueMenuDtoSchema,
+            venue.public.menu,
+          );
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
+        },
+      }).catch((error: unknown) => {
+        if (isIdempotencyConflict(error)) {
+          return mapDomainError(reply, request, venueId, error, {
+            conflictId: v2Headers['idempotency-key'],
+          });
+        }
+        return mapDomainError(reply, request, venueId, error);
+      });
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
+
+  // ── AVAILABILITY (derived from the same slots the calendar returns) ───────
+  fastify.get(
+    '/venues/:venueId/availability',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({
+          params: venueIdParam,
+          querystring: calendarQuery,
+          headers: venueHeaders,
+        }),
+        fastify.requirePermission('venue.read'),
+        fastify.cached('AVAILABILITY'),
+      ],
+    },
+    async (request, reply) => {
+      const { venueId } = request.params as z.infer<typeof venueIdParam>;
+      const { from, to } = request.query as z.infer<typeof calendarQuery>;
+      const actor = services.actor(request);
+      const availability = await services.venueCalendar
+        .getAvailability(actor, venueId, from, to)
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, venueId, error, { hideForbidden: true }),
+        );
+      if (availability === undefined) return reply;
+      const validated = validateV2Response(
+        reply,
+        request,
+        venueAvailabilityDtoSchema,
+        availability,
+      );
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
   // ── SLOT REQUESTS (host-initiated create; venue-owner-scoped list/accept/reject) ──
   fastify.get(
     '/venues/:venueId/slot-requests',
     {
-      preHandler: fastify.validateV2({
-        params: venueIdParam,
-        querystring: paginationQuerySchema,
-        headers: venueHeaders,
-      }),
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({
+          params: venueIdParam,
+          querystring: paginationQuerySchema,
+          headers: venueHeaders,
+        }),
+        fastify.requirePermission('venue.read'),
+      ],
     },
     async (request, reply) => {
       const { venueId } = request.params as z.infer<typeof venueIdParam>;
@@ -395,11 +542,15 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
   fastify.post(
     '/venues/:venueId/slot-requests',
     {
-      preHandler: fastify.validateV2({
-        params: venueIdParam,
-        body: createSlotRequestSchema,
-        headers: venueHeaders.extend({ 'idempotency-key': idempotencyKeySchema }),
-      }),
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({
+          params: venueIdParam,
+          body: createSlotRequestSchema,
+          headers: venueHeaders.extend({ 'idempotency-key': idempotencyKeySchema }),
+        }),
+        fastify.requirePermission('slot-request.create'),
+      ],
     },
     async (request, reply) => {
       const { venueId } = request.params as z.infer<typeof venueIdParam>;
@@ -445,10 +596,14 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
     fastify.post(
       `/venues/slot-requests/:slotRequestId/${action}`,
       {
-        preHandler: fastify.validateV2({
-          params: slotRequestIdParam,
-          headers: venueHeaders.extend({ 'idempotency-key': idempotencyKeySchema }),
-        }),
+        preHandler: [
+          fastify.rateLimit('STANDARD_COMMAND'),
+          fastify.validateV2({
+            params: slotRequestIdParam,
+            headers: venueHeaders.extend({ 'idempotency-key': idempotencyKeySchema }),
+          }),
+          fastify.requirePermission('venue.schedule'),
+        ],
       },
       async (request, reply) => {
         const { slotRequestId } = request.params as z.infer<typeof slotRequestIdParam>;

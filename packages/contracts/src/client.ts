@@ -358,3 +358,85 @@ export const createEventSchema = z.object({
   tags: z.array(z.string().min(1)).max(50).default([]),
 });
 export type CreateEventInput = z.infer<typeof createEventSchema>;
+
+/* ─── Organization invitations ─────────────────────────────────────────────── */
+
+export const invitationStatusSchema = z.enum(['pending', 'accepted', 'revoked', 'expired']);
+export type InvitationStatus = z.infer<typeof invitationStatusSchema>;
+
+export const invitationDtoSchema = z.object({
+  id: opaqueIdSchema,
+  organizationId: opaqueIdSchema,
+  email: z.email(),
+  role: organizationRoleSchema,
+  capabilities: z.array(z.enum(['host', 'venue', 'promoter'])),
+  status: invitationStatusSchema,
+  invitedBy: opaqueIdSchema,
+  expiresAt: z.iso.datetime(),
+  acceptedAt: z.iso.datetime().nullable(),
+  version: z.number().int().positive(),
+  createdAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+});
+export type InvitationDto = z.infer<typeof invitationDtoSchema>;
+
+/** Owner cannot be invited — the owner is set at creation and transferred. */
+export const createInvitationSchema = z
+  .object({
+    email: z.email(),
+    role: z.enum(['admin', 'manager', 'member']),
+    capabilities: z.array(z.enum(['host', 'venue', 'promoter'])).optional(),
+  })
+  .strict();
+export type CreateInvitationRequest = z.infer<typeof createInvitationSchema>;
+
+/* ─── Venue availability (derived from calendar slots) ─────────────────────── */
+
+export const venueAvailabilitySlotSchema = z.object({
+  id: opaqueIdSchema,
+  label: z.string(),
+  startTime: z.iso.datetime(),
+  endTime: z.iso.datetime(),
+  status: z.enum(['open', 'booked', 'blocked']),
+  capacityFor: z.number().int().nonnegative().nullable(),
+});
+
+export const venueAvailabilityDtoSchema = z.object({
+  venueId: opaqueIdSchema,
+  from: z.iso.datetime(),
+  to: z.iso.datetime(),
+  openSlots: z.number().int().nonnegative(),
+  bookedSlots: z.number().int().nonnegative(),
+  blockedSlots: z.number().int().nonnegative(),
+  openMinutes: z.number().int().nonnegative(),
+  fullyBooked: z.boolean(),
+  slots: z.array(venueAvailabilitySlotSchema),
+});
+export type VenueAvailabilityDto = z.infer<typeof venueAvailabilityDtoSchema>;
+
+/* ─── Venue menu ───────────────────────────────────────────────────────────── */
+
+export const venueMenuItemSchema = z.object({
+  name: z.string().min(1).max(120),
+  description: z.string().max(500).optional(),
+  /** Integer paise, like every other money field on the wire. */
+  pricePaise: z.number().int().nonnegative().nullable(),
+  tags: z.array(z.string().min(1).max(40)).max(20).default([]),
+});
+
+export const venueMenuSectionSchema = z.object({
+  name: z.string().min(1).max(120),
+  items: z.array(venueMenuItemSchema).max(200),
+});
+
+export const venueMenuDtoSchema = z.object({
+  sections: z.array(venueMenuSectionSchema).max(50),
+  updatedAt: z.iso.datetime().nullable(),
+});
+export type VenueMenuDto = z.infer<typeof venueMenuDtoSchema>;
+
+/** PUT replaces the menu wholesale — a merge could not express a deletion. */
+export const updateVenueMenuSchema = z
+  .object({ sections: z.array(venueMenuSectionSchema).max(50) })
+  .strict();
+export type UpdateVenueMenuRequest = z.infer<typeof updateVenueMenuSchema>;

@@ -4,21 +4,23 @@
 
 ## Carried over from Phase 0 (see phase-00-foundation.md §C for full context)
 
-- **Organization invitations** (`GET /organizations/:organizationId/invitations`)
-  — needs a real "pending invitation, not yet a member" domain concept added
-  to `packages/core/src/domain/models/organization.ts` before a route can be
-  built; today `inviteMember` adds a member immediately, there's nothing to
-  list as "pending."
-- **Venue menu** (`PUT/GET /venues/:venueId/menu`) — needs a `menu` field
-  added to `VenuePublicProfile` (`domain/models/venue.ts`); doesn't exist yet.
-- **Venue availability** (`GET /venues/:venueId/availability`) — needs a
-  real availability computation distinct from the calendar's raw slot list
-  (e.g. derived open/booked/blocked summary); no service method exists yet.
-- **Event `review → published` gap** — with only the 6 documented lifecycle
-  actions, `publish()` can never succeed from `review` status (it requires
-  `scheduled`). Needs a product decision: allow `review → published`
-  directly in the FSM, or add a `schedule`/`approve` action. Do not build
-  Phase 1's own event-adjacent features assuming this is resolved.
+- ~~**Organization invitations**~~ — **done 2026-08-13**, ahead of this phase:
+  `OrganizationInvitation` aggregate + state machine + repository (memory and
+  Firestore adapters) + the four routes. See `docs/architecture/decisions.md`
+  D-013. Covered by `packages/core/src/domain/invitation.test.ts` and
+  `apps/api-gateway/src/routes/v2/partner/invitations.test.ts`.
+- ~~**Venue menu**~~ — **done 2026-08-13**, ahead of this phase: `VenueMenu`
+  added to `VenuePublicProfile`, with `GET`/`PUT` routes (replace-wholesale).
+  See `docs/architecture/decisions.md` D-016.
+- ~~**Venue availability**~~ — **done 2026-08-13**, ahead of this phase:
+  `computeVenueAvailability` derives an open/booked/blocked summary (plus
+  bookable minutes) from the calendar's slots, and the route is registered and
+  cached. See `docs/architecture/decisions.md` D-014 and
+  `packages/core/src/domain/availability.test.ts`.
+- ~~**Event `review → published` gap**~~ — **resolved before Phase 1 started**
+  (`docs/architecture/decisions.md` D-010): `publish()` walks
+  `review → scheduled → published` inside one service call. Phase 1 may assume
+  publishing works from `review`. No product decision outstanding.
 
 This is the highest-value phase after Phase 0: it's what the most-built part
 of the frontend (`apps/partner-dashboard`) actually needs. Every screen
@@ -108,4 +110,24 @@ DTOs (careful: promoter finance is private, never shown to venue/host).
 
 ## Session Log
 
-(none yet)
+- 2026-08-13 — **Phase 0 carry-overs cleared, and the first Phase 1 domain
+  landed.** Nothing from Phase 0's scope is outstanding any more (invitations,
+  venue menu, availability, RBAC/rate-limit/cache enforcement, compare-and-set,
+  durable idempotency — see `phase-00-foundation.md` and D-012…D-016).
+  - **Built here:** `domain/models/partnership.ts` — the venue↔host graph
+    ported from v1 `routes/v1/partnerships.ts`, plus the promoter commission
+    tiers ported verbatim from v1 `lib/rbac-permissions.ts`. 21 tests.
+  - **Two v1 behaviours deliberately tightened** (both were latent bugs, not
+    intentional design):
+    1. v1 let the **requester approve their own request** — it only checked
+       "are you a party to this?". V2 requires the *counterparty*.
+    2. v1's `blocked` was just another string in a `statusMap`, so a later
+       `approve` silently un-blocked. V2 makes `blocked` terminal; unblocking
+       is a new request.
+  - **Commission rounds DOWN** (`Math.floor`). Rounding a half-paisa up on
+    every order pays out money the platform never collected.
+  - **Not built yet:** the repository/service/routes for partnerships, and
+    everything dashboard-facing (overview/finance/analytics endpoints, the
+    RBAC tab-visibility matrix, promoter connections, referral links). The
+    domain is the foundation those sit on; it is done and tested, they are not
+    started.

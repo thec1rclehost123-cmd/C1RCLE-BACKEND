@@ -19,6 +19,7 @@ import { isIdempotencyConflict, runIdempotent } from '../../../lib/v2-idempotenc
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
 
+import type { Permission } from '../../../plugins/rbac.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 /**
@@ -84,11 +85,15 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
   fastify.get(
     '/organizations/:organizationId/events',
     {
-      preHandler: fastify.validateV2({
-        params: orgIdParam,
-        querystring: paginationQuerySchema,
-        headers: readHeaders,
-      }),
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({
+          params: orgIdParam,
+          querystring: paginationQuerySchema,
+          headers: readHeaders,
+        }),
+        fastify.requirePermission('event.read'),
+      ],
     },
     async (request, reply) => {
       const { organizationId } = request.params as z.infer<typeof orgIdParam>;
@@ -119,10 +124,14 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
   fastify.get(
     '/events/:eventId',
     {
-      preHandler: fastify.validateV2({
-        params: eventIdParam,
-        headers: readHeaders,
-      }),
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({
+          params: eventIdParam,
+          headers: readHeaders,
+        }),
+        fastify.requirePermission('event.read'),
+      ],
     },
     async (request, reply) => {
       const { eventId } = request.params as z.infer<typeof eventIdParam>;
@@ -141,11 +150,15 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
   fastify.post(
     '/organizations/:organizationId/events',
     {
-      preHandler: fastify.validateV2({
-        params: orgIdParam,
-        body: createEventBody,
-        headers: createEventHeaders,
-      }),
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({
+          params: orgIdParam,
+          body: createEventBody,
+          headers: createEventHeaders,
+        }),
+        fastify.requirePermission('event.create'),
+      ],
     },
     async (request, reply) => {
       const { organizationId } = request.params as z.infer<typeof orgIdParam>;
@@ -191,11 +204,15 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
   fastify.patch(
     '/events/:eventId',
     {
-      preHandler: fastify.validateV2({
-        params: eventIdParam,
-        body: updateEventSchema,
-        headers: createEventHeaders.extend({ 'if-match': versionHeaderSchema }),
-      }),
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({
+          params: eventIdParam,
+          body: updateEventSchema,
+          headers: createEventHeaders.extend({ 'if-match': versionHeaderSchema }),
+        }),
+        fastify.requirePermission('event.update'),
+      ],
     },
     async (request, reply) => {
       const { eventId } = request.params as z.infer<typeof eventIdParam>;
@@ -257,6 +274,22 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
   // ── LIFECYCLE ACTIONS (idempotent + If-Match; each maps 1:1 to an
   // `EventService` method — the FSM validation lives in the domain model,
   // never here) ──────────────────────────────────────────────────────────────
+  /**
+   * Each lifecycle action carries its own authority: publishing is a
+   * different decision from pausing sales, and duplicating creates a new
+   * event rather than mutating this one.
+   */
+  const actionPermission = (action: string): Permission => {
+    switch (action) {
+      case 'publish':
+        return 'event.publish';
+      case 'duplicate':
+        return 'event.create';
+      default:
+        return 'event.update';
+    }
+  };
+
   const simpleActions: Record<string, (actor: ActorContext, eventId: string) => Promise<Event>> = {
     review: (actor, eventId) => services.events.review(actor, eventId),
     publish: (actor, eventId) => services.events.publish(actor, eventId),
@@ -269,10 +302,14 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
     fastify.post(
       `/events/:eventId/${action}`,
       {
-        preHandler: fastify.validateV2({
-          params: eventIdParam,
-          headers: createEventHeaders,
-        }),
+        preHandler: [
+          fastify.rateLimit('STANDARD_COMMAND'),
+          fastify.validateV2({
+            params: eventIdParam,
+            headers: createEventHeaders,
+          }),
+          fastify.requirePermission(actionPermission(action)),
+        ],
       },
       async (request, reply) => {
         const { eventId } = request.params as z.infer<typeof eventIdParam>;
@@ -310,11 +347,15 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
   fastify.post(
     '/events/:eventId/cancel',
     {
-      preHandler: fastify.validateV2({
-        params: eventIdParam,
-        body: cancelEventSchema,
-        headers: createEventHeaders,
-      }),
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({
+          params: eventIdParam,
+          body: cancelEventSchema,
+          headers: createEventHeaders,
+        }),
+        fastify.requirePermission('event.cancel'),
+      ],
     },
     async (request, reply) => {
       const { eventId } = request.params as z.infer<typeof eventIdParam>;

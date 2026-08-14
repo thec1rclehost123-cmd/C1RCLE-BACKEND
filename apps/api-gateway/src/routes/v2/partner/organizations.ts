@@ -5,11 +5,14 @@ import {
   organizationDtoSchema,
   organizationMemberDtoSchema,
   inviteMemberSchema,
+  invitationDtoSchema,
+  createInvitationSchema,
   paginatedSchema,
 } from '@c1rcle/contracts/client';
+import { effectiveInvitationStatus } from '@c1rcle/core/domain';
 import { z } from 'zod';
 
-import type { Organization, OrganizationRole } from '@c1rcle/core/domain';
+import type { Organization, OrganizationInvitation, OrganizationRole } from '@c1rcle/core/domain';
 
 import { isIdempotencyConflict, runIdempotent } from '../../../lib/v2-idempotency.js';
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
@@ -51,13 +54,19 @@ const orgHeaders = z.looseObject({
 
 const orgListSchema = paginatedSchema(organizationDtoSchema);
 const memberListSchema = paginatedSchema(organizationMemberDtoSchema);
+const invitationListSchema = paginatedSchema(invitationDtoSchema);
+const invitationIdParam = z.object({ invitationId: opaqueIdSchema });
 
 export default async function partnerOrganizationRoutes(fastify: FastifyInstance) {
   // ── LIST (active memberships only) ────────────────────────────────────────
   fastify.get(
     '/organizations',
     {
-      preHandler: fastify.validateV2({ querystring: paginationQuerySchema, headers: orgHeaders }),
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({ querystring: paginationQuerySchema, headers: orgHeaders }),
+        fastify.requirePermission('organization.read'),
+      ],
     },
     async (request, reply) => {
       const query = request.query as z.infer<typeof paginationQuerySchema>;
@@ -86,7 +95,12 @@ export default async function partnerOrganizationRoutes(fastify: FastifyInstance
   fastify.get(
     '/organizations/:organizationId',
     {
-      preHandler: fastify.validateV2({ params: organizationIdParam, headers: orgHeaders }),
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({ params: organizationIdParam, headers: orgHeaders }),
+        fastify.requirePermission('organization.read'),
+        fastify.cached('ORGANIZATION'),
+      ],
     },
     async (request, reply) => {
       const { organizationId } = request.params as z.infer<typeof organizationIdParam>;
@@ -112,10 +126,15 @@ export default async function partnerOrganizationRoutes(fastify: FastifyInstance
   fastify.post(
     '/organizations',
     {
-      preHandler: fastify.validateV2({
-        body: createOrganizationBody,
-        headers: orgHeaders.extend({ 'idempotency-key': idempotencyKeySchema }),
-      }),
+      // No `requirePermission` here on purpose: creating your first
+      // organization happens before any membership exists to grant a role.
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({
+          body: createOrganizationBody,
+          headers: orgHeaders.extend({ 'idempotency-key': idempotencyKeySchema }),
+        }),
+      ],
     },
     async (request, reply) => {
       const body = request.body as z.infer<typeof createOrganizationBody>;
@@ -160,32 +179,36 @@ export default async function partnerOrganizationRoutes(fastify: FastifyInstance
   fastify.patch(
     '/organizations/:organizationId',
     {
-      preHandler: fastify.validateV2({
-        params: organizationIdParam,
-        headers: orgHeaders.extend({
-          'idempotency-key': idempotencyKeySchema,
-          'if-match': z
-            .string()
-            .regex(/^[1-9][0-9]*$/, 'If-Match must be a positive integer version'),
-        }),
-        body: z
-          .object({
-            name: z.string().min(1).max(200).optional(),
-            slug: z
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({
+          params: organizationIdParam,
+          headers: orgHeaders.extend({
+            'idempotency-key': idempotencyKeySchema,
+            'if-match': z
               .string()
-              .min(1)
-              .max(60)
-              .regex(/^[a-z0-9][a-z0-9-]*$/)
-              .optional(),
-            settings: z
-              .object({
-                name: z.string().max(200).optional(),
-                timezone: z.string().max(50).optional(),
-              })
-              .optional(),
-          })
-          .strict(),
-      }),
+              .regex(/^[1-9][0-9]*$/, 'If-Match must be a positive integer version'),
+          }),
+          body: z
+            .object({
+              name: z.string().min(1).max(200).optional(),
+              slug: z
+                .string()
+                .min(1)
+                .max(60)
+                .regex(/^[a-z0-9][a-z0-9-]*$/)
+                .optional(),
+              settings: z
+                .object({
+                  name: z.string().max(200).optional(),
+                  timezone: z.string().max(50).optional(),
+                })
+                .optional(),
+            })
+            .strict(),
+        }),
+        fastify.requirePermission('organization.update'),
+      ],
     },
     async (request, reply) => {
       const { organizationId } = request.params as z.infer<typeof organizationIdParam>;
@@ -235,17 +258,19 @@ export default async function partnerOrganizationRoutes(fastify: FastifyInstance
     },
   );
 
-  // ── MEMBERS (task.md §5; "invitations" is not registered — the domain
-  // model has no distinct pending-invitation concept yet, only immediate
-  // membership via `inviteMember`; see docs/roadmap/phase-01-partner-dashboards.md) ──
+  // ── MEMBERS (task.md §5) ──────────────────────────────────────────────────
   fastify.get(
     '/organizations/:organizationId/members',
     {
-      preHandler: fastify.validateV2({
-        params: organizationIdParam,
-        querystring: paginationQuerySchema,
-        headers: orgHeaders,
-      }),
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({
+          params: organizationIdParam,
+          querystring: paginationQuerySchema,
+          headers: orgHeaders,
+        }),
+        fastify.requirePermission('organization.read'),
+      ],
     },
     async (request, reply) => {
       const { organizationId } = request.params as z.infer<typeof organizationIdParam>;
@@ -275,11 +300,15 @@ export default async function partnerOrganizationRoutes(fastify: FastifyInstance
   fastify.post(
     '/organizations/:organizationId/members',
     {
-      preHandler: fastify.validateV2({
-        params: organizationIdParam,
-        body: inviteMemberSchema,
-        headers: orgHeaders.extend({ 'idempotency-key': idempotencyKeySchema }),
-      }),
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({
+          params: organizationIdParam,
+          body: inviteMemberSchema,
+          headers: orgHeaders.extend({ 'idempotency-key': idempotencyKeySchema }),
+        }),
+        fastify.requirePermission('staff.manage'),
+      ],
     },
     async (request, reply) => {
       const { organizationId } = request.params as z.infer<typeof organizationIdParam>;
@@ -317,6 +346,187 @@ export default async function partnerOrganizationRoutes(fastify: FastifyInstance
       return reply.status(result.statusCode).send(result.body);
     },
   );
+  // ── INVITATIONS ───────────────────────────────────────────────────────────
+  // A pending invitation is a real domain concept now (see
+  // `domain/models/organization.ts`), so this route reports real state rather
+  // than the always-empty list that rule 10 forbade in Phase 0.
+  fastify.get(
+    '/organizations/:organizationId/invitations',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({
+          params: organizationIdParam,
+          querystring: paginationQuerySchema,
+          headers: orgHeaders,
+        }),
+        fastify.requirePermission('staff.manage'),
+      ],
+    },
+    async (request, reply) => {
+      const { organizationId } = request.params as z.infer<typeof organizationIdParam>;
+      const query = request.query as z.infer<typeof paginationQuerySchema>;
+      const actor = services.actor(request);
+      const page = await services.organizations
+        .listInvitations(actor, organizationId, {
+          limit: query.limit,
+          cursor: query.cursor ?? null,
+        })
+        .catch((error: unknown) => mapDomainError(reply, request, organizationId, error));
+      if (page === undefined) return reply;
+
+      const payload = {
+        items: page.items.map(invitationToDto),
+        pageInfo: {
+          page: 1,
+          pageSize: query.limit,
+          total: page.total,
+          hasNextPage: page.nextCursor !== null,
+        },
+      };
+      const validated = validateV2Response(reply, request, invitationListSchema, payload);
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  fastify.post(
+    '/organizations/:organizationId/invitations',
+    {
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({
+          params: organizationIdParam,
+          headers: orgHeaders.extend({ 'idempotency-key': idempotencyKeySchema }),
+          body: createInvitationSchema,
+        }),
+        fastify.requirePermission('staff.manage'),
+      ],
+    },
+    async (request, reply) => {
+      const { organizationId } = request.params as z.infer<typeof organizationIdParam>;
+      const body = request.body as z.infer<typeof createInvitationSchema>;
+      const actor = services.actor(request);
+      const v2Headers = request.v2Headers ?? {};
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: actor.userId,
+        commandName: 'organization-invitations.create',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { organizationId }, body },
+        run: async () => {
+          const invitation = await services.organizations.createInvitation(actor, {
+            organizationId,
+            email: body.email,
+            role: body.role,
+            capabilities: body.capabilities,
+          });
+          const validated = validateV2Response(
+            reply,
+            request,
+            invitationDtoSchema,
+            invitationToDto(invitation),
+          );
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 201, body: validated };
+        },
+      }).catch((error: unknown) => {
+        if (isIdempotencyConflict(error)) {
+          return mapDomainError(reply, request, organizationId, error, {
+            conflictId: v2Headers['idempotency-key'],
+          });
+        }
+        return mapDomainError(reply, request, organizationId, error);
+      });
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
+
+  // Revoking is how an invitation is withdrawn; there is no DELETE because the
+  // row survives as the audit trail of what was offered and taken back.
+  fastify.post(
+    '/invitations/:invitationId/revoke',
+    {
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({
+          params: invitationIdParam,
+          headers: orgHeaders.extend({ 'idempotency-key': idempotencyKeySchema }),
+        }),
+        fastify.requirePermission('staff.manage'),
+      ],
+    },
+    async (request, reply) => {
+      const { invitationId } = request.params as z.infer<typeof invitationIdParam>;
+      const actor = services.actor(request);
+      const invitation = await services.organizations
+        .revokeInvitation(actor, invitationId)
+        .catch((error: unknown) => mapDomainError(reply, request, invitationId, error));
+      if (invitation === undefined) return reply;
+
+      const validated = validateV2Response(
+        reply,
+        request,
+        invitationDtoSchema,
+        invitationToDto(invitation),
+      );
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  // Accepting is the invitee's own act: it needs a session but NOT membership
+  // of the target org (that is exactly what is being granted), so it carries no
+  // `requirePermission` and no `X-Organization-Id`.
+  fastify.post(
+    '/invitations/:invitationId/accept',
+    {
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({ params: invitationIdParam }),
+      ],
+    },
+    async (request, reply) => {
+      const { invitationId } = request.params as z.infer<typeof invitationIdParam>;
+      const actor = services.actor(request);
+      const org = await services.organizations
+        .acceptInvitation(actor, { invitationId, userId: actor.userId })
+        .catch((error: unknown) => mapDomainError(reply, request, invitationId, error));
+      if (org === undefined) return reply;
+
+      const validated = validateV2Response(
+        reply,
+        request,
+        organizationDtoSchema,
+        organizationToDto(org, actor.userId),
+      );
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+}
+
+/** Wire shape for an invitation. `acceptedBy` stays internal — the audit
+ * trail does not need to be a public field on the partner surface. */
+function invitationToDto(invitation: OrganizationInvitation) {
+  return {
+    id: invitation.id,
+    organizationId: invitation.organizationId,
+    email: invitation.email,
+    role: invitation.role,
+    capabilities: [...invitation.capabilities],
+    // Report the EFFECTIVE status: a lapsed invitation reads as `expired`
+    // even if no sweeper has rewritten the stored row.
+    status: effectiveInvitationStatus(invitation),
+    invitedBy: invitation.invitedBy,
+    expiresAt: invitation.expiresAt,
+    acceptedAt: invitation.acceptedAt,
+    version: invitation.version,
+    createdAt: invitation.createdAt,
+    updatedAt: invitation.updatedAt,
+  };
 }
 
 /** Converts the core domain Organization to the canonical wire DTO (caller-scoped). */
