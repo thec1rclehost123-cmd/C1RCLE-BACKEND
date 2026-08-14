@@ -4,8 +4,10 @@ import { getGatewayConfig, GatewayConfigError } from '../../config/index.js';
 import { createV2Services } from '../../lib/v2-services.js';
 import authContextPlugin, { buildBetterAuth } from '../../plugins/auth.js';
 
+import adminRoutes from './admin/onboarding-review.js';
 import authRoutes from './auth/index.js';
 import { internalRoutes } from './internal/index.js';
+import onboardingRoutes from './onboarding.js';
 import partnerAnalyticsRoutes from './partner/analytics.js';
 import partnerEventCatalogRoutes from './partner/event-catalog.js';
 import partnerEventRoutes from './partner/events.js';
@@ -71,6 +73,10 @@ export async function registerV2Routes(app: FastifyInstance): Promise<void> {
       await partnerAnalyticsRoutes(v2);
       await partnerReferralLinkRoutes(v2);
       await promoterConnectionRoutes(v2);
+      // Phase 2: not org-scoped — an applicant has no organization yet, and a
+      // platform admin acts across all of them.
+      await onboardingRoutes(v2);
+      await adminRoutes(v2);
     },
     { prefix: '/api/v2' },
   );

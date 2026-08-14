@@ -58,6 +58,18 @@ export class PartnershipNotFoundError extends DomainError {
   }
 }
 
+export class OnboardingRequestNotFoundError extends DomainError {
+  constructor(requestId: string) {
+    super(`Onboarding request ${requestId} not found`, 'onboarding_request_not_found');
+  }
+}
+
+export class ProposalNotFoundError extends DomainError {
+  constructor(proposalId: string) {
+    super(`Proposed action ${proposalId} not found`, 'proposal_not_found');
+  }
+}
+
 export class ForbiddenError extends DomainError {
   constructor(message = 'Insufficient permissions') {
     super(message, 'forbidden');

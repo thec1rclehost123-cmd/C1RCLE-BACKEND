@@ -9,6 +9,7 @@
  */
 
 import type { EntityId } from '../identity.js';
+import type { PlatformAdmin, ProposalStatus, ProposedAction } from '../models/admin-authority.js';
 import type {
   TicketTier,
   PromoCode,
@@ -16,6 +17,7 @@ import type {
   PromoterAssignment,
 } from '../models/event-catalog.js';
 import type { Event } from '../models/event.js';
+import type { OnboardingRequest, OnboardingStatus } from '../models/onboarding.js';
 import type {
   Organization,
   OrganizationInvitation,
@@ -229,4 +231,66 @@ export interface EventAnalytics {
 export interface AnalyticsReadModelRepository {
   getOrganizationOverview(organizationId: EntityId): Promise<OrganizationOverview | null>;
   getEventAnalytics(eventId: EntityId): Promise<EventAnalytics | null>;
+}
+
+// ─── Onboarding / KYC (Phase 2) ──────────────────────────────────────────────
+
+/**
+ * Onboarding requests are keyed by the applicant's *user* id, not by an
+ * organization: the whole point of the flow is that the applicant has no
+ * organization yet. `findOpenForUser` exists so "one live application per
+ * person" can be enforced without the caller already knowing the request id.
+ */
+export interface OnboardingRepository {
+  getById(requestId: EntityId): Promise<OnboardingRequest | null>;
+  /** The applicant's request that is still in play (draft/submitted/changes). */
+  findOpenForUser(userId: EntityId): Promise<OnboardingRequest | null>;
+  listForUser(userId: EntityId, query: PaginationQuery): Promise<Page<OnboardingRequest>>;
+  /** The admin review queue. `status: null` lists every request. */
+  listByStatus(
+    status: OnboardingStatus | null,
+    query: PaginationQuery,
+  ): Promise<Page<OnboardingRequest>>;
+  save(request: OnboardingRequest, tx?: TxContext | null): Promise<void>;
+}
+
+/** Platform operators, keyed by auth user id. */
+export interface PlatformAdminRepository {
+  getById(userId: EntityId): Promise<PlatformAdmin | null>;
+  list(query: PaginationQuery): Promise<Page<PlatformAdmin>>;
+  save(admin: PlatformAdmin, tx?: TxContext | null): Promise<void>;
+}
+
+/** TIER3 dual-control proposals awaiting a second admin. */
+export interface ProposedActionRepository {
+  getById(proposalId: EntityId): Promise<ProposedAction | null>;
+  listByStatus(
+    status: ProposalStatus | null,
+    query: PaginationQuery,
+  ): Promise<Page<ProposedAction>>;
+  save(proposal: ProposedAction, tx?: TxContext | null): Promise<void>;
+}
+
+/**
+ * One recorded KYC verification attempt. Mirrors v1's
+ * `verificationAttempts/{userId}/attempts/{id}`, which existed to bound how
+ * many times an applicant may probe a document check.
+ */
+export interface VerificationAttempt {
+  id: EntityId;
+  userId: EntityId;
+  /** Which document kind was checked, e.g. `aadhaar`, `pan`. */
+  documentType: string;
+  outcome: 'passed' | 'failed' | 'error';
+  /** Provider name, so a later provider swap is visible in the history. */
+  provider: string;
+  /** Epoch ms. */
+  attemptedAt: number;
+}
+
+export interface VerificationAttemptRepository {
+  append(attempt: VerificationAttempt): Promise<void>;
+  /** Attempts by this user since `sinceEpochMs` — the rate-limit input. */
+  countSince(userId: EntityId, sinceEpochMs: number): Promise<number>;
+  listForUser(userId: EntityId, limit: number): Promise<VerificationAttempt[]>;
 }

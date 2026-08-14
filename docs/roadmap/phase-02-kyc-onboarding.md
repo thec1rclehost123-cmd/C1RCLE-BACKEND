@@ -1,6 +1,6 @@
 # Phase 2 — KYC / Onboarding
 
-**Status:** not started · **Depends on:** Phase 0 (auth)
+**Status:** substantially done (2026-08-14) · **Depends on:** Phase 0 (auth)
 
 Currently explicitly BLOCKED in every C1RCLE-BACKEND doc
 (`docs/reference/frontend-api-map.md`: "no manifest entry exists for KYC/onboarding/
@@ -58,6 +58,70 @@ entityType, kycStepData`.
 `v2_proposed_actions`, `v2_verification_attempts` (rate-limit KYC verification
 attempts, matches v1's `verificationAttempts/{userId}/attempts/{id}` shape).
 
+## What shipped
+
+**Domain** (`packages/core/src/domain/models/`)
+- `onboarding.ts` — FSM `draft → submitted → approved|rejected|changes_requested`,
+  with `changes_requested → submitted` so an applicant can fix and resubmit.
+  `PLAN_PLATFORM_FEE_PERCENT` (basic 15 / silver 12 / diamond 10, verbatim from
+  v1). `REQUIRED_DOCUMENT_LABELS` gate submission. `sanitizeApplicantProfile`
+  is v1's `role`-stripping privilege-escalation guard made total: an allow-list,
+  so a field added later cannot arrive carrying authority. Re-uploading a label
+  replaces it rather than appending, so an admin cannot approve the stale copy.
+- `admin-authority.ts` — TIER1/2/3 exactly as v1 defined them, plus
+  `PlatformAdmin` and propose→resolve dual control. `resolve` refuses when
+  `resolvedBy === proposedBy`.
+
+**Ports** — `OnboardingRepository`, `PlatformAdminRepository`,
+`ProposedActionRepository`, `VerificationAttemptRepository`, `AdminAuditRepository`
+(before/after, which the existing single-`snapshot` `AuditRecord` cannot express),
+and `VerificationProvider`. Memory + Firestore adapters for all of them, both
+under the same compare-and-set invariant.
+
+**Application** — `AdminAuthorityService` (resolve → authorize → record; the
+proposal desk; `provisionAdminFromProposal` reads its payload from the approved
+proposal, never from the executing call) and `OnboardingService` (applicant side
+keyed by user id; admin side gated on `ONBOARDING_APPROVE`; approval provisions
+the organization with the plan's fee and the single capability applied for).
+
+**Routes** — `/api/v2/onboarding/*` (applicant, not org-scoped) and
+`/api/v2/admin/*` (queue, review, proposals, roster, audit). 19 HTTP tests.
+
+## Deferred, and why
+
+- **Signed storage upload.** `addDocument` takes a `storagePath` the client has
+  already written to; issuing signed upload URLs needs a Firebase Storage
+  bucket decision that has not been made. The label→path convention from v1
+  (`kyc/{userId}/{label}.{ext}`) is what the tests use.
+- **Approval email.** No mail transport exists in V2 yet; it belongs with
+  notifications (Phase 8) rather than bolted onto this path.
+- **`v2_verification_attempts` sub-collection shape.** Stored flat with a
+  `userId` field rather than v1's `{userId}/attempts/{id}` nesting — a flat
+  collection is what `countSince` can aggregate server-side.
+- **Bootstrapping the first admin.** Provisioning is TIER3 and needs two
+  existing admins, so the very first `super` must be seeded out of band. That
+  is the correct shape (no self-service path to platform authority) but it does
+  need a documented seed step before this goes live.
+
 ## Session Log
 
-(none yet)
+### 2026-08-14 — Phase 2 built end to end
+
+- Built everything listed above. Full suite green: 276 tests
+  (12 contracts / 165+3 core / 99 gateway), boundaries clean, contract parity
+  clean against `C1RCLE-FRONTEND` (33 checks).
+- Decisions recorded as D-017 (platform authority ≠ org authority),
+  D-018 (the v1 "verification" was a format check and is labelled as one),
+  D-019 (platform fee lives outside `OrganizationProps`).
+- **`X-User-Id` is now honoured on `STORAGE_DRIVER=memory` only.** The memory
+  driver already fabricates the whole actor from a hardcoded `dev-user`, which
+  made "applicant A cannot read applicant B's application" and
+  admin-vs-applicant untestable at the HTTP layer. On `firestore` the identity
+  comes from the verified session and the header is ignored. Called out here
+  because it *looks* like an auth bypass in isolation.
+- **`Organization` gained `platformFeePercent`.** Firestore documents written
+  before today have no such field; the adapter reads them as 15 (the basic
+  plan's rate, which is what they were created under).
+- Still open: the deferred items above, and Phase 7 will layer the rest of the
+  admin console on top of `AdminAuthorityService` — the tiering, dual control
+  and audit trail it needs already exist.

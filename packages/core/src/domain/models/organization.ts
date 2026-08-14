@@ -78,6 +78,14 @@ export interface Organization extends VersionedEntity {
   /** Internal / non-public settings. */
   settings: OrganizationSettings;
   status: OrganizationStatus;
+  /**
+   * Commission the platform takes, whole-number percent. Set once at
+   * onboarding approval from the applicant's plan (Phase 2) and deliberately
+   * absent from `OrganizationProps` — a partner editing their own
+   * organization must not be able to edit their own fee. Changing it is a
+   * TIER3 `COMMISSION_ADJUST`.
+   */
+  platformFeePercent: number;
 }
 
 export type OrganizationStatus = 'active' | 'suspended' | 'archived';
@@ -97,6 +105,10 @@ export interface CreateOrganizationInput {
   slug: string;
   ownerId: EntityId;
   settings?: OrganizationSettings;
+  /** Owner's capabilities. Defaults to all three for a self-serve org. */
+  capabilities?: Capability[];
+  /** Defaults to the `basic` plan's 15% until an approval says otherwise. */
+  platformFeePercent?: number;
   now?: Date;
 }
 
@@ -105,7 +117,7 @@ export function createOrganization(input: CreateOrganizationInput): Organization
   const member: OrganizationMember = {
     userId: input.ownerId,
     role: 'owner',
-    capabilities: ['host', 'venue', 'promoter'],
+    capabilities: input.capabilities ?? ['host', 'venue', 'promoter'],
     joinedAt: now.toISOString(),
   };
   return {
@@ -116,6 +128,7 @@ export function createOrganization(input: CreateOrganizationInput): Organization
     members: [member],
     settings: input.settings ?? {},
     status: 'active',
+    platformFeePercent: input.platformFeePercent ?? 15,
     ...newVersionedEntity(now),
   };
 }

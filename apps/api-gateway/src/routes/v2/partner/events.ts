@@ -434,6 +434,8 @@ export function mapDomainError(
     'event_not_found',
     'slot_request_not_found',
     'partnership_not_found',
+    'onboarding_request_not_found',
+    'proposal_not_found',
   ]);
   if (known?.code && notFoundCodes.has(known.code)) {
     reply.status(404).send(
@@ -441,6 +443,19 @@ export function mapDomainError(
         status: 404,
         message: known.message ?? 'Not found',
         code: 'not_found',
+        requestId: request.id,
+      }),
+    );
+    return undefined;
+  }
+  // No session at all (or no platform-admin authority) — distinct from
+  // `forbidden`, which means a valid identity in the wrong scope.
+  if (known?.code === 'unauthorized') {
+    reply.status(401).send(
+      buildV2ErrorResponse({
+        status: 401,
+        message: known.message ?? 'Authentication required',
+        code: 'unauthorized',
         requestId: request.id,
       }),
     );

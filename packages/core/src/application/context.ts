@@ -11,9 +11,14 @@ import { domainEvent, type DomainEventType, type EventPayloads } from '../domain
 import type { CoreConfig } from '../config/index.js';
 import type { EntityId } from '../domain/identity.js';
 import type { OrganizationRole, Capability } from '../domain/models/organization.js';
+import type { AdminAuditRepository } from '../domain/ports/audit.js';
 import type { OutboxWriter } from '../domain/ports/outbox.js';
 import type {
   InvitationRepository,
+  OnboardingRepository,
+  PlatformAdminRepository,
+  ProposedActionRepository,
+  VerificationAttemptRepository,
   OrganizationRepository,
   PartnershipRepository,
   PromoterConnectionRepository,
@@ -25,6 +30,7 @@ import type {
   EventCatalogRepository,
   AnalyticsReadModelRepository,
 } from '../domain/ports/repositories.js';
+import type { VerificationProvider } from '../domain/ports/verification.js';
 import type { Logger } from '../telemetry/logger.js';
 
 /** Who is making this call and in which tenant/role. Set by gateway auth. */
@@ -42,6 +48,18 @@ export interface ServiceDeps {
   logger: Logger;
   /** T12 outbox: domain events appended in the same unit of work as writes. */
   outbox: OutboxWriter;
+  /**
+   * Phase 2: every privileged operator action is written here with before/after
+   * state. Injected rather than reached for, so a service cannot skip it by
+   * forgetting to import something.
+   */
+  adminAudit: AdminAuditRepository;
+  /**
+   * Phase 2: pluggable KYC document verification. The default is a format
+   * check that says so — see `ports/verification.ts` for why v1's checksum
+   * "verification" was not ported as verification.
+   */
+  verification: VerificationProvider;
   repositories: {
     organizations: OrganizationRepository;
     invitations: InvitationRepository;
@@ -54,6 +72,10 @@ export interface ServiceDeps {
     events: EventRepository;
     catalog: EventCatalogRepository;
     analytics: AnalyticsReadModelRepository;
+    onboarding: OnboardingRepository;
+    platformAdmins: PlatformAdminRepository;
+    proposals: ProposedActionRepository;
+    verificationAttempts: VerificationAttemptRepository;
   };
 }
 

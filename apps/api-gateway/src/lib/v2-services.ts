@@ -11,12 +11,14 @@ import {
   EventCatalogService,
   AnalyticsService,
   IdempotencyService,
+  OnboardingService,
+  AdminAuthorityService,
   InProcessEventBus,
   createAuditConsumer,
   createProjectionConsumer,
 } from '@c1rcle/core/application';
 import { createCoreConfig } from '@c1rcle/core/config';
-import { UnauthorizedError } from '@c1rcle/core/domain';
+import { FormatCheckVerificationProvider, UnauthorizedError } from '@c1rcle/core/domain';
 import {
   MemoryOrganizationRepository,
   MemoryInvitationRepository,
@@ -32,6 +34,11 @@ import {
   MemoryIdempotencyStore,
   MemoryOutboxStore,
   MemoryAuditRepository,
+  MemoryAdminAuditRepository,
+  MemoryOnboardingRepository,
+  MemoryPlatformAdminRepository,
+  MemoryProposedActionRepository,
+  MemoryVerificationAttemptRepository,
   getFirestoreClient,
   FirestoreIdempotencyStore,
   FirestoreOrganizationRepository,
@@ -45,10 +52,20 @@ import {
   FirestoreEventRepository,
   FirestoreEventCatalogRepository,
   FirestoreAnalyticsReadModelRepository,
+  FirestoreOnboardingRepository,
+  FirestorePlatformAdminRepository,
+  FirestoreProposedActionRepository,
+  FirestoreVerificationAttemptRepository,
+  FirestoreAdminAuditRepository,
 } from '@c1rcle/core/infrastructure';
 
 import type { ServiceDeps, ActorContext } from '@c1rcle/core/application';
-import type { IdempotencyStore, OrganizationRole, Capability } from '@c1rcle/core/domain';
+import type {
+  AdminAuditRepository,
+  IdempotencyStore,
+  OrganizationRole,
+  Capability,
+} from '@c1rcle/core/domain';
 
 import { getGatewayConfig, GatewayConfigError } from '../config/index.js';
 
@@ -74,6 +91,10 @@ export interface PartnerV2Services {
   events: EventService;
   catalog: EventCatalogService;
   analytics: AnalyticsService;
+  /** Phase 2: partner applications, applicant + admin review sides. */
+  onboarding: OnboardingService;
+  /** Phase 2: platform-admin resolution, tiering and dual control. */
+  adminAuthority: AdminAuthorityService;
   /** T09 idempotency — durable on the firestore driver, in-memory on `memory`. */
   idempotency: IdempotencyService;
   /** Builds the service actor from the authenticated request state. */
@@ -82,6 +103,8 @@ export interface PartnerV2Services {
   repos(): ServiceDeps['repositories'];
   /** T13 audit trail written by the event bus (B09 slice consumer). */
   audits: MemoryAuditRepository;
+  /** Phase 2 admin audit trail (before/after), for seed/test wiring. */
+  adminAudits(): AdminAuditRepository;
 }
 
 // Each route module calls `createV2Services()` independently at import time
@@ -117,6 +140,11 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   // Future projection consumer (no-op now — wire exists for B11 projections).
   eventBus.subscribe('event.published', createProjectionConsumer);
 
+  const adminAudits: AdminAuditRepository =
+    gw.STORAGE_DRIVER === 'memory'
+      ? new MemoryAdminAuditRepository()
+      : new FirestoreAdminAuditRepository(firestoreClient(gw));
+
   const deps: ServiceDeps = {
     config: coreConfig,
     logger:
@@ -127,8 +155,13 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
         error: (message, obj) => console.error(message, obj ?? {}),
       }),
     outbox: eventBus,
+    adminAudit: adminAudits,
+    // Swap here — and only here — when a real KYC provider is contracted.
+    verification: new FormatCheckVerificationProvider(),
     repositories,
   };
+
+  const adminAuthority = new AdminAuthorityService(deps);
 
   return {
     organizations: new OrganizationService(deps),
@@ -141,6 +174,8 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     events: new EventService(deps),
     catalog: new EventCatalogService(deps),
     analytics: new AnalyticsService(deps),
+    onboarding: new OnboardingService(deps, adminAuthority),
+    adminAuthority,
     // Replay protection must outlive the process: a restart mid-retry with an
     // in-memory store turns a client's retry into a second business result.
     idempotency: new IdempotencyService(buildIdempotencyStore(), logger),
@@ -148,6 +183,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     repos: () => repositories,
     /** T13 audit trail surfaced to routes/tests (B09 slice consumer). */
     audits,
+    adminAudits: () => adminAudits,
   };
 }
 
@@ -193,6 +229,10 @@ function buildRepositories(gw: GatewayConfig): ServiceDeps['repositories'] {
       events: new MemoryEventRepository(),
       catalog: new MemoryEventCatalogRepository(),
       analytics: new MemoryAnalyticsReadModelRepository(),
+      onboarding: new MemoryOnboardingRepository(),
+      platformAdmins: new MemoryPlatformAdminRepository(),
+      proposals: new MemoryProposedActionRepository(),
+      verificationAttempts: new MemoryVerificationAttemptRepository(),
     };
   }
   // STORAGE_DRIVER === 'firestore' — config validation guarantees these two
@@ -221,7 +261,30 @@ function buildRepositories(gw: GatewayConfig): ServiceDeps['repositories'] {
     events: new FirestoreEventRepository(db),
     catalog: new FirestoreEventCatalogRepository(db),
     analytics: new FirestoreAnalyticsReadModelRepository(db),
+    onboarding: new FirestoreOnboardingRepository(db),
+    platformAdmins: new FirestorePlatformAdminRepository(db),
+    proposals: new FirestoreProposedActionRepository(db),
+    verificationAttempts: new FirestoreVerificationAttemptRepository(db),
   };
+}
+
+/**
+ * The Firestore handle, with the same fail-closed credential check the
+ * repository and idempotency builders make. Factored out because three
+ * builders now need it and a silent memory fallback in any of them would be a
+ * production data-loss bug.
+ */
+function firestoreClient(gw: GatewayConfig) {
+  if (!gw.FIREBASE_CLIENT_EMAIL || !gw.FIREBASE_PRIVATE_KEY) {
+    throw new GatewayConfigError(
+      'STORAGE_DRIVER=firestore requires FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY',
+    );
+  }
+  return getFirestoreClient({
+    projectId: gw.FIRESTORE_PROJECT_ID,
+    clientEmail: gw.FIREBASE_CLIENT_EMAIL,
+    privateKey: gw.FIREBASE_PRIVATE_KEY,
+  });
 }
 
 /**
@@ -252,7 +315,14 @@ function buildActorContext(request: FastifyRequest): ActorContext {
   };
 
   if (getGatewayConfig().STORAGE_DRIVER === 'memory') {
-    const userId = anyReq.user?.uid ?? 'dev-user';
+    // `X-User-Id` is honoured ONLY on this driver, and only because the
+    // driver already fabricates the whole actor: with a single hardcoded
+    // `dev-user` there is no way to exercise "applicant A cannot see
+    // applicant B's application", or admin-vs-applicant, at the HTTP layer at
+    // all. On `firestore` the identity comes from the verified session and
+    // this header is ignored entirely.
+    const userId =
+      anyReq.user?.uid ?? (request.headers['x-user-id'] as string | undefined) ?? 'dev-user';
     const organizationId =
       anyReq.authContext?.activeMembership?.organizationId ??
       (request.headers['x-organization-id'] as string | undefined) ??

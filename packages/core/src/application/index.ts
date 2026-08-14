@@ -34,6 +34,15 @@ export { ReferralLinkService } from './promoters/referral-link-service.js';
 export type { CreateReferralLinkCommand } from './promoters/referral-link-service.js';
 export { PartnershipService } from './partnerships/partnership-service.js';
 export type { RequestPartnershipCommand } from './partnerships/partnership-service.js';
+export { AdminAuthorityService } from './admin/admin-authority-service.js';
+export type { ProposeCommand, AuditInput } from './admin/admin-authority-service.js';
+export { OnboardingService } from './onboarding/onboarding-service.js';
+export type {
+  StartApplicationCommand,
+  AddDocumentCommand,
+  VerifyDocumentCommand,
+  ReviewCommand,
+} from './onboarding/onboarding-service.js';
 export { AnalyticsService } from './analytics/analytics-service.js';
 export { IdempotencyService } from './idempotency/idempotency-service.js';
 export type { IdempotentCommand, IdempotentResult } from './idempotency/idempotency-service.js';

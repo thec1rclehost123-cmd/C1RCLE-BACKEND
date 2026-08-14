@@ -71,6 +71,7 @@ function toDoc(org: Organization): DocumentData {
     memberIds: org.members.map((m) => m.userId),
     settings: org.settings,
     status: org.status,
+    platformFeePercent: org.platformFeePercent,
     version: org.version,
     createdAt: org.createdAt,
     updatedAt: org.updatedAt,
@@ -86,6 +87,9 @@ function toOrganization(data: DocumentData): Organization {
     members: data.members as OrganizationMember[],
     settings: data.settings as Organization['settings'],
     status: data.status as Organization['status'],
+    // Pre-Phase-2 documents predate the field; the basic plan's rate is the
+    // one they were created under.
+    platformFeePercent: (data.platformFeePercent ?? 15) as number,
     version: data.version as number,
     createdAt: data.createdAt as string,
     updatedAt: data.updatedAt as string,

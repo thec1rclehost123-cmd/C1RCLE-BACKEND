@@ -313,6 +313,66 @@
   item, which is the edit a venue makes most often.
 - Both are covered by `idempotency-store-contract.test.ts` and `menu.test.ts`.
 
+## D-017 · Platform authority is not organization authority
+
+- **Date / Status:** 2026-08-14 · **chosen**
+- Phase 2 needed an "admin" who can approve any partner. The tempting shortcut
+  was to reuse `OrganizationRole` — an org `owner` with some flag. We did not:
+  an org role answers "what may you do inside your own tenant", and a platform
+  role answers "what may you do to everyone else's". Collapsing them is how a
+  partner ends up able to approve their own onboarding.
+- So `PlatformAdmin` is its own aggregate in `v2_admins`, keyed by the auth
+  user id, and `AdminAuthorityService.requireAdmin` is the only way to become
+  one. Admin routes carry **no** `requirePermission` — deliberately, because
+  checking an org permission there would be checking the wrong question.
+- A deactivated admin is refused with the same `unauthorized` as a stranger:
+  once authority is revoked, whether the account ever held it is not something
+  the caller needs told.
+- **Revocation is not dual-controlled** even though provisioning is. Making it
+  hard to *remove* authority is the wrong failure mode when an account is
+  compromised; granting it is the dangerous direction. An admin still cannot
+  revoke themselves, because locking the last super admin out of the console is
+  a real outage.
+
+## D-018 · The KYC "verification" v1 shipped was a format check, and is labelled as one
+
+- **Date / Status:** 2026-08-14 · **chosen**
+- v1's Aadhaar check was a Verhoeff checksum on the number. A checksum proves
+  the digits are well-formed and nothing else — not that the person exists, not
+  that the document is theirs. Porting it as-is would leave a
+  verification-shaped hole in the approval path, so the roadmap called for a
+  pluggable provider instead.
+- `ports/verification.ts` is that seam. The default implementation is named
+  `FormatCheckVerificationProvider`, reports `provider: 'format-check'` and
+  `reason: 'format_ok'`, and is documented as advisory. The one failure mode
+  that mattered here was an operator reading a green tick as "identity
+  confirmed", so nothing in the stack ever calls it verified.
+- Approval consequently requires a **human** TIER2 decision regardless of what
+  any provider returned. There is no auto-approve path.
+- Attempts are recorded per applicant and bounded (5 per 24h), including
+  provider errors — an unbounded check is an oracle, and an attacker who can
+  induce errors would otherwise get unlimited free tries. The HTTP rate limiter
+  bounds a *caller*; only the attempt budget bounds an *applicant*.
+
+## D-019 · The platform fee lives on the organization, outside `OrganizationProps`
+
+- **Date / Status:** 2026-08-14 · **chosen**
+- Approval provisions an organization carrying `platformFeePercent`, taken from
+  the applicant's plan (`basic→15, silver→12, diamond→10`, ported verbatim from
+  v1's `approveOnboarding`). Phase 6 settlement will read it.
+- It is a top-level field on `Organization` rather than a key in `settings`,
+  because `updateOrganization` merges `settings` from a partner-supplied body —
+  putting a commercial term there would let a partner set their own fee.
+  `OrganizationProps` deliberately has no way to reach it; changing it is a
+  TIER3 `COMMISSION_ADJUST`.
+- The approving admin receives `provisionedOrganizationDtoSchema`, not
+  `organizationDtoSchema`: the latter carries `role`, meaning *the caller's*
+  role in the org, and an admin who provisioned it for someone else has none.
+- Approval writes the organization **before** the request status. A failure
+  after the org exists leaves the request `submitted` and retryable; the
+  opposite order would leave an approved request pointing at an organization
+  that was never created, which nothing can repair.
+
 ## Open questions (resolve before they block)
 
 1. **Frontend env injection** for preview/prod (`NEXT_PUBLIC_API_BASE_URL`

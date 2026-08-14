@@ -29,16 +29,16 @@
 | F2 | `POST /api/auth/otp/send` | "Dummy Code: 123456" | none — OTP is out of slice (Better Auth chosen over OTP-first flows) | no manifest entry | **Delete**; OTP auth later slice |
 | F3 | `POST /api/auth/otp/verify` | accepts any 6-digit code | none | no manifest entry | **Delete** |
 | F4 | `POST /api/auth/create-account` | mock `customToken` | `POST /api/v2/auth/signup` (Better Auth sign-up; extend B10 with signup route) | TBD under B10 — B10 currently defines login/refresh/logout/session only | **Extend B10** with signup decision |
-| F5 | `POST /api/auth/onboard` | mock `pending_approval` | none (onboarding domain) | BLOCKED / unregistered | **Delete** (until onboarding slice) |
-| F6 | `PATCH /api/auth/onboarding-progress` | mock | none | no manifest entry | **Delete** |
+| F5 | `POST /api/auth/onboard` | mock `pending_approval` | `POST /api/v2/onboarding/applications` then `.../submit` | **LIVE** (Phase 2) | **Replace** |
+| F6 | `PATCH /api/auth/onboarding-progress` | mock | `PATCH /api/v2/onboarding/applications/:requestId` | **LIVE** (Phase 2) | **Replace** |
 | F7 | `GET /api/auth/partner-context` | `grantedPermissions: ['*']` | later: session bootstrap; today nothing in slice | `session.sync` DEFERRED | **Delete**; permissions come from gateway RBAC, never `'*'` |
 | F8 | `GET`/`POST /api/auth/check-availability` | `{ available: true }` | none (fold into signup validation → 400/409) | no manifest entry | **Delete** |
 | F9 | `POST /api/auth/check-email` | `exists: false` | none (fold into signup validation) | no manifest entry | **Delete** |
-| F10 | `GET /api/auth/onboard-status` | mock | none | no manifest entry | **Delete** |
+| F10 | `GET /api/auth/onboard-status` | mock | `GET /api/v2/onboarding/me` | **LIVE** (Phase 2) | **Replace** |
 | F11 | `POST`/`PATCH /api/auth/profile` | mock | none in slice (profile ≠ session) | no manifest entry | **Delete**; profile later slice |
-| F12 | `GET /api/kyc` | mock `kycStatus` | none | BLOCKED (KYC not in manifest) | **Delete** |
-| F13 | `POST /api/kyc/upload` | mock | none | BLOCKED | **Delete** |
-| F14 | `POST /api/kyc/verify-aadhaar` | mock | none | BLOCKED | **Delete** |
+| F12 | `GET /api/kyc` | mock `kycStatus` | `GET /api/v2/onboarding/me` (`documents` + `missingDocuments`) | **LIVE** (Phase 2) | **Replace** |
+| F13 | `POST /api/kyc/upload` | mock | `POST /api/v2/onboarding/applications/:requestId/documents` (client uploads to storage first; signed-URL issuing still deferred) | **LIVE** (Phase 2) | **Replace** |
+| F14 | `POST /api/kyc/verify-aadhaar` | mock | `POST /api/v2/onboarding/verify-document` — **advisory only**, `provider: 'format-check'` is not identity verification (D-018) | **LIVE** (Phase 2) | **Replace**, and never render as "verified" |
 
 ### 1.2 Direct calls from client components (violations today)
 
