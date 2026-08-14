@@ -126,8 +126,21 @@ DTOs (careful: promoter finance is private, never shown to venue/host).
        is a new request.
   - **Commission rounds DOWN** (`Math.floor`). Rounding a half-paisa up on
     every order pays out money the platform never collected.
-  - **Not built yet:** the repository/service/routes for partnerships, and
-    everything dashboard-facing (overview/finance/analytics endpoints, the
-    RBAC tab-visibility matrix, promoter connections, referral links). The
-    domain is the foundation those sit on; it is done and tested, they are not
-    started.
+  - **Partnership repository/service/routes now built too** (same day):
+    `PartnershipRepository` (memory + Firestore), `PartnershipService`, and
+    `GET /organizations/:organizationId/partnerships`, `POST /partnerships`,
+    `POST /partnerships/:partnershipId/{approve,reject,block,end}`. 11 route
+    tests. Notes worth keeping:
+    - the venue's owning organization is resolved **from the venue**, so a
+      client cannot address a request at an org that does not own it
+    - resolution is four POST actions, not a PATCH of `status` — approve and
+      block are different authorities, and collapsing them into one mutable
+      field is what let v1's `statusMap` silently un-block a partnership
+    - a partnership between two other organizations reads as **404**, not 403
+    - the Firestore adapter denormalizes `partyIds` so one `array-contains`
+      query serves "either side of the graph" (Firestore has no cross-field OR)
+  - **Still not started in this phase:** the RBAC tab-visibility matrix,
+    promoter connections + referral links, and every dashboard-facing endpoint
+    (Host/Venue/Promoter overview, events, finance, analytics) plus their
+    `PartnerEventSummary`/`PartnerEventDetail`/`PartnerAnalyticsSummary`
+    contracts.

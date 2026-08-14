@@ -579,3 +579,47 @@ export const assignPromoterSchema = z
   })
   .strict();
 export type AssignPromoterRequest = z.infer<typeof assignPromoterSchema>;
+
+/* ─── Partnerships (Phase 1) ───────────────────────────────────────────────── */
+
+export const partnershipStatusSchema = z.enum([
+  'pending',
+  'active',
+  'rejected',
+  'blocked',
+  'ended',
+]);
+
+export const partnershipDtoSchema = z.object({
+  id: opaqueIdSchema,
+  hostOrganizationId: opaqueIdSchema,
+  venueOrganizationId: opaqueIdSchema,
+  venueId: opaqueIdSchema,
+  initiatedBy: z.enum(['host', 'venue']),
+  status: partnershipStatusSchema,
+  message: z.string().nullable(),
+  resolutionReason: z.string().nullable(),
+  resolvedAt: z.iso.datetime().nullable(),
+  version: z.number().int().positive(),
+  createdAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+});
+export type PartnershipDto = z.infer<typeof partnershipDtoSchema>;
+
+/**
+ * `initiatedBy` says which side the CALLER is; the counterparty organization
+ * is resolved server-side from the venue, never accepted from the client.
+ */
+export const requestPartnershipSchema = z
+  .object({
+    venueId: opaqueIdSchema,
+    initiatedBy: z.enum(['host', 'venue']),
+    message: z.string().max(1000).optional(),
+  })
+  .strict();
+export type RequestPartnershipRequest = z.infer<typeof requestPartnershipSchema>;
+
+export const resolvePartnershipSchema = z
+  .object({ reason: z.string().min(1).max(500).optional() })
+  .strict();
+export type ResolvePartnershipRequest = z.infer<typeof resolvePartnershipSchema>;

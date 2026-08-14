@@ -21,6 +21,7 @@ import type {
   OrganizationInvitation,
   OrganizationMember,
 } from '../models/organization.js';
+import type { Partnership } from '../models/partnership.js';
 import type { Venue, VenueSlot, SlotRequest } from '../models/venue.js';
 
 /** Opaque cursor into a paginated result set. */
@@ -65,6 +66,19 @@ export interface OrganizationRepository {
  * outlive nothing — an accepted one stays as the audit trail of how a member
  * joined.
  */
+/**
+ * The venue↔host graph. Addressed by pair as well as by id, because the
+ * "one live partnership per pair" rule needs a lookup that does not depend on
+ * the caller already knowing the partnership id.
+ */
+export interface PartnershipRepository {
+  getById(partnershipId: EntityId): Promise<Partnership | null>;
+  findByPair(hostOrganizationId: EntityId, venueId: EntityId): Promise<Partnership | null>;
+  /** Every partnership either side of which is this organization. */
+  listForOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Partnership>>;
+  save(partnership: Partnership, tx?: TxContext | null): Promise<void>;
+}
+
 export interface InvitationRepository {
   getById(invitationId: EntityId): Promise<OrganizationInvitation | null>;
   listByOrganization(

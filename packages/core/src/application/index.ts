@@ -28,6 +28,8 @@ export type {
   AssignPromoterCommand,
   CommissionTerms,
 } from './event-catalog/event-catalog-service.js';
+export { PartnershipService } from './partnerships/partnership-service.js';
+export type { RequestPartnershipCommand } from './partnerships/partnership-service.js';
 export { AnalyticsService } from './analytics/analytics-service.js';
 export { IdempotencyService } from './idempotency/idempotency-service.js';
 export type { IdempotentCommand, IdempotentResult } from './idempotency/idempotency-service.js';

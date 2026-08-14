@@ -9,6 +9,7 @@ import { internalRoutes } from './internal/index.js';
 import partnerEventCatalogRoutes from './partner/event-catalog.js';
 import partnerEventRoutes from './partner/events.js';
 import partnerOrganizationRoutes from './partner/organizations.js';
+import partnerPartnershipRoutes from './partner/partnerships.js';
 import partnerVenueRoutes from './partner/venues.js';
 
 import type { BetterAuthInstance } from '../../plugins/auth.js';
@@ -63,6 +64,7 @@ export async function registerV2Routes(app: FastifyInstance): Promise<void> {
       await partnerVenueRoutes(v2);
       await partnerEventRoutes(v2);
       await partnerEventCatalogRoutes(v2);
+      await partnerPartnershipRoutes(v2);
     },
     { prefix: '/api/v2' },
   );

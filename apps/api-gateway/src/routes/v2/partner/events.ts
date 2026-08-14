@@ -433,6 +433,7 @@ export function mapDomainError(
     'venue_not_found',
     'event_not_found',
     'slot_request_not_found',
+    'partnership_not_found',
   ]);
   if (known?.code && notFoundCodes.has(known.code)) {
     reply.status(404).send(

@@ -8,3 +8,4 @@ export * from './firestore-event-catalog-repository.js';
 export * from './firestore-analytics-read-model-repository.js';
 export * from './firestore-invitation-repository.js';
 export * from './firestore-idempotency-store.js';
+export * from './firestore-partnership-repository.js';

@@ -52,6 +52,12 @@ export class PromoterAssignmentNotFoundError extends DomainError {
   }
 }
 
+export class PartnershipNotFoundError extends DomainError {
+  constructor(partnershipId: string) {
+    super(`Partnership ${partnershipId} not found`, 'partnership_not_found');
+  }
+}
+
 export class ForbiddenError extends DomainError {
   constructor(message = 'Insufficient permissions') {
     super(message, 'forbidden');

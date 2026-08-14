@@ -15,6 +15,7 @@ import type { OutboxWriter } from '../domain/ports/outbox.js';
 import type {
   InvitationRepository,
   OrganizationRepository,
+  PartnershipRepository,
   VenueRepository,
   SlotRequestRepository,
   VenueSlotRepository,
@@ -42,6 +43,7 @@ export interface ServiceDeps {
   repositories: {
     organizations: OrganizationRepository;
     invitations: InvitationRepository;
+    partnerships: PartnershipRepository;
     venues: VenueRepository;
     slotRequests: SlotRequestRepository;
     venueSlots: VenueSlotRepository;
