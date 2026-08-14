@@ -7,12 +7,18 @@ import {
   inviteMemberSchema,
   invitationDtoSchema,
   createInvitationSchema,
+  partnerAccessDtoSchema,
   paginatedSchema,
 } from '@c1rcle/contracts/client';
-import { effectiveInvitationStatus } from '@c1rcle/core/domain';
+import { effectiveInvitationStatus, partnerAccessContext } from '@c1rcle/core/domain';
 import { z } from 'zod';
 
-import type { Organization, OrganizationInvitation, OrganizationRole } from '@c1rcle/core/domain';
+import type {
+  Capability,
+  Organization,
+  OrganizationInvitation,
+  OrganizationRole,
+} from '@c1rcle/core/domain';
 
 import { isIdempotencyConflict, runIdempotent } from '../../../lib/v2-idempotency.js';
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
@@ -346,6 +352,49 @@ export default async function partnerOrganizationRoutes(fastify: FastifyInstance
       return reply.status(result.statusCode).send(result.body);
     },
   );
+  // ── ACCESS CONTEXT (what this member may see and do) ──────────────────────
+  // v1's rbac-permissions.ts opens with "the frontend must NEVER define or
+  // evaluate these" — this is the endpoint that makes that possible. Hiding a
+  // tab is a convenience; every request is still authorized server-side.
+  fastify.get(
+    '/organizations/:organizationId/access',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({ params: organizationIdParam, headers: orgHeaders }),
+        fastify.requirePermission('organization.read'),
+      ],
+    },
+    async (request, reply) => {
+      const { organizationId } = request.params as z.infer<typeof organizationIdParam>;
+      const actor = services.actor(request);
+      const org = await services.organizations
+        .get(actor, organizationId)
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, organizationId, error, { hideForbidden: true }),
+        );
+      if (org === undefined) return reply;
+
+      const membership = org.members.find((member) => member.userId === actor.userId);
+      // Capability decides WHICH matrix applies: the same person can be a
+      // venue manager and a host owner, and those are different dashboards.
+      const partnerType = primaryPartnerType(membership?.capabilities ?? []);
+      const context = partnerAccessContext(partnerType, toPartnerRole(membership?.role));
+
+      const payload = {
+        organizationId,
+        userId: actor.userId,
+        partnerType: context.partnerType,
+        role: context.role,
+        permissions: [...context.permissions],
+        tabVisibility: context.tabVisibility,
+      };
+      const validated = validateV2Response(reply, request, partnerAccessDtoSchema, payload);
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
   // ── INVITATIONS ───────────────────────────────────────────────────────────
   // A pending invitation is a real domain concept now (see
   // `domain/models/organization.ts`), so this route reports real state rather
@@ -527,6 +576,37 @@ function invitationToDto(invitation: OrganizationInvitation) {
     createdAt: invitation.createdAt,
     updatedAt: invitation.updatedAt,
   };
+}
+
+/**
+ * Which matrix applies. An organization can hold several capabilities; venue
+ * duty is the most operationally restrictive, so it wins when present — a
+ * member should not gain door-side reach through a broader capability.
+ */
+function primaryPartnerType(capabilities: readonly Capability[]): string {
+  if (capabilities.includes('venue')) return 'venue';
+  if (capabilities.includes('host')) return 'host';
+  if (capabilities.includes('promoter')) return 'promoter';
+  return 'venue';
+}
+
+/**
+ * Bridges V2's tenancy role to v1's operational role vocabulary. `admin` maps
+ * to MANAGER rather than OWNER: an org admin runs the tenant, but "owner" in
+ * the partner matrix carries payout and settings authority that should be
+ * granted deliberately, not inherited.
+ */
+function toPartnerRole(role: OrganizationRole | undefined): string {
+  switch (role) {
+    case 'owner':
+      return 'OWNER';
+    case 'admin':
+    case 'manager':
+      return 'MANAGER';
+    case 'member':
+    case undefined:
+      return 'STAFF';
+  }
 }
 
 /** Converts the core domain Organization to the canonical wire DTO (caller-scoped). */

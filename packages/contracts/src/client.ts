@@ -623,3 +623,43 @@ export const resolvePartnershipSchema = z
   .object({ reason: z.string().min(1).max(500).optional() })
   .strict();
 export type ResolvePartnershipRequest = z.infer<typeof resolvePartnershipSchema>;
+
+/* ─── Partner access context (Phase 1) ─────────────────────────────────────── */
+
+export const partnerTypeSchema = z.enum(['venue', 'host', 'promoter']);
+
+export const partnerPermissionSchema = z.enum([
+  'VIEW_FINANCIALS',
+  'MANAGE_STAFF',
+  'MANAGE_EVENTS',
+  'EDIT_EVENT_RULES',
+  'MANAGE_TABLES',
+  'VIEW_GUESTLIST',
+  'SCAN_ENTRY',
+  'LOG_INCIDENTS',
+  'VIEW_ANALYTICS',
+  'MANAGE_SETTINGS',
+  'MANAGE_PROMOTERS',
+  'MANAGE_PAYOUTS',
+  'MANAGE_PARTNERSHIPS',
+  'MANAGE_PAGE_CONTENT',
+  'VIEW_REAL_TIME_SCANS',
+  'MANAGE_GUEST_OPS',
+  'CHARGE_COVER_WALLETS',
+  'EXPORT_GUESTS',
+]);
+
+/**
+ * What a member may see and do, computed by the backend. The dashboard renders
+ * from this; it must never derive permissions locally (v1's own rule, kept).
+ * `tabVisibility: null` means "no restriction — show every tab".
+ */
+export const partnerAccessDtoSchema = z.object({
+  organizationId: opaqueIdSchema,
+  userId: opaqueIdSchema,
+  partnerType: partnerTypeSchema,
+  role: z.string().min(1),
+  permissions: z.array(partnerPermissionSchema),
+  tabVisibility: z.record(z.string(), z.boolean()).nullable(),
+});
+export type PartnerAccessDto = z.infer<typeof partnerAccessDtoSchema>;

@@ -184,3 +184,39 @@ describe('organization invitations', () => {
     await server.close();
   });
 });
+
+describe('partner access context', () => {
+  it('computes permissions and tab visibility server-side', async () => {
+    const server = await buildServer();
+    const org = await seedOrganization(server);
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/organizations/${org}/access`,
+      headers: read(org),
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    // The creator is the owner, and a venue-capable owner has no tab
+    // restriction — `null` means "show everything", not "show nothing".
+    expect(body).toMatchObject({ organizationId: org, role: 'OWNER', tabVisibility: null });
+    expect(body.permissions).toContain('VIEW_FINANCIALS');
+    expect(body.permissions).toContain('MANAGE_STAFF');
+    await server.close();
+  });
+
+  it('refuses to describe an organization the caller is not in', async () => {
+    const server = await buildServer();
+    const org = await seedOrganization(server);
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/organizations/not_mine/access',
+      headers: read(org),
+    });
+
+    expect(response.statusCode).toBe(403);
+    await server.close();
+  });
+});

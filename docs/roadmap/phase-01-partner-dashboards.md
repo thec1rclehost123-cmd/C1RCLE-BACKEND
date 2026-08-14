@@ -139,8 +139,23 @@ DTOs (careful: promoter finance is private, never shown to venue/host).
     - a partnership between two other organizations reads as **404**, not 403
     - the Firestore adapter denormalizes `partyIds` so one `array-contains`
       query serves "either side of the graph" (Firestore has no cross-field OR)
-  - **Still not started in this phase:** the RBAC tab-visibility matrix,
-    promoter connections + referral links, and every dashboard-facing endpoint
+  - **RBAC tab-visibility matrix ported** (`domain/models/partner-access.ts`,
+    22 tests) and served by `GET /organizations/:organizationId/access` —
+    permissions + tab visibility computed server-side, which is what v1's own
+    "the frontend must NEVER define or evaluate these" comment demands. Notes:
+    - `tabVisibility: null` preserves v1's "no restriction" answer rather than
+      expanding to an all-true map; the tab LIST is the frontend's to own, the
+      backend says only what is withheld
+    - two role vocabularies now coexist deliberately: `OrganizationRole`
+      (owner/admin/manager/member) authorizes the API, `PartnerRole`
+      (OWNER/DOOR/COHOST/…) drives the dashboard. A venue's DOOR staff and a
+      host's COHOST are both "member" in V2 terms but see different tabs
+    - V2 `admin` maps to partner MANAGER, not OWNER: running the tenant should
+      not silently inherit payout and settings authority
+    - an unrecognized role falls back to the least-privileged one, never to an
+      empty permission set that renders as a broken dashboard
+  - **Still not started in this phase:** promoter connections + referral links,
+    and every dashboard-facing endpoint
     (Host/Venue/Promoter overview, events, finance, analytics) plus their
     `PartnerEventSummary`/`PartnerEventDetail`/`PartnerAnalyticsSummary`
     contracts.
