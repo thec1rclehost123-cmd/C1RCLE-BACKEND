@@ -22,6 +22,7 @@ import type {
   OrganizationMember,
 } from '../models/organization.js';
 import type { Partnership } from '../models/partnership.js';
+import type { ReferralLink } from '../models/referral-link.js';
 import type { Venue, VenueSlot, SlotRequest } from '../models/venue.js';
 
 /** Opaque cursor into a paginated result set. */
@@ -77,6 +78,19 @@ export interface PartnershipRepository {
   /** Every partnership either side of which is this organization. */
   listForOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Partnership>>;
   save(partnership: Partnership, tx?: TxContext | null): Promise<void>;
+}
+
+/**
+ * Referral links are looked up by CODE on the guest path (a click) and by
+ * event on the partner path (a dashboard list), so both are first-class.
+ */
+export interface ReferralLinkRepository {
+  getById(linkId: EntityId): Promise<ReferralLink | null>;
+  /** The guest-facing lookup: resolve a shared code to its link. */
+  findByCode(eventId: EntityId, code: string): Promise<ReferralLink | null>;
+  listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<ReferralLink>>;
+  listByPromoter(promoterId: EntityId, query: PaginationQuery): Promise<Page<ReferralLink>>;
+  save(link: ReferralLink, tx?: TxContext | null): Promise<void>;
 }
 
 export interface InvitationRepository {

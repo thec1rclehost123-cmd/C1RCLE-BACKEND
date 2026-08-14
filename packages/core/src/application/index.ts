@@ -28,6 +28,8 @@ export type {
   AssignPromoterCommand,
   CommissionTerms,
 } from './event-catalog/event-catalog-service.js';
+export { ReferralLinkService } from './promoters/referral-link-service.js';
+export type { CreateReferralLinkCommand } from './promoters/referral-link-service.js';
 export { PartnershipService } from './partnerships/partnership-service.js';
 export type { RequestPartnershipCommand } from './partnerships/partnership-service.js';
 export { AnalyticsService } from './analytics/analytics-service.js';

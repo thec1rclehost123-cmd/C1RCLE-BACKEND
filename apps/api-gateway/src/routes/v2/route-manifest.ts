@@ -11,6 +11,7 @@ import partnerEventCatalogRoutes from './partner/event-catalog.js';
 import partnerEventRoutes from './partner/events.js';
 import partnerOrganizationRoutes from './partner/organizations.js';
 import partnerPartnershipRoutes from './partner/partnerships.js';
+import partnerReferralLinkRoutes from './partner/referral-links.js';
 import partnerVenueRoutes from './partner/venues.js';
 
 import type { BetterAuthInstance } from '../../plugins/auth.js';
@@ -67,6 +68,7 @@ export async function registerV2Routes(app: FastifyInstance): Promise<void> {
       await partnerEventCatalogRoutes(v2);
       await partnerPartnershipRoutes(v2);
       await partnerAnalyticsRoutes(v2);
+      await partnerReferralLinkRoutes(v2);
     },
     { prefix: '/api/v2' },
   );

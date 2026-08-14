@@ -712,3 +712,37 @@ export const eventAnalyticsDtoSchema = z.object({
   conversionRate: ratio(),
 });
 export type EventAnalyticsDto = z.infer<typeof eventAnalyticsDtoSchema>;
+
+/* ─── Promoter referral links (Phase 1) ────────────────────────────────────── */
+
+export const referralLinkDtoSchema = z.object({
+  id: opaqueIdSchema,
+  eventId: opaqueIdSchema,
+  promoterId: opaqueIdSchema,
+  organizationId: opaqueIdSchema,
+  code: z.string().min(4).max(16),
+  label: z.string().min(1).max(120),
+  isActive: z.boolean(),
+  /** Vanity counters. The authoritative attribution lives on the order. */
+  clicks: z.number().int().nonnegative(),
+  conversions: z.number().int().nonnegative(),
+  version: z.number().int().positive(),
+  createdAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+});
+export type ReferralLinkDto = z.infer<typeof referralLinkDtoSchema>;
+
+export const createReferralLinkSchema = z
+  .object({
+    promoterId: opaqueIdSchema,
+    /** Omit to have one generated from an unambiguous alphabet. */
+    code: z
+      .string()
+      .min(4)
+      .max(16)
+      .regex(/^[A-Za-z0-9 -]+$/, 'A referral code may contain letters and digits only')
+      .optional(),
+    label: z.string().min(1).max(120).optional(),
+  })
+  .strict();
+export type CreateReferralLinkRequest = z.infer<typeof createReferralLinkSchema>;

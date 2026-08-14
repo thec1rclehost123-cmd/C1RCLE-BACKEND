@@ -154,8 +154,29 @@ DTOs (careful: promoter finance is private, never shown to venue/host).
       not silently inherit payout and settings authority
     - an unrecognized role falls back to the least-privileged one, never to an
       empty permission set that renders as a broken dashboard
-  - **Still not started in this phase:** promoter connections + referral links,
-    and every dashboard-facing endpoint
+  - **Referral links built** (`domain/models/referral-link.ts` + service +
+    both adapters + routes, 12 domain / 6 route tests). The rule that shapes
+    the model: **a link carries attribution, it never owns it.** Attribution is
+    written onto the order at purchase time (Phase 4), so a link holds no money
+    and no commission rate — deactivating or renaming one can never rewrite
+    what a past order earned. Other decisions:
+    - codes use an alphabet with no `O/0/I/1/L`: they are read aloud, printed
+      on flyers and typed by hand, so look-alikes cost real conversions
+    - `clicks`/`conversions` do NOT bump `version` — a high-frequency counter
+      under optimistic locking would make a popular link unwritable under
+      contention, and a lost click is not a lost order
+    - a duplicate code for one event is refused: a collision would silently
+      hand one promoter another's attribution
+    - deactivate, never delete, so past attributions stay explicable
+    - the guest-side click tracker is deliberately NOT here — a click is
+      anonymous traffic, and putting it behind partner policy would be wrong.
+      It belongs to Phase 4's public routes.
+  - **Analytics routes built** — `GET /organizations/:id/analytics/overview`
+    and `GET /events/:eventId/analytics`, read-model only.
+  - **Still not started in this phase:** promoter *connections* (the
+    promoter↔host/venue graph, distinct from the venue↔host partnerships now
+    built), and the Host/Venue/Promoter overview + finance dashboard
+    endpoints
     (Host/Venue/Promoter overview, events, finance, analytics) plus their
     `PartnerEventSummary`/`PartnerEventDetail`/`PartnerAnalyticsSummary`
     contracts.

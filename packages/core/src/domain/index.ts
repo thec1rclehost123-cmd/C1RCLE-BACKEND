@@ -7,6 +7,7 @@ export * from './models/event.js';
 export * from './models/event-catalog.js';
 export * from './models/partnership.js';
 export * from './models/partner-access.js';
+export * from './models/referral-link.js';
 export * from './events.js';
 export * from './ports/outbox.js';
 export type * from './ports/audit.js';

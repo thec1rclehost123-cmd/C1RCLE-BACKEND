@@ -4,4 +4,5 @@ export * from './memory/memory-outbox-store.js';
 export * from './memory/memory-audit-repository.js';
 export * from './memory/memory-invitation-repository.js';
 export * from './memory/memory-partnership-repository.js';
+export * from './memory/memory-referral-link-repository.js';
 export * from './firestore/index.js';
