@@ -7,6 +7,8 @@ import { VersionConflictError } from '../../domain/errors.js';
  */
 
 import type { EntityId } from '../../domain/identity.js';
+import type { CartReservation } from '../../domain/models/cart-reservation.js';
+import type { Entitlement } from '../../domain/models/entitlement.js';
 import type {
   TicketTier,
   PromoCode,
@@ -14,6 +16,7 @@ import type {
   PromoterAssignment,
 } from '../../domain/models/event-catalog.js';
 import type { Event } from '../../domain/models/event.js';
+import type { Order } from '../../domain/models/order.js';
 import type { Organization, OrganizationMember } from '../../domain/models/organization.js';
 import type { Venue, SlotRequest, VenueSlot } from '../../domain/models/venue.js';
 import type {
@@ -29,6 +32,10 @@ import type {
   TxContext,
   VenueRepository,
   VenueSlotRepository,
+  OrderRepository,
+  CartReservationRepository,
+  EntitlementRepository,
+  PromoRedemptionRepository,
 } from '../../domain/ports/repositories.js';
 
 /**
@@ -249,4 +256,210 @@ function serializeSlice<TItem>(all: TItem[], query: PaginationQuery): Page<TItem
   const items = all.slice(start, start + limit);
   const nextCursor = start + limit < all.length ? String(start + limit) : null;
   return { items, total: all.length, nextCursor };
+}
+
+// ─── Phase 4: Order, CartReservation, Entitlement, PromoRedemption ───────────────
+
+export class MemoryOrderRepository implements OrderRepository {
+  orders = new Map<EntityId, Order>();
+  byPaymentId = new Map<string, EntityId>();
+  byIdempotencyKey = new Map<string, EntityId>();
+
+  async getById(orderId: EntityId): Promise<Order | null> {
+    return this.orders.get(orderId) ?? null;
+  }
+
+  async getByPaymentId(paymentId: string): Promise<Order | null> {
+    const orderId = this.byPaymentId.get(paymentId);
+    return orderId ? (this.orders.get(orderId) ?? null) : null;
+  }
+
+  async getByIdempotencyKey(key: string): Promise<Order | null> {
+    const orderId = this.byIdempotencyKey.get(key);
+    return orderId ? (this.orders.get(orderId) ?? null) : null;
+  }
+
+  async listByUser(userId: EntityId, query: PaginationQuery): Promise<Page<Order>> {
+    const all = [...this.orders.values()].filter((o) => o.userId === userId);
+    return serializeSlice(all, query);
+  }
+
+  async listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Order>> {
+    const all = [...this.orders.values()].filter((o) => o.organizationId === organizationId);
+    return serializeSlice(all, query);
+  }
+
+  async listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<Order>> {
+    const all = [...this.orders.values()].filter((o) => o.eventId === eventId);
+    return serializeSlice(all, query);
+  }
+
+  async save(order: Order, _tx?: TxContext | null): Promise<void> {
+    casSet(this.orders, order);
+    if (order.paymentId) this.byPaymentId.set(order.paymentId, order.id);
+    // Idempotency key is tracked externally via IdempotencyService
+  }
+
+  async delete(orderId: EntityId, _tx?: TxContext | null): Promise<void> {
+    const order = this.orders.get(orderId);
+    if (order?.paymentId) this.byPaymentId.delete(order.paymentId);
+    this.orders.delete(orderId);
+  }
+}
+
+export class MemoryCartReservationRepository implements CartReservationRepository {
+  reservations = new Map<EntityId, CartReservation>();
+  byIdempotencyKey = new Map<string, EntityId>();
+
+  async create(reservation: CartReservation, _tx?: TxContext | null): Promise<void> {
+    casSet(this.reservations, reservation);
+    this.byIdempotencyKey.set(reservation.idempotencyKey, reservation.id);
+  }
+
+  async getById(reservationId: EntityId): Promise<CartReservation | null> {
+    return this.reservations.get(reservationId) ?? null;
+  }
+
+  async getByIdempotencyKey(key: string): Promise<CartReservation | null> {
+    const id = this.byIdempotencyKey.get(key);
+    return id ? (this.reservations.get(id) ?? null) : null;
+  }
+
+  async release(reservationId: EntityId, _tx?: TxContext | null): Promise<void> {
+    const reservation = this.reservations.get(reservationId);
+    if (reservation) {
+      const released = { ...reservation, status: 'released' as const };
+      casSet(this.reservations, released);
+    }
+  }
+
+  async convertToOrder(
+    reservationId: EntityId,
+    orderId: EntityId,
+    _tx?: TxContext | null,
+  ): Promise<void> {
+    const reservation = this.reservations.get(reservationId);
+    if (reservation) {
+      const converted = { ...reservation, status: 'converted' as const, convertedOrderId: orderId };
+      casSet(this.reservations, converted);
+    }
+  }
+
+  async cleanupExpired(now: Date, _tx?: TxContext | null): Promise<number> {
+    let count = 0;
+    for (const [_id, reservation] of this.reservations) {
+      if (reservation.status === 'active' && now.getTime() > Date.parse(reservation.expiresAt)) {
+        const released = { ...reservation, status: 'released' as const };
+        casSet(this.reservations, released);
+        count++;
+      }
+    }
+    return count;
+  }
+}
+
+export class MemoryEntitlementRepository implements EntitlementRepository {
+  entitlements = new Map<EntityId, Entitlement>();
+  byOrderId = new Map<EntityId, EntityId[]>();
+
+  async getById(entitlementId: EntityId): Promise<Entitlement | null> {
+    return this.entitlements.get(entitlementId) ?? null;
+  }
+
+  async getByOrderId(orderId: EntityId): Promise<Entitlement[]> {
+    const ids = this.byOrderId.get(orderId) ?? [];
+    return ids
+      .map((id) => this.entitlements.get(id))
+      .filter((e): e is Entitlement => e !== undefined);
+  }
+
+  async listByUser(userId: EntityId, query: PaginationQuery): Promise<Page<Entitlement>> {
+    const all = [...this.entitlements.values()].filter((e) => e.userId === userId);
+    return serializeSlice(all, query);
+  }
+
+  async listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<Entitlement>> {
+    const all = [...this.entitlements.values()].filter((e) => e.eventId === eventId);
+    return serializeSlice(all, query);
+  }
+
+  async listByOrganization(
+    organizationId: EntityId,
+    query: PaginationQuery,
+  ): Promise<Page<Entitlement>> {
+    const all = [...this.entitlements.values()].filter((e) => e.organizationId === organizationId);
+    return serializeSlice(all, query);
+  }
+
+  async save(entitlement: Entitlement, _tx?: TxContext | null): Promise<void> {
+    casSet(this.entitlements, entitlement);
+    const ids = this.byOrderId.get(entitlement.orderId) ?? [];
+    if (!ids.includes(entitlement.id)) {
+      this.byOrderId.set(entitlement.orderId, [...ids, entitlement.id]);
+    }
+  }
+
+  async saveMany(entitlements: Entitlement[], _tx?: TxContext | null): Promise<void> {
+    for (const e of entitlements) await this.save(e);
+  }
+
+  async countValidByTier(tierId: EntityId): Promise<number> {
+    return [...this.entitlements.values()].filter(
+      (e) => e.tierId === tierId && e.status === 'valid',
+    ).length;
+  }
+}
+
+export class MemoryPromoRedemptionRepository implements PromoRedemptionRepository {
+  redemptions = new Map<
+    EntityId,
+    { promoId: EntityId; orderId: EntityId; userId: EntityId | null; redeemedAt: string }
+  >();
+  byOrderId = new Map<EntityId, EntityId>();
+  byPromoId = new Map<EntityId, EntityId[]>();
+  byPromoAndUser = new Map<string, EntityId[]>(); // key: `${promoId}|${userId}`
+
+  async create(
+    redemption: {
+      id: EntityId;
+      promoId: EntityId;
+      orderId: EntityId;
+      userId: EntityId | null;
+      redeemedAt: string;
+    },
+    _tx?: TxContext | null,
+  ): Promise<void> {
+    const key = `${redemption.promoId}|${redemption.userId ?? ''}`;
+    const existing = this.byPromoAndUser.get(key) ?? [];
+    if (existing.length > 0) {
+      // Idempotent: if same order, allow; else conflict
+      const existingId = this.byOrderId.get(redemption.orderId);
+      if (existingId && existingId !== redemption.id) {
+        throw new Error('Promo already redeemed for a different order');
+      }
+      return; // same order, same idempotency
+    }
+    this.redemptions.set(redemption.id, redemption);
+    this.byOrderId.set(redemption.orderId, redemption.id);
+    this.byPromoId.set(redemption.promoId, [
+      ...(this.byPromoId.get(redemption.promoId) ?? []),
+      redemption.id,
+    ]);
+    this.byPromoAndUser.set(key, [...existing, redemption.id]);
+  }
+
+  async getByOrderId(orderId: EntityId): Promise<{ promoId: EntityId; redeemedAt: string } | null> {
+    const id = this.byOrderId.get(orderId);
+    if (!id) return null;
+    const redemption = this.redemptions.get(id);
+    return redemption ? { promoId: redemption.promoId, redeemedAt: redemption.redeemedAt } : null;
+  }
+
+  async countByPromo(promoId: EntityId): Promise<number> {
+    return (this.byPromoId.get(promoId) ?? []).length;
+  }
+
+  async countByPromoAndUser(promoId: EntityId, userId: EntityId): Promise<number> {
+    return (this.byPromoAndUser.get(`${promoId}|${userId}`) ?? []).length;
+  }
 }

@@ -392,3 +392,76 @@ traceable, not deleted):
    session's other work but was still marked open here): `Idempotency-Key`
    24h TTL, `If-Match` version-based optimistic lock. Live in
    `lib/v2-idempotency.ts` / `application/idempotency/idempotency-service.ts`.
+
+---
+
+## D-020 · Phase 4 Execution — Guest Checkout & Tickets (2026-08-17)
+
+- **Date / Status:** 2026-08-17 · **execution started**
+- **Context:** Phase 4 domain models (`pricing.ts`, `order.ts`, `entitlement.ts`) are complete and tested (40 tests). HTTP wiring (ports, adapters, services, routes) is the remaining work. The `C1RCLE-FRONTEND` integration branch (`feat/dashboard-api-gateway-integration`) was audited and found to contain **only stubs** (`@c1rcle/api-client` and `@c1rcle/auth` are pure UI mode stubs) and **retains all 14 mock API routes** in `apps/partner-dashboard/src/app/api/**`. It is not usable for integration — we must build the real implementation from scratch following the documented architecture.
+- **Choice:** Execute Phase 4 per the documented roadmap (`docs/roadmap/phase-04-guest-checkout-tickets.md`) and manifest (`docs/reference/route-manifest.ts`), following the exact architecture in `docs/architecture/README.md`:
+  1. **Repository ports first** (B04/B06 pattern): `OrderRepository`, `EntitlementRepository`, `CartReservationRepository`, `PromoRedemptionRepository` in `packages/core/src/domain/ports/`.
+  2. **Memory adapters** for CI/testing (zero infra imports).
+  3. **Firestore adapters** with **compare-and-set transactions** (D-015) — business write + outbox event in one transaction; sharded inventory counters (`ticket_shards`); circuit breaker for `strictMode` events (503 + Retry-After on Redis degradation).
+  4. **Application services**: `CheckoutService` (quote → holds → intent → confirm with dual-path idempotent fulfillment), `OrderService`, `EntitlementService`, `InventoryService`, `PaymentProvider` port + Razorpay adapter.
+  5. **HTTP routes** (activate from BLOCKED in manifest): checkout/quote, checkout/holds, payments/attempts, payments/verify, orders/*, tickets/*, wallet/*, webhooks/payments/razorpay.
+  6. **Public discovery routes** for Guest Portal: public/events, public/venues, public/hosts, public/discovery, public/search (cached PUBLIC_CDN).
+  7. **Contracts** added to `packages/contracts/src/client.ts` — backend-owned, parity-checked.
+- **Why this order:** Matches the documented development order (task.md §4: Contracts → Domain → Validation → Repository interfaces → Application services → Event bus → Routes → Repository implementations → Integration → Frontend switch). Every step has an exit gate (contract suite passes against Memory AND Firestore; service tests green; route tests green; boundaries clean; parity 33/33).
+- **Frontend integration branch audit result (2026-08-17):** `origin/feat/dashboard-api-gateway-integration` contains:
+  - `@c1rcle/api-client/index.ts` → pure UI mode stub (8 lines, no transport)
+  - `@c1rcle/auth/index.ts` → pure UI mode stub (auth = { currentUser: null })
+  - All 14 mock API routes retained in `apps/partner-dashboard/src/app/api/**`
+  - No real API integration code exists
+  - **Decision:** Do not use this branch. Build real implementation from scratch per documented architecture.
+- **Non-negotiables for Phase 4 (enforced by guardrails):**
+  - Thin routes only: validate → auth → policy → ONE service call → serialize
+  - No `process.env` in domain (only `apps/api-gateway/src/config/`)
+  - No `.collection()`/`.doc()` in routes (enforced by `scripts/check-boundaries.mjs`)
+  - Contracts backend-owned; frontend imports; parity test must pass
+  - Idempotency + optimistic locking on EVERY write (manifest `REQUIRED`)
+  - BLOCKED routes = 404 by absence, never 501 stubs
+  - Compare-and-set in adapter (Firestore `runTransaction`), not in service (D-015)
+  - Access token in memory only; httpOnly cookie backend-owned
+  - QR/pass data short-lived, authorized at read time, never stored
+  - Money = integer paise everywhere on the wire
+  - Transactional outbox: fulfillment (order + entitlements + promo + ledger) in one atomic unit
+
+## D-021 · Transactional Outbox Completion for Phase 4 Fulfillment (2026-08-17)
+
+- **Date / Status:** 2026-08-17 · **required before Phase 4 route activation**
+- **Context:** Phase 4 fulfillment (order creation + entitlement issuance + promo redemption + ledger write) must be atomic. The outbox skeleton exists (`event-bus.ts`, `audit-consumers.ts`, `outbox.ts`) but lacks:
+  - Firestore outbox store with transactional write
+  - `OutboxWriter` port implementation in adapters
+  - Consumer idempotency by event ID
+- **Choice:** Complete the outbox implementation before activating checkout routes:
+  1. `packages/core/src/infrastructure/firestore/firestore-outbox-store.ts` — writes outbox event in same `runTransaction` as business write
+  2. `packages/core/src/infrastructure/memory/memory-outbox-store.ts` — in-memory for CI
+  3. `OutboxWriter` port in `domain/ports/outbox.ts` implemented by both adapters
+  4. Consumers: `OrderCreated`, `EntitlementsIssued`, `PromoRedeemed`, `LedgerRecorded` → audit + projections
+  4. Tests: publish → consumers run once; failure → retry, no duplicate effects; kill-after-commit does not lose row
+- **Why:** Without transactional outbox, dual confirmation paths (webhook + client redirect) could produce duplicate fulfillments. The outbox is the single source of truth for "what happened" and enables exactly-once semantics.
+
+## D-022 · Razorpay Webhook Security — HMAC Verification Not Optional (2026-08-17)
+
+- **Date / Status:** 2026-08-17 · **enforced**
+- **Context:** `PAYMENT_TICKET_CODE_REVIEW.md` in `thec1rcle` documents an earlier bug where webhook trusted request body without HMAC verification. The current `thec1rcle` code calls Razorpay refund API with idempotent claim via `status:'settling'` transactional lock, but this must be re-verified at implementation time.
+- **Choice:** Razorpay webhook endpoint (`POST /api/v2/webhooks/payments/razorpay`) **must** implement:
+  - HMAC-SHA256 verification using `RAZORPAY_WEBHOOK_SECRET` (validated at cold start, fails if missing)
+  - Deterministic `JSON.stringify` for signature verification (D-018: no non-deterministic serialization)
+  - Idempotent claim via `status: 'settling'` transactional lock (prevents double capture)
+  - Raw body capture (Express/Fastify raw body) for signature verification
+  - Dedicated tests for HMAC verification (tampered payload → 400, valid → processed once)
+- **Why:** Webhook is the authoritative payment confirmation path. Client redirect is a parallel path that races. Both must converge on the same idempotent fulfillment. HMAC verification is the only guarantee the webhook came from Razorpay.
+
+## D-023 · Frontend Contract Enforcement — No Stubs in Production (2026-08-17)
+
+- **Date / Status:** 2026-08-17 · **enforced**
+- **Context:** The `C1RCLE-FRONTEND` integration branch contains stubs that would silently fail in production (empty api-client, empty auth). The documented architecture (`docs/architecture/README.md` §4) states: "The frontend never instantiates a database or fetches raw. It sends one `@c1rcle/api-client` request per screen."
+- **Choice:** Before any frontend integration:
+  1. Implement real `@c1rcle/api-client` with: `x-request-id` per attempt, Bearer token provider from `@c1rcle/auth`, 401 → `onUnauthorized` → `POST /api/v2/auth/refresh` → retry once, 204 handling, request cancellation, deduplication
+  2. Implement real `@c1rcle/auth` session store with: `login()`, `signup()`, `logout()`, `refreshSession()` wired to backend endpoints
+  3. Delete all 14 mock API routes in `apps/partner-dashboard/src/app/api/**`
+  4. Delete `src/lib/firebase/client.ts` + all `firebase/auth` imports
+  5. Replace raw `fetch('/api/...')` with `@c1rcle/api-client` typed calls
+- **Why:** Stubs violate the single-network-owner rule, the memory-only token rule, and the no-Firebase-in-frontend rule. They also cannot be tested against the real backend contract.

@@ -10,6 +10,8 @@
 
 import type { EntityId } from '../identity.js';
 import type { PlatformAdmin, ProposalStatus, ProposedAction } from '../models/admin-authority.js';
+import type { CartReservation } from '../models/cart-reservation.js';
+import type { Entitlement } from '../models/entitlement.js';
 import type {
   TicketTier,
   PromoCode,
@@ -18,6 +20,7 @@ import type {
 } from '../models/event-catalog.js';
 import type { Event } from '../models/event.js';
 import type { OnboardingRequest, OnboardingStatus } from '../models/onboarding.js';
+import type { Order } from '../models/order.js';
 import type {
   Organization,
   OrganizationInvitation,
@@ -293,4 +296,100 @@ export interface VerificationAttemptRepository {
   /** Attempts by this user since `sinceEpochMs` — the rate-limit input. */
   countSince(userId: EntityId, sinceEpochMs: number): Promise<number>;
   listForUser(userId: EntityId, limit: number): Promise<VerificationAttempt[]>;
+}
+
+// ─── Phase 4: Order, Cart Reservation, Entitlement, Promo Redemption ───────────
+
+/** Standard paginated read outcome. `nextCursor` is null when exhausted. */
+export interface Page<TItem> {
+  items: TItem[];
+  /** True total before paging (V1-proven `total`; 0 when the source lacks a count). */
+  total: number;
+  nextCursor: string | null;
+}
+
+export interface PaginationQuery {
+  cursor?: string | null;
+  limit: number;
+}
+
+/** Transaction/atomicity handle. Storage-agnostic. Routes pass `null`. */
+export interface TxContext {
+  readonly kind: 'tx';
+  readonly id: string;
+}
+
+/** Cart reservation (hold) — short-lived inventory lock before payment. */
+export interface CartReservationRepository {
+  /** Creates a new hold. Fails if inventory is not available. */
+  create(reservation: CartReservation, tx?: TxContext | null): Promise<void>;
+  /** Fetches by id. */
+  getById(reservationId: EntityId): Promise<CartReservation | null>;
+  /** Fetches by idempotency key (for idempotent hold creation). */
+  getByIdempotencyKey(key: string): Promise<CartReservation | null>;
+  /** Releases the hold (marks as released/expired). */
+  release(reservationId: EntityId, tx?: TxContext | null): Promise<void>;
+  /** Converts a hold to an order (atomic with order creation). */
+  convertToOrder(reservationId: EntityId, orderId: EntityId, tx?: TxContext | null): Promise<void>;
+  /** Cleans up expired holds (called by a worker). */
+  cleanupExpired(now: Date, tx?: TxContext | null): Promise<number>;
+}
+
+/** Order repository — the commerce aggregate. */
+export interface OrderRepository {
+  /** Fetches by id. */
+  getById(orderId: EntityId): Promise<Order | null>;
+  /** Fetches by payment id (idempotency anchor for dual confirmation). */
+  getByPaymentId(paymentId: string): Promise<Order | null>;
+  /** Fetches by idempotency key (for idempotent order creation). */
+  getByIdempotencyKey(key: string): Promise<Order | null>;
+  /** Lists orders for a user (wallet). */
+  listByUser(userId: EntityId, query: PaginationQuery): Promise<Page<Order>>;
+  /** Lists orders for an organization (partner/admin dashboard). */
+  listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Order>>;
+  /** Lists orders for an event. */
+  listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<Order>>;
+  /** Saves (create or update). Version is checked for optimistic locking. */
+  save(order: Order, tx?: TxContext | null): Promise<void>;
+}
+
+/** Entitlement repository — the ticket/wallet aggregate. */
+export interface EntitlementRepository {
+  /** Fetches by deterministic id (`ENT-{orderId}-{tierId}-{index}`). */
+  getById(entitlementId: EntityId): Promise<Entitlement | null>;
+  /** Fetches all entitlements for an order (fulfilment verification). */
+  getByOrderId(orderId: EntityId): Promise<Entitlement[]>;
+  /** Fetches entitlements for a user (wallet). */
+  listByUser(userId: EntityId, query: PaginationQuery): Promise<Page<Entitlement>>;
+  /** Fetches entitlements for an event (door operations). */
+  listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<Entitlement>>;
+  /** Fetches entitlements for an organization (partner/admin). */
+  listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Entitlement>>;
+  /** Saves (create or update — scan increments version). Version checked for optimistic locking. */
+  save(entitlement: Entitlement, tx?: TxContext | null): Promise<void>;
+  /** Bulk save for fulfilment (atomic with order creation). */
+  saveMany(entitlements: Entitlement[], tx?: TxContext | null): Promise<void>;
+  /** Counts valid entitlements for a tier (inventory/sell-through). */
+  countValidByTier(tierId: EntityId): Promise<number>;
+}
+
+/** Promo redemption tracking (shared with Phase 3 event-catalog). */
+export interface PromoRedemptionRepository {
+  /** Records a redemption. Fails if duplicate for same order. */
+  create(
+    redemption: {
+      id: EntityId;
+      promoId: EntityId;
+      orderId: EntityId;
+      userId: EntityId | null;
+      redeemedAt: string;
+    },
+    tx?: TxContext | null,
+  ): Promise<void>;
+  /** Fetches by order id (for audit). */
+  getByOrderId(orderId: EntityId): Promise<{ promoId: EntityId; redeemedAt: string } | null>;
+  /** Counts redemptions for a promo (enforces maxRedemptions). */
+  countByPromo(promoId: EntityId): Promise<number>;
+  /** Counts redemptions by a user for a promo (enforces maxPerUser). */
+  countByPromoAndUser(promoId: EntityId, userId: EntityId): Promise<number>;
 }

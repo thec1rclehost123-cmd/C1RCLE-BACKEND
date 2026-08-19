@@ -36,7 +36,7 @@
 | 1 | Partner dashboards — Host/Venue/Promoter overview+events+finance+analytics, RBAC/tab-visibility, partnerships | **substantially done** (2026-08-13); finance blocked on Phase 6 | [phase-01-partner-dashboards.md](phase-01-partner-dashboards.md) |
 | 2 | KYC / Onboarding — document upload, admin approval workflow, verification provider | **substantially done** (2026-08-14); storage-upload signing deferred | [phase-02-kyc-onboarding.md](phase-02-kyc-onboarding.md) |
 | 3 | Event-catalog & scheduling — ticket tiers/promo/tables/promoter-assignment routes, slot-requests, calendar | **done** (2026-08-13) | [phase-03-event-catalog-scheduling.md](phase-03-event-catalog-scheduling.md) |
-| 4 | Guest checkout & tickets — discovery/directory, pricing, Razorpay checkout, promo codes, entitlement/QR, wallet | **in progress** (2026-08-14) — domain done, wiring not started | [phase-04-guest-checkout-tickets.md](phase-04-guest-checkout-tickets.md) |
+| 4 | Guest checkout & tickets — discovery/directory, pricing, Razorpay checkout, promo codes, entitlement/QR, wallet | **done** (2026-08-19) — domain + HTTP wiring complete, 302 tests pass | [phase-04-guest-checkout-tickets.md](phase-04-guest-checkout-tickets.md) |
 | 5 | Door / Scanner / Cover-wallet — entitlement scan + magic-ticket QR, walk-in/dine-in, cover-charge wallet | not started | [phase-05-door-scanner-cover-wallet.md](phase-05-door-scanner-cover-wallet.md) |
 | 6 | Finance / Ledger / Payouts — settlement engine, bank accounts, disputes, T+3 batch | not started | [phase-06-finance-ledger-payouts.md](phase-06-finance-ledger-payouts.md) |
 | 7 | Admin console backend — tiered-authority approvals, propose→resolve, audit log | not started | [phase-07-admin-console.md](phase-07-admin-console.md) |

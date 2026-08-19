@@ -16,6 +16,10 @@ import {
   InProcessEventBus,
   createAuditConsumer,
   createProjectionConsumer,
+  CheckoutService,
+  InventoryService,
+  PricingService,
+  RazorpayPaymentProvider,
 } from '@c1rcle/core/application';
 import { createCoreConfig } from '@c1rcle/core/config';
 import { FormatCheckVerificationProvider, UnauthorizedError } from '@c1rcle/core/domain';
@@ -39,6 +43,10 @@ import {
   MemoryPlatformAdminRepository,
   MemoryProposedActionRepository,
   MemoryVerificationAttemptRepository,
+  MemoryCartReservationRepository,
+  MemoryOrderRepository,
+  MemoryEntitlementRepository,
+  MemoryPromoRedemptionRepository,
   getFirestoreClient,
   FirestoreIdempotencyStore,
   FirestoreOrganizationRepository,
@@ -57,6 +65,10 @@ import {
   FirestoreProposedActionRepository,
   FirestoreVerificationAttemptRepository,
   FirestoreAdminAuditRepository,
+  FirestoreCartReservationRepository,
+  FirestoreOrderRepository,
+  FirestoreEntitlementRepository,
+  FirestorePromoRedemptionRepository,
 } from '@c1rcle/core/infrastructure';
 
 import type { ServiceDeps, ActorContext } from '@c1rcle/core/application';
@@ -95,6 +107,7 @@ export interface PartnerV2Services {
   onboarding: OnboardingService;
   /** Phase 2: platform-admin resolution, tiering and dual control. */
   adminAuthority: AdminAuthorityService;
+  checkout: CheckoutService;
   /** T09 idempotency — durable on the firestore driver, in-memory on `memory`. */
   idempotency: IdempotencyService;
   /** Builds the service actor from the authenticated request state. */
@@ -145,6 +158,20 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
       ? new MemoryAdminAuditRepository()
       : new FirestoreAdminAuditRepository(firestoreClient(gw));
 
+  // Phase 4: Payment provider, pricing, inventory
+  const gwConfig = getGatewayConfig();
+  const paymentProvider = new RazorpayPaymentProvider({
+    keyId: gwConfig.RAZORPAY_KEY_ID ?? 'test_key_id',
+    keySecret: gwConfig.RAZORPAY_KEY_SECRET ?? 'test_key_secret',
+    webhookSecret: gwConfig.RAZORPAY_WEBHOOK_SECRET ?? 'test_webhook_secret',
+  });
+  const pricing = new PricingService({ eventCatalog: repositories.catalog });
+  const inventory = new InventoryService({
+    eventCatalog: repositories.catalog,
+    cartReservation: repositories.cartReservations,
+    order: repositories.orders,
+  });
+
   const deps: ServiceDeps = {
     config: coreConfig,
     logger:
@@ -158,6 +185,9 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     adminAudit: adminAudits,
     // Swap here — and only here — when a real KYC provider is contracted.
     verification: new FormatCheckVerificationProvider(),
+    paymentProvider,
+    pricing,
+    inventory,
     repositories,
   };
 
@@ -176,6 +206,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     analytics: new AnalyticsService(deps),
     onboarding: new OnboardingService(deps, adminAuthority),
     adminAuthority,
+    checkout: new CheckoutService(deps),
     // Replay protection must outlive the process: a restart mid-retry with an
     // in-memory store turns a client's retry into a second business result.
     idempotency: new IdempotencyService(buildIdempotencyStore(), logger),
@@ -233,6 +264,11 @@ function buildRepositories(gw: GatewayConfig): ServiceDeps['repositories'] {
       platformAdmins: new MemoryPlatformAdminRepository(),
       proposals: new MemoryProposedActionRepository(),
       verificationAttempts: new MemoryVerificationAttemptRepository(),
+      // Phase 4
+      cartReservations: new MemoryCartReservationRepository(),
+      orders: new MemoryOrderRepository(),
+      entitlements: new MemoryEntitlementRepository(),
+      promoRedemptions: new MemoryPromoRedemptionRepository(),
     };
   }
   // STORAGE_DRIVER === 'firestore' — config validation guarantees these two
@@ -265,6 +301,11 @@ function buildRepositories(gw: GatewayConfig): ServiceDeps['repositories'] {
     platformAdmins: new FirestorePlatformAdminRepository(db),
     proposals: new FirestoreProposedActionRepository(db),
     verificationAttempts: new FirestoreVerificationAttemptRepository(db),
+    // Phase 4
+    cartReservations: new FirestoreCartReservationRepository(db),
+    orders: new FirestoreOrderRepository(db),
+    entitlements: new FirestoreEntitlementRepository(db),
+    promoRedemptions: new FirestorePromoRedemptionRepository(db),
   };
 }
 

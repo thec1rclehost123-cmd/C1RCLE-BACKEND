@@ -10,9 +10,11 @@ import { domainEvent, type DomainEventType, type EventPayloads } from '../domain
 
 import type { CoreConfig } from '../config/index.js';
 import type { EntityId } from '../domain/identity.js';
+import type { InventoryService } from './inventory/inventory-service.js';
 import type { OrganizationRole, Capability } from '../domain/models/organization.js';
 import type { AdminAuditRepository } from '../domain/ports/audit.js';
 import type { OutboxWriter } from '../domain/ports/outbox.js';
+import type { PaymentProvider } from '../domain/ports/payment-provider.js';
 import type {
   InvitationRepository,
   OnboardingRepository,
@@ -29,9 +31,14 @@ import type {
   EventRepository,
   EventCatalogRepository,
   AnalyticsReadModelRepository,
+  CartReservationRepository,
+  OrderRepository,
+  EntitlementRepository,
+  PromoRedemptionRepository,
 } from '../domain/ports/repositories.js';
 import type { VerificationProvider } from '../domain/ports/verification.js';
 import type { Logger } from '../telemetry/logger.js';
+import type { PricingService } from './pricing/pricing-service.js';
 
 /** Who is making this call and in which tenant/role. Set by gateway auth. */
 export interface ActorContext {
@@ -60,6 +67,12 @@ export interface ServiceDeps {
    * "verification" was not ported as verification.
    */
   verification: VerificationProvider;
+  /** Phase 4: Payment provider (pluggable) */
+  paymentProvider: PaymentProvider;
+  /** Phase 4: Pricing engine */
+  pricing: PricingService;
+  /** Phase 4: Inventory service */
+  inventory: InventoryService;
   repositories: {
     organizations: OrganizationRepository;
     invitations: InvitationRepository;
@@ -76,6 +89,11 @@ export interface ServiceDeps {
     platformAdmins: PlatformAdminRepository;
     proposals: ProposedActionRepository;
     verificationAttempts: VerificationAttemptRepository;
+    // Phase 4
+    cartReservations: CartReservationRepository;
+    orders: OrderRepository;
+    entitlements: EntitlementRepository;
+    promoRedemptions: PromoRedemptionRepository;
   };
 }
 

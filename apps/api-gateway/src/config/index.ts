@@ -22,6 +22,10 @@ const envSchema = z.object({
   /** B10: Better Auth. */
   BETTER_AUTH_SECRET: z.string().min(1).default('dev-only-change-me'),
   BETTER_AUTH_URL: z.string().min(1).default('http://localhost:8080'),
+  /** Phase 4: Razorpay credentials. */
+  RAZORPAY_KEY_ID: z.string().min(1).optional(),
+  RAZORPAY_KEY_SECRET: z.string().min(1).optional(),
+  RAZORPAY_WEBHOOK_SECRET: z.string().min(1).optional(),
 });
 
 /** Fail closed: STORAGE_DRIVER=firestore requires real credentials, never a silent memory fallback. */

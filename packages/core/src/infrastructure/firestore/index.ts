@@ -12,3 +12,7 @@ export * from './firestore-partnership-repository.js';
 export * from './firestore-referral-link-repository.js';
 export * from './firestore-promoter-connection-repository.js';
 export * from './firestore-onboarding-repository.js';
+export * from './firestore-order-repository.js';
+export * from './firestore-cart-reservation-repository.js';
+export * from './firestore-entitlement-repository.js';
+export * from './firestore-promo-redemption-repository.js';

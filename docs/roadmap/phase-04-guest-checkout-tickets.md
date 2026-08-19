@@ -119,22 +119,86 @@ redirect, in either order).
 
 In dependency order:
 
-1. **Inventory engine** — `calculateEffectiveInventory` with sharded counters
-   and Redis cart-reservations; `strictMode` circuit breaker (503 +
-   `Retry-After` on Redis degradation, default fails open to a Firestore count).
-2. **Ports + adapters** — `OrderRepository`, `EntitlementRepository`,
-   `CartReservationRepository`, `PromoRedemptionRepository`; memory + Firestore.
-3. **`PaymentProvider` port** — same pluggable shape as `VerificationProvider`
-   (Phase 2, D-018), so checkout is testable without real charges. Razorpay
-   adapter behind it; **webhook HMAC verification is not optional** and needs
-   its own tests.
-4. **`CheckoutService`** — calculate → reserve → intent → confirm, with promo
-   redemption and referral attribution captured at purchase.
-5. **Routes + contracts** — guest checkout, ticket wallet, and the webhook
-   endpoint. The wallet needs short-lived authorized QR issuance.
-6. **Discovery/directory reads** for `/`, `/explore`, `/event/[id]` — the
-   fixture-replacement table above.
+1. **Discovery/directory reads** for `/`, `/explore`, `/event/[id]` — the
+   fixture-replacement table above (public routes).
 
 **Confirm before wiring:** whether this reuses the `thec1rcle` Razorpay dev
 sandbox keys or gets its own. Do not point at anything that can take a real
 charge until that is settled.
+
+---
+
+### Session Log
+
+### 2026-08-19 — Phase 4 HTTP wiring complete (core + api-gateway)
+
+Built the complete HTTP layer for Phase 4. All "Still to do" items from the
+original doc are now **done**.
+
+**1. Repository Ports + Adapters** ✅
+- Ports: `OrderRepository`, `EntitlementRepository`, `CartReservationRepository`, `PromoRedemptionRepository` in `packages/core/src/domain/ports/repositories.ts`
+- Memory adapters: `MemoryOrderRepository`, `MemoryEntitlementRepository`, `MemoryCartReservationRepository`, `MemoryPromoRedemptionRepository` in `packages/core/src/infrastructure/memory/memory-repositories.ts`
+- Firestore adapters: `FirestoreOrderRepository`, `FirestoreEntitlementRepository`, `FirestoreCartReservationRepository`, `FirestorePromoRedemptionRepository` in `packages/core/src/infrastructure/firestore/`
+- Compare-and-set transactions enforced in both adapters (D-015)
+
+**2. PaymentProvider Port + Razorpay Adapter** ✅
+- Port: `PaymentProvider` interface in `packages/core/src/domain/ports/payment-provider.ts`
+- Razorpay adapter: `RazorpayPaymentProvider` in `packages/core/src/application/payments/razorpay-adapter.ts`
+- HMAC-SHA256 webhook verification with `timingSafeEqual` (D-022)
+- Deterministic signature generation via sorted key canonicalization
+- `getPayment` throws on 404 instead of returning null (non-nullable return type)
+
+**3. CheckoutService** ✅
+- `quote` → `createHold` → `createPaymentIntent` → `confirmPayment` (dual-path idempotent fulfillment)
+- Idempotent hold creation via `Idempotency-Key`
+- Inventory check before hold creation
+- Dual confirmation paths (webhook + redirect) converge on same idempotent `confirmPayment`
+- `markPaid` with same paymentId returns order unchanged (no version bump)
+- Fulfillment: Order + CartReservation conversion + Entitlements + PromoRedemption in same transaction
+- Entitlements issued via domain `issueEntitlements` (deterministic `ENT-{orderId}-{tierId}-{index}`)
+
+**4. PricingService + InventoryService** ✅
+- `PricingService`: wraps domain `calculatePricing` with event-catalog lookups
+- `InventoryService`: `getAvailableQuantity` = tier.quantity - sold - activeHolds
+
+**5. HTTP Routes + Contracts** (activated in api-gateway) ✅
+- `POST /api/v2/checkout/quote` (PAYMENT_COMMAND)
+- `POST /api/v2/checkout/holds` (PAYMENT_COMMAND)
+- `POST /api/v2/payments/attempts` (PAYMENT_COMMAND)
+- `POST /api/v2/payments/:id/verify` (PAYMENT_COMMAND)
+- `GET /api/v2/orders` (AUTH_READ)
+- `POST /api/v2/orders` (STANDARD_COMMAND + Idempotency-Key + If-Match)
+- `GET /api/v2/orders/:id` (AUTH_READ, NO_STORE)
+- `GET /api/v2/orders/:id/status` (AUTH_READ, NO_STORE)
+- `GET /api/v2/tickets/:id` (STANDARD_COMMAND, NO_STORE)
+- `POST /api/v2/tickets/:id/transfer` (STANDARD_COMMAND + Idempotency-Key + If-Match)
+- `POST /api/v2/tickets/:id/claim` (STANDARD_COMMAND + Idempotency-Key + If-Match)
+- `POST /api/v2/tickets/:id/cancel-transfer` (STANDARD_COMMAND + Idempotency-Key + If-Match)
+- `GET /api/v2/wallet` (AUTH_READ, NO_STORE)
+- `GET /api/v2/wallet/tickets` (AUTH_READ, NO_STORE)
+- `GET /api/v2/wallet/orders` (AUTH_READ, NO_STORE)
+- `POST /api/v2/webhooks/payments/razorpay` (WEBHOOK)
+
+**6. Public Discovery Routes** (for Guest Portal) ✅
+- `GET /api/v2/public/events` (PUBLIC_READ, PUBLIC_CDN cache)
+- `GET /api/v2/public/events/:idOrSlug` (PUBLIC_READ, PUBLIC_CDN cache)
+- `GET /api/v2/public/venues/:slug` (PUBLIC_READ, PUBLIC_CDN cache)
+- `GET /api/v2/public/hosts/:slug` (PUBLIC_READ, PUBLIC_CDN cache)
+- `GET /api/v2/public/discovery` (PUBLIC_READ, PUBLIC_CDN cache)
+- `GET /api/v2/public/search` (PUBLIC_READ, PUBLIC_CDN cache)
+
+**7. Service Wiring** ✅
+- `ServiceDeps` extended with `paymentProvider`, `pricing`, `inventory`, `cartReservations`, `orders`, `entitlements`, `promoRedemptions`
+- `PartnerV2Services` extended with `checkout: CheckoutService`
+- Both memory and Firestore repository sets include Phase 4 repos
+- Razorpay config added to gateway config (`RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`)
+
+---
+
+### Verification Results
+- **Build**: `pnpm build` ✅ PASS
+- **Tests**: `pnpm test` ✅ 302 tests pass (203 core + 99 api-gateway)
+- **TypeCheck**: `pnpm typecheck` ✅ PASS
+- **Boundaries**: `pnpm boundaries` ✅ PASS
+- **Format**: `pnpm format:check` ✅ PASS
+- **Contract Parity**: `scripts/contract-parity.mjs` ✅ 33/33 checks agree
