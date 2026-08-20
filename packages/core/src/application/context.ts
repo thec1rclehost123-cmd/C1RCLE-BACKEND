@@ -35,6 +35,13 @@ import type {
   OrderRepository,
   EntitlementRepository,
   PromoRedemptionRepository,
+  ScanLedgerRepository,
+  EventCodeRepository,
+  ScannerSessionRepository,
+  DoorSaleRepository,
+  CoverWalletRepository,
+  CoverWalletTxnRepository,
+  CoverWalletReconciliationRepository,
 } from '../domain/ports/repositories.js';
 import type { VerificationProvider } from '../domain/ports/verification.js';
 import type { Logger } from '../telemetry/logger.js';
@@ -94,6 +101,14 @@ export interface ServiceDeps {
     orders: OrderRepository;
     entitlements: EntitlementRepository;
     promoRedemptions: PromoRedemptionRepository;
+    // Phase 5
+    scanLedger: ScanLedgerRepository;
+    eventCodes: EventCodeRepository;
+    scannerSessions: ScannerSessionRepository;
+    doorSales: DoorSaleRepository;
+    coverWallets: CoverWalletRepository;
+    coverWalletTxns: CoverWalletTxnRepository;
+    coverWalletReconciliations: CoverWalletReconciliationRepository;
   };
 }
 

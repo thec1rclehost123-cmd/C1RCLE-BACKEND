@@ -40,6 +40,7 @@ export interface CoreConfig {
   redis: RedisConfig;
   firestore: FirestoreConfig;
   features: FeatureFlagConfig;
+  magicTicketSecret: string;
 }
 
 export interface CoreConfigInput {
@@ -48,6 +49,7 @@ export interface CoreConfigInput {
   redis: Partial<RedisConfig> & { url: string };
   firestore: Partial<FirestoreConfig> & { projectId: string };
   features?: FeatureFlagConfig;
+  magicTicketSecret?: string;
 }
 
 export class CoreConfigError extends Error {
@@ -83,6 +85,7 @@ export function createCoreConfig(input: CoreConfigInput): CoreConfig {
       databaseId: input.firestore.databaseId ?? '(default)',
     },
     features: input.features ?? {},
+    magicTicketSecret: input.magicTicketSecret ?? 'default-magic-ticket-secret-change-in-production',
   };
 }
 

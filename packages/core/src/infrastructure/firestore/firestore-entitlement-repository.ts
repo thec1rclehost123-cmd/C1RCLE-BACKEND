@@ -31,6 +31,10 @@ export class FirestoreEntitlementRepository implements EntitlementRepository {
     return data ? toEntitlement(data) : null;
   }
 
+  async findById(entitlementId: EntityId): Promise<Entitlement | null> {
+    return this.getById(entitlementId);
+  }
+
   async getByOrderId(orderId: EntityId): Promise<Entitlement[]> {
     const snap = await this.collection.where('orderId', '==', orderId).get();
     return snap.docs.map((doc) => toEntitlement(doc.data()));

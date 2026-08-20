@@ -148,6 +148,7 @@ export interface VenueSlotRepository {
 
 export interface EventRepository {
   getById(eventId: EntityId): Promise<Event | null>;
+  findById(eventId: EntityId): Promise<Event | null>;
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Event>>;
   listByVenue(venueId: EntityId, query: PaginationQuery): Promise<Page<Event>>;
   listPublic(query: PaginationQuery): Promise<Page<Event>>;
@@ -161,6 +162,8 @@ export interface EventCatalogRepository {
   // Ticket tiers
   getTierById(tierId: EntityId): Promise<TicketTier | null>;
   listTiers(eventId: EntityId): Promise<TicketTier[]>;
+  findWalkInTier(eventId: EntityId): Promise<TicketTier | null>;
+  findDineInTier(eventId: EntityId): Promise<TicketTier | null>;
   saveTier(tier: TicketTier, tx?: TxContext | null): Promise<void>;
   // Promo codes
   getPromoById(promoId: EntityId): Promise<PromoCode | null>;
@@ -357,6 +360,8 @@ export interface OrderRepository {
 export interface EntitlementRepository {
   /** Fetches by deterministic id (`ENT-{orderId}-{tierId}-{index}`). */
   getById(entitlementId: EntityId): Promise<Entitlement | null>;
+  /** Alias for getById. */
+  findById(entitlementId: EntityId): Promise<Entitlement | null>;
   /** Fetches all entitlements for an order (fulfilment verification). */
   getByOrderId(orderId: EntityId): Promise<Entitlement[]>;
   /** Fetches entitlements for a user (wallet). */
@@ -392,4 +397,159 @@ export interface PromoRedemptionRepository {
   countByPromo(promoId: EntityId): Promise<number>;
   /** Counts redemptions by a user for a promo (enforces maxPerUser). */
   countByPromoAndUser(promoId: EntityId, userId: EntityId): Promise<number>;
+}
+
+// ─── Phase 5: Scan Ledger, Event Code, Scanner Session, Door Sale, Cover Wallet ───────
+
+import type { ScanLedger, ScanLedgerStatus, ScanLedgerCreateInput, ScanDenyReason } from '../models/scan-ledger.js';
+import type { EventCode, EventCodeCreateInput, EventCodeStatus, ScannerSession, ScannerSessionCreateInput, EventCodeType, ScannerSessionType, SessionPermissions } from '../models/event-code.js';
+import type { DoorSale, DoorSaleCreateInput, DoorSaleCategory, DoorSaleStatus, DoorSalePaymentMode } from '../models/door-sale.js';
+import type { CoverWallet, CoverWalletTxn, CoverWalletCreateInput, CoverWalletCreditInput, CoverWalletDebitInput, CoverWalletStatus, CoverWalletTxnType, CoverWalletTxnStatus } from '../models/cover-wallet.js';
+import type { CoverWalletReconciliation, CoverWalletReconciliationCreateInput, ReconciliationStatus } from '../models/cover-wallet-reconciliation.js';
+
+/** Scan Ledger repository — immutable scan records. */
+export interface ScanLedgerRepository {
+  create(input: ScanLedgerCreateInput): Promise<ScanLedger>;
+  findById(id: EntityId): Promise<ScanLedger | null>;
+  findByEventAndEntitlement(eventId: EntityId, entitlementId: EntityId): Promise<ScanLedger | null>;
+  findByEvent(eventId: EntityId, input: PaginationQuery): Promise<Page<ScanLedger>>;
+  findByOrganization(organizationId: EntityId, input: PaginationQuery): Promise<Page<ScanLedger>>;
+  findByDevice(deviceId: string, input: PaginationQuery): Promise<Page<ScanLedger>>;
+  findByOperator(operatorUid: string, input: PaginationQuery): Promise<Page<ScanLedger>>;
+  updateStatus(id: EntityId, status: ScanLedgerStatus, denyReason?: ScanDenyReason, denyMessage?: string): Promise<ScanLedger | null>;
+  markConsumed(id: EntityId): Promise<ScanLedger | null>;
+  markDenied(id: EntityId, reason: ScanDenyReason, message: string): Promise<ScanLedger | null>;
+  markCancelled(id: EntityId): Promise<ScanLedger | null>;
+  countByEventAndStatus(eventId: EntityId, status: ScanLedgerStatus): Promise<number>;
+  countConsumedByEntitlement(entitlementId: EntityId): Promise<number>;
+  findOfflineScans(eventId: EntityId, before: Date): Promise<ScanLedger[]>;
+}
+
+/** Event Code repository — authorization codes for scanner apps. */
+export interface EventCodeRepository {
+  create(input: EventCodeCreateInput): Promise<EventCode>;
+  findById(id: EntityId): Promise<EventCode | null>;
+  findByCode(code: string): Promise<EventCode | null>;
+  findByEvent(eventId: EntityId, input: PaginationQuery): Promise<Page<EventCode>>;
+  findByOrganization(organizationId: EntityId, input: PaginationQuery): Promise<Page<EventCode>>;
+  findActiveByEvent(eventId: EntityId): Promise<EventCode[]>;
+  updateStatus(id: EntityId, status: EventCodeStatus, revokedReason?: string): Promise<EventCode | null>;
+  revoke(id: EntityId, reason: string): Promise<EventCode | null>;
+  incrementScanCount(id: EntityId): Promise<void>;
+  incrementDoorEntry(id: EntityId, amountPaise: number): Promise<void>;
+  updateLastUsed(id: EntityId): Promise<void>;
+  adjustActiveSessions(id: EntityId, delta: number): Promise<void>;
+}
+
+/** Scanner Session repository — short-lived device tokens. */
+export interface ScannerSessionRepository {
+  create(input: ScannerSessionCreateInput): Promise<{ session: ScannerSession; sessionToken: string; sessionExpiresAt: string; sessionId: string }>;
+  findById(id: EntityId): Promise<ScannerSession | null>;
+  findByTokenHash(tokenHash: string): Promise<ScannerSession | null>;
+  findByCode(codeId: EntityId, input: PaginationQuery): Promise<Page<ScannerSession>>;
+  findActiveByCode(codeId: EntityId): Promise<ScannerSession[]>;
+  findByDevice(deviceId: string, input: PaginationQuery): Promise<Page<ScannerSession>>;
+  updateLastUsed(id: EntityId): Promise<void>;
+  revoke(id: EntityId, reason: string): Promise<ScannerSession | null>;
+  cleanupExpired(): Promise<number>;
+}
+
+/** Door Sale repository — walk-in and dine-in sales. */
+export interface DoorSaleRepository {
+  create(input: DoorSaleCreateInput): Promise<DoorSale>;
+  findById(id: EntityId): Promise<DoorSale | null>;
+  findByIdempotencyKey(idempotencyKey: string): Promise<DoorSale | null>;
+  findByEvent(eventId: EntityId, input: PaginationQuery): Promise<Page<DoorSale>>;
+  findByOrganization(organizationId: EntityId, input: PaginationQuery): Promise<Page<DoorSale>>;
+  findByVenue(venueId: EntityId, input: PaginationQuery): Promise<Page<DoorSale>>;
+  findByCategory(category: DoorSaleCategory, input: PaginationQuery): Promise<Page<DoorSale>>;
+  findByCreator(createdBy: EntityId, input: PaginationQuery): Promise<Page<DoorSale>>;
+  updateStatus(id: EntityId, status: DoorSaleStatus): Promise<DoorSale | null>;
+  voidSale(id: EntityId, voidedBy: EntityId, reason: string): Promise<DoorSale | null>;
+  refundSale(id: EntityId, refundedBy: EntityId, amountPaise: number): Promise<DoorSale | null>;
+  getEventStats(eventId: EntityId): Promise<{
+    totalSales: number;
+    totalRevenue: number;
+    walkinCount: number;
+    dineinCount: number;
+    walkinRevenue: number;
+    dineinRevenue: number;
+    byPaymentMode: Record<string, { count: number; revenue: number }>;
+  }>;
+  getOrganizationStats(organizationId: EntityId, from: Date, to: Date): Promise<{
+    totalSales: number;
+    totalRevenue: number;
+    byCategory: Record<string, { count: number; revenue: number }>;
+    byPaymentMode: Record<string, { count: number; revenue: number }>;
+  }>;
+}
+
+/** Cover Wallet repository — pre-paid wallets for venue entry. */
+export interface CoverWalletRepository {
+  create(input: CoverWalletCreateInput): Promise<CoverWallet>;
+  findById(id: EntityId): Promise<CoverWallet | null>;
+  findByEventAndUser(eventId: EntityId, userId: EntityId): Promise<CoverWallet | null>;
+  findByEvent(eventId: EntityId, input: PaginationQuery): Promise<Page<CoverWallet>>;
+  findByOrganization(organizationId: EntityId, input: PaginationQuery): Promise<Page<CoverWallet>>;
+  findActiveByEvent(eventId: EntityId): Promise<CoverWallet[]>;
+  credit(input: CoverWalletCreditInput): Promise<{ wallet: CoverWallet; txn: CoverWalletTxn }>;
+  debit(input: CoverWalletDebitInput): Promise<{ wallet: CoverWallet; txn: CoverWalletTxn }>;
+  refund(walletId: EntityId, amount: number, referenceId: EntityId, idempotencyKey: string, operatorUid: EntityId, description: string): Promise<{ wallet: CoverWallet; txn: CoverWalletTxn }>;
+  adjust(walletId: EntityId, amount: number, idempotencyKey: string, operatorUid: EntityId, description: string): Promise<{ wallet: CoverWallet; txn: CoverWalletTxn }>;
+  terminate(walletId: EntityId, reason: string): Promise<CoverWallet | null>;
+  close(walletId: EntityId): Promise<CoverWallet | null>;
+  getBalance(walletId: EntityId): Promise<number | null>;
+  isActive(walletId: EntityId): Promise<boolean>;
+  countRecentDebits(deviceId: string, since: Date): Promise<number>;
+  getEventStats(eventId: EntityId): Promise<{
+    totalWallets: number;
+    activeWallets: number;
+    terminatedWallets: number;
+    totalBalance: number;
+    totalCredits: number;
+    totalDebits: number;
+    totalRefunds: number;
+    avgBalance: number;
+    byStatus: Record<string, number>;
+  }>;
+}
+
+/** Cover Wallet Transaction repository. */
+export interface CoverWalletTxnRepository {
+  create(txn: Omit<CoverWalletTxn, 'id' | 'createdAt' | 'updatedAt' | 'version'>): Promise<CoverWalletTxn>;
+  findById(id: EntityId): Promise<CoverWalletTxn | null>;
+  findByIdempotencyKey(idempotencyKey: string): Promise<CoverWalletTxn | null>;
+  findByWallet(walletId: EntityId, input: PaginationQuery): Promise<Page<CoverWalletTxn>>;
+  findByEvent(eventId: EntityId, input: PaginationQuery): Promise<Page<CoverWalletTxn>>;
+  findByType(type: CoverWalletTxnType, input: PaginationQuery): Promise<Page<CoverWalletTxn>>;
+  findByReference(referenceId: EntityId, referenceType: string): Promise<CoverWalletTxn[]>;
+  updateStatus(id: EntityId, status: CoverWalletTxnStatus, failureReason?: string, processedAt?: Date): Promise<CoverWalletTxn | null>;
+  getEventStats(eventId: EntityId): Promise<{
+    totalCredits: number;
+    totalDebits: number;
+    totalRefunds: number;
+    totalAdjustments: number;
+    netFlow: number;
+    txnCount: number;
+  }>;
+  countRecentDebits(deviceId: string, since: Date): Promise<number>;
+}
+
+/** Cover Wallet Reconciliation repository. */
+export interface CoverWalletReconciliationRepository {
+  create(input: CoverWalletReconciliationCreateInput): Promise<CoverWalletReconciliation>;
+  findById(id: EntityId): Promise<CoverWalletReconciliation | null>;
+  findByEventAndDate(eventId: EntityId, date: string): Promise<CoverWalletReconciliation | null>;
+  findByEvent(eventId: EntityId, input: PaginationQuery): Promise<Page<CoverWalletReconciliation>>;
+  findByOrganization(organizationId: EntityId, input: PaginationQuery): Promise<Page<CoverWalletReconciliation>>;
+  findPending(organizationId: EntityId): Promise<CoverWalletReconciliation[]>;
+  findWithDiscrepancies(organizationId: EntityId): Promise<CoverWalletReconciliation[]>;
+  resolve(id: EntityId, resolvedBy: EntityId, notes: string): Promise<CoverWalletReconciliation | null>;
+  getOrganizationStats(organizationId: EntityId, from: Date, to: Date): Promise<{
+    totalReconciliations: number;
+    completedCount: number;
+    discrepancyCount: number;
+    resolvedCount: number;
+    totalDiscrepancyAmount: number;
+  }>;
 }

@@ -1,140 +1,242 @@
 /**
- * ─── Standard error envelope (V1 + V2) ──────────────────────────────────────
- * Ported from thec1rcle api-gateway `lib/api-contracts.ts` (frozen, tested).
- * Single home of the success/error envelope for every API response.
+ * ─── Root exports ────────────────────────────────────────────────────────────
+ * Re-exports all contract types and utilities.
+ * Source of truth is in ./contracts/ directory (modular monolith structure).
  */
 
-export type ApiErrorCode =
-  | 'validation'
-  | 'unauthorized'
-  | 'forbidden'
-  | 'not_found'
-  | 'conflict'
-  | 'rate_limited'
-  | 'network'
-  | 'timeout'
-  | 'aborted'
-  | 'parse'
-  | 'unknown'
-  | 'server';
+// Re-export everything from client.ts (which re-exports from modular contracts)
+export * from './client.js';
 
-export type FieldErrors = Record<string, string[]>;
+// Error envelope utilities (from shared)
+export { 
+  buildErrorResponse, 
+  buildSuccessResponse, 
+  buildValidationDetails, 
+  errorCodeForStatus, 
+  buildV2ErrorResponse, 
+  zodToFieldErrors, 
+  STATUS_CODE_TO_ERROR_CODE 
+} from './contracts/shared.js';
+export type {
+  OrganizationRoleDto,
+  OrganizationStatusDto,
+  OrganizationDto,
+  CreateOrganizationInput,
+  VenueStatusDto,
+  VenueDto,
+  CreateVenueInput,
+  OrganizationMemberDto,
+  InviteMemberInput,
+  VenueProfileDto,
+  VenueSlotDto,
+  SlotRequestDto,
+  CreateSlotRequestInput,
+} from './contracts/organization.js';
 
-export type RequestId = string;
+export {
+  organizationRoleSchema,
+  organizationStatusSchema,
+  organizationDtoSchema,
+  createOrganizationSchema,
+  venueStatusSchema,
+  venueDtoSchema,
+  createVenueSchema,
+  organizationMemberDtoSchema,
+  inviteMemberSchema,
+  venueProfileDtoSchema,
+  venueSlotDtoSchema,
+  slotRequestDtoSchema,
+  createSlotRequestSchema,
+} from './contracts/organization.js';
 
-export interface ApiError {
-  code: ApiErrorCode;
-  message: string;
-  status: number;
-  requestId?: string;
-  fieldErrors?: FieldErrors;
-  details?: unknown;
-}
+// Event + Catalog
+export type {
+  EventStatusDto,
+  EventDto,
+  EventPreviewDto,
+  CreateEventInput,
+  UpdateEventInput,
+  CancelEventInput,
+  TicketTierDto,
+  CreateTicketTierRequest,
+  PromoCodeDto,
+  CreatePromoCodeRequest,
+  TablePackageDto,
+  CreateTablePackageRequest,
+  PromoterAssignmentDto,
+  AssignPromoterRequest,
+} from './contracts/event.js';
 
-export interface ApiErrorPayload {
-  code: string;
-  message: string;
-  details?: { path: string; message: string }[] | Record<string, unknown> | null;
-  requestId?: string;
-}
+export {
+  eventStatusSchema,
+  eventDtoSchema,
+  eventPreviewDtoSchema,
+  createEventSchema,
+  updateEventSchema,
+  cancelEventSchema,
+  ticketTierStatusSchema,
+  ticketTierDtoSchema,
+  createTicketTierSchema,
+  promoCodeDtoSchema,
+  createPromoCodeSchema,
+  tablePackageDtoSchema,
+  createTablePackageSchema,
+  promoterAssignmentDtoSchema,
+  assignPromoterSchema,
+} from './contracts/event.js';
 
-export interface StandardErrorResponse {
-  success: false;
-  error: ApiErrorPayload;
-}
+// Partner (partnerships, promoters, referrals, analytics)
+export type {
+  PartnershipDto,
+  RequestPartnershipRequest,
+  ResolvePartnershipRequest,
+  PartnerAccessDto,
+  OrganizationOverviewDto,
+  EventAnalyticsDto,
+  ReferralLinkDto,
+  CreateReferralLinkRequest,
+  PromoterConnectionDto,
+  RequestConnectionRequest,
+} from './contracts/partner.js';
 
-export function buildErrorResponse(payload: ApiErrorPayload): StandardErrorResponse {
-  const error: ApiErrorPayload = {
-    code: payload.code,
-    message: payload.message,
-  };
+export {
+  partnershipStatusSchema,
+  partnershipDtoSchema,
+  requestPartnershipSchema,
+  resolvePartnershipSchema,
+  partnerPermissionSchema,
+  partnerAccessDtoSchema,
+  organizationOverviewDtoSchema,
+  eventAnalyticsDtoSchema,
+  referralLinkDtoSchema,
+  createReferralLinkSchema,
+  promoterConnectionDtoSchema,
+  requestConnectionSchema,
+} from './contracts/partner.js';
 
-  if (payload.details && (Array.isArray(payload.details) ? payload.details.length > 0 : true)) {
-    error.details = payload.details;
-  }
+// Onboarding / KYC / Admin Authority
+export type {
+  OnboardingProfileDto,
+  OnboardingRequestDto,
+  StartOnboardingRequest,
+  SaveOnboardingProgressRequest,
+  AddOnboardingDocumentRequest,
+  VerifyDocumentRequest,
+  VerificationResultDto,
+  ReviewOnboardingRequest,
+  ProvisionedOrganizationDto,
+  ApproveOnboardingResult,
+  PlatformAdminDto,
+  ProposedActionDto,
+  ProposeActionRequest,
+  ResolveProposalRequest,
+  AdminAuditRecordDto,
+} from './contracts/onboarding.js';
 
-  if (payload.requestId) {
-    error.requestId = payload.requestId;
-  }
+export {
+  onboardingStatusSchema,
+  onboardingPlanSchema,
+  onboardingProfileSchema,
+  onboardingDocumentSchema,
+  onboardingRequestDtoSchema,
+  startOnboardingSchema,
+  saveOnboardingProgressSchema,
+  addOnboardingDocumentSchema,
+  verifyDocumentSchema,
+  verificationResultDtoSchema,
+  reviewOnboardingSchema,
+  provisionedOrganizationDtoSchema,
+  approveOnboardingResultSchema,
+  adminRoleSchema,
+  adminActionSchema,
+  proposalStatusSchema,
+  platformAdminDtoSchema,
+  proposedActionDtoSchema,
+  proposeActionSchema,
+  resolveProposalSchema,
+  adminAuditRecordDtoSchema,
+} from './contracts/onboarding.js';
 
-  return { success: false, error };
-}
+// Checkout / Orders / Payments / Entitlements
+export type {
+  CheckoutQuoteRequest,
+  CheckoutQuoteResponse,
+  CheckoutHoldRequest,
+  CheckoutHoldResponse,
+  OrderDto,
+  OrdersListResponse,
+  EntitlementDto,
+  EntitlementsListResponse,
+  PaymentOrderRequest,
+  PaymentOrderResponse,
+  PaymentVerificationRequest,
+  PaymentVerificationResponse,
+  RefundRequest,
+  RefundResponse,
+} from './contracts/checkout.js';
 
-/**
- * Wraps a payload in the canonical success envelope. All existing top-level
- * fields from `data` are also spread at the root for backward compatibility
- * with clients that consumed the flat shape.
- */
-export function buildSuccessResponse<T extends Record<string, unknown>>(
-  data: T,
-): { success: true; data: T } & T {
-  return { success: true, data, ...data };
-}
+export {
+  checkoutQuoteRequestSchema,
+  checkoutQuoteResponseSchema,
+  checkoutHoldRequestSchema,
+  checkoutHoldResponseSchema,
+  orderDtoSchema,
+  ordersListResponseSchema,
+  entitlementDtoSchema,
+  entitlementsListResponseSchema,
+  paymentOrderRequestSchema,
+  paymentOrderResponseSchema,
+  paymentVerificationRequestSchema,
+  paymentVerificationResponseSchema,
+  refundRequestSchema,
+  refundResponseSchema,
+} from './contracts/checkout.js';
 
-export function buildValidationDetails(
-  issues: { path?: (string | number)[]; message: string }[] = [],
-) {
-  return issues.map((issue) => ({
-    path: Array.isArray(issue.path) ? issue.path.join('.') : '',
-    message: issue.message,
-  }));
-}
+// Phase 5: Door / Scanner / Cover Wallet
+export type {
+  ScannerSessionCreateBody,
+  ScannerSessionDto,
+  ScanRequest,
+  ScanResponse,
+  MagicQrRequest,
+  MagicQrResponse,
+  OfflineManifestRequest,
+  OfflineManifestResponse,
+  OfflineSyncRequest,
+  OfflineSyncResponse,
+  DoorWalkInRequest,
+  DoorDineInRequest,
+  DoorSaleResponse,
+  DoorSalesListResponse,
+  CoverWalletIssueRequest,
+  CoverWalletDebitRequest,
+  CoverWalletCreditRequest,
+  CoverWalletResponse,
+  CoverWalletReconciliationRequest,
+  CoverWalletReconciliationResponse,
+  Phase5ErrorCode,
+} from './contracts/phase5.js';
 
-/* ─── V2 API error contract (additive layer) ─────────────────────────────── */
-
-/** Locked status → code table. */
-export const STATUS_CODE_TO_ERROR_CODE: Readonly<Partial<Record<number, ApiErrorCode>>> = {
-  400: 'validation',
-  401: 'unauthorized',
-  403: 'forbidden',
-  404: 'not_found',
-  409: 'conflict',
-  422: 'validation',
-  429: 'rate_limited',
-};
-
-export function errorCodeForStatus(status: number): ApiErrorCode {
-  const mapped = STATUS_CODE_TO_ERROR_CODE[status];
-  if (mapped) return mapped;
-  return status >= 500 ? 'server' : 'unknown';
-}
-
-export interface V2ErrorBody extends ApiError {
-  status: number;
-}
-
-export function buildV2ErrorResponse(input: {
-  status: number;
-  message: string;
-  code?: ApiErrorCode;
-  requestId?: RequestId;
-  fieldErrors?: FieldErrors;
-  details?: unknown;
-}): V2ErrorBody {
-  const error: V2ErrorBody = {
-    status: input.status,
-    code: input.code ?? errorCodeForStatus(input.status),
-    message: input.message,
-  };
-  if (input.requestId) error.requestId = input.requestId;
-  if (input.fieldErrors && Object.keys(input.fieldErrors).length > 0) {
-    error.fieldErrors = input.fieldErrors;
-  }
-  if (input.details !== undefined) error.details = input.details;
-  return error;
-}
-
-/** Lodash-free flatten of a zod error into `{ field: string[] }`. */
-export function zodToFieldErrors(error: {
-  issues: { path: PropertyKey[] | string; message: string }[];
-}): FieldErrors {
-  const fieldErrors: Record<string, string[]> = {};
-  for (const issue of error.issues ?? []) {
-    const key =
-      Array.isArray(issue.path) && issue.path.length > 0
-        ? issue.path.join('.')
-        : String(issue.path) || '_root';
-    (fieldErrors[key] ??= []).push(issue.message);
-  }
-  return fieldErrors;
-}
+export {
+  scannerSessionCreateBodySchema,
+  scannerSessionDtoSchema,
+  scanRequestSchema,
+  scanResponseSchema,
+  magicQrRequestSchema,
+  magicQrResponseSchema,
+  offlineManifestRequestSchema,
+  offlineManifestResponseSchema,
+  offlineSyncRequestSchema,
+  offlineSyncResponseSchema,
+  doorWalkInRequestSchema,
+  doorDineInRequestSchema,
+  doorSaleResponseSchema,
+  doorSalesListResponseSchema,
+  coverWalletIssueRequestSchema,
+  coverWalletDebitRequestSchema,
+  coverWalletCreditRequestSchema,
+  coverWalletResponseSchema,
+  coverWalletReconciliationRequestSchema,
+  coverWalletReconciliationResponseSchema,
+  phase5ErrorCodeSchema,
+} from './contracts/phase5.js';

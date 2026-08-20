@@ -37,24 +37,30 @@ export interface AdminAuditRecord {
   id: EntityId;
   /** The admin user id. */
   adminId: EntityId;
-  adminRole: string;
+  /** Actor user id (for services that use actor context). */
+  actorId?: EntityId;
+  /** Organization id for cross-tenant auditing. */
+  organizationId?: EntityId;
+  adminRole?: string;
   /** `AdminAction`, or a lower-tier verb like `onboarding.request_changes`. */
-  action: string;
+  action?: string;
   /** What was acted on. */
-  targetType: string;
-  targetId: EntityId;
+  targetType?: string;
+  targetId?: EntityId;
   /** State before the action, `null` when the action created the target. */
-  before: Record<string, unknown> | null;
+  before?: Record<string, unknown> | null;
   /** State after, `null` when the action deleted it. */
-  after: Record<string, unknown> | null;
+  after?: Record<string, unknown> | null;
   /** Operator-supplied justification, when the action required one. */
-  reason: string | null;
+  reason?: string | null;
   /** Epoch ms. */
-  occurredAt: number;
+  occurredAt?: number;
 }
 
 export interface AdminAuditRepository {
   append(record: AdminAuditRecord): Promise<void>;
+  /** Alias for append — used by application services. */
+  write(record: AdminAuditRecord): Promise<void>;
   listRecent(limit: number): Promise<AdminAuditRecord[]>;
   listForTarget(targetId: EntityId, limit: number): Promise<AdminAuditRecord[]>;
 }

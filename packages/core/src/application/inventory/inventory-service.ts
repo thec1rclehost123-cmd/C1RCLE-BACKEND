@@ -45,7 +45,7 @@ export class InventoryService {
   /**
    * Gets the number of tickets sold for a tier (from paid orders).
    */
-  private async getSoldCount(tierId: EntityId): Promise<number> {
+  private async getSoldCount(_tierId: EntityId): Promise<number> {
     // Sum quantities from paid orders for this tier
     // This would be a query on orders with status='paid' and line.tierId = tierId
     // For now, use a simplified approach - in production this would be a proper query
@@ -55,7 +55,7 @@ export class InventoryService {
   /**
    * Gets the number of active cart reservations (holds) for a tier.
    */
-  private async getActiveHoldsCount(tierId: EntityId): Promise<number> {
+  private async getActiveHoldsCount(_tierId: EntityId): Promise<number> {
     // Sum quantities from active cart reservations for this tier
     // This would query cart_reservations where status='active' and line.tierId = tierId
     return 0;

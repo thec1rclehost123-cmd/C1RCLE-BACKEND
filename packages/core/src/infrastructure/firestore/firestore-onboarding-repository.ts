@@ -248,6 +248,11 @@ export class FirestoreAdminAuditRepository implements AdminAuditRepository {
       });
   }
 
+  /** Alias for append — used by application services. */
+  async write(record: AdminAuditRecord): Promise<void> {
+    return this.append(record);
+  }
+
   async listRecent(limit: number): Promise<AdminAuditRecord[]> {
     const snap = await this.collection.orderBy('occurredAt', 'desc').limit(limit).get();
     return snap.docs.map((doc) => toAdminAudit(doc.data()));

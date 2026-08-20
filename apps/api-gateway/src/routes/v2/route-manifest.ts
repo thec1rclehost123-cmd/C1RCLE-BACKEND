@@ -16,6 +16,7 @@ import partnerPartnershipRoutes from './partner/partnerships.js';
 import promoterConnectionRoutes from './partner/promoter-connections.js';
 import partnerReferralLinkRoutes from './partner/referral-links.js';
 import partnerVenueRoutes from './partner/venues.js';
+import phase5Routes from './phase5-routes.js';
 
 import type { BetterAuthInstance } from '../../plugins/auth.js';
 import type { FastifyInstance } from 'fastify';
@@ -77,6 +78,8 @@ export async function registerV2Routes(app: FastifyInstance): Promise<void> {
       // platform admin acts across all of them.
       await onboardingRoutes(v2);
       await adminRoutes(v2);
+      // Phase 5: Door / Scanner / Cover-wallet
+      await phase5Routes(v2);
     },
     { prefix: '/api/v2' },
   );

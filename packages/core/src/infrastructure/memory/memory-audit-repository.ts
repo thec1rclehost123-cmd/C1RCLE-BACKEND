@@ -41,14 +41,23 @@ export class MemoryAdminAuditRepository implements AdminAuditRepository {
     this.records.push(record);
   }
 
+  /** Alias for append — used by application services. */
+  async write(record: AdminAuditRecord): Promise<void> {
+    return this.append(record);
+  }
+
   async listRecent(limit: number): Promise<AdminAuditRecord[]> {
-    return [...this.records].sort((a, b) => b.occurredAt - a.occurredAt).slice(0, limit);
+    return [...this.records]
+      .filter((r) => r.occurredAt !== undefined)
+      .sort((a, b) => (b.occurredAt ?? 0) - (a.occurredAt ?? 0))
+      .slice(0, limit);
   }
 
   async listForTarget(targetId: EntityId, limit: number): Promise<AdminAuditRecord[]> {
     return this.records
       .filter((record) => record.targetId === targetId)
-      .sort((a, b) => b.occurredAt - a.occurredAt)
+      .filter((r) => r.occurredAt !== undefined)
+      .sort((a, b) => (b.occurredAt ?? 0) - (a.occurredAt ?? 0))
       .slice(0, limit);
   }
 

@@ -32,7 +32,7 @@ export class CheckoutService {
 
     // Load event catalog (tiers + promos)
     const catalog = await this.deps.repositories.catalog.listTiers(eventId);
-    const tierMap = new Map(catalog.map((t) => [t.id, t]));
+    const _tierMap = new Map(catalog.map((t) => [t.id, t]));
 
     const pricingLines = lines.map((l) => ({ tierId: l.tierId, quantity: l.quantity }));
 
@@ -43,11 +43,11 @@ export class CheckoutService {
     }
 
     // Build referral attribution if code provided
-    let attribution = null;
+    let _attribution = null;
     if (referralCode) {
       const link = await this.deps.repositories.referralLinks.findByCode(eventId, referralCode);
       if (link && link.isActive) {
-        attribution = {
+        _attribution = {
           referralLinkId: link.id,
           promoterId: link.promoterId,
           code: link.code,
@@ -177,9 +177,9 @@ export class CheckoutService {
     paymentId: string;
     paymentIntentId: string;
     holdId: EntityId;
-    idempotencyKey: string;
+    _idempotencyKey: string;
   }): Promise<{ order: Order; entitlements: Entitlement[] }> {
-    const { paymentId, paymentIntentId, holdId, idempotencyKey } = input;
+    const { paymentId, paymentIntentId, holdId, _idempotencyKey } = input;
 
     // Check for existing order with this payment id (idempotency)
     const existingOrder = await this.deps.repositories.orders.getByPaymentId(paymentId);

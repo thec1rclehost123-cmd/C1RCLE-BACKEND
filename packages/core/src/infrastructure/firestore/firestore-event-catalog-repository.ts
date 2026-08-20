@@ -33,6 +33,20 @@ export class FirestoreEventCatalogRepository implements EventCatalogRepository {
     const snap = await this.db.collection(TIERS).where('eventId', '==', eventId).get();
     return snap.docs.map((doc) => doc.data() as unknown as TicketTier);
   }
+  async findWalkInTier(eventId: EntityId): Promise<TicketTier | null> {
+    const snap = await this.db.collection(TIERS).where('eventId', '==', eventId).where('entryType', '==', 'walkin').limit(1).get();
+    if (snap.empty) return null;
+    const doc = snap.docs[0];
+    if (!doc) return null;
+    return doc.exists ? (doc.data() as unknown as TicketTier) : null;
+  }
+  async findDineInTier(eventId: EntityId): Promise<TicketTier | null> {
+    const snap = await this.db.collection(TIERS).where('eventId', '==', eventId).where('entryType', '==', 'dinein').limit(1).get();
+    if (snap.empty) return null;
+    const doc = snap.docs[0];
+    if (!doc) return null;
+    return doc.exists ? (doc.data() as unknown as TicketTier) : null;
+  }
   async saveTier(tier: TicketTier, _tx?: TxContext | null): Promise<void> {
     await this.db
       .collection(TIERS)

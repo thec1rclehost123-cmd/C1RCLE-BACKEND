@@ -132,3 +132,9 @@ export class IdempotencyInFlightError extends DomainError {
     );
   }
 }
+
+export class NotFoundError extends DomainError {
+  constructor(resource: string, id: string) {
+    super(`${resource} ${id} not found`, 'not_found');
+  }
+}

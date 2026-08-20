@@ -750,6 +750,177 @@ admin, social, campaigns, notifications, public discovery.
 
 ---
 
+# PHASE 5 — DOOR / SCANNER / COVER-WALLET
+
+## B16 — Domain models + state machines (Door/Scanner/Cover)
+
+**Goal:** explicit entities with explicit finite state machines for scanner/door/cover-wallet.
+
+> **Hand-in-hand (T-series):** port the verified v1 logic from `entitlement-engine.js`, `cover-charge-engine.js`, `scan-engine.js` (non-deprecated path only), `event-codes` auth pattern.
+
+**Tasks:**
+
+- [ ] `packages/core/src/domain/models/scan-ledger.ts` — `ScanLedger` entity, FSM `PENDING → CONSUMED | DENIED`, `processEntryScan` pure function
+- [ ] `packages/core/src/domain/models/event-code.ts` — `EventCode` entity (`type: full|scan_only|charge`), `ScannerSession` entity, session token generation/validation
+- [ ] `packages/core/src/domain/models/door-sale.ts` — `DoorSale` entity (`category: walkin|dinein`, `paymentMode`), synthetic order generation
+- [ ] `packages/core/src/domain/models/cover-wallet.ts` — `CoverWallet` entity, `CoverWalletTxn` sub-entity, termination time computation, velocity limits
+- [ ] `packages/core/src/domain/models/cover-wallet-reconciliation.ts` — reconciliation entity
+- [ ] **Key invariants ported verbatim:**
+  - All money = integer paise
+  - Every mutation = caller idempotency key
+  - Firestore transactions for balance+txn atomicity
+  - Velocity limit: max 3 debits/min/device
+  - Terminated wallets reject all mutations
+  - Offline debits blocked at API layer
+  - Nightlife termination: `computeTerminationTime(eventStartIso, terminationHour=5, tzOffset='+05:30')`
+  - Magic Ticket QR: `HMAC(entitlementId : floor(unixTime/30))`, rotates every 30s, ±65s clock-drift tolerance
+- [ ] Unit tests: FSM transitions, Magic Ticket QR verification (±65s clock drift), velocity limits, termination logic, idempotent scan
+
+**Exit gate:** domain model tests green; `pnpm lint` clean; no infra imports in `packages/core/src/domain/**` (guardrail enforced).
+
+## B17 — Repository ports (Door/Scanner/Cover)
+
+**Goal:** domain depends on interfaces; adapters swappable.
+
+**Tasks:**
+
+- [ ] `packages/core/src/domain/ports/scan-ledger-repository.ts` — `ScanLedgerRepository`
+- [ ] `packages/core/src/domain/ports/event-code-repository.ts` — `EventCodeRepository`, `ScannerSessionRepository`
+- [ ] `packages/core/src/domain/ports/door-sale-repository.ts` — `DoorSaleRepository`
+- [ ] `packages/core/src/domain/ports/cover-wallet-repository.ts` — `CoverWalletRepository`, `CoverWalletReconciliationRepository`
+- [ ] Contract suite tests for all ports (same pattern as Phase 4)
+
+**Exit gate:** port contract tests green with zero infra imports.
+
+## B18 — Application services (Door/Scanner/Cover)
+
+**Goal:** one service per use case; orchestration only; rules in domain models.
+
+**Tasks:**
+
+- [ ] `packages/core/src/application/scanner/scanner-service.ts` — `ScannerService`: `createSession`, `validateSession`, `processEntryScan`, `getLiveStats`
+- [ ] `packages/core/src/application/door/door-service.ts` — `DoorService`: `walkInSale`, `dineInSale`, `getLiveStats`
+- [ ] `packages/core/src/application/cover-wallet/cover-wallet-service.ts` — `CoverWalletService`: `issueWallet`, `debit`, `credit`, `terminate`, `reconcile`
+- [ ] `packages/core/src/application/scanner/magic-ticket.ts` — Magic Ticket QR generation/verification (±65s clock drift)
+- [ ] Services receive injected: actor context, config, repositories, logger. They throw typed domain errors the gateway maps to HTTP.
+- [ ] Every service unit-tested with Memory repositories; no `process.env`, no Fastify, no Firebase imports anywhere in `application/`.
+
+**Exit gate:** all service tests green; guardrail (no env/fastify/firebase in application) enforced.
+
+## B19 — Infrastructure adapters (Memory + Firestore)
+
+**Goal:** real durable storage behind the ports (no mocks in shipped code).
+
+**Tasks:**
+
+- [ ] Memory adapters for all 6 new ports in `packages/core/src/infrastructure/memory/`
+- [ ] Firestore adapters for all 6 new ports in `packages/core/src/infrastructure/firestore/` with compare-and-set transactions (D-015)
+- [ ] Denormalized indexes: `scan_ledger` by `eventId+entitlementId`, `scanner_sessions` by `eventCode`, `cover_wallets` by `entitlementId`
+- [ ] Contract suite tests against Memory AND Firestore (same suite, swapped dependency)
+- [ ] Integration tests: `processEntryScan` dual-path idempotency, WebSocket live stats
+
+**Exit gate:** repository contract suite passes against Memory AND Firestore; integration tests green.
+
+## B20 — HTTP Routes + WebSocket (Scanner/Door/Cover)
+
+**Goal:** activate BLOCKED routes from manifest; add WebSocket for live stats.
+
+**Tasks:**
+
+- [ ] `routes/v2/door/sessions.ts` — Scanner session auth (short-lived signed token)
+- [ ] `routes/v2/door/check-ins.ts` — `processEntryScan` (scan entitlement)
+- [ ] `routes/v2/door/lookup.ts` — ticket lookup without check-in
+- [ ] `routes/v2/door/override.ts` — override (requires `ticket.override` permission)
+- [ ] `routes/v2/door/offline-manifest.ts` — download signed offline manifest
+- [ ] `routes/v2/door/offline-sync.ts` — sync offline scans
+- [ ] `routes/v2/door/walk-in.ts` — walk-in sale (server-side price recalculation)
+- [ ] `routes/v2/door/dine-in.ts` — dine-in sale
+- [ ] `routes/v2/door/sales.ts` — list door sales
+- [ ] `routes/v2/door/stats.ts` — live stats (WebSocket upgrade or polling fallback)
+- [ ] `routes/v2/cover-wallet.ts` — issue, debit, credit, terminate, reconcile
+- [ ] `routes/v2/tickets/qr.ts` — Magic Ticket rotating QR (HMAC, ±65s clock drift)
+- [ ] WebSocket route: `GET /api/v2/door/stats/ws` — live scanner stats push
+- [ ] Rate limit classes: `SCANNER_COMMAND` (300/min), `DOOR_COMMAND` (60/min), `COVER_WALLET_COMMAND` (30/min)
+- [ ] Cache classes: `SCANNER_SESSION`, `LIVE_STATS` (5s), `COVER_WALLET` (NO_STORE)
+- [ ] Contracts: add schemas to `packages/contracts/src/client.ts`
+- [ ] Error codes: `SCANNER_SESSION_EXPIRED`, `VELOCITY_LIMIT_EXCEEDED`, `WALLET_TERMINATED`, `OFFLINE_MANIFEST_EXPIRED`
+
+**Exit gate:** `pnpm boundaries` green; route tests green; every registered route has ACTIVE manifest entry; BLOCKED paths 404.
+
+## B21 — WebSocket Live Stats Infrastructure
+
+**Goal:** real-time scanner stats pushed to venue dashboard.
+
+**Tasks:**
+
+- [ ] `packages/core/src/application/events/live-stats-bus.ts` — WebSocket message bus
+- [ ] `packages/core/src/application/door/live-stats-consumer.ts` — consumer that pushes on scan/sale
+- [ ] `apps/api-gateway/src/plugins/websocket.ts` — WebSocket upgrade handler, connection scoping (eventId+session or orgId)
+- [ ] Connection auth: validate scanner session or partner auth before upgrade
+- [ ] Message format: `{ totalEntered, checkedIn, doorEntries, doorRevenue, walkIns, entryTypeCounts }`
+- [ ] Push on every `processEntryScan`, `walkInSale`, `dineInSale`
+
+**Exit gate:** WebSocket connects, receives live updates on scan/sale, disconnects cleanly.
+
+## B22 — Service wiring + Contracts + Verification
+
+**Goal:** wire new services, add contracts, verify.
+
+**Tasks:**
+
+- [ ] Add `ScannerService`, `DoorService`, `CoverWalletService` to `ServiceDeps`
+- [ ] Add repositories to `ServiceDeps['repositories']`
+- [ ] Update `PartnerV2Services` with `scanner`, `door`, `coverWallet` services
+- [ ] Add repositories to memory + Firestore adapter sets in `apps/api-gateway/src/lib/v2-services.ts`
+- [ ] Add rate limit classes, cache classes to gateway config
+- [ ] Add contracts to `packages/contracts/src/client.ts`
+- [ ] Add error codes to `packages/contracts/src/index.ts`
+- [ ] Run `scripts/contract-parity.mjs` — must pass 33+ checks
+
+**Exit gate:** `pnpm check` ALL GREEN; `scripts/contract-parity.mjs` passes; all tests green.
+
+## B23 — End-to-End Integration Tests
+
+**Goal:** verify full Phase 5 flows work.
+
+**Tests:**
+
+- [ ] Scanner session creation → scan valid ticket → check-in recorded → live stats update
+- [ ] Scanner session creation → scan expired ticket → DENIED → scan ledger written
+- [ ] Scanner session creation → scan already consumed ticket → DENIED
+- [ ] Scanner session creation → Magic Ticket QR verification (±65s drift)
+- [ ] Walk-in sale → server-side price recalculation → synthetic order → door sale recorded
+- [ ] Cover wallet issue → debit (velocity limit) → credit → terminate → reconciliation
+- [ ] Offline manifest download → offline scan → sync → dedup
+- [ ] Live stats WebSocket push on scan/sale
+- [ ] Cover wallet termination at nightlife cutoff time
+
+**Exit gate:** all E2E tests pass; `pnpm check` ALL GREEN.
+
+---
+
+# PHASE 6 — FINANCE / LEDGER / PAYOUTS
+
+## B24 — Ledger engine + Settlement
+
+...
+
+---
+
+# PHASE 7 — ADMIN CONSOLE BACKEND
+
+## B25 — Tiered authority + Propose→Resolve
+
+...
+
+---
+
+# PHASE 8 — SOCIAL / NOTIFICATIONS
+
+## B26 — Follow graph + Chat + Notifications
+
+...
+
 ## 6. Open decisions to confirm (resolve in `docs/architecture/decisions.md`)
 
 1. **Storage:** Firestore-first (reuse old pattern) vs PostgreSQL now vs

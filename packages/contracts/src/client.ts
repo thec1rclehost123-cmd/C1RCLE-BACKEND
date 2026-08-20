@@ -1,1004 +1,274 @@
-import { z } from 'zod';
-
 /**
- * ─── V2 API contract runtime schemas ─────────────────────────────────────────
- * Ported from thec1rcle `packages/types/src/client.ts` (browser-safe, frozen).
- * This package mirrors `C1RCLE-FRONTEND/packages/types` 1:1.
+ * ─── V2 API contract runtime schemas (re-export) ──────────────────────────────
+ * This file re-exports all domain contracts for convenient importing.
+ * Source of truth is in ./contracts/ directory (modular monolith structure).
  */
 
-export const roleSchema = z.enum(['guest', 'partner', 'admin']);
-export type Role = z.infer<typeof roleSchema>;
-
-export const userSchema = z.object({
-  id: z.string().min(1),
-  email: z.email(),
-  displayName: z.string().min(1),
-  role: roleSchema,
-  avatarUrl: z.url().nullable(),
-});
-export type User = z.infer<typeof userSchema>;
-
-export const sessionSchema = z.object({
-  user: userSchema,
-  expiresAt: z.number().int().positive(),
-});
-export type Session = z.infer<typeof sessionSchema>;
-
-/* ─── B10 auth bridge (Better Auth session ↔ frontend contract) ─────────── */
-
-export const signupRequestSchema = z
-  .object({
-    email: z.email(),
-    password: z.string().min(8).max(128),
-    displayName: z.string().min(1).max(200),
-  })
-  .strict();
-export type SignupRequest = z.infer<typeof signupRequestSchema>;
-
-export const loginRequestSchema = z
-  .object({
-    email: z.email(),
-    password: z.string().min(1).max(128),
-  })
-  .strict();
-export type LoginRequest = z.infer<typeof loginRequestSchema>;
-
-/** `POST /auth/{signup,login,refresh}` response — task.md §0 frontend bridge shape. */
-export const authBridgeResponseSchema = z.object({
-  user: userSchema,
-  accessToken: z.string().min(1),
-  expiresAt: z.number().int().positive(),
-});
-export type AuthBridgeResponse = z.infer<typeof authBridgeResponseSchema>;
-
-export const pageInfoSchema = z.object({
-  page: z.number().int().nonnegative(),
-  pageSize: z.number().int().positive(),
-  total: z.number().int().nonnegative(),
-  hasNextPage: z.boolean(),
-});
-export type PageInfo = z.infer<typeof pageInfoSchema>;
-
-export function paginatedSchema<TItem extends z.ZodType>(itemSchema: TItem) {
-  return z.object({
-    items: z.array(itemSchema),
-    pageInfo: pageInfoSchema,
-  });
-}
-export interface Paginated<TItem> {
-  items: TItem[];
-  pageInfo: PageInfo;
-}
-
-export const noContentSchema = z.void();
-export type NoContent = z.infer<typeof noContentSchema>;
-
-/* ─── T06 shared validation helpers ──────────────────────────────────────── */
-
-export const opaqueIdSchema = z
-  .string()
-  .min(1)
-  .max(64)
-  .regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/, 'Invalid opaque id format');
-export type OpaqueId = z.infer<typeof opaqueIdSchema>;
-
-export const cursorSchema = z.string().min(1).max(256);
-export type Cursor = z.infer<typeof cursorSchema>;
-
-export const paginationQuerySchema = z.object({
-  cursor: cursorSchema.optional(),
-  limit: z.coerce.number().int().min(1).max(100).default(20),
-});
-export type PaginationQuery = z.infer<typeof paginationQuerySchema>;
-
-export const idempotencyKeySchema = z
-  .string()
-  .min(1)
-  .max(128)
-  .regex(/^[A-Za-z0-9_-]+$/, 'Invalid Idempotency-Key format');
-export type IdempotencyKey = z.infer<typeof idempotencyKeySchema>;
-
-export const versionHeaderSchema = z
-  .string()
-  .regex(/^[1-9][0-9]*$/, 'If-Match must be a positive integer version');
-export type IfMatchVersion = z.infer<typeof versionHeaderSchema>;
-
-export const organizationIdSchema = opaqueIdSchema;
-export type OrganizationId = z.infer<typeof organizationIdSchema>;
-
-/* ─── V2 partner Event DTO ───────────────────────────────────────────────── */
-
-export const eventStatusSchema = z.enum([
-  'draft',
-  'review',
-  'scheduled',
-  'published',
-  'sales_paused',
-  'started',
-  'ended',
-  'archived',
-  'cancelled',
-]);
-export type EventStatusDto = z.infer<typeof eventStatusSchema>;
-
-export const eventDtoSchema = z.object({
-  id: opaqueIdSchema,
-  organizationId: opaqueIdSchema,
-  venueId: opaqueIdSchema.nullable(),
-  slug: z
-    .string()
-    .min(1)
-    .max(80)
-    .regex(/^[a-z0-9-]+$/, 'Invalid slug format'),
-  title: z.string().min(1).max(200),
-  summary: z.string().max(1000).default(''),
-  description: z.string().max(20_000).default(''),
-  imageUrl: z.url().nullable(),
-  startAt: z.iso.datetime(),
-  endAt: z.iso.datetime().nullable(),
-  status: eventStatusSchema,
-  isPublic: z.boolean(),
-  tags: z.array(z.string().min(1)).max(50).default([]),
-  startingPricePaise: z.number().int().nonnegative().nullable(),
-  isFree: z.boolean(),
-  cancellationReason: z.string().max(1000).nullable(),
-  version: z.number().int().positive(),
-  createdAt: z.iso.datetime(),
-  updatedAt: z.iso.datetime(),
-});
-export type EventDto = z.infer<typeof eventDtoSchema>;
-
-/* ─── Organization + venue DTOs ──────────────────────────────────────────── */
-
-export const organizationRoleSchema = z.enum(['owner', 'admin', 'manager', 'member']);
-export type OrganizationRoleDto = z.infer<typeof organizationRoleSchema>;
-
-export const organizationStatusSchema = z.enum(['active', 'suspended', 'archived']);
-export type OrganizationStatusDto = z.infer<typeof organizationStatusSchema>;
-
-export const organizationDtoSchema = z.object({
-  id: opaqueIdSchema,
-  name: z.string().min(1).max(200),
-  slug: z
-    .string()
-    .min(1)
-    .max(60)
-    .regex(/^[a-z0-9][a-z0-9-]*$/, 'Invalid slug format'),
-  role: organizationRoleSchema,
-  status: organizationStatusSchema,
-  version: z.number().int().positive(),
-  createdAt: z.iso.datetime(),
-  updatedAt: z.iso.datetime(),
-});
-export type OrganizationDto = z.infer<typeof organizationDtoSchema>;
-
-export const venueStatusSchema = z.enum(['active', 'suspended']);
-export type VenueStatusDto = z.infer<typeof venueStatusSchema>;
-
-export const venueDtoSchema = z.object({
-  id: opaqueIdSchema,
-  organizationId: opaqueIdSchema,
-  name: z.string().min(1).max(200),
-  slug: z
-    .string()
-    .min(1)
-    .max(60)
-    .regex(/^[a-z0-9][a-z0-9-]*$/, 'Invalid slug format'),
-  status: venueStatusSchema,
-  description: z.string().max(2000).default(''),
-  capacity: z.number().int().nonnegative().nullable(),
-  city: z.string().max(100).nullable(),
-  version: z.number().int().positive(),
-  createdAt: z.iso.datetime(),
-  updatedAt: z.iso.datetime(),
-});
-export type VenueDto = z.infer<typeof venueDtoSchema>;
-
-/* ─── Request DTOs (write surfaces) ──────────────────────────────────────── */
-
-export const createOrganizationSchema = z.object({
-  name: z.string().min(1).max(200),
-  slug: z
-    .string()
-    .min(1)
-    .max(60)
-    .regex(/^[a-z0-9][a-z0-9-]*$/, 'Invalid slug format'),
-});
-export type CreateOrganizationInput = z.infer<typeof createOrganizationSchema>;
-
-export const createVenueSchema = z.object({
-  name: z.string().min(1).max(200),
-  slug: z
-    .string()
-    .min(1)
-    .max(60)
-    .regex(/^[a-z0-9][a-z0-9-]*$/, 'Invalid slug format'),
-  description: z.string().max(2000).optional(),
-  capacity: z.number().int().nonnegative().nullable().optional(),
-  city: z.string().max(100).nullable().optional(),
-});
-export type CreateVenueInput = z.infer<typeof createVenueSchema>;
-
-/* ─── Organization members (B11) ─────────────────────────────────────────── */
-
-export const organizationMemberDtoSchema = z.object({
-  userId: opaqueIdSchema,
-  role: organizationRoleSchema,
-  capabilities: z.array(z.enum(['host', 'venue', 'promoter'])),
-  joinedAt: z.iso.datetime(),
-  invitedBy: opaqueIdSchema.optional(),
-});
-export type OrganizationMemberDto = z.infer<typeof organizationMemberDtoSchema>;
-
-export const inviteMemberSchema = z
-  .object({
-    userId: opaqueIdSchema,
-    role: organizationRoleSchema,
-    capabilities: z.array(z.enum(['host', 'venue', 'promoter'])).optional(),
-  })
-  .strict();
-export type InviteMemberInput = z.infer<typeof inviteMemberSchema>;
-
-/* ─── Venue profile / calendar / slot-requests (B11) ─────────────────────── */
-
-export const venueAddressSchema = z.object({
-  street: z.string().max(200).optional(),
-  city: z.string().max(100).optional(),
-  state: z.string().max(100).optional(),
-  zip: z.string().max(20).optional(),
-  country: z.string().max(100).optional(),
-  lat: z.number().optional(),
-  lng: z.number().optional(),
-});
-
-export const venuePublicProfileSchema = z.object({
-  name: z.string().min(1).max(200),
-  slug: z.string().min(1).max(60),
-  description: z.string().max(2000),
-  shortDescription: z.string().max(200).optional(),
-  photoUrl: z.url().nullable(),
-  address: venueAddressSchema,
-  facilities: z.array(z.string().min(1).max(60)),
-  capacity: z.number().int().nonnegative().nullable(),
-  settings: z.object({ showGuestList: z.boolean(), activityEnabled: z.boolean() }),
-});
-
-export const venuePrivateProfileSchema = z.object({
-  contactEmail: z.email().nullable(),
-  contactPhone: z.string().max(20).nullable(),
-  socials: z.object({
-    instagram: z.string().max(200).optional(),
-    website: z.url().optional(),
-    facebook: z.string().max(200).optional(),
-  }),
-  internalNotes: z.string().max(5000),
-});
-
-/** `GET/PATCH /venues/:venueId/profile` — full profile, owner-scoped only. */
-export const venueProfileDtoSchema = z.object({
-  public: venuePublicProfileSchema,
-  private: venuePrivateProfileSchema,
-});
-export type VenueProfileDto = z.infer<typeof venueProfileDtoSchema>;
-
-export const venueSlotDtoSchema = z.object({
-  id: opaqueIdSchema,
-  venueId: opaqueIdSchema,
-  label: z.string().min(1).max(200),
-  startTime: z.iso.datetime(),
-  endTime: z.iso.datetime(),
-  recurring: z.boolean(),
-  status: z.enum(['open', 'booked', 'blocked', 'cancelled']),
-  capacityFor: z.number().int().nonnegative().nullable(),
-  version: z.number().int().positive(),
-  createdAt: z.iso.datetime(),
-  updatedAt: z.iso.datetime(),
-});
-export type VenueSlotDto = z.infer<typeof venueSlotDtoSchema>;
-
-export const slotRequestDtoSchema = z.object({
-  id: opaqueIdSchema,
-  venueId: opaqueIdSchema,
-  eventId: opaqueIdSchema.nullable(),
-  hostId: opaqueIdSchema,
-  status: z.enum(['pending', 'accepted', 'rejected', 'cancelled']),
-  message: z.string().max(2000).optional(),
-  version: z.number().int().positive(),
-  createdAt: z.iso.datetime(),
-  updatedAt: z.iso.datetime(),
-});
-export type SlotRequestDto = z.infer<typeof slotRequestDtoSchema>;
-
-export const createSlotRequestSchema = z
-  .object({
-    eventId: opaqueIdSchema.nullable().optional(),
-    message: z.string().max(2000).optional(),
-  })
-  .strict();
-export type CreateSlotRequestInput = z.infer<typeof createSlotRequestSchema>;
-
-/* ─── Event lifecycle (B11) ───────────────────────────────────────────────── */
-
-export const updateEventSchema = z
-  .object({
-    title: z.string().min(1).max(200).optional(),
-    summary: z.string().max(1000).optional(),
-    description: z.string().max(20_000).optional(),
-    imageUrl: z.url().nullable().optional(),
-    startAt: z.iso.datetime().optional(),
-    endAt: z.iso.datetime().nullable().optional(),
-    tags: z.array(z.string().min(1).max(40)).max(50).optional(),
-    startingPricePaise: z.number().int().nonnegative().optional(),
-    isFree: z.boolean().optional(),
-  })
-  .strict();
-export type UpdateEventInput = z.infer<typeof updateEventSchema>;
-
-export const cancelEventSchema = z
-  .object({
-    reason: z.string().min(1).max(1000),
-  })
-  .strict();
-export type CancelEventInput = z.infer<typeof cancelEventSchema>;
-
-export const eventPreviewDtoSchema = z.object({
-  event: eventDtoSchema,
-  isPublic: z.boolean(),
-});
-export type EventPreviewDto = z.infer<typeof eventPreviewDtoSchema>;
-
-export const createEventSchema = z.object({
-  venueId: opaqueIdSchema,
-  title: z.string().min(1).max(200),
-  summary: z.string().max(1000).optional(),
-  description: z.string().max(20_000).optional(),
-  imageUrl: z.url().nullable().optional(),
-  startAt: z.iso.datetime(),
-  endAt: z.iso.datetime().nullable(),
-  tags: z.array(z.string().min(1)).max(50).default([]),
-});
-export type CreateEventInput = z.infer<typeof createEventSchema>;
-
-/* ─── Organization invitations ─────────────────────────────────────────────── */
-
-export const invitationStatusSchema = z.enum(['pending', 'accepted', 'revoked', 'expired']);
-export type InvitationStatus = z.infer<typeof invitationStatusSchema>;
-
-export const invitationDtoSchema = z.object({
-  id: opaqueIdSchema,
-  organizationId: opaqueIdSchema,
-  email: z.email(),
-  role: organizationRoleSchema,
-  capabilities: z.array(z.enum(['host', 'venue', 'promoter'])),
-  status: invitationStatusSchema,
-  invitedBy: opaqueIdSchema,
-  expiresAt: z.iso.datetime(),
-  acceptedAt: z.iso.datetime().nullable(),
-  version: z.number().int().positive(),
-  createdAt: z.iso.datetime(),
-  updatedAt: z.iso.datetime(),
-});
-export type InvitationDto = z.infer<typeof invitationDtoSchema>;
-
-/** Owner cannot be invited — the owner is set at creation and transferred. */
-export const createInvitationSchema = z
-  .object({
-    email: z.email(),
-    role: z.enum(['admin', 'manager', 'member']),
-    capabilities: z.array(z.enum(['host', 'venue', 'promoter'])).optional(),
-  })
-  .strict();
-export type CreateInvitationRequest = z.infer<typeof createInvitationSchema>;
-
-/* ─── Venue availability (derived from calendar slots) ─────────────────────── */
-
-export const venueAvailabilitySlotSchema = z.object({
-  id: opaqueIdSchema,
-  label: z.string(),
-  startTime: z.iso.datetime(),
-  endTime: z.iso.datetime(),
-  status: z.enum(['open', 'booked', 'blocked']),
-  capacityFor: z.number().int().nonnegative().nullable(),
-});
-
-export const venueAvailabilityDtoSchema = z.object({
-  venueId: opaqueIdSchema,
-  from: z.iso.datetime(),
-  to: z.iso.datetime(),
-  openSlots: z.number().int().nonnegative(),
-  bookedSlots: z.number().int().nonnegative(),
-  blockedSlots: z.number().int().nonnegative(),
-  openMinutes: z.number().int().nonnegative(),
-  fullyBooked: z.boolean(),
-  slots: z.array(venueAvailabilitySlotSchema),
-});
-export type VenueAvailabilityDto = z.infer<typeof venueAvailabilityDtoSchema>;
-
-/* ─── Venue menu ───────────────────────────────────────────────────────────── */
-
-export const venueMenuItemSchema = z.object({
-  name: z.string().min(1).max(120),
-  description: z.string().max(500).optional(),
-  /** Integer paise, like every other money field on the wire. */
-  pricePaise: z.number().int().nonnegative().nullable(),
-  tags: z.array(z.string().min(1).max(40)).max(20).default([]),
-});
-
-export const venueMenuSectionSchema = z.object({
-  name: z.string().min(1).max(120),
-  items: z.array(venueMenuItemSchema).max(200),
-});
-
-export const venueMenuDtoSchema = z.object({
-  sections: z.array(venueMenuSectionSchema).max(50),
-  updatedAt: z.iso.datetime().nullable(),
-});
-export type VenueMenuDto = z.infer<typeof venueMenuDtoSchema>;
-
-/** PUT replaces the menu wholesale — a merge could not express a deletion. */
-export const updateVenueMenuSchema = z
-  .object({ sections: z.array(venueMenuSectionSchema).max(50) })
-  .strict();
-export type UpdateVenueMenuRequest = z.infer<typeof updateVenueMenuSchema>;
-
-/* ─── Event catalog (Phase 3) ──────────────────────────────────────────────── */
-
-export const ticketTierStatusSchema = z.enum(['active', 'paused', 'sold_out']);
-
-export const ticketTierDtoSchema = z.object({
-  id: opaqueIdSchema,
-  eventId: opaqueIdSchema,
-  organizationId: opaqueIdSchema,
-  name: z.string().min(1).max(120),
-  description: z.string().max(2000),
-  entryType: z.string().min(1).max(40),
-  currency: z.string().length(3),
-  /** Money is always integer paise on the wire. */
-  priceInPaise: z.number().int().nonnegative(),
-  quantity: z.number().int().nonnegative(),
-  status: ticketTierStatusSchema,
-  salesStartAt: z.iso.datetime().nullable(),
-  salesEndAt: z.iso.datetime().nullable(),
-  minPerOrder: z.number().int().positive().nullable(),
-  maxPerOrder: z.number().int().positive().nullable(),
-  version: z.number().int().positive(),
-  createdAt: z.iso.datetime(),
-  updatedAt: z.iso.datetime(),
-});
-export type TicketTierDto = z.infer<typeof ticketTierDtoSchema>;
-
-export const createTicketTierSchema = z
-  .object({
-    name: z.string().min(1).max(120),
-    description: z.string().max(2000).optional(),
-    entryType: z.string().min(1).max(40).optional(),
-    currency: z.string().length(3).optional(),
-    priceInPaise: z.number().int().nonnegative(),
-    quantity: z.number().int().nonnegative(),
-    salesStartAt: z.iso.datetime().nullable().optional(),
-    salesEndAt: z.iso.datetime().nullable().optional(),
-    minPerOrder: z.number().int().positive().nullable().optional(),
-    maxPerOrder: z.number().int().positive().nullable().optional(),
-  })
-  .strict();
-export type CreateTicketTierRequest = z.infer<typeof createTicketTierSchema>;
-
-export const promoTypeSchema = z.enum(['public', 'private', 'single_use', 'multi_use']);
-export const promoDiscountTypeSchema = z.enum(['percent', 'fixed']);
-
-export const promoCodeDtoSchema = z.object({
-  id: opaqueIdSchema,
-  eventId: opaqueIdSchema.nullable(),
-  organizationId: opaqueIdSchema,
-  code: z.string().min(1).max(40),
-  name: z.string().max(120),
-  type: promoTypeSchema,
-  discountType: promoDiscountTypeSchema,
-  /** Percent 0–100 when `percent`; paise when `fixed`. */
-  discountValue: z.number().int().nonnegative(),
-  tierIds: z.array(opaqueIdSchema),
-  maxRedemptions: z.number().int().positive().nullable(),
-  maxPerUser: z.number().int().positive().nullable(),
-  redemptionCount: z.number().int().nonnegative(),
-  startsAt: z.iso.datetime().nullable(),
-  endsAt: z.iso.datetime().nullable(),
-  isActive: z.boolean(),
-  version: z.number().int().positive(),
-  createdAt: z.iso.datetime(),
-  updatedAt: z.iso.datetime(),
-});
-export type PromoCodeDto = z.infer<typeof promoCodeDtoSchema>;
-
-export const createPromoCodeSchema = z
-  .object({
-    code: z.string().min(1).max(40),
-    name: z.string().max(120).optional(),
-    type: promoTypeSchema.optional(),
-    discountType: promoDiscountTypeSchema,
-    discountValue: z.number().int().nonnegative(),
-    /** Empty/omitted = every tier, matching v1 semantics. */
-    tierIds: z.array(opaqueIdSchema).max(100).optional(),
-    maxRedemptions: z.number().int().positive().nullable().optional(),
-    maxPerUser: z.number().int().positive().nullable().optional(),
-    startsAt: z.iso.datetime().nullable().optional(),
-    endsAt: z.iso.datetime().nullable().optional(),
-  })
-  .strict();
-export type CreatePromoCodeRequest = z.infer<typeof createPromoCodeSchema>;
-
-export const tablePackageDtoSchema = z.object({
-  id: opaqueIdSchema,
-  eventId: opaqueIdSchema,
-  organizationId: opaqueIdSchema,
-  name: z.string().min(1).max(120),
-  capacity: z.number().int().positive(),
-  pricePaise: z.number().int().nonnegative(),
-  minSpendPaise: z.number().int().nonnegative().nullable(),
-  isActive: z.boolean(),
-  version: z.number().int().positive(),
-  createdAt: z.iso.datetime(),
-  updatedAt: z.iso.datetime(),
-});
-export type TablePackageDto = z.infer<typeof tablePackageDtoSchema>;
-
-export const createTablePackageSchema = z
-  .object({
-    name: z.string().min(1).max(120),
-    capacity: z.number().int().positive(),
-    pricePaise: z.number().int().nonnegative(),
-    minSpendPaise: z.number().int().nonnegative().nullable().optional(),
-  })
-  .strict();
-export type CreateTablePackageRequest = z.infer<typeof createTablePackageSchema>;
-
-export const commissionTermsSchema = z.object({
-  version: z.number().int().positive(),
-  ratePercent: z.number().int().nonnegative(),
-  flatPaise: z.number().int().nonnegative(),
-});
-
-export const promoterAssignmentDtoSchema = z.object({
-  id: opaqueIdSchema,
-  eventId: opaqueIdSchema,
-  promoterId: opaqueIdSchema,
-  status: z.enum(['active', 'ended']),
-  /** Frozen at assignment time — later term changes never rewrite history. */
-  terms: commissionTermsSchema,
-  endedAt: z.iso.datetime().nullable(),
-  version: z.number().int().positive(),
-  createdAt: z.iso.datetime(),
-  updatedAt: z.iso.datetime(),
-});
-export type PromoterAssignmentDto = z.infer<typeof promoterAssignmentDtoSchema>;
-
-export const assignPromoterSchema = z
-  .object({
-    promoterId: opaqueIdSchema,
-    ratePercent: z.number().int().min(0).max(100).optional(),
-    flatPaise: z.number().int().nonnegative().optional(),
-  })
-  .strict();
-export type AssignPromoterRequest = z.infer<typeof assignPromoterSchema>;
-
-/* ─── Partnerships (Phase 1) ───────────────────────────────────────────────── */
-
-export const partnershipStatusSchema = z.enum([
-  'pending',
-  'active',
-  'rejected',
-  'blocked',
-  'ended',
-]);
-
-export const partnershipDtoSchema = z.object({
-  id: opaqueIdSchema,
-  hostOrganizationId: opaqueIdSchema,
-  venueOrganizationId: opaqueIdSchema,
-  venueId: opaqueIdSchema,
-  initiatedBy: z.enum(['host', 'venue']),
-  status: partnershipStatusSchema,
-  message: z.string().nullable(),
-  resolutionReason: z.string().nullable(),
-  resolvedAt: z.iso.datetime().nullable(),
-  version: z.number().int().positive(),
-  createdAt: z.iso.datetime(),
-  updatedAt: z.iso.datetime(),
-});
-export type PartnershipDto = z.infer<typeof partnershipDtoSchema>;
-
-/**
- * `initiatedBy` says which side the CALLER is; the counterparty organization
- * is resolved server-side from the venue, never accepted from the client.
- */
-export const requestPartnershipSchema = z
-  .object({
-    venueId: opaqueIdSchema,
-    initiatedBy: z.enum(['host', 'venue']),
-    message: z.string().max(1000).optional(),
-  })
-  .strict();
-export type RequestPartnershipRequest = z.infer<typeof requestPartnershipSchema>;
-
-export const resolvePartnershipSchema = z
-  .object({ reason: z.string().min(1).max(500).optional() })
-  .strict();
-export type ResolvePartnershipRequest = z.infer<typeof resolvePartnershipSchema>;
-
-/* ─── Partner access context (Phase 1) ─────────────────────────────────────── */
-
-export const partnerTypeSchema = z.enum(['venue', 'host', 'promoter']);
-
-export const partnerPermissionSchema = z.enum([
-  'VIEW_FINANCIALS',
-  'MANAGE_STAFF',
-  'MANAGE_EVENTS',
-  'EDIT_EVENT_RULES',
-  'MANAGE_TABLES',
-  'VIEW_GUESTLIST',
-  'SCAN_ENTRY',
-  'LOG_INCIDENTS',
-  'VIEW_ANALYTICS',
-  'MANAGE_SETTINGS',
-  'MANAGE_PROMOTERS',
-  'MANAGE_PAYOUTS',
-  'MANAGE_PARTNERSHIPS',
-  'MANAGE_PAGE_CONTENT',
-  'VIEW_REAL_TIME_SCANS',
-  'MANAGE_GUEST_OPS',
-  'CHARGE_COVER_WALLETS',
-  'EXPORT_GUESTS',
-]);
-
-/**
- * What a member may see and do, computed by the backend. The dashboard renders
- * from this; it must never derive permissions locally (v1's own rule, kept).
- * `tabVisibility: null` means "no restriction — show every tab".
- */
-export const partnerAccessDtoSchema = z.object({
-  organizationId: opaqueIdSchema,
-  userId: opaqueIdSchema,
-  partnerType: partnerTypeSchema,
-  role: z.string().min(1),
-  permissions: z.array(partnerPermissionSchema),
-  tabVisibility: z.record(z.string(), z.boolean()).nullable(),
-});
-export type PartnerAccessDto = z.infer<typeof partnerAccessDtoSchema>;
-
-/* ─── Partner analytics (Phase 1) ──────────────────────────────────────────── */
-
-export const topEventDtoSchema = z.object({
-  eventId: opaqueIdSchema,
-  title: z.string(),
-  revenuePaise: z.number().int().nonnegative(),
-  tickets: z.number().int().nonnegative(),
-  date: z.iso.datetime(),
-});
-
-/**
- * Read-model only: every value is precomputed at write time. Nothing here is
- * scanned per request, which is why a dashboard can load it cheaply.
- */
-export const organizationOverviewDtoSchema = z.object({
-  organizationId: opaqueIdSchema,
-  totalEvents: z.number().int().nonnegative(),
-  publishedEvents: z.number().int().nonnegative(),
-  totalRevenuePaise: z.number().int().nonnegative(),
-  totalTicketsSold: z.number().int().nonnegative(),
-  totalCheckIns: z.number().int().nonnegative(),
-  topEvents: z.array(topEventDtoSchema),
-  /** null until the organization has a finished event. */
-  lastEventAt: z.iso.datetime().nullable(),
-});
-export type OrganizationOverviewDto = z.infer<typeof organizationOverviewDtoSchema>;
-
-/** Ratios are 0..1, not percentages — the UI decides how to render them. */
-const ratio = () => z.number().min(0).max(1);
-
-export const eventAnalyticsDtoSchema = z.object({
-  eventId: opaqueIdSchema,
-  totalRevenuePaise: z.number().int().nonnegative(),
-  ticketsSold: z.number().int().nonnegative(),
-  totalCheckIns: z.number().int().nonnegative(),
-  capacity: z.number().int().nonnegative(),
-  views: z.number().int().nonnegative(),
-  guestlistSignups: z.number().int().nonnegative(),
-  avgTicketPricePaise: z.number().int().nonnegative(),
-  occupancyRate: ratio(),
-  sellThroughRate: ratio(),
-  refundAmountPaise: z.number().int().nonnegative(),
-  refundRate: ratio(),
-  noShowRate: ratio(),
-  repeatGuests: z.number().int().nonnegative(),
-  conversionRate: ratio(),
-});
-export type EventAnalyticsDto = z.infer<typeof eventAnalyticsDtoSchema>;
-
-/* ─── Promoter referral links (Phase 1) ────────────────────────────────────── */
-
-export const referralLinkDtoSchema = z.object({
-  id: opaqueIdSchema,
-  eventId: opaqueIdSchema,
-  promoterId: opaqueIdSchema,
-  organizationId: opaqueIdSchema,
-  code: z.string().min(4).max(16),
-  label: z.string().min(1).max(120),
-  isActive: z.boolean(),
-  /** Vanity counters. The authoritative attribution lives on the order. */
-  clicks: z.number().int().nonnegative(),
-  conversions: z.number().int().nonnegative(),
-  version: z.number().int().positive(),
-  createdAt: z.iso.datetime(),
-  updatedAt: z.iso.datetime(),
-});
-export type ReferralLinkDto = z.infer<typeof referralLinkDtoSchema>;
-
-export const createReferralLinkSchema = z
-  .object({
-    promoterId: opaqueIdSchema,
-    /** Omit to have one generated from an unambiguous alphabet. */
-    code: z
-      .string()
-      .min(4)
-      .max(16)
-      .regex(/^[A-Za-z0-9 -]+$/, 'A referral code may contain letters and digits only')
-      .optional(),
-    label: z.string().min(1).max(120).optional(),
-  })
-  .strict();
-export type CreateReferralLinkRequest = z.infer<typeof createReferralLinkSchema>;
-
-/* ─── Promoter connections (Phase 1) ───────────────────────────────────────── */
-
-export const promoterConnectionStatusSchema = z.enum([
-  'pending',
-  'active',
-  'rejected',
-  'blocked',
-  'revoked',
-]);
-
-export const promoterConnectionDtoSchema = z.object({
-  id: opaqueIdSchema,
-  promoterId: opaqueIdSchema,
-  targetId: opaqueIdSchema,
-  targetType: z.enum(['host', 'venue']),
-  initiatedBy: z.enum(['promoter', 'target']),
-  status: promoterConnectionStatusSchema,
-  message: z.string().nullable(),
-  resolutionReason: z.string().nullable(),
-  resolvedAt: z.iso.datetime().nullable(),
-  version: z.number().int().positive(),
-  createdAt: z.iso.datetime(),
-  updatedAt: z.iso.datetime(),
-});
-export type PromoterConnectionDto = z.infer<typeof promoterConnectionDtoSchema>;
-
-/**
- * `initiatedBy` says which side the CALLER is; the caller's own organization
- * is taken from the session, so only the counterparty is named here.
- */
-export const requestConnectionSchema = z
-  .object({
-    counterpartyId: opaqueIdSchema,
-    targetType: z.enum(['host', 'venue']),
-    initiatedBy: z.enum(['promoter', 'target']),
-    message: z.string().max(1000).optional(),
-  })
-  .strict();
-export type RequestConnectionRequest = z.infer<typeof requestConnectionSchema>;
-
-/* ─── Onboarding / KYC (Phase 2) ───────────────────────────────────────────── */
-
-export const onboardingStatusSchema = z.enum([
-  'draft',
-  'submitted',
-  'changes_requested',
-  'approved',
-  'rejected',
-]);
-
-export const onboardingPlanSchema = z.enum(['basic', 'silver', 'diamond']);
-
-/**
- * Everything an applicant may set. Kept `.strict()` at the request boundary
- * and re-filtered in the domain — a client cannot smuggle `role` in either
- * place (v1's privilege-escalation guard, made total).
- */
-export const onboardingProfileSchema = z
-  .object({
-    legalName: z.string().min(1).max(200),
-    contactPerson: z.string().min(1).max(200),
-    phone: z.string().min(6).max(20),
-    city: z.string().min(1).max(120),
-    area: z.string().max(120).optional(),
-    website: z.string().max(300).optional(),
-    capacity: z.number().int().nonnegative().nullable().optional(),
-    instagram: z.string().max(120).optional(),
-    bio: z.string().max(2000).optional(),
-    businessType: z.string().max(120).optional(),
-    registrationNumber: z.string().max(120).optional(),
-    entityType: z.string().max(120).optional(),
-  })
-  .strict();
-export type OnboardingProfileDto = z.infer<typeof onboardingProfileSchema>;
-
-export const onboardingDocumentSchema = z.object({
-  label: z.string().min(1).max(60),
-  storagePath: z.string().min(1).max(500),
-  uploadedAt: z.iso.datetime(),
-});
-
-export const onboardingRequestDtoSchema = z.object({
-  id: opaqueIdSchema,
-  userId: opaqueIdSchema,
-  status: onboardingStatusSchema,
-  requestedType: partnerTypeSchema,
-  plan: onboardingPlanSchema,
-  profile: onboardingProfileSchema,
-  documents: z.array(onboardingDocumentSchema),
-  /** Labels still missing before the applicant may submit. */
-  missingDocuments: z.array(z.string()),
-  submittedAt: z.iso.datetime().nullable(),
-  reviewedBy: opaqueIdSchema.nullable(),
-  reviewedAt: z.iso.datetime().nullable(),
-  reviewNote: z.string().nullable(),
-  provisionedOrganizationId: opaqueIdSchema.nullable(),
-  version: z.number().int().positive(),
-  createdAt: z.iso.datetime(),
-  updatedAt: z.iso.datetime(),
-});
-export type OnboardingRequestDto = z.infer<typeof onboardingRequestDtoSchema>;
-
-export const startOnboardingSchema = z
-  .object({
-    requestedType: partnerTypeSchema,
-    plan: onboardingPlanSchema,
-    profile: onboardingProfileSchema,
-  })
-  .strict();
-export type StartOnboardingRequest = z.infer<typeof startOnboardingSchema>;
-
-/**
- * Autosave. Loose on purpose at the type level (every field optional) but
- * still `.strict()`, so an unknown key is a 422 rather than something the
- * server silently ignores — the applicant should know their data was dropped.
- */
-export const saveOnboardingProgressSchema = onboardingProfileSchema.partial().strict();
-export type SaveOnboardingProgressRequest = z.infer<typeof saveOnboardingProgressSchema>;
-
-export const addOnboardingDocumentSchema = z
-  .object({
-    label: z.string().min(1).max(60),
-    storagePath: z.string().min(1).max(500),
-  })
-  .strict();
-export type AddOnboardingDocumentRequest = z.infer<typeof addOnboardingDocumentSchema>;
-
-export const verifyDocumentSchema = z
-  .object({
-    documentType: z.string().min(1).max(40),
-    documentNumber: z.string().min(1).max(64),
-    holderName: z.string().max(200).optional(),
-  })
-  .strict();
-export type VerifyDocumentRequest = z.infer<typeof verifyDocumentSchema>;
-
-/**
- * `passed` is never rendered as "verified" by the frontend unless `provider`
- * is a real one — the default provider reports `format-check` / `format_ok`
- * precisely so a green tick cannot be mistaken for an identity confirmation.
- */
-export const verificationResultDtoSchema = z.object({
-  passed: z.boolean(),
-  provider: z.string().min(1),
-  reason: z.string().nullable(),
-  referenceId: z.string().nullable(),
-});
-export type VerificationResultDto = z.infer<typeof verificationResultDtoSchema>;
-
-/** Admin decision on an application. A note is required to ask for changes. */
-export const reviewOnboardingSchema = z
-  .object({
-    note: z.string().max(2000).optional(),
-  })
-  .strict();
-export type ReviewOnboardingRequest = z.infer<typeof reviewOnboardingSchema>;
-
-/**
- * The organization an approval created. Deliberately not `organizationDtoSchema`:
- * that one carries `role`, meaning *the caller's* role in the org, and the
- * approving admin has none — they provisioned it for someone else.
- */
-export const provisionedOrganizationDtoSchema = z.object({
-  id: opaqueIdSchema,
-  name: z.string().min(1).max(200),
-  slug: z.string().min(1).max(60),
-  ownerId: opaqueIdSchema,
-  /** Whole-number percent, set from the applicant's plan. */
-  platformFeePercent: z.number().int().nonnegative().max(100),
-  status: organizationStatusSchema,
-  version: z.number().int().positive(),
-  createdAt: z.iso.datetime(),
-  updatedAt: z.iso.datetime(),
-});
-export type ProvisionedOrganizationDto = z.infer<typeof provisionedOrganizationDtoSchema>;
-
-export const approveOnboardingResultSchema = z.object({
-  request: onboardingRequestDtoSchema,
-  organization: provisionedOrganizationDtoSchema,
-});
-export type ApproveOnboardingResult = z.infer<typeof approveOnboardingResultSchema>;
-
-/* ─── Tiered admin authority (Phase 2) ─────────────────────────────────────── */
-
-export const adminRoleSchema = z.enum(['super', 'admin', 'ops', 'finance', 'support']);
-
-export const adminActionSchema = z.enum([
-  'ONBOARDING_APPROVE',
-  'VENUE_SUSPEND',
-  'FINANCIAL_REFUND',
-  'PAYOUT_BATCH_RUN',
-  'ADMIN_PROVISION',
-  'COMMISSION_ADJUST',
-  'PAYOUT_FREEZE',
-]);
-
-export const proposalStatusSchema = z.enum(['pending', 'approved', 'rejected', 'cancelled']);
-
-export const platformAdminDtoSchema = z.object({
-  id: opaqueIdSchema,
-  email: z.email(),
-  role: adminRoleSchema,
-  isActive: z.boolean(),
-  version: z.number().int().positive(),
-  createdAt: z.iso.datetime(),
-  updatedAt: z.iso.datetime(),
-});
-export type PlatformAdminDto = z.infer<typeof platformAdminDtoSchema>;
-
-export const proposedActionDtoSchema = z.object({
-  id: opaqueIdSchema,
-  action: adminActionSchema,
-  proposedBy: opaqueIdSchema,
-  reason: z.string(),
-  payload: z.record(z.string(), z.unknown()),
-  status: proposalStatusSchema,
-  resolvedBy: opaqueIdSchema.nullable(),
-  resolvedAt: z.iso.datetime().nullable(),
-  resolutionReason: z.string().nullable(),
-  version: z.number().int().positive(),
-  createdAt: z.iso.datetime(),
-  updatedAt: z.iso.datetime(),
-});
-export type ProposedActionDto = z.infer<typeof proposedActionDtoSchema>;
-
-export const proposeActionSchema = z
-  .object({
-    action: adminActionSchema,
-    reason: z.string().min(1).max(2000),
-    payload: z.record(z.string(), z.unknown()).optional(),
-  })
-  .strict();
-export type ProposeActionRequest = z.infer<typeof proposeActionSchema>;
-
-export const resolveProposalSchema = z
-  .object({
-    reason: z.string().max(2000).optional(),
-  })
-  .strict();
-export type ResolveProposalRequest = z.infer<typeof resolveProposalSchema>;
-
-/** Before/after trail of a privileged action. */
-export const adminAuditRecordDtoSchema = z.object({
-  id: opaqueIdSchema,
-  adminId: opaqueIdSchema,
-  adminRole: z.string(),
-  action: z.string(),
-  targetType: z.string(),
-  targetId: opaqueIdSchema,
-  before: z.record(z.string(), z.unknown()).nullable(),
-  after: z.record(z.string(), z.unknown()).nullable(),
-  reason: z.string().nullable(),
-  occurredAt: z.number().int().nonnegative(),
-});
-export type AdminAuditRecordDto = z.infer<typeof adminAuditRecordDtoSchema>;
+// Shared primitives
+export type {
+  PageInfo,
+  Paginated,
+  NoContent,
+  OpaqueId,
+  Cursor,
+  PaginationQuery,
+  IdempotencyKey,
+  IfMatchVersion,
+  OrganizationId,
+} from './contracts/shared.js';
+
+export {
+  pageInfoSchema,
+  noContentSchema,
+  opaqueIdSchema,
+  cursorSchema,
+  paginationQuerySchema,
+  idempotencyKeySchema,
+  versionHeaderSchema,
+  organizationIdSchema,
+  paginatedSchema,
+} from './contracts/shared.js';
+
+// Auth
+export type {
+  Role,
+  User,
+  Session,
+  SignupRequest,
+  LoginRequest,
+  AuthBridgeResponse,
+} from './contracts/auth.js';
+
+export {
+  roleSchema,
+  userSchema,
+  sessionSchema,
+  signupRequestSchema,
+  loginRequestSchema,
+  authBridgeResponseSchema,
+} from './contracts/auth.js';
+
+// Organization, Venue, Member
+export type {
+  OrganizationRoleDto,
+  OrganizationStatusDto,
+  OrganizationDto,
+  CreateOrganizationInput,
+  VenueStatusDto,
+  VenueDto,
+  CreateVenueInput,
+  OrganizationMemberDto,
+  InviteMemberInput,
+  VenueProfileDto,
+  VenueSlotDto,
+  SlotRequestDto,
+  CreateSlotRequestInput,
+} from './contracts/organization.js';
+
+export {
+  organizationRoleSchema,
+  organizationStatusSchema,
+  organizationDtoSchema,
+  createOrganizationSchema,
+  venueStatusSchema,
+  venueDtoSchema,
+  createVenueSchema,
+  organizationMemberDtoSchema,
+  inviteMemberSchema,
+  venueProfileDtoSchema,
+  venueSlotDtoSchema,
+  slotRequestDtoSchema,
+  createSlotRequestSchema,
+} from './contracts/organization.js';
+
+// Event + Catalog
+export type {
+  EventStatusDto,
+  EventDto,
+  EventPreviewDto,
+  CreateEventInput,
+  UpdateEventInput,
+  CancelEventInput,
+  TicketTierDto,
+  CreateTicketTierRequest,
+  PromoCodeDto,
+  CreatePromoCodeRequest,
+  TablePackageDto,
+  CreateTablePackageRequest,
+  PromoterAssignmentDto,
+  AssignPromoterRequest,
+} from './contracts/event.js';
+
+export {
+  eventStatusSchema,
+  eventDtoSchema,
+  eventPreviewDtoSchema,
+  createEventSchema,
+  updateEventSchema,
+  cancelEventSchema,
+  ticketTierStatusSchema,
+  ticketTierDtoSchema,
+  createTicketTierSchema,
+  promoCodeDtoSchema,
+  createPromoCodeSchema,
+  tablePackageDtoSchema,
+  createTablePackageSchema,
+  promoterAssignmentDtoSchema,
+  assignPromoterSchema,
+} from './contracts/event.js';
+
+// Partner (partnerships, promoters, referrals, analytics)
+export type {
+  PartnershipDto,
+  RequestPartnershipRequest,
+  ResolvePartnershipRequest,
+  PartnerAccessDto,
+  OrganizationOverviewDto,
+  EventAnalyticsDto,
+  ReferralLinkDto,
+  CreateReferralLinkRequest,
+  PromoterConnectionDto,
+  RequestConnectionRequest,
+} from './contracts/partner.js';
+
+export {
+  partnershipStatusSchema,
+  partnershipDtoSchema,
+  requestPartnershipSchema,
+  resolvePartnershipSchema,
+  partnerPermissionSchema,
+  partnerAccessDtoSchema,
+  organizationOverviewDtoSchema,
+  eventAnalyticsDtoSchema,
+  referralLinkDtoSchema,
+  createReferralLinkSchema,
+  promoterConnectionDtoSchema,
+  requestConnectionSchema,
+} from './contracts/partner.js';
+
+// Onboarding / KYC / Admin Authority
+export type {
+  OnboardingProfileDto,
+  OnboardingRequestDto,
+  StartOnboardingRequest,
+  SaveOnboardingProgressRequest,
+  AddOnboardingDocumentRequest,
+  VerifyDocumentRequest,
+  VerificationResultDto,
+  ReviewOnboardingRequest,
+  ProvisionedOrganizationDto,
+  ApproveOnboardingResult,
+  PlatformAdminDto,
+  ProposedActionDto,
+  ProposeActionRequest,
+  ResolveProposalRequest,
+  AdminAuditRecordDto,
+} from './contracts/onboarding.js';
+
+export {
+  onboardingStatusSchema,
+  onboardingPlanSchema,
+  onboardingProfileSchema,
+  onboardingDocumentSchema,
+  onboardingRequestDtoSchema,
+  startOnboardingSchema,
+  saveOnboardingProgressSchema,
+  addOnboardingDocumentSchema,
+  verifyDocumentSchema,
+  verificationResultDtoSchema,
+  reviewOnboardingSchema,
+  provisionedOrganizationDtoSchema,
+  approveOnboardingResultSchema,
+  adminRoleSchema,
+  adminActionSchema,
+  proposalStatusSchema,
+  platformAdminDtoSchema,
+  proposedActionDtoSchema,
+  proposeActionSchema,
+  resolveProposalSchema,
+  adminAuditRecordDtoSchema,
+} from './contracts/onboarding.js';
+
+// Checkout / Orders / Payments / Entitlements
+export type {
+  CheckoutQuoteRequest,
+  CheckoutQuoteResponse,
+  CheckoutHoldRequest,
+  CheckoutHoldResponse,
+  OrderDto,
+  OrdersListResponse,
+  EntitlementDto,
+  EntitlementsListResponse,
+  PaymentOrderRequest,
+  PaymentOrderResponse,
+  PaymentVerificationRequest,
+  PaymentVerificationResponse,
+  RefundRequest,
+  RefundResponse,
+} from './contracts/checkout.js';
+
+export {
+  checkoutQuoteRequestSchema,
+  checkoutQuoteResponseSchema,
+  checkoutHoldRequestSchema,
+  checkoutHoldResponseSchema,
+  orderDtoSchema,
+  ordersListResponseSchema,
+  entitlementDtoSchema,
+  entitlementsListResponseSchema,
+  paymentOrderRequestSchema,
+  paymentOrderResponseSchema,
+  paymentVerificationRequestSchema,
+  paymentVerificationResponseSchema,
+  refundRequestSchema,
+  refundResponseSchema,
+} from './contracts/checkout.js';
+
+// Phase 5: Door / Scanner / Cover Wallet
+export type {
+  ScannerSessionCreateBody,
+  ScannerSessionDto,
+  ScanRequest,
+  ScanResponse,
+  MagicQrRequest,
+  MagicQrResponse,
+  OfflineManifestRequest,
+  OfflineManifestResponse,
+  OfflineSyncRequest,
+  OfflineSyncResponse,
+  DoorWalkInRequest,
+  DoorDineInRequest,
+  DoorSaleResponse,
+  DoorSalesListResponse,
+  CoverWalletIssueRequest,
+  CoverWalletDebitRequest,
+  CoverWalletCreditRequest,
+  CoverWalletResponse,
+  CoverWalletReconciliationRequest,
+  CoverWalletReconciliationResponse,
+  Phase5ErrorCode,
+} from './contracts/phase5.js';
+
+export {
+  scannerSessionCreateBodySchema,
+  scannerSessionDtoSchema,
+  scanRequestSchema,
+  scanResponseSchema,
+  magicQrRequestSchema,
+  magicQrResponseSchema,
+  offlineManifestRequestSchema,
+  offlineManifestResponseSchema,
+  offlineSyncRequestSchema,
+  offlineSyncResponseSchema,
+  doorWalkInRequestSchema,
+  doorDineInRequestSchema,
+  doorSaleResponseSchema,
+  doorSalesListResponseSchema,
+  coverWalletIssueRequestSchema,
+  coverWalletDebitRequestSchema,
+  coverWalletCreditRequestSchema,
+  coverWalletResponseSchema,
+  coverWalletReconciliationRequestSchema,
+  coverWalletReconciliationResponseSchema,
+  phase5ErrorCodeSchema,
+} from './contracts/phase5.js';

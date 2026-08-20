@@ -1,4 +1,3 @@
-export * from './memory/memory-repositories.js';
 export * from './memory/memory-idempotency-store.js';
 export * from './memory/memory-outbox-store.js';
 export * from './memory/memory-audit-repository.js';
@@ -7,4 +6,8 @@ export * from './memory/memory-partnership-repository.js';
 export * from './memory/memory-referral-link-repository.js';
 export * from './memory/memory-promoter-connection-repository.js';
 export * from './memory/memory-onboarding-repository.js';
+export * from './memory/memory-scan-ledger-repository.js';
+export * from './memory/memory-event-code-repository.js';
+export * from './memory/memory-door-sale-repository.js';
+export * from './memory/memory-cover-wallet-repository.js';
 export * from './firestore/index.js';
