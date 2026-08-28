@@ -679,6 +679,10 @@ function createCoverWalletServiceImpl(deps: CoverWalletServiceDeps): CoverWallet
     if (input.walletId) {
       const wallet = await coverWallets.findById(input.walletId);
       if (!wallet) throw new NotFoundError('Wallet', input.walletId);
+      // The event's org is checked above, but a caller can pass any
+      // `walletId` — verify the wallet itself is in the actor's org so a
+      // reconciliation cannot read another tenant's balance/txn history.
+      requireOrgAccess(actor, wallet.organizationId);
       wallets = [wallet];
     } else if (input.userId) {
       const wallet = await coverWallets.findByEventAndUser(input.eventId, input.userId);
