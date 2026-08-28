@@ -1,16 +1,15 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
-import { InvalidOperationError } from '../../domain/errors.js';
+import { InvalidOperationError } from '@c1rcle/core/domain';
 
 import type {
-  PaymentProvider,
   PaymentOrderRequest,
   PaymentOrderResponse,
   PaymentVerificationRequest,
   PaymentVerificationResponse,
   RefundRequest,
   RefundResponse,
-} from '../payments/payment-provider.js';
+} from '@c1rcle/core/domain/ports';
 
 interface RazorpayErrorResponse {
   error?: {
@@ -62,7 +61,7 @@ function isRazorpayOrderResponse(data: unknown): data is RazorpayOrderResponse {
 
 function isRazorpayPaymentResponse(data: unknown): data is RazorpayPaymentResponse {
   return (
-    isRazorpayOrderResponse(data) && typeof (data as Record<string, unknown>).captured === 'boolean'
+    isRazorpayOrderResponse(data) && typeof (data as unknown as Record<string, unknown>).captured === 'boolean'
   );
 }
 
@@ -129,16 +128,16 @@ export class RazorpayPaymentProvider {
     });
 
     if (!response.ok) {
-      const error = (await response
+      const error = await response
         .json()
-        .catch(() => ({ error: { description: 'Unknown error' } }))) as unknown;
+        .catch(() => ({ error: { description: 'Unknown error' } }));
       if (!isRazorpayErrorResponseDataWithDescription(error)) {
         throw new InvalidOperationError(`Razorpay create order failed: ${response.statusText}`);
       }
       throw new InvalidOperationError(`Razorpay create order failed: ${error.error.description}`);
     }
 
-    const data = (await response.json()) as unknown;
+    const data = await response.json();
     if (!isRazorpayOrderResponse(data)) {
       throw new InvalidOperationError('Invalid Razorpay order response');
     }
@@ -180,16 +179,16 @@ export class RazorpayPaymentProvider {
     });
 
     if (!response.ok) {
-      const error = (await response
+      const error = await response
         .json()
-        .catch(() => ({ error: { description: 'Unknown error' } }))) as unknown;
+        .catch(() => ({ error: { description: 'Unknown error' } }));
       if (!isRazorpayErrorResponseDataWithDescription(error)) {
         throw new InvalidOperationError(`Razorpay capture failed: ${response.statusText}`);
       }
       throw new InvalidOperationError(`Razorpay capture failed: ${error.error.description}`);
     }
 
-    const data = (await response.json()) as unknown;
+    const data = await response.json();
     if (!isRazorpayPaymentResponse(data)) {
       throw new InvalidOperationError('Invalid Razorpay payment response');
     }
@@ -215,16 +214,16 @@ export class RazorpayPaymentProvider {
     });
 
     if (!response.ok) {
-      const error = (await response
+      const error = await response
         .json()
-        .catch(() => ({ error: { description: 'Unknown error' } }))) as unknown;
+        .catch(() => ({ error: { description: 'Unknown error' } }));
       if (!isRazorpayErrorResponseDataWithDescription(error)) {
         throw new InvalidOperationError(`Razorpay refund failed: ${response.statusText}`);
       }
       throw new InvalidOperationError(`Razorpay refund failed: ${error.error.description}`);
     }
 
-    const data = (await response.json()) as unknown;
+    const data = await response.json();
     if (!isRazorpayRefundResponse(data)) {
       throw new InvalidOperationError('Invalid Razorpay refund response');
     }
@@ -246,16 +245,16 @@ export class RazorpayPaymentProvider {
       if (response.status === 404) {
         throw new InvalidOperationError('Payment not found');
       }
-      const error = (await response
+      const error = await response
         .json()
-        .catch(() => ({ error: { description: 'Unknown error' } }))) as unknown;
+        .catch(() => ({ error: { description: 'Unknown error' } }));
       if (!isRazorpayErrorResponseDataWithDescription(error)) {
         throw new InvalidOperationError(`Razorpay get payment failed: ${response.statusText}`);
       }
       throw new InvalidOperationError(`Razorpay get payment failed: ${error.error.description}`);
     }
 
-    const data = (await response.json()) as unknown;
+    const data = await response.json();
     if (!isRazorpayPaymentResponse(data)) {
       throw new InvalidOperationError('Invalid Razorpay payment response');
     }

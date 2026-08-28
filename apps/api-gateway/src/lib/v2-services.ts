@@ -24,7 +24,7 @@ import {
   createCoverWalletService,
   type ScannerService,
   type DoorService,
-  type CoverWalletService,
+  type CoverWalletService, type ServiceDeps, type ActorContext 
 } from '@c1rcle/core/application';
 import { createCoreConfig } from '@c1rcle/core/config';
 import { FormatCheckVerificationProvider } from '@c1rcle/core/domain';
@@ -39,12 +39,13 @@ import {
   buildActorContext,
 } from '@c1rcle/core/infrastructure';
 
-import type { ServiceDeps, ActorContext } from '@c1rcle/core/application';
 import type { AdminAuditRepository } from '@c1rcle/core/domain';
 
 import { getGatewayConfig } from '../config/index.js';
-import { RazorpayPaymentProvider } from '../payments/razorpay-adapter.js';
 
+import { RazorpayPaymentProvider } from './payments/razorpay-adapter.js';
+
+import type { GatewayConfig } from '../config/index.js';
 import type { FastifyRequest } from 'fastify';
 
 /**
@@ -104,6 +105,48 @@ export function createV2Services(logger?: Logger): PartnerV2Services {
   return built;
 }
 
+/**
+ * Pre-B10 fabricated actor, restored (see `plugins/auth.ts`'s header
+ * comment — this is meant to live here, not in `packages/core`, precisely
+ * because it needs `STORAGE_DRIVER` to gate itself: fabricating an actor
+ * from a bare header is only safe when there is no real auth flow to bypass
+ * (`STORAGE_DRIVER=memory`, i.e. `pnpm test` / CI). On `firestore`,
+ * `plugins/auth.ts`'s `onRequest` hook always populates `request.actor`
+ * before this runs when there's a real session — this never fabricates one.
+ */
+function actorFromRequest(gw: GatewayConfig, request: FastifyRequest): ActorContext {
+  if (gw.STORAGE_DRIVER === 'memory' && !request.actor) {
+    // "The memory driver has a single fixed dev actor" (see
+    // `partner/invitations.test.ts`) — always fabricates on this driver,
+    // never throws. Only `STORAGE_DRIVER=firestore` (real auth) reaches the
+    // `buildActorContext` throw below when there's genuinely no session.
+    //
+    // Mirrors what `plugins/auth.ts`'s real onRequest hook would have put on
+    // the request (`request.user`/`request.authContext`) when a test/caller
+    // fabricates that shape directly (see `v2-services.test.ts`'s
+    // `fakeRequest`) — preferred over the header fallback so role and
+    // capabilities aren't silently flattened to a hardcoded default. Falls
+    // back further to `x-organization-id` (org-scoped routes) or `x-user-id`
+    // (not-yet-in-an-org routes, e.g. onboarding's `requireUserId`), and
+    // finally to a fixed default when a route needs no identity at all
+    // (e.g. `/invitations/:id/accept`, which looks the org up from the
+    // invitation itself).
+    const membership = request.authContext?.activeMembership;
+    const orgHeader = request.headers['x-organization-id'];
+    const organizationId = membership?.organizationId ?? (Array.isArray(orgHeader) ? orgHeader[0] : orgHeader);
+    const userHeader = request.headers['x-user-id'];
+    const userId = request.user?.uid ?? (Array.isArray(userHeader) ? userHeader[0] : userHeader);
+    return {
+      userId: userId ?? 'user_1',
+      organizationId: organizationId ?? '',
+      role: membership?.role ?? 'owner',
+      capabilities: membership?.capabilities ?? [],
+      platformRole: 'partner',
+    } as ActorContext;
+  }
+  return buildActorContext(request);
+}
+
 function buildV2Services(logger?: Logger): PartnerV2Services {
   const gw = getGatewayConfig();
   const coreConfig = createCoreConfig({
@@ -111,7 +154,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     firestore: { projectId: gw.FIRESTORE_PROJECT_ID },
   });
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call
+   
   const repositories: ServiceDeps['repositories'] = buildRepositories(gw);
 
   // T13 event infrastructure: memory outbox store + in-process bus + audit.
@@ -126,12 +169,12 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   const adminAudits: AdminAuditRepository =
     gw.STORAGE_DRIVER === 'memory'
       ? new MemoryAdminAuditRepository()
-      : // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call
+      :  
         new FirestoreAdminAuditRepository(firestoreClient(gw));
 
   // Phase 4: Payment provider, pricing, inventory
   const gwConfig = getGatewayConfig();
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call
+   
   const paymentProvider = new RazorpayPaymentProvider({
     keyId: gwConfig.RAZORPAY_KEY_ID ?? 'test_key_id',
     keySecret: gwConfig.RAZORPAY_KEY_SECRET ?? 'test_key_secret',
@@ -158,7 +201,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     // Swap here — and only here — when a real KYC provider is contracted.
 
     verification: new FormatCheckVerificationProvider(),
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+     
     paymentProvider,
     pricing,
     inventory,
@@ -173,6 +216,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     eventCodes: repositories.eventCodes,
     scannerSessions: repositories.scannerSessions,
     entitlements: repositories.entitlements,
+    repositories,
     config: coreConfig,
     logger: deps.logger,
     outbox: eventBus,
@@ -219,9 +263,9 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     checkout: new CheckoutService(deps),
     // Replay protection must outlive the process: a restart mid-retry with an
     // in-memory store turns a client's retry into a second business result.
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-argument
+     
     idempotency: new IdempotencyService(buildIdempotencyStore(), logger),
-    actor: buildActorContext,
+    actor: (request: FastifyRequest) => actorFromRequest(gw, request),
     repos: () => repositories,
     /** T13 audit trail surfaced to routes/tests (B09 slice consumer). */
     audits,

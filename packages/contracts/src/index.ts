@@ -17,6 +17,7 @@ export {
   zodToFieldErrors, 
   STATUS_CODE_TO_ERROR_CODE 
 } from './contracts/shared.js';
+export type { ApiErrorCode, FieldErrors, RequestId } from './contracts/shared.js';
 export type {
   OrganizationRoleDto,
   OrganizationStatusDto,

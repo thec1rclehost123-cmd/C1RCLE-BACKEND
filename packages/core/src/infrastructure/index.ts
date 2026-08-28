@@ -10,4 +10,6 @@ export * from './memory/memory-scan-ledger-repository.js';
 export * from './memory/memory-event-code-repository.js';
 export * from './memory/memory-door-sale-repository.js';
 export * from './memory/memory-cover-wallet-repository.js';
+export * from './memory/index.js';
+export * from './utils.js';
 export * from './firestore/index.js';

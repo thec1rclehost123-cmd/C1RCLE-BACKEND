@@ -38,7 +38,9 @@ export type Permission =
   | 'event.publish'
   | 'event.cancel'
   /** Ask a venue for a slot — the host side of the same conversation. */
-  | 'slot-request.create';
+  | 'slot-request.create'
+  /** Phase 5: door staff overriding a denied scan (manual admission). */
+  | 'ticket.override';
 
 const READ_ONLY: readonly Permission[] = ['organization.read', 'venue.read', 'event.read'];
 
@@ -62,6 +64,7 @@ export const ROLE_PERMISSIONS: Readonly<Record<OrganizationRole, readonly Permis
     'event.publish',
     'event.cancel',
     'slot-request.create',
+    'ticket.override',
   ],
   admin: [
     'organization.read',
@@ -77,6 +80,7 @@ export const ROLE_PERMISSIONS: Readonly<Record<OrganizationRole, readonly Permis
     'event.publish',
     'event.cancel',
     'slot-request.create',
+    'ticket.override',
   ],
   manager: [
     'organization.read',
@@ -88,6 +92,7 @@ export const ROLE_PERMISSIONS: Readonly<Record<OrganizationRole, readonly Permis
     'event.update',
     'event.publish',
     'slot-request.create',
+    'ticket.override',
   ],
   member: READ_ONLY,
 };

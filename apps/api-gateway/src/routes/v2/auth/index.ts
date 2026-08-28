@@ -76,12 +76,20 @@ export default async function authRoutes(
     async (request, reply) => {
       if (!auth) return sendAuthUnavailable(reply, request);
       const body = request.body as z.infer<typeof loginRequestSchema>;
-      const result = await runAuthFlow(auth, request, reply, () =>
-        auth.api.signInEmail({
-          body: { email: body.email, password: body.password },
-          headers: toWebHeaders(request.headers),
-          asResponse: true,
-        }),
+      const result = await runAuthFlow(
+        auth,
+        request,
+        reply,
+        () =>
+          auth.api.signInEmail({
+            body: { email: body.email, password: body.password },
+            headers: toWebHeaders(request.headers),
+            asResponse: true,
+          }),
+        // Every client-side login failure returns one constant body — an
+        // unknown email and a wrong password are byte-identical, so there is
+        // no account-existence oracle (spec §11.7 / D-024).
+        { genericClientErrorMessage: 'Authentication failed' },
       );
       if (result === undefined) return reply;
       const validated = validateV2Response(reply, request, authBridgeResponseSchema, result);
@@ -156,14 +164,17 @@ async function runAuthFlow(
   request: FastifyRequest,
   reply: FastifyReply,
   call: () => Promise<Response>,
+  options: { genericClientErrorMessage?: string } = {},
 ): Promise<{ user: unknown; accessToken: string; expiresAt: number } | undefined> {
   let response: Response;
   try {
     response = await call();
   } catch (error) {
-    return sendAuthError(reply, request, error);
+    return sendAuthError(reply, request, error, options.genericClientErrorMessage);
   }
-  if (!response.ok) return forwardAuthErrorResponse(reply, request, response);
+  if (!response.ok) {
+    return forwardAuthErrorResponse(reply, request, response, options.genericClientErrorMessage);
+  }
 
   forwardSetCookie(reply, response);
   const accessToken = response.headers.get('set-auth-token');
@@ -194,14 +205,22 @@ async function forwardAuthErrorResponse(
   reply: FastifyReply,
   request: FastifyRequest,
   response: Response,
+  genericClientErrorMessage?: string,
 ): Promise<undefined> {
   const status = response.status === 422 ? 422 : response.status >= 500 ? 500 : 400;
   let message = 'Authentication request failed';
-  try {
-    const body = (await response.json()) as { message?: string };
-    if (body?.message) message = body.message;
-  } catch {
-    // Non-JSON error body — keep the generic message.
+  if (genericClientErrorMessage !== undefined && status < 500) {
+    // Login path: discard Better Auth's own message and return one constant for
+    // every 4xx, so the response cannot distinguish "no such user" from "wrong
+    // password" (account-existence oracle — spec §11.7 / D-024).
+    message = genericClientErrorMessage;
+  } else {
+    try {
+      const body = (await response.json()) as { message?: string };
+      if (body?.message) message = body.message;
+    } catch {
+      // Non-JSON error body — keep the generic message.
+    }
   }
   reply.status(status).send(
     buildV2ErrorResponse({
@@ -213,13 +232,22 @@ async function forwardAuthErrorResponse(
   return undefined;
 }
 
-function sendAuthError(reply: FastifyReply, request: FastifyRequest, error: unknown): undefined {
+function sendAuthError(
+  reply: FastifyReply,
+  request: FastifyRequest,
+  error: unknown,
+  genericClientErrorMessage?: string,
+): undefined {
   const known = error as { status?: number; message?: string };
   const status = typeof known?.status === 'number' ? known.status : 400;
+  const message =
+    genericClientErrorMessage !== undefined && status < 500
+      ? genericClientErrorMessage
+      : (known?.message ?? 'Authentication request failed');
   reply.status(status).send(
     buildV2ErrorResponse({
       status,
-      message: known?.message ?? 'Authentication request failed',
+      message,
       requestId: request.id,
     }),
   );

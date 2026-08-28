@@ -1,6 +1,6 @@
 # Phase 5 — Door / Scanner / Cover-wallet
 
-**Status:** not started · **Depends on:** Phase 4 (entitlements must exist)
+**Status:** substantially done (2026-08-21, verified — see Session Log) · **Depends on:** Phase 4 (entitlements must exist)
 
 ## v1 proven logic to port (`thec1rcle`)
 
@@ -266,4 +266,54 @@ it as a past finding, not a guaranteed-current state.
 115: 
 116: ### Session Log
 117: 
-118: (to be appended during execution)
+118: **2026-08-21** — HTTP wiring session. Prior state at session start: domain
+models/ports/services/memory+Firestore adapters/contracts all existed and
+were wired into `v2-services.ts`, but every route in `phase5-routes.ts`
+returned `501` regardless (confirmed by reading the file directly — this
+contradicted an uncommitted `ROADMAP.md` edit claiming "done ... 29/29
+contract tests pass", which was never actually true until this session).
+
+What changed: split the routes into `door/scanner-routes.ts` (sessions,
+check-ins, verify, lookup, offline-sync, magic QR — override and
+offline-manifest stay honest 501s, see below), `door/door-sale-routes.ts`
+(walk-in/dine-in/sales, server-side price recalc confirmed against
+`door-service.ts`), `door/cover-wallet-routes.ts` (issue/get/debit/credit/
+terminate/reconcile — freeze/unfreeze stay 501, no service method exists).
+`phase5-routes.ts` now holds only the two genuinely-deferred routes
+(`/door/stats`, `/door/stats/ws` — no `@fastify/websocket` registered, no
+aggregation design).
+
+Also fixed, all pre-existing and blocking (found while getting this to
+actually run, not introduced by the routing work): `packages/core`'s
+`infrastructure/utils.ts` didn't compile (wrong relative import path, wrong
+config-field names, 9 missing memory-repo imports, a core→app-layer type
+dependency); `buildActorContext` had no memory-driver fabrication path,
+401/500-ing roughly 95 of 122 gateway tests including the unmodified
+reference template; `contract-suite.test.ts` imported
+`MemoryCoverWalletReconciliationRepository` from the wrong file (test
+never actually ran before — "29/29" was aspirational); reconciliation ids
+embedded a full eventId and blew the platform's 64-char id cap the first
+time a real HTTP call exercised it; `runReconciliation` double-counted the
+opening balance against its own activation transaction (0 tests had ever
+covered this path).
+
+Verified, not asserted: `pnpm --filter @c1rcle/core build` clean,
+`pnpm --filter @c1rcle/core exec vitest run` → 231/232 (the 1 failure is
+`compare-and-set.test.ts`, pre-existing/unrelated, explicitly called out as
+known in the original Phase 5 commit message), `pnpm --filter api-gateway
+typecheck` clean, `pnpm --filter api-gateway exec vitest run` → 122/122.
+
+Still open, by design (not attempted this session — see
+`docs/PHASE_5_HTTP_WIRING_PLAN.md`): live door stats + WebSocket, `/door/
+override` (FSM has no `denied → consumed` transition), `/door/
+offline-manifest` (nothing signs one), cover-wallet freeze/unfreeze (no
+service method), a real scanner-device bearer-token auth layer (routes
+currently authenticate the same way every other v2 route does — cookie
+session — not the short-lived device token the v1 security note
+describes). Also unresolved, found but out of scope to fix here per
+`packages/core/src/application/scanner/scanner-service.ts`'s existing
+(untouched) logic: `ScannerSession.organizationId` is set to the creating
+actor's id, not the real org (worked around at the route layer by
+re-deriving org from the session's event code, same pattern
+`revokeSession` already uses); `scanTicket`/`scanMagicTicket` read the
+client's `deviceId` field as a session-token lookup key, not a hardware id.

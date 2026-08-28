@@ -15,14 +15,38 @@ import type {
   TxContext,
 } from '../domain/ports/repositories.js';
 import type { ScanLedger, ScanLedgerStatus, ScanDenyReason } from '../domain/models/scan-ledger.js';
-import type { EventCode, EventCodeStatus, EventCodeCreateInput, ScannerSession } from '../domain/models/event-code.js';
-import type { DoorSale, DoorSaleCreateInput, DoorSaleCategory, DoorSaleStatus } from '../domain/models/door-sale.js';
-import type { CoverWallet, CoverWalletTxn, CoverWalletCreateInput, CoverWalletCreditInput, CoverWalletDebitInput } from '../domain/models/cover-wallet.js';
+import type {
+  EventCode,
+  EventCodeStatus,
+  EventCodeCreateInput,
+  ScannerSession,
+} from '../domain/models/event-code.js';
+import type {
+  DoorSale,
+  DoorSaleCreateInput,
+  DoorSaleCategory,
+  DoorSaleStatus,
+} from '../domain/models/door-sale.js';
+import type {
+  CoverWallet,
+  CoverWalletTxn,
+  CoverWalletCreateInput,
+  CoverWalletCreditInput,
+  CoverWalletDebitInput,
+} from '../domain/models/cover-wallet.js';
 import type { CoverWalletReconciliation } from '../domain/models/cover-wallet-reconciliation.js';
 import { MemoryScanLedgerRepository } from './memory/memory-scan-ledger-repository.js';
-import { MemoryEventCodeRepository, MemoryScannerSessionRepository } from './memory/memory-event-code-repository.js';
+import {
+  MemoryEventCodeRepository,
+  MemoryScannerSessionRepository,
+} from './memory/memory-event-code-repository.js';
 import { MemoryDoorSaleRepository } from './memory/memory-door-sale-repository.js';
-import { MemoryCoverWalletRepository, MemoryCoverWalletTxnRepository, MemoryCoverWalletReconciliationRepository, sharedTxns } from './memory/memory-cover-wallet-repository.js';
+import {
+  MemoryCoverWalletRepository,
+  MemoryCoverWalletTxnRepository,
+  MemoryCoverWalletReconciliationRepository,
+  sharedTxns,
+} from './memory/memory-cover-wallet-repository.js';
 import { createScanLedger } from '../domain/models/scan-ledger.js';
 import { createEventCode } from '../domain/models/event-code.js';
 import { createDoorSale } from '../domain/models/door-sale.js';
@@ -40,19 +64,19 @@ let memoryRepos: {
 };
 
 beforeEach(() => {
-    // Clear shared state
-    sharedTxns.clear();
-    
-    memoryRepos = {
-      scanLedger: new MemoryScanLedgerRepository(),
-      eventCodes: new MemoryEventCodeRepository(),
-      scannerSessions: new MemoryScannerSessionRepository(),
-      doorSales: new MemoryDoorSaleRepository(),
-      coverWallets: new MemoryCoverWalletRepository(),
-      coverWalletTxns: new MemoryCoverWalletTxnRepository(),
-      coverWalletReconciliations: new MemoryCoverWalletReconciliationRepository(),
-    };
-  });
+  // Clear shared state
+  sharedTxns.clear();
+
+  memoryRepos = {
+    scanLedger: new MemoryScanLedgerRepository(),
+    eventCodes: new MemoryEventCodeRepository(),
+    scannerSessions: new MemoryScannerSessionRepository(),
+    doorSales: new MemoryDoorSaleRepository(),
+    coverWallets: new MemoryCoverWalletRepository(),
+    coverWalletTxns: new MemoryCoverWalletTxnRepository(),
+    coverWalletReconciliations: new MemoryCoverWalletReconciliationRepository(),
+  };
+});
 
 /**
  * Contract suite tests for all Phase 5 repository implementations.
@@ -149,6 +173,10 @@ function createTestCoverWallet(): any {
 
 function createTestReconciliationInput(): any {
   return {
+    // Pin `now` so `createReconciliation` is fully deterministic — this helper
+    // is built twice (test + repo) and compared with `toEqual`; an unpinned
+    // `new Date()` made `createdAt`/`updatedAt` flaky across a ms boundary.
+    now: new Date('2026-08-20T00:00:00.000Z'),
     eventId: 'evt_test' as EntityId,
     organizationId: 'org_test' as EntityId,
     venueId: 'venue_test' as EntityId,
@@ -169,18 +197,21 @@ function createTestReconciliation(): any {
   return createReconciliation(createTestReconciliationInput());
 }
 
-function runRepositoryContractTests(repoName: string, getRepos: () => {
-  scanLedger: any;
-  eventCodes: any;
-  scannerSessions: any;
-  doorSales: any;
-  coverWallets: any;
-  coverWalletTxns: any;
-  coverWalletReconciliations: any;
-}) {
+function runRepositoryContractTests(
+  repoName: string,
+  getRepos: () => {
+    scanLedger: any;
+    eventCodes: any;
+    scannerSessions: any;
+    doorSales: any;
+    coverWallets: any;
+    coverWalletTxns: any;
+    coverWalletReconciliations: any;
+  },
+) {
   describe(`${repoName} contract suite`, () => {
     let repos: ReturnType<typeof getRepos>;
-    
+
     beforeEach(() => {
       repos = getRepos();
     });
@@ -196,7 +227,10 @@ function runRepositoryContractTests(repoName: string, getRepos: () => {
       it('finds by event and entitlement for duplicate detection', async () => {
         const scan = createTestScanLedger();
         await repos.scanLedger.create(scan);
-        const found = await repos.scanLedger.findByEventAndEntitlement(scan.eventId, scan.entitlementId!);
+        const found = await repos.scanLedger.findByEventAndEntitlement(
+          scan.eventId,
+          scan.entitlementId!,
+        );
         expect(found).toEqual(scan);
       });
 
@@ -208,7 +242,11 @@ function runRepositoryContractTests(repoName: string, getRepos: () => {
       it('updates status with deny reason', async () => {
         const scan = createTestScanLedger();
         await repos.scanLedger.create(scan);
-        const updated = await repos.scanLedger.markDenied(scan.id, 'already_used', 'Ticket already scanned');
+        const updated = await repos.scanLedger.markDenied(
+          scan.id,
+          'already_used',
+          'Ticket already scanned',
+        );
         expect(updated?.status).toBe('denied');
         expect(updated?.denyReason).toBe('already_used');
         expect(updated?.denyMessage).toBe('Ticket already scanned');
@@ -268,17 +306,26 @@ function runRepositoryContractTests(repoName: string, getRepos: () => {
       it('creates session with token', async () => {
         const code = createTestEventCode();
         await repos.eventCodes.create(code);
-        
+
         const result = await repos.scannerSessions.create({
           codeId: code.id,
-          codeData: { id: code.id, code: code.code, eventId: code.eventId, venueId: code.venueId, type: code.type, gate: code.gate, maxDevices: code.maxDevices, allowReuse: code.allowReuse },
+          codeData: {
+            id: code.id,
+            code: code.code,
+            eventId: code.eventId,
+            venueId: code.venueId,
+            type: code.type,
+            gate: code.gate,
+            maxDevices: code.maxDevices,
+            allowReuse: code.allowReuse,
+          },
           deviceId: 'device_123',
           deviceName: 'iPhone 15',
           createdBy: 'usr_staff',
           createdByName: 'Staff Member',
           sessionType: 'staff',
         });
-        
+
         expect(result.session).toBeDefined();
         expect(result.sessionToken).toBeDefined();
         expect(result.sessionId).toBeDefined();
@@ -288,17 +335,26 @@ function runRepositoryContractTests(repoName: string, getRepos: () => {
       it('validates session by token hash', async () => {
         const code = createTestEventCode();
         await repos.eventCodes.create(code);
-        
+
         const result = await repos.scannerSessions.create({
           codeId: code.id,
-          codeData: { id: code.id, code: code.code, eventId: code.eventId, venueId: code.venueId, type: code.type, gate: code.gate, maxDevices: code.maxDevices, allowReuse: code.allowReuse },
+          codeData: {
+            id: code.id,
+            code: code.code,
+            eventId: code.eventId,
+            venueId: code.venueId,
+            type: code.type,
+            gate: code.gate,
+            maxDevices: code.maxDevices,
+            allowReuse: code.allowReuse,
+          },
           deviceId: 'device_123',
           deviceName: 'iPhone 15',
           createdBy: 'usr_staff',
           createdByName: 'Staff Member',
           sessionType: 'staff',
         });
-        
+
         const crypto = await import('crypto');
         const tokenHash = crypto.createHash('sha256').update(result.sessionToken).digest('hex');
         const found = await repos.scannerSessions.findByTokenHash(tokenHash);
@@ -308,17 +364,26 @@ function runRepositoryContractTests(repoName: string, getRepos: () => {
       it('revokes session', async () => {
         const code = createTestEventCode();
         await repos.eventCodes.create(code);
-        
+
         const result = await repos.scannerSessions.create({
           codeId: code.id,
-          codeData: { id: code.id, code: code.code, eventId: code.eventId, venueId: code.venueId, type: code.type, gate: code.gate, maxDevices: code.maxDevices, allowReuse: code.allowReuse },
+          codeData: {
+            id: code.id,
+            code: code.code,
+            eventId: code.eventId,
+            venueId: code.venueId,
+            type: code.type,
+            gate: code.gate,
+            maxDevices: code.maxDevices,
+            allowReuse: code.allowReuse,
+          },
           deviceId: 'device_123',
           deviceName: 'iPhone 15',
           createdBy: 'usr_staff',
           createdByName: 'Staff Member',
           sessionType: 'staff',
         });
-        
+
         const revoked = await repos.scannerSessions.revoke(result.sessionId, 'shift_ended');
         expect(revoked?.revokedAt).toBeDefined();
         expect(revoked?.revokedReason).toBe('shift_ended');
@@ -331,7 +396,7 @@ function runRepositoryContractTests(repoName: string, getRepos: () => {
         const created = await repos.doorSales.create(input);
         expect(created.id).toBeDefined();
         expect(created.idempotencyKey).toBe(input.idempotencyKey);
-        
+
         // Second create with same idempotency key should return existing
         const duplicate = await repos.doorSales.create(input);
         expect(duplicate.id).toBe(created.id);
@@ -368,7 +433,7 @@ function runRepositoryContractTests(repoName: string, getRepos: () => {
         sale1.amountPaise = 50000;
         sale1.paymentMode = 'cash';
         await repos.doorSales.create(input1);
-        
+
         const input2 = createTestDoorSaleInput();
         input2.idempotencyKey = 'idem_dinein_1';
         const sale2 = await repos.doorSales.create(input2);
@@ -377,7 +442,7 @@ function runRepositoryContractTests(repoName: string, getRepos: () => {
         sale2.amountPaise = 100000;
         sale2.paymentMode = 'card';
         await repos.doorSales.create(input2);
-        
+
         const stats = await repos.doorSales.getEventStats('evt_test');
         expect(stats.totalSales).toBe(2);
         expect(stats.walkinCount).toBe(1);
@@ -390,19 +455,21 @@ function runRepositoryContractTests(repoName: string, getRepos: () => {
       it('creates wallet and enforces one per user per event', async () => {
         const input = createTestCoverWalletInput();
         const wallet = await repos.coverWallets.create(input);
-        
+
         // Second create for same user/event should fail
         const duplicateInput = createTestCoverWalletInput();
         duplicateInput.userId = input.userId;
         duplicateInput.eventId = input.eventId;
         duplicateInput.openingBalance = 50000;
-        await expect(repos.coverWallets.create(duplicateInput)).rejects.toThrow('Wallet already exists');
+        await expect(repos.coverWallets.create(duplicateInput)).rejects.toThrow(
+          'Wallet already exists',
+        );
       });
 
       it('credits wallet atomically', async () => {
         const input = createTestCoverWalletInput();
         const wallet = await repos.coverWallets.create(input);
-        
+
         const result = await repos.coverWallets.credit({
           walletId: wallet.id,
           amount: 50000,
@@ -413,7 +480,7 @@ function runRepositoryContractTests(repoName: string, getRepos: () => {
           description: 'Top-up',
           idempotencyKey: 'idem_credit_1',
         });
-        
+
         expect(result.wallet.balance).toBe(150000);
         expect(result.wallet.totalCredits).toBe(150000);
         expect(result.txn.type).toBe('credit');
@@ -424,7 +491,7 @@ function runRepositoryContractTests(repoName: string, getRepos: () => {
         const input = createTestCoverWalletInput();
         input.openingBalance = 100000;
         const wallet = await repos.coverWallets.create(input);
-        
+
         // First debit
         await repos.coverWallets.debit({
           walletId: wallet.id,
@@ -437,7 +504,7 @@ function runRepositoryContractTests(repoName: string, getRepos: () => {
           idempotencyKey: 'idem_debit_1',
           deviceId: 'device_1',
         });
-        
+
         // 3 debits within 1 minute should work
         for (let i = 2; i <= 3; i++) {
           await repos.coverWallets.debit({
@@ -452,27 +519,36 @@ function runRepositoryContractTests(repoName: string, getRepos: () => {
             deviceId: 'device_1',
           });
         }
-        
+
         // 4th debit within 1 minute should fail
-        await expect(repos.coverWallets.debit({
-          walletId: wallet.id,
-          amount: 5000,
-          referenceId: 'charge_4',
-          referenceType: 'cover_charge',
-          operatorUid: 'usr_operator',
-          operatorName: 'Operator',
-          description: 'Entry charge',
-          idempotencyKey: 'idem_debit_4',
-          deviceId: 'device_1',
-        })).rejects.toThrow('Velocity limit exceeded');
+        await expect(
+          repos.coverWallets.debit({
+            walletId: wallet.id,
+            amount: 5000,
+            referenceId: 'charge_4',
+            referenceType: 'cover_charge',
+            operatorUid: 'usr_operator',
+            operatorName: 'Operator',
+            description: 'Entry charge',
+            idempotencyKey: 'idem_debit_4',
+            deviceId: 'device_1',
+          }),
+        ).rejects.toThrow('Velocity limit exceeded');
       });
 
       it('refunds wallet', async () => {
         const input = createTestCoverWalletInput();
         input.openingBalance = 50000;
         const wallet = await repos.coverWallets.create(input);
-        
-        await repos.coverWallets.refund(wallet.id, 10000, 'charge_1', 'idem_refund_1', 'usr_admin', 'Refund for cancelled entry');
+
+        await repos.coverWallets.refund(
+          wallet.id,
+          10000,
+          'charge_1',
+          'idem_refund_1',
+          'usr_admin',
+          'Refund for cancelled entry',
+        );
         const updated = await repos.coverWallets.findById(wallet.id);
         expect(updated?.balance).toBe(60000);
         expect(updated?.totalRefunds).toBe(10000);
@@ -483,7 +559,7 @@ function runRepositoryContractTests(repoName: string, getRepos: () => {
       it('creates and finds transaction by idempotency key', async () => {
         const wallet = createTestCoverWallet();
         await repos.coverWallets.create(wallet);
-        
+
         const result = await repos.coverWallets.credit({
           walletId: wallet.id,
           amount: 10000,
@@ -494,10 +570,10 @@ function runRepositoryContractTests(repoName: string, getRepos: () => {
           description: 'Test credit',
           idempotencyKey: 'idem_txn_1',
         });
-        
+
         const txnById = await repos.coverWalletTxns.findById(result.txn.id);
         expect(txnById).toEqual(result.txn);
-        
+
         const txnByIdem = await repos.coverWalletTxns.findByIdempotencyKey('idem_txn_1');
         expect(txnByIdem).toEqual(result.txn);
       });
@@ -505,11 +581,32 @@ function runRepositoryContractTests(repoName: string, getRepos: () => {
       it('finds by wallet with pagination', async () => {
         const wallet = createTestCoverWallet();
         await repos.coverWallets.create(wallet);
-        
-        await repos.coverWallets.credit({ walletId: wallet.id, amount: 10000, referenceId: null, referenceType: null, operatorUid: 'usr_admin', operatorName: 'Admin', description: 'Credit 1', idempotencyKey: 'idem_1' });
-        await repos.coverWallets.credit({ walletId: wallet.id, amount: 20000, referenceId: null, referenceType: null, operatorUid: 'usr_admin', operatorName: 'Admin', description: 'Credit 2', idempotencyKey: 'idem_2' });
-        
-        const page = await repos.coverWalletTxns.findByWallet(wallet.id, { limit: 10, cursor: null });
+
+        await repos.coverWallets.credit({
+          walletId: wallet.id,
+          amount: 10000,
+          referenceId: null,
+          referenceType: null,
+          operatorUid: 'usr_admin',
+          operatorName: 'Admin',
+          description: 'Credit 1',
+          idempotencyKey: 'idem_1',
+        });
+        await repos.coverWallets.credit({
+          walletId: wallet.id,
+          amount: 20000,
+          referenceId: null,
+          referenceType: null,
+          operatorUid: 'usr_admin',
+          operatorName: 'Admin',
+          description: 'Credit 2',
+          idempotencyKey: 'idem_2',
+        });
+
+        const page = await repos.coverWalletTxns.findByWallet(wallet.id, {
+          limit: 10,
+          cursor: null,
+        });
         expect(page.items.length).toBe(2);
       });
     });
@@ -520,17 +617,23 @@ function runRepositoryContractTests(repoName: string, getRepos: () => {
         const recon = createReconciliation(input);
         const created = await repos.coverWalletReconciliations.create(input);
         expect(created).toEqual(recon);
-        
+
         // Duplicate reconciliation for same event+date should fail
-        await expect(repos.coverWalletReconciliations.create(input)).rejects.toThrow('Reconciliation already exists');
+        await expect(repos.coverWalletReconciliations.create(input)).rejects.toThrow(
+          'Reconciliation already exists',
+        );
       });
 
       it('resolves reconciliation', async () => {
         const input = createTestReconciliationInput();
         const recon = createReconciliation(input);
         await repos.coverWalletReconciliations.create(input);
-        
-        const resolved = await repos.coverWalletReconciliations.resolve(recon.id, 'usr_auditor', 'Verified');
+
+        const resolved = await repos.coverWalletReconciliations.resolve(
+          recon.id,
+          'usr_auditor',
+          'Verified',
+        );
         expect(resolved?.status).toBe('resolved');
         expect(resolved?.resolvedBy).toBe('usr_auditor');
         expect(resolved?.resolutionNotes).toBe('Verified');
@@ -540,7 +643,7 @@ function runRepositoryContractTests(repoName: string, getRepos: () => {
         const input = createTestReconciliationInput();
         const recon = createReconciliation(input);
         await repos.coverWalletReconciliations.create(input);
-        
+
         const pending = await repos.coverWalletReconciliations.findPending('org_test');
         expect(pending.length).toBe(1);
       });
@@ -550,7 +653,7 @@ function runRepositoryContractTests(repoName: string, getRepos: () => {
       it('rejects stale version on scan ledger', async () => {
         const scan = createTestScanLedger();
         await repos.scanLedger.create(scan);
-        
+
         // Simulate concurrent modification by incrementing version
         const stale = { ...scan, version: scan.version + 5 };
         await expect(repos.scanLedger.create(stale)).rejects.toThrow('Version conflict');
@@ -559,7 +662,7 @@ function runRepositoryContractTests(repoName: string, getRepos: () => {
       it('rejects stale version on cover wallet', async () => {
         const wallet = createTestCoverWallet();
         await repos.coverWallets.create(wallet);
-        
+
         const stale = { ...wallet, version: wallet.version + 5 };
         await expect(repos.coverWallets.create(stale)).rejects.toThrow('Version conflict');
       });

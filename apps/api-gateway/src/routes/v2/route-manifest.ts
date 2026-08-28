@@ -6,6 +6,9 @@ import authContextPlugin, { buildBetterAuth } from '../../plugins/auth.js';
 
 import adminRoutes from './admin/onboarding-review.js';
 import authRoutes from './auth/index.js';
+import phase5CoverWalletRoutes from './door/cover-wallet-routes.js';
+import phase5DoorSaleRoutes from './door/door-sale-routes.js';
+import phase5ScannerRoutes from './door/scanner-routes.js';
 import { internalRoutes } from './internal/index.js';
 import onboardingRoutes from './onboarding.js';
 import partnerAnalyticsRoutes from './partner/analytics.js';
@@ -79,6 +82,9 @@ export async function registerV2Routes(app: FastifyInstance): Promise<void> {
       await onboardingRoutes(v2);
       await adminRoutes(v2);
       // Phase 5: Door / Scanner / Cover-wallet
+      await phase5DoorSaleRoutes(v2);
+      await phase5CoverWalletRoutes(v2);
+      await phase5ScannerRoutes(v2);
       await phase5Routes(v2);
     },
     { prefix: '/api/v2' },

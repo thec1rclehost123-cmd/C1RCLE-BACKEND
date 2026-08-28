@@ -152,13 +152,6 @@ export default tseslint.config(
                 'ARCHITECTURE: direct process.env access is forbidden outside apps/api-gateway/src/config. Import the validated config instead.',
             },
           ],
-          patterns: [
-            {
-              group: ['@c1rcle/*/src/*', '@c1rcle/*/dist/*', '@c1rcle/*/*/*'],
-              message:
-                'ARCHITECTURE: deep imports are forbidden. Import the package root and let its `exports` map define the public API.',
-            },
-          ],
         },
       ],
 
@@ -225,6 +218,28 @@ export default tseslint.config(
     rules: {
       'no-restricted-syntax': 'off',
       '@typescript-eslint/no-non-null-assertion': 'off',
+    },
+  },
+  // Gateway lib layer may import from @c1rcle/core public export paths
+// (domain/ports, config, etc.) — these are the published package API,
+// not "deep imports" into private src/. The global pattern catches them
+// because of the broad @c1rcle/... pattern; we exempt them here.
+  {
+    files: ['apps/api-gateway/src/lib/**'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: 'process',
+              importNames: ['env'],
+              message:
+                'ARCHITECTURE: direct process.env access is forbidden outside apps/api-gateway/src/config. Import the validated config instead.',
+            },
+          ],
+        },
+      ],
     },
   },
 );

@@ -63,6 +63,12 @@ export type {
   VenueSlotDto,
   SlotRequestDto,
   CreateSlotRequestInput,
+  InvitationStatus,
+  InvitationDto,
+  CreateInvitationRequest,
+  VenueAvailabilityDto,
+  VenueMenuDto,
+  UpdateVenueMenuRequest,
 } from './contracts/organization.js';
 
 export {
@@ -79,6 +85,15 @@ export {
   venueSlotDtoSchema,
   slotRequestDtoSchema,
   createSlotRequestSchema,
+  invitationStatusSchema,
+  invitationDtoSchema,
+  createInvitationSchema,
+  venueAvailabilitySlotSchema,
+  venueAvailabilityDtoSchema,
+  venueMenuItemSchema,
+  venueMenuSectionSchema,
+  venueMenuDtoSchema,
+  updateVenueMenuSchema,
 } from './contracts/organization.js';
 
 // Event + Catalog

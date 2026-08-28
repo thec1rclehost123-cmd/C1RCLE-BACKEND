@@ -47,23 +47,69 @@ function frontendRoot() {
 }
 
 const FRONTEND = frontendRoot();
-const FRONTEND_SCHEMAS = join(FRONTEND, 'packages/api-client/dist/schemas.js');
+
+/*
+ * The frontend wire contract lives in its own generated package,
+ * `<frontend>/packages/contracts` (spec §5 — mirrored from this repo by
+ * `scripts/export-contracts.mjs`, built to `dist/` because Next does not
+ * transpile workspace TS). Its `./client` entry mirrors this repo's
+ * `packages/contracts/src/client.ts` export-for-export, so it is what we read.
+ *
+ * Before Phase 2 that package does not exist. The pre-Phase-2 home for the
+ * shared schemas was `packages/api-client/dist/schemas.js`, but it only ever
+ * carried role / user / session / pagination — not the auth-bridge, onboarding,
+ * organization or partner schemas this check now covers. So when the contracts
+ * package is absent we cannot run a meaningful check: exit 2 ("cannot check"),
+ * never a crash.
+ */
+const FE_CONTRACTS_DIR = join(FRONTEND, 'packages/contracts/dist');
+const FE_CONTRACTS_MAIN = join(FE_CONTRACTS_DIR, 'index.js');
+const FE_CONTRACTS_CLIENT = join(FE_CONTRACTS_DIR, 'client.js');
+const FE_APICLIENT_SCHEMAS = join(FRONTEND, 'packages/api-client/dist/schemas.js'); // pre-Phase-2 (legacy)
 const FRONTEND_ERRORS = join(FRONTEND, 'packages/api-client/dist/errors.js');
 
-if (!existsSync(FRONTEND_SCHEMAS) || !existsSync(FRONTEND_ERRORS)) {
-  console.error('Contract parity: cannot locate the frontend contract.');
-  console.error(`  looked in: ${FRONTEND}`);
-  console.error('  pass --frontend <path> or set C1RCLE_FRONTEND_PATH.');
-  console.error('  (the frontend must be built: pnpm --filter @c1rcle/api-client build)');
+if (!existsSync(FE_CONTRACTS_MAIN) || !existsSync(FE_CONTRACTS_CLIENT)) {
+  console.error('Contract parity: the frontend @c1rcle/contracts package is not built yet.');
+  console.error(`  expected: ${FE_CONTRACTS_CLIENT}`);
+  console.error(`  frontend root: ${FRONTEND}  (--frontend <path> or C1RCLE_FRONTEND_PATH)`);
+  console.error('  This lands in Phase 2 — scaffold packages/contracts, then:');
+  console.error('    node ../C1RCLE-BACKEND/scripts/export-contracts.mjs --frontend .');
+  console.error('    pnpm --filter @c1rcle/contracts build');
+  if (existsSync(FE_APICLIENT_SCHEMAS)) {
+    console.error(`  (legacy ${FE_APICLIENT_SCHEMAS} exists but predates these schemas.)`);
+  }
   process.exit(2);
 }
 
+if (!existsSync(FRONTEND_ERRORS)) {
+  console.error('Contract parity: cannot locate the frontend error module.');
+  console.error(`  expected: ${FRONTEND_ERRORS}  (build: pnpm --filter @c1rcle/api-client build)`);
+  process.exit(2);
+}
+
+/*
+ * Both sides are read from BUILT output. This repo's `packages/contracts/src`
+ * uses NodeNext `.js` import specifiers that plain `node` cannot resolve back to
+ * `.ts` under type-stripping, so the check reads `packages/contracts/dist`
+ * instead — symmetric with the frontend (also `dist`), and it means the check
+ * validates exactly what a consumer resolves.
+ */
+const BACKEND_DIR = join(ROOT, 'packages/contracts/dist');
+const BACKEND_CLIENT = join(BACKEND_DIR, 'client.js');
+const BACKEND_INDEX = join(BACKEND_DIR, 'index.js');
+if (!existsSync(BACKEND_CLIENT) || !existsSync(BACKEND_INDEX)) {
+  console.error('Contract parity: packages/contracts is not built.');
+  console.error(`  expected: ${BACKEND_CLIENT}`);
+  console.error('  build it: pnpm --filter @c1rcle/contracts build');
+  process.exit(2);
+}
+
+const FRONTEND_SCHEMAS = FE_CONTRACTS_CLIENT;
+
 const frontend = await import(pathToFileURL(FRONTEND_SCHEMAS).href);
 const frontendErrors = await import(pathToFileURL(FRONTEND_ERRORS).href);
-const backend = await import(pathToFileURL(join(ROOT, 'packages/contracts/src/client.ts')).href);
-const backendEnvelope = await import(
-  pathToFileURL(join(ROOT, 'packages/contracts/src/index.ts')).href
-);
+const backend = await import(pathToFileURL(BACKEND_CLIENT).href);
+const backendEnvelope = await import(pathToFileURL(BACKEND_INDEX).href);
 
 const failures = [];
 const checks = [];
@@ -188,6 +234,204 @@ agree('noContentSchema', 'rejects a body', {}, false);
     }
   }
 }
+
+/* ── auth bridge ({user, accessToken, expiresAt}) ─────────────────────────── */
+const VALID_AUTH_BRIDGE = {
+  user: VALID_USER,
+  accessToken: 'session_tok_abcdef',
+  expiresAt: 1_800_000_000_000,
+};
+agree(
+  'authBridgeResponseSchema',
+  'accepts user + token + epoch-ms expiry',
+  VALID_AUTH_BRIDGE,
+  true,
+);
+agree(
+  'authBridgeResponseSchema',
+  'accepts another epoch-ms expiry',
+  { ...VALID_AUTH_BRIDGE, expiresAt: 1_723_000_000_000 },
+  true,
+);
+agree(
+  'authBridgeResponseSchema',
+  'rejects an ISO-string expiry (epoch ms is the contract)',
+  { ...VALID_AUTH_BRIDGE, expiresAt: '2026-08-11T00:00:00Z' },
+  false,
+);
+agree(
+  'authBridgeResponseSchema',
+  'rejects a missing accessToken',
+  { user: VALID_USER, expiresAt: 1_800_000_000_000 },
+  false,
+);
+agree(
+  'authBridgeResponseSchema',
+  'rejects an empty accessToken',
+  { ...VALID_AUTH_BRIDGE, accessToken: '' },
+  false,
+);
+
+/* ── signup / login requests — both .strict(), neither carries `role` ─────── */
+const VALID_SIGNUP = {
+  email: 'partner@example.com',
+  password: 'corr3ct-horse',
+  displayName: 'Sky Partner',
+};
+agree('signupRequestSchema', 'accepts a well-formed signup', VALID_SIGNUP, true);
+agree(
+  'signupRequestSchema',
+  'rejects a password under 8 chars',
+  { ...VALID_SIGNUP, password: 'short' },
+  false,
+);
+agree(
+  'signupRequestSchema',
+  'rejects an extra `role` key (.strict)',
+  { ...VALID_SIGNUP, role: 'admin' },
+  false,
+);
+agree(
+  'signupRequestSchema',
+  'rejects an unknown key (.strict)',
+  { ...VALID_SIGNUP, nickname: 'sky' },
+  false,
+);
+
+const VALID_LOGIN = { email: 'partner@example.com', password: 'corr3ct-horse' };
+agree('loginRequestSchema', 'accepts a well-formed login', VALID_LOGIN, true);
+agree('loginRequestSchema', 'rejects an empty password', { ...VALID_LOGIN, password: '' }, false);
+agree(
+  'loginRequestSchema',
+  'rejects an extra `role` key (.strict)',
+  { ...VALID_LOGIN, role: 'admin' },
+  false,
+);
+agree(
+  'loginRequestSchema',
+  'rejects an unknown key (.strict)',
+  { ...VALID_LOGIN, remember: true },
+  false,
+);
+
+/* ── onboarding profile — .strict(), `role` stripped at the boundary ─────── */
+const VALID_ONBOARDING_PROFILE = {
+  legalName: 'Neon Room Hospitality LLP',
+  contactPerson: 'Asha Menon',
+  phone: '+91 22 1234 5678',
+  city: 'Mumbai',
+};
+agree('onboardingProfileSchema', 'accepts the required minimum', VALID_ONBOARDING_PROFILE, true);
+agree(
+  'onboardingProfileSchema',
+  'accepts the optional fields too',
+  { ...VALID_ONBOARDING_PROFILE, area: 'Bandra', capacity: 300, instagram: '@neonroom' },
+  true,
+);
+agree(
+  'onboardingProfileSchema',
+  'rejects a `role` key (privilege-escalation guard)',
+  { ...VALID_ONBOARDING_PROFILE, role: 'host' },
+  false,
+);
+agree(
+  'onboardingProfileSchema',
+  'rejects an unknown key (.strict)',
+  { ...VALID_ONBOARDING_PROFILE, plan: 'basic' },
+  false,
+);
+agree(
+  'onboardingProfileSchema',
+  'rejects a missing required field (city)',
+  { legalName: 'X Co', contactPerson: 'Y', phone: '123456' },
+  false,
+);
+
+/* ── onboarding request DTO ──────────────────────────────────────────────── */
+const ISO = '2026-08-27T10:00:00Z';
+const VALID_ONBOARDING_REQUEST = {
+  id: 'onb_1',
+  userId: 'usr_1',
+  status: 'draft',
+  requestedType: 'venue',
+  plan: 'basic',
+  profile: VALID_ONBOARDING_PROFILE,
+  documents: [],
+  missingDocuments: ['id_front', 'id_back', 'selfie'],
+  submittedAt: null,
+  reviewedBy: null,
+  reviewedAt: null,
+  reviewNote: null,
+  provisionedOrganizationId: null,
+  version: 1,
+  createdAt: ISO,
+  updatedAt: ISO,
+};
+agree(
+  'onboardingRequestDtoSchema',
+  'accepts a canonical draft request',
+  VALID_ONBOARDING_REQUEST,
+  true,
+);
+agree(
+  'onboardingRequestDtoSchema',
+  'rejects a legacy `pending` status (V2 renamed it `submitted`)',
+  { ...VALID_ONBOARDING_REQUEST, status: 'pending' },
+  false,
+);
+
+/* ── organization DTO ───────────────────────────────────────────────────── */
+const VALID_ORGANIZATION = {
+  id: 'org_1',
+  name: 'Neon Room',
+  slug: 'neon-room',
+  role: 'owner',
+  status: 'active',
+  version: 1,
+  createdAt: ISO,
+  updatedAt: ISO,
+};
+agree('organizationDtoSchema', 'accepts a canonical organization', VALID_ORGANIZATION, true);
+agree(
+  'organizationDtoSchema',
+  'rejects an out-of-enum status',
+  { ...VALID_ORGANIZATION, status: 'pending' },
+  false,
+);
+
+/* ── partner access DTO — the RBAC source ───────────────────────────────── */
+const VALID_PARTNER_ACCESS = {
+  organizationId: 'org_1',
+  userId: 'usr_1',
+  partnerType: 'venue',
+  role: 'owner',
+  permissions: ['MANAGE_EVENTS', 'VIEW_ANALYTICS'],
+  tabVisibility: null,
+};
+agree(
+  'partnerAccessDtoSchema',
+  'accepts tabVisibility: null (show every tab)',
+  VALID_PARTNER_ACCESS,
+  true,
+);
+agree(
+  'partnerAccessDtoSchema',
+  'accepts an explicit tabVisibility map',
+  { ...VALID_PARTNER_ACCESS, tabVisibility: { events: true, finance: false } },
+  true,
+);
+agree(
+  'partnerAccessDtoSchema',
+  'rejects an unknown permission verb',
+  { ...VALID_PARTNER_ACCESS, permissions: ['DO_ANYTHING'] },
+  false,
+);
+agree(
+  'partnerAccessDtoSchema',
+  'rejects an unknown partnerType',
+  { ...VALID_PARTNER_ACCESS, partnerType: 'admin' },
+  false,
+);
 
 /* ── error envelope: status → code map ────────────────────────────────────── */
 for (const status of [400, 401, 403, 404, 409, 422, 429, 500, 502, 503, 418]) {

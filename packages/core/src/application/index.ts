@@ -56,9 +56,39 @@ export { InventoryService } from './inventory/inventory-service.js';
 export { PricingService } from './pricing/pricing-service.js';
 
 // Phase 5: Scanner, Door, Cover Wallet
-export type { ScannerService, ScannerServiceDeps, ScanTicketInput, ScanMagicTicketInput, ScanResult } from './scanner/scanner-service.js';
+export type {
+  ScannerService,
+  ScannerServiceDeps,
+  ScanTicketInput,
+  ScanMagicTicketInput,
+  ScanResult,
+  ResolveTicketInput,
+  ResolveMagicTicketInput,
+  TicketResolution,
+} from './scanner/scanner-service.js';
 export { createScannerService } from './scanner/scanner-service.js';
-export type { DoorService, DoorServiceDeps, CreateWalkInInput, CreateDineInInput, DoorSaleFilters, DoorSaleStats } from './door/door-service.js';
+export type {
+  DoorService,
+  DoorServiceDeps,
+  CreateWalkInInput,
+  CreateDineInInput,
+  DoorSaleFilters,
+  DoorSaleStats,
+} from './door/door-service.js';
 export { createDoorService } from './door/door-service.js';
-export type { CoverWalletService, CoverWalletServiceDeps, CreateWalletInput, CreditWalletInput, DebitWalletInput, RefundWalletInput, AdjustWalletInput, WalletFilters, TxnFilters, RunReconciliationInput, ReconciliationFilters, WalletEventStats, WalletOrgStats } from './cover-wallet/cover-wallet-service.js';
+export type {
+  CoverWalletService,
+  CoverWalletServiceDeps,
+  CreateWalletInput,
+  CreditWalletInput,
+  DebitWalletInput,
+  RefundWalletInput,
+  AdjustWalletInput,
+  WalletFilters,
+  TxnFilters,
+  RunReconciliationInput,
+  ReconciliationFilters,
+  WalletEventStats,
+  WalletOrgStats,
+} from './cover-wallet/cover-wallet-service.js';
 export { createCoverWalletService } from './cover-wallet/cover-wallet-service.js';

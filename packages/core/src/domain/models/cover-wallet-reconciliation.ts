@@ -85,13 +85,24 @@ export interface CoverWalletReconciliationCreateInput {
   now?: Date;
 }
 
-export function createReconciliation(input: CoverWalletReconciliationCreateInput): CoverWalletReconciliation {
+export function createReconciliation(
+  input: CoverWalletReconciliationCreateInput,
+): CoverWalletReconciliation {
   const now = input.now ?? new Date();
   const discrepancy = input.actualBalance - input.expectedBalance;
   const status: ReconciliationStatus = 'pending';
-  
+
+  // The id must satisfy `opaqueIdSchema` (max 64 chars). A raw `eventId`
+  // (often a 36-char UUID) plus a ms timestamp overflowed that, failing
+  // response serialization. It is now fully deterministic from
+  // `(eventId, reconciliationDate)`: there is exactly one reconciliation per
+  // event per date (the service's `findByEventAndDate` guard rejects a
+  // second), so a stable id is correct — and it makes `create()` idempotent
+  // and the contract suite's build-twice-and-compare assertion pass.
+  const compactDate = input.reconciliationDate.replace(/-/g, '');
+
   return {
-    id: `REC-${input.eventId}-${input.reconciliationDate}-${Date.now()}`,
+    id: `REC-${input.eventId.slice(0, 40)}-${compactDate}`,
     eventId: input.eventId,
     organizationId: input.organizationId,
     venueId: input.venueId,
