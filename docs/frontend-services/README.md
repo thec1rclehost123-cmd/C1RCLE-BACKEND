@@ -1,9 +1,16 @@
 # THE C1RCLE frontend services architecture
 
-**Status:** source-grounded architecture inventory
-**Audited:** 2026-08-20
-**Repository:** C1RCLE-FRONTEND checkout at /Users/aayushdivase/Desktop/thec1rcle
-**Audited HEAD:** cecbc8587fd266e8245320fa96d4182882cc4eef on staging
+**Status:** source-grounded inventory. Mostly still accurate as a map of the
+CURRENT frontend, with two 2026-08-29 corrections: (1) `@c1rcle/api-client` is
+no longer a stub — a real transport now lives in `packages/api-client/src/`
+(retry/backoff, x-request-id, bearer, timeout, 204, zod parse, typed errors);
+it still needs the `reauth` + `Retry-After` additions. (2) The target session
+call is `GET /api/v2/auth/session` returning `{ user, expiresAt }` only — NOT a
+fat `/api/v2/session` bootstrap; memberships come from `GET /api/v2/organizations`
+and permissions from `GET /api/v2/organizations/:id/access`. See
+`docs/api-contracts/auth-and-permissions.md`. The migration order in this doc
+matches `C1RCLE-FRONTEND/docs/superpowers/plans/2026-08-27-auth-foundation-plan.md`.
+**Audited:** 2026-08-20 · **Audited HEAD:** cecbc85 on staging (pre-api-client-rebuild)
 
 This is the authoritative index for frontend service and service-like layers in
 the canonical checkout. It describes what the source does now, not what a route,

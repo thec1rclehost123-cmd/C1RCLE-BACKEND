@@ -1,8 +1,13 @@
 # Checkout integration flow
 
-**Status:** target integration flow; current Guest Portal checkout is fixture-only.
+**Status:** ASPIRATIONAL — none of the checkout / orders / payments / tickets
+routes are registered on the gateway yet (404 by absence). This is the intended
+shape for when Phase 6 lands; do not build a frontend consumer against it now.
+Guest-portal checkout stays fixture-only until the backend routes exist and are
+tested. Wire shapes below still need reconciling with the corrected envelope
+(bare DTO / flat errors) in `docs/api-contracts/error-contract.md`.
 **Frontend:** apps/guest-portal checkout and confirmation routes.
-**Backend contract:** /api/v2 checkout, orders, payment-intents, and tickets.
+**Backend contract:** `/api/v2` checkout, orders, payments, tickets — all BLOCKED.
 
 ## Authority rules
 

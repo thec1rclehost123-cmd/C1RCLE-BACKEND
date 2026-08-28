@@ -1,101 +1,78 @@
 # Authentication and permissions contract
 
-**Status:** frontend integration contract draft
-**Backend reference:** docs/partner-dashboard-v2/AUTHORIZATION_MODEL.md and
-docs/partner-dashboard-v2/API_V2_SPEC.md.
+**Status:** corrected 2026-08-29 against the live backend. An earlier draft
+described a single `GET /api/v2/session` returning `{ user, memberships,
+permissions }` wrapped in `{ data, meta }`. The gateway does not have that
+route or that shape. See `docs/architecture/decisions.md` D-001 and D-024, and
+`C1RCLE-FRONTEND/docs/superpowers/specs/2026-08-27-frontend-gateway-auth-foundation-design.md` §2.
+**Authority:** `apps/api-gateway/src/routes/v2/auth/index.ts`,
+`packages/contracts/src/contracts/{auth,partner,organization}.ts`, and their tests.
 
-## Session boundary
+## Mechanism
 
-The frontend calls GET /api/v2/session through @c1rcle/api-client.
+Better Auth (D-001): an httpOnly session cookie the backend owns, plus a
+short-lived access token the client holds **in memory only** and sends as
+`Authorization: Bearer <token>`. The access token is Better Auth's own session
+token (surfaced via the `bearer()` plugin's `set-auth-token` response header) —
+not a separately minted JWT. Real auth requires `STORAGE_DRIVER=firestore`
+(`STORAGE_DRIVER=memory` is the test/CI sandbox and fabricates a dev actor).
 
-The response must contain:
+## Routes (live)
 
-~~~json
-{
-  "data": {
-    "user": { "id": "user_123", "email": "person@example.com", "displayName": "Person" },
-    "activeOrganizationId": "org_123",
-    "memberships": [
-      { "organizationId": "org_123", "role": "OWNER", "status": "ACTIVE" }
-    ],
-    "permissions": ["organization.read", "event.read"]
-  },
-  "meta": { "requestId": "uuid", "nextCursor": null }
-}
-~~~
+| Method | Path | Body | Response | Rate class |
+| --- | --- | --- | --- | --- |
+| POST | `/api/v2/auth/signup` | `signupRequestSchema` `{ email, password (8–128), displayName }` `.strict()` — **no `role`** | 201 `authBridgeResponseSchema` `{ user, accessToken, expiresAt }` | `SENSITIVE_COMMAND` (10/60s) |
+| POST | `/api/v2/auth/login` | `loginRequestSchema` `{ email, password }` `.strict()` | 200 `authBridgeResponseSchema` | `SENSITIVE_COMMAND` |
+| POST | `/api/v2/auth/refresh` | none (httpOnly cookie only) | 200 `authBridgeResponseSchema` | `SENSITIVE_COMMAND` |
+| POST | `/api/v2/auth/logout` | none | 204 (+ Set-Cookie clear; revokes the server session) | — |
+| GET | `/api/v2/auth/session` | none | 200 `sessionSchema` `{ user, expiresAt }` or 401 | `AUTH_READ` (240/60s) |
 
-The server is authoritative for user identity, active organization, membership,
-role, approval/KYC state, suspension, and effective permissions.
+`user` = `userSchema` `{ id, email, displayName, role: 'guest'|'partner'|'admin',
+avatarUrl: string|null }` — **5 fields**. `expiresAt` is **epoch milliseconds**
+(`z.number().int().positive()`), unlike every other timestamp on the wire
+(ISO-8601 strings). `signup` always sets `role: 'partner'` server-side.
 
-## Credential behavior
+Login failures return one constant body regardless of whether the email exists
+(no account-existence oracle).
 
-- Browser clients use the approved session cookie or short-lived bearer token.
-- Tokens are never written to localStorage, sessionStorage, URLs, analytics, or
-  logs.
-- The API client attaches credentials centrally; pages do not build auth headers.
-- On 401, the client/session boundary may refresh once. If that fails, clear
-  session state and render the sign-in boundary.
-- On 403, keep the session and show permission denied.
-- On logout, invalidate local server-state caches and remove session state.
-- A session bootstrap must complete before private profile/ticket UI claims the
-  user is anonymous.
+## What `/auth/session` does NOT return
 
-## Organization context
+No `memberships`, no `activeOrganizationId`, no `permissions`, no approval/KYC
+state, no `{ data, meta }` wrapper. Those are separate calls:
 
-- GET /api/v2/organizations lists accessible organizations.
-- The selected organization is sent through the approved path or
-  X-Organization-Id when the endpoint requires context.
-- The backend verifies that the user is an active member of that organization.
-- An organization ID in the request body is never trusted by itself.
-- Switching organization clears or scopes cached queries before loading the new
-  context.
-- Revoked/suspended membership fails closed and invalidates relevant caches.
-
-## Role and permission model
-
-Canonical roles are OWNER, ADMIN, EVENT_MANAGER, FINANCE_MANAGER,
-MARKETING_MANAGER, DOOR_MANAGER, PROMOTER, and VIEWER. Legacy role strings are
-compatibility adapters, not new frontend policy.
-
-Permission examples:
-
-| Area | Permissions |
-| --- | --- |
-| Organization | organization.read, organization.manage, staff.read, staff.manage |
-| Venue/events | venue.read, venue.manage, event.read, event.create, event.update, event.publish, event.cancel |
-| Commerce | order.read, refund.create, refund.approve |
-| Finance | finance.read, payout.request, payout.approve, bank_account.manage |
-| Guests/door | guest.read, guest.export, door.read, ticket.check_in, ticket.override |
-| Campaigns/analytics | campaign.read, campaign.create, campaign.send, analytics.read |
-| Audit | audit.read |
-
-The frontend may hide navigation or disable actions for usability. It never
-grants access. Every protected backend route checks authentication, membership,
-permission, and resource scope.
-
-## Data visibility
-
-Backend DTOs must project fields by caller:
-
-- Guest: own order/ticket/profile data only.
-- Promoter: assigned/attributed events, own earnings, minimized guest data.
-- Door staff: event/door data required for check-in, not finance.
-- Finance staff: approved finance/order projection, not unrelated guest PII.
-- Admin/owner: only fields allowed by explicit permission and policy.
-
-## Required frontend states
-
-| State | Meaning | UI behavior |
+| Need | Call | Response |
 | --- | --- | --- |
-| unknown | Session bootstrap pending | Loading shell; do not flash logged-out UI |
-| anonymous | No valid session | Public UI or sign-in boundary |
-| authenticated | Valid session | Load active organization and scoped data |
-| forbidden | Session valid, operation disallowed | Permission-denied state |
-| revoked/suspended | Session or membership no longer usable | Clear affected cache and explain next action |
+| organizations the user belongs to | `GET /api/v2/organizations` | `{ items: organizationDtoSchema[], pageInfo }` |
+| effective permissions + tab visibility for one org | `GET /api/v2/organizations/:organizationId/access` | `partnerAccessDtoSchema` |
+| onboarding / approval state | `GET /api/v2/onboarding/me` | `{ request: onboardingRequestDtoSchema \| null }` |
 
-## Acceptance tests
+`partnerAccessDtoSchema` = `{ organizationId, userId, partnerType:
+'venue'|'host'|'promoter', role, permissions: PartnerPermission[],
+tabVisibility: Record<string,boolean> | null }`. `null` tabVisibility means
+"show all tabs". `PartnerPermission` is an 18-value enum
+(`VIEW_FINANCIALS, MANAGE_STAFF, MANAGE_EVENTS, EDIT_EVENT_RULES, MANAGE_TABLES,
+VIEW_GUESTLIST, SCAN_ENTRY, LOG_INCIDENTS, VIEW_ANALYTICS, MANAGE_SETTINGS,
+MANAGE_PROMOTERS, MANAGE_PAYOUTS, MANAGE_PARTNERSHIPS, MANAGE_PAGE_CONTENT,
+VIEW_REAL_TIME_SCANS, MANAGE_GUEST_OPS, CHARGE_COVER_WALLETS, EXPORT_GUESTS`).
+There is **no** `actionPermissions`, `piiPolicy`, or `isSuspended` field —
+suspension surfaces as a `403` from any org-scoped route.
 
-Backend/frontend integration is not ready until tests cover anonymous access,
-expired/revoked tokens, no membership, wrong organization, every role against
-each protected module, cross-resource access, organization switching, and
-permission revocation while cached state exists.
+## Org scoping
+
+Every org-scoped route needs `X-Organization-Id: <opaqueId>` **and** that value
+must equal the `:organizationId` path segment. The **path is authoritative**;
+a mismatch is `403`. Cache and rate-limit keys derive the org from the verified
+actor, never the header. Cross-tenant reads are `403`/`404` with an answer that
+is identical whether or not the resource exists.
+
+## Credential rules
+
+- Access token: in memory only. Never `localStorage` / `sessionStorage` /
+  `IndexedDB` / a JS-readable cookie / a URL / a query string / a log line.
+- The session cookie is httpOnly and backend-owned. The frontend's thin
+  Next.js BFF re-scopes it to the frontend origin and owns the CSRF check for
+  the cookie-bearing calls (`refresh`, `logout`) — see the design spec §8.
+- The API client attaches `Authorization` centrally; pages never build auth
+  headers.
+- All authorization is the backend's. A visible link or an enabled button is a
+  usability hint, not a permission.

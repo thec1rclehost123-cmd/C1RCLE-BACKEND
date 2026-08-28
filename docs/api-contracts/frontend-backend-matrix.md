@@ -1,21 +1,37 @@
 # Frontend/backend integration matrix
 
-**Status:** initial integration backlog
-**Legend:** CURRENT = frontend exists; TARGET = intended backend contract;
-FIXTURE = current frontend uses sample data; MISSING = endpoint/consumer proof
-not available in this checkout.
+**Status:** corrected 2026-08-29. The earlier draft pointed the session rows at
+`/api/v2/session` and called `@c1rcle/api-client` a "stub" — the live route is
+`/api/v2/auth/session` and the client has been rebuilt (real transport in
+`packages/api-client/src/`). Endpoint truth is `apps/api-gateway/src/routes/v2/`
++ `docs/api-contracts/auth-and-permissions.md`, not this backlog.
+**Legend:** CURRENT = frontend exists; TARGET = intended contract;
+FIXTURE = frontend uses sample data; MISSING = no endpoint yet;
+LIVE = endpoint exists and is tested; BLOCKED = 404 by absence (a later phase).
 
-The backend V2 route manifest and contract tests are the authority for live
-status. This matrix intentionally does not mark planned endpoints as live.
+## Live vs blocked (backend, as of 2026-08-29)
+
+- **LIVE:** `/api/v2/auth/*`, `/api/v2/onboarding/*`, `/api/v2/organizations*`
+  (+ `/members`, `/invitations`, `/access`), `/api/v2/venues*`,
+  `/api/v2/events*` (+ lifecycle), `/api/v2/events/:id/{ticket-tiers,
+  promo-codes,table-packages,promoter-assignments}`,
+  `/api/v2/organizations/:id/{partnerships,promoter-connections,analytics/overview}`,
+  `/api/v2/events/:id/{analytics,referral-links}`, `/api/v2/admin/*`, and the
+  Phase 5 door/scanner/cover-wallet routes (`/api/v2/door/*`,
+  `/api/v2/cover-wallets/*`, `/api/v2/tickets/:id/qr`).
+- **BLOCKED (404 — no route):** checkout, orders, payments, refunds, payouts,
+  entitlement/ticket lists, `/api/v2/public/*` discovery, webhooks. Guest-portal
+  and partner finance/orders screens stay FIXTURE until those land.
 
 ## Shared transport and session
 
-| Frontend surface | Current source | Target endpoint | Method | Auth | Frontend status | Backend status/gate |
+| Frontend surface | Current source | Endpoint | Method | Auth | Frontend status | Note |
 | --- | --- | --- | --- | --- | --- | --- |
-| Shared API calls | packages/api-client/index.ts | /api/v2/* | varies | central | Stub | Implement transport + DTO decoders |
-| Guest session | packages/auth/index.ts | /api/v2/session | GET | session | In-memory only | Confirm web session/bootstrap |
-| Partner session | DashboardAuthProvider.tsx | /api/v2/session | GET | session | Mock + local routes | Confirm membership/permission DTO |
-| Organization picker | partner/select-organization/page.tsx | /api/v2/organizations | GET | authenticated | UI exists | Confirm list/switch semantics |
+| Shared API calls | packages/api-client/src/ | /api/v2/* | varies | central | Rebuilt transport; needs `reauth` + `Retry-After` | LIVE surface per list above |
+| Session | packages/auth/index.ts | /api/v2/auth/session | GET | session cookie | In-memory store only; no network | LIVE — returns `{ user, expiresAt }` only |
+| Login / signup / refresh / logout | DashboardAuthProvider.tsx (mock) | /api/v2/auth/{login,signup,refresh,logout} | POST | — / cookie | MOCK + 14 local `/api/auth/*` routes | LIVE (firestore driver); cookie/CSRF via a thin Next BFF |
+| Memberships | select-organization/page.tsx | /api/v2/organizations | GET | bearer | UI exists, fixture data | LIVE — `{ items, pageInfo }` |
+| Per-org permissions | DashboardAuthProvider (mock `['*']`) | /api/v2/organizations/:id/access | GET | bearer + X-Organization-Id | not called | LIVE — `partnerAccessDtoSchema` |
 
 ## Guest Portal
 

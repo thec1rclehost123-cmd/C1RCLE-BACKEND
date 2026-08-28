@@ -3,10 +3,20 @@ info:
   title: THE C1RCLE Frontend Integration API
   version: 0.1.0-draft
   description: |
-    Frontend-facing contract for the first integration slice. This is a draft
-    contract, not proof that every path is live. Backend route activation remains
-    governed by docs/partner-dashboard-v2/execution/API_V2_ROUTE_MANIFEST.md.
-    Do not expose Firestore documents or provider payloads.
+    SUPERSEDED for wire shapes (2026-08-29). This draft uses `/session` and a
+    `{ data, meta }` / `{ success, error }` envelope taken from the frozen V2
+    manifest. The gateway ships something different: `/api/v2/auth/session`,
+    a BARE-DTO success body, and a FLAT error envelope
+    `{ code, message, status, requestId, fieldErrors? }` (lowercase `code`).
+    The authoritative machine-readable contract is `packages/contracts`
+    (zod schemas, shared by backend and frontend); see
+    `docs/api-contracts/{auth-and-permissions,error-contract}.md` for the
+    corrected prose. Regenerate this file from `packages/contracts` before
+    relying on it.
+
+    Route activation is governed by `apps/api-gateway/src/routes/v2/route-manifest.ts`
+    (the runtime code, not a doc). Do not expose Firestore documents or
+    provider payloads.
 servers:
   - url: https://api.example.invalid/api/v2
     description: Replace with the approved staging/production API base URL.

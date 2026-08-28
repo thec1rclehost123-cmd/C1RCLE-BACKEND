@@ -1,97 +1,97 @@
 # API error contract
 
-**Status:** frontend integration contract draft
-**Authority:** backend response schemas and tests supersede this document.
+**Status:** corrected 2026-08-29 against the live backend (`packages/contracts` +
+`apps/api-gateway` tests, ~340 passing). An earlier draft of this file described
+a `{ success, error }` / `{ data, meta }` shape from the frozen V2 manifest —
+that shape is **not** what the gateway ships. See
+`docs/architecture/decisions.md` D-004 and D-009.
+**Authority:** `packages/contracts/src/index.ts` (`buildV2ErrorResponse`,
+`STATUS_CODE_TO_ERROR_CODE`, `zodToFieldErrors`) and the route tests. This
+document explains; it does not override.
 
-## Envelope
+## Success envelope
 
-Every non-2xx API response must be JSON:
+There is **no wrapper**. A success response is the bare DTO, validated against
+its zod schema in `packages/contracts`:
 
-~~~json
-{
-  "success": false,
-  "error": {
-    "code": "VALIDATION_FAILED",
-    "message": "The request could not be accepted.",
-    "details": [
-      { "path": "lines[0].quantity", "message": "Must be at least 1." }
-    ],
-    "requestId": "uuid"
-  }
-}
+~~~jsonc
+// GET /api/v2/organizations/:id  -> organizationDtoSchema
+{ "id": "org_1", "name": "…", "slug": "…", "role": "owner",
+  "status": "active", "version": 3, "createdAt": "…", "updatedAt": "…" }
 ~~~
 
-Success responses use:
+Lists are `{ items, pageInfo }` (page-based):
 
-~~~json
-{
-  "data": {},
-  "meta": {
-    "requestId": "uuid",
-    "nextCursor": null
-  }
-}
+~~~jsonc
+{ "items": [ /* … */ ],
+  "pageInfo": { "page": 1, "pageSize": 20, "total": 42, "hasNextPage": true } }
 ~~~
 
-The frontend must never depend on raw Firestore fields, provider payloads, stack
-traces, or framework-specific error shapes.
+`204 No Content` has no body (the client's `noContentSchema` handles it).
 
-## Required codes
+## Error envelope
 
-| HTTP | Code | Frontend behavior | Retry |
+**Flat, from every path** — 404s, unhandled 5xx, validation, all of it:
+
+~~~jsonc
+{ "code": "validation",        // ApiErrorCode, lowercase
+  "message": "…",              // human-safe; 5xx is always "Internal server error"
+  "status": 422,               // the HTTP status, echoed in the body
+  "requestId": "uuid",         // echo of x-request-id, or a minted UUID
+  "fieldErrors": {             // present only for 400/422
+    "profile.phone": ["Must be 6–20 characters."]
+  } }
+~~~
+
+`ApiErrorCode` (the only values that ever appear in `code`):
+`validation | unauthorized | forbidden | not_found | conflict | rate_limited |
+server | network | timeout | aborted | parse | unknown`.
+(`network`/`timeout`/`aborted`/`parse`/`unknown` are produced client-side by
+`@c1rcle/api-client`, never sent by the gateway.)
+
+## Status → code → frontend behavior
+
+| HTTP | `code` | Frontend behavior | Retry |
 | ---: | --- | --- | --- |
-| 400 | INVALID_REQUEST | Show generic request error; log request ID | No |
-| 401 | UNAUTHENTICATED / SESSION_REVOKED | Clear stale session, attempt one session refresh, then redirect/sign in | One refresh only |
-| 403 | PERMISSION_REQUIRED | Show permission-denied state | No |
-| 404 | RESOURCE_NOT_FOUND | Render not-found state | No |
-| 409 | VERSION_CONFLICT / IDEMPOTENCY_CONFLICT / INVENTORY_UNAVAILABLE / RESERVATION_EXPIRED | Refresh authoritative state and ask user to retry | No automatic mutation retry |
-| 422 | VALIDATION_FAILED | Map details to fields or form summary | No |
-| 429 | RATE_LIMITED | Respect Retry-After; show delayed retry | Bounded |
-| 502/503/504 | DEPENDENCY_UNAVAILABLE | Show unavailable state and retry action | Idempotent reads only |
-| 500 | INTERNAL_ERROR | Show generic error and request ID | Reads only, bounded |
-
-Domain codes may expand, but each must map to one of these frontend behaviors.
+| 400 / 422 | `validation` | Map `fieldErrors` to fields; else a form-level message | No |
+| 401 | `unauthorized` | One `refresh()` via `@c1rcle/api-client`'s `reauth`, replay once, else clear session + `/login` | One refresh only |
+| 403 | `forbidden` | Permission-denied state — **identical whether or not the resource exists** (IDOR-safe) | No |
+| 404 | `not_found` | Not-found state | No |
+| 409 | `conflict` | Version conflict → refetch + resubmit with the new `version`; idempotency conflict → treat as already-done | No automatic mutation retry |
+| 429 | `rate_limited` | Honor `Retry-After` (seconds); bounded delayed retry | Bounded, idempotent only |
+| ≥500 | `server` | Generic "something went wrong" + request ID; internals are already stripped server-side | Reads only, bounded |
 
 ## Request correlation
 
-- Client sends X-Request-Id when it has one; backend accepts or generates a UUID.
-- Backend returns requestId on success and failure.
-- UI support/error reporting may show the request ID.
-- Never log Authorization, cookies, OTPs, provider signatures, payment secrets,
-  QR secrets, or unnecessary PII.
+- Client sends `x-request-id` (a UUID, minted per attempt by `@c1rcle/api-client`);
+  the gateway echoes it or mints one.
+- `requestId` is in every response body, success and error.
+- Never log `authorization`, `cookie`, `x-api-key`, tokens, OTPs, provider
+  signatures, payment secrets, QR payloads, or unnecessary PII. The gateway's
+  pino `redact` list covers the server side; the frontend BFF must not log
+  request/response bodies at all.
 
-## Validation details
+## Client normalization (`@c1rcle/api-client`)
 
-details is optional. Each detail has a stable path and human-safe message.
-The API client converts it to fieldErrors without changing the original code.
-Unknown details remain available for diagnostics but are not rendered blindly.
-
-## Client normalization
-
-The shared API client maps transport failures to the frontend ApiError types:
-
-- network: no response
-- timeout: client deadline exceeded
-- aborted: route/user cancellation
-- parse: invalid JSON or invalid DTO
-- unauthorized, forbidden, not_found, conflict, validation, rate_limited,
-  server: mapped from HTTP/code
-- unknown: anything else
-
-The client must preserve status, code, message, request ID, and field errors.
+`ApiClientError` preserves `code`, `status`, `requestId`, `fieldErrors`. Transport
+failures become `network` (no response), `timeout` (client deadline), `aborted`
+(cancellation), `parse` (bad JSON or a DTO that fails its zod schema — usually
+means the two repos' contracts drifted). `isRetryable` = `network | timeout |
+rate_limited`, plus `server` when `status !== 501`.
 
 ## Fallback rule
 
-Production API errors never fall back to fixtures, demo identities, zero-valued
-metrics, or cached data from another user or organization. Fixture fallback is
-allowed only in an explicitly labelled local preview/test mode.
+A production API error never renders a fixture, a demo identity, zero-valued
+metrics, or another user/org's cached data. Fixtures are for tests and an
+explicitly labelled local preview mode only.
 
-## Backend acceptance checklist
+## Backend acceptance (already met on the auth/partner/onboarding/door surface)
 
-- All errors use the envelope.
-- Error codes are stable and documented.
-- Request IDs are present.
-- Validation paths are deterministic.
-- 401/403/404/409/422 behavior is covered by contract tests.
-- Retry-After is present for rate limiting where applicable.
-- Sensitive provider/internal details are redacted.
+- One flat error envelope from every path, including `setNotFoundHandler` (D-009).
+- `code` is a lowercase `ApiErrorCode`; the status→code map is single-sourced in
+  `packages/contracts`.
+- `requestId` present everywhere; `fieldErrors` on 400/422 via `zodToFieldErrors`.
+- 401/403/404/409/422 behavior covered by route tests.
+- `Retry-After` on 429 (`plugins/rate-limit.ts`).
+- 5xx bodies say only "Internal server error"; the real message is logged with
+  the `requestId`.
