@@ -140,6 +140,80 @@ describe('applicant onboarding', () => {
     expect(response.statusCode).toBe(404);
   });
 
+  describe('KYC upload URLs', () => {
+    it('issues a bounded, time-limited PUT grant', async () => {
+      const created = await startApplication('user_a');
+      const response = await server.inject({
+        method: 'POST',
+        url: `/onboarding/applications/${created.id}/documents/upload-url`,
+        headers: asUser('user_a'),
+        payload: { label: 'id_front', contentType: 'image/jpeg' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const grant = response.json();
+      expect(grant.method).toBe('PUT');
+      expect(grant.uploadUrl).toEqual(expect.any(String));
+      expect(grant.headers['content-type']).toBe('image/jpeg');
+      expect(grant.storagePath).toBe(`kyc/user_a/${created.id}/id_front`);
+      expect(grant.expiresAt).toBeGreaterThan(Date.now());
+    });
+
+    it('rejects an unknown label and a non-image content type', async () => {
+      const created = await startApplication('user_a');
+      for (const payload of [
+        { label: 'passport', contentType: 'image/jpeg' },
+        { label: 'id_front', contentType: 'application/pdf' },
+      ]) {
+        const response = await server.inject({
+          method: 'POST',
+          url: `/onboarding/applications/${created.id}/documents/upload-url`,
+          headers: asUser('user_a'),
+          payload,
+        });
+        expect(response.statusCode).toBe(422);
+      }
+    });
+
+    it("reads another applicant's application as not-found", async () => {
+      const created = await startApplication('user_a');
+      const response = await server.inject({
+        method: 'POST',
+        url: `/onboarding/applications/${created.id}/documents/upload-url`,
+        headers: asUser('user_b'),
+        payload: { label: 'id_front', contentType: 'image/png' },
+      });
+      expect(response.statusCode).toBe(404);
+    });
+
+    it('feeds the grant storagePath straight into the documents step', async () => {
+      const created = await startApplication('user_a');
+      for (const label of ['id_front', 'id_back', 'selfie']) {
+        const grant = (
+          await server.inject({
+            method: 'POST',
+            url: `/onboarding/applications/${created.id}/documents/upload-url`,
+            headers: asUser('user_a'),
+            payload: { label, contentType: 'image/webp' },
+          })
+        ).json();
+        const recorded = await server.inject({
+          method: 'POST',
+          url: `/onboarding/applications/${created.id}/documents`,
+          headers: asUser('user_a'),
+          payload: { label, storagePath: grant.storagePath },
+        });
+        expect(recorded.statusCode).toBe(200);
+      }
+      const submitted = await server.inject({
+        method: 'POST',
+        url: `/onboarding/applications/${created.id}/submit`,
+        headers: asUser('user_a'),
+      });
+      expect(submitted.statusCode).toBe(200);
+    });
+  });
+
   it('refuses to submit until the required documents are present', async () => {
     const created = await startApplication('user_a');
     const early = await server.inject({

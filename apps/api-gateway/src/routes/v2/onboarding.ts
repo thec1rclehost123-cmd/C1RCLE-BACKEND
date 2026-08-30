@@ -1,5 +1,7 @@
 import {
   addOnboardingDocumentSchema,
+  documentUploadUrlDtoSchema,
+  documentUploadUrlRequestSchema,
   idempotencyKeySchema,
   onboardingRequestDtoSchema,
   opaqueIdSchema,
@@ -152,6 +154,38 @@ export default async function onboardingRoutes(fastify: FastifyInstance) {
         onboardingRequestDtoSchema,
         toDto(updated),
       );
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  /**
+   * Mint a pre-signed URL for one KYC image. Not idempotency-keyed: the object
+   * key is deterministic (`kyc/<userId>/<requestId>/<label>`) so a re-upload
+   * overwrites in place, and minting a fresh URL has no side effect worth
+   * de-duplicating. The client `PUT`s the file to `uploadUrl` with the
+   * returned `headers`, then calls `POST .../documents` with `storagePath`.
+   */
+  fastify.post(
+    '/onboarding/applications/:requestId/documents/upload-url',
+    {
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({ params: requestIdParam, body: documentUploadUrlRequestSchema }),
+      ],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+      const { requestId } = request.params as z.infer<typeof requestIdParam>;
+      const body = request.body as z.infer<typeof documentUploadUrlRequestSchema>;
+
+      const grant = await services.onboarding
+        .issueDocumentUploadUrl(userId, { requestId, ...body })
+        .catch((error: unknown) => mapDomainError(reply, request, requestId, error));
+      if (grant === undefined) return reply;
+
+      const validated = validateV2Response(reply, request, documentUploadUrlDtoSchema, grant);
       if (validated === undefined) return reply;
       return reply.send(validated);
     },

@@ -27,14 +27,16 @@ import {
   type CoverWalletService, type ServiceDeps, type ActorContext 
 } from '@c1rcle/core/application';
 import { createCoreConfig } from '@c1rcle/core/config';
-import { FormatCheckVerificationProvider } from '@c1rcle/core/domain';
+import { EchoObjectStorage, FormatCheckVerificationProvider } from '@c1rcle/core/domain';
 import {
   MemoryOutboxStore,
   MemoryAuditRepository,
   MemoryAdminAuditRepository,
   FirestoreAdminAuditRepository,
+  FirebaseObjectStorage,
   buildRepositories,
   firestoreClient,
+  storageClient,
   buildIdempotencyStore,
   buildActorContext,
 } from '@c1rcle/core/infrastructure';
@@ -152,6 +154,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   const coreConfig = createCoreConfig({
     redis: { url: gw.REDIS_URL },
     firestore: { projectId: gw.FIRESTORE_PROJECT_ID },
+    storage: gw.FIREBASE_STORAGE_BUCKET ? { kycBucket: gw.FIREBASE_STORAGE_BUCKET } : undefined,
   });
 
    
@@ -201,7 +204,11 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     // Swap here — and only here — when a real KYC provider is contracted.
 
     verification: new FormatCheckVerificationProvider(),
-     
+    objectStorage:
+      gw.STORAGE_DRIVER === 'memory'
+        ? new EchoObjectStorage()
+        : new FirebaseObjectStorage(storageClient(gw), coreConfig.storage.kycBucket),
+
     paymentProvider,
     pricing,
     inventory,

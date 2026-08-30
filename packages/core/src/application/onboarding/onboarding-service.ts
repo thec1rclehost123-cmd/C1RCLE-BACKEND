@@ -11,6 +11,7 @@ import {
   platformFeePercentFor,
   rejectOnboardingRequest,
   requestOnboardingChanges,
+  REQUIRED_DOCUMENT_LABELS,
   sanitizeApplicantProfile,
   submitOnboardingRequest,
   updateOnboardingProfile,
@@ -27,6 +28,7 @@ import type {
   PartnerEntityType,
 } from '../../domain/models/onboarding.js';
 import type { Capability, Organization } from '../../domain/models/organization.js';
+import type { UploadUrlGrant } from '../../domain/ports/object-storage.js';
 import type { PaginationQuery } from '../../domain/ports/repositories.js';
 import type { VerificationResult } from '../../domain/ports/verification.js';
 import type { AdminAuthorityService } from '../admin/admin-authority-service.js';
@@ -54,6 +56,11 @@ import type { ServiceDeps } from '../context.js';
 const VERIFICATION_ATTEMPT_LIMIT = 5;
 const VERIFICATION_WINDOW_MS = 24 * 60 * 60 * 1000;
 
+/** KYC image upload bounds — enforced in the signed URL itself. */
+const MAX_DOCUMENT_BYTES = 5 * 1024 * 1024;
+const UPLOAD_URL_TTL_MS = 10 * 60 * 1000;
+const ALLOWED_UPLOAD_CONTENT_TYPES: readonly string[] = ['image/jpeg', 'image/png', 'image/webp'];
+
 export interface StartApplicationCommand {
   requestedType: PartnerEntityType;
   plan: OnboardingPlan;
@@ -64,6 +71,14 @@ export interface AddDocumentCommand {
   requestId: EntityId;
   label: string;
   storagePath: string;
+}
+
+export interface IssueUploadUrlCommand {
+  requestId: EntityId;
+  /** One of the three required KYC labels. */
+  label: string;
+  /** `image/jpeg` | `image/png` | `image/webp`. */
+  contentType: string;
 }
 
 export interface VerifyDocumentCommand {
@@ -138,6 +153,47 @@ export class OnboardingService {
     );
     await this.repo.save(updated);
     return updated;
+  }
+
+  /**
+   * Mints a short-lived, content-type-bound, size-bound URL the applicant
+   * `PUT`s a KYC image straight to — the gateway never sees the bytes. The
+   * caller records the returned `storagePath` via `addDocument` afterwards.
+   *
+   * Not idempotency-keyed: minting a fresh URL is safe to repeat, and the
+   * object key is deterministic (`kyc/<userId>/<applicationId>/<label>`), so a
+   * re-upload of the same label overwrites in place — matching
+   * `addOnboardingDocument`'s replace-by-label rule.
+   */
+  async issueDocumentUploadUrl(
+    userId: EntityId,
+    command: IssueUploadUrlCommand,
+  ): Promise<UploadUrlGrant> {
+    const request = await this.requireOwn(userId, command.requestId);
+
+    if (!REQUIRED_DOCUMENT_LABELS.includes(command.label)) {
+      throw new InvalidOperationError(
+        `Unknown document label — expected one of ${REQUIRED_DOCUMENT_LABELS.join(', ')}`,
+      );
+    }
+    if (!ALLOWED_UPLOAD_CONTENT_TYPES.includes(command.contentType)) {
+      throw new InvalidOperationError('Document must be a JPEG, PNG, or WebP image');
+    }
+
+    const key = `kyc/${userId}/${request.id}/${command.label}`;
+    const expiresAt = this.deps.config.clock.now().getTime() + UPLOAD_URL_TTL_MS;
+    const grant = await this.deps.objectStorage.issueUploadUrl({
+      key,
+      contentType: command.contentType,
+      maxBytes: MAX_DOCUMENT_BYTES,
+      expiresAt,
+    });
+    this.deps.logger.info('onboarding.upload_url_issued', {
+      requestId: request.id,
+      label: command.label,
+      provider: this.deps.objectStorage.name,
+    });
+    return grant;
   }
 
   async addDocument(userId: EntityId, command: AddDocumentCommand): Promise<OnboardingRequest> {

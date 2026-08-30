@@ -13,6 +13,7 @@ import type { EntityId } from '../domain/identity.js';
 import type { InventoryService } from './inventory/inventory-service.js';
 import type { OrganizationRole, Capability } from '../domain/models/organization.js';
 import type { AdminAuditRepository } from '../domain/ports/audit.js';
+import type { ObjectStoragePort } from '../domain/ports/object-storage.js';
 import type { OutboxWriter } from '../domain/ports/outbox.js';
 import type { PaymentProvider } from '../domain/ports/payment-provider.js';
 import type {
@@ -74,6 +75,11 @@ export interface ServiceDeps {
    * "verification" was not ported as verification.
    */
   verification: VerificationProvider;
+  /**
+   * Phase 2 gap-closure: pre-signed upload URLs for onboarding KYC images.
+   * `EchoObjectStorage` on the memory driver; Firebase Storage v4 on firestore.
+   */
+  objectStorage: ObjectStoragePort;
   /** Phase 4: Payment provider (pluggable) */
   paymentProvider: PaymentProvider;
   /** Phase 4: Pricing engine */

@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { opaqueIdSchema, paginatedSchema } from './shared.js';
+
+import { opaqueIdSchema } from './shared.js';
 
 /**
  * ─── Onboarding / KYC Contracts ──────────────────────────────────────────────
@@ -89,6 +90,37 @@ export const addOnboardingDocumentSchema = z
   })
   .strict();
 export type AddOnboardingDocumentRequest = z.infer<typeof addOnboardingDocumentSchema>;
+
+/** The three KYC images V2 collects. */
+export const onboardingDocumentLabelSchema = z.enum(['id_front', 'id_back', 'selfie']);
+export type OnboardingDocumentLabel = z.infer<typeof onboardingDocumentLabelSchema>;
+
+/**
+ * Ask for a pre-signed upload URL for one KYC image. The client `PUT`s the
+ * file to the returned `uploadUrl` with the returned `headers`, then calls
+ * `POST .../documents` with the returned `storagePath`.
+ */
+export const documentUploadUrlRequestSchema = z
+  .object({
+    label: onboardingDocumentLabelSchema,
+    contentType: z.enum(['image/jpeg', 'image/png', 'image/webp']),
+  })
+  .strict();
+export type DocumentUploadUrlRequest = z.infer<typeof documentUploadUrlRequestSchema>;
+
+export const documentUploadUrlDtoSchema = z
+  .object({
+    uploadUrl: z.string().min(1),
+    method: z.literal('PUT'),
+    /** Headers the client must send on the PUT, verbatim. */
+    headers: z.record(z.string(), z.string()),
+    /** Pass this back to `POST .../documents` as `storagePath`. */
+    storagePath: z.string().min(1).max(500),
+    /** Epoch ms — the URL is unusable after this. */
+    expiresAt: z.number().int().positive(),
+  })
+  .strict();
+export type DocumentUploadUrlDto = z.infer<typeof documentUploadUrlDtoSchema>;
 
 export const verifyDocumentSchema = z
   .object({

@@ -20,3 +20,4 @@ export * from './firestore-scan-ledger-repository.js';
 export * from './firestore-event-code-repository.js';
 export * from './firestore-door-sale-repository.js';
 export * from './firestore-cover-wallet-repository.js';
+export * from './firebase-object-storage.js';

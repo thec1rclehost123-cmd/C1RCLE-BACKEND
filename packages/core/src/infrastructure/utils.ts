@@ -12,7 +12,7 @@
 
 import { UnauthorizedError } from '../domain/errors.js';
 
-import { getFirestoreClient } from './firestore/client.js';
+import { getFirestoreClient, getStorageClient } from './firestore/client.js';
 import {
   FirestoreOrganizationRepository,
   FirestoreVenueRepository,
@@ -193,16 +193,25 @@ export function buildActorContext(request: { actor?: ActorContext }): ActorConte
  * Creates a Firestore client from gateway config.
  */
 export function firestoreClient(gw: StorageDriverConfig) {
+  return getFirestoreClient(firestoreCredentials(gw));
+}
+
+/** The Firebase Storage handle from the same app — for signed upload URLs. */
+export function storageClient(gw: StorageDriverConfig) {
+  return getStorageClient(firestoreCredentials(gw));
+}
+
+function firestoreCredentials(gw: StorageDriverConfig) {
   if (!gw.FIREBASE_CLIENT_EMAIL || !gw.FIREBASE_PRIVATE_KEY) {
     throw new Error(
       'STORAGE_DRIVER=firestore requires FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY',
     );
   }
-  return getFirestoreClient({
+  return {
     projectId: gw.FIRESTORE_PROJECT_ID,
     clientEmail: gw.FIREBASE_CLIENT_EMAIL,
     privateKey: gw.FIREBASE_PRIVATE_KEY,
-  });
+  };
 }
 
-export { getFirestoreClient } from './firestore/client.js';
+export { getFirestoreClient, getStorageClient } from './firestore/client.js';

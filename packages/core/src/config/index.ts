@@ -32,6 +32,11 @@ export interface FirestoreConfig {
   databaseId: string;
 }
 
+export interface StorageConfig {
+  /** Bucket that holds onboarding KYC images. */
+  kycBucket: string;
+}
+
 export type FeatureFlagConfig = Record<string, boolean | undefined>;
 
 export interface CoreConfig {
@@ -39,6 +44,7 @@ export interface CoreConfig {
   ids: IdGenerator;
   redis: RedisConfig;
   firestore: FirestoreConfig;
+  storage: StorageConfig;
   features: FeatureFlagConfig;
   magicTicketSecret: string;
 }
@@ -48,6 +54,7 @@ export interface CoreConfigInput {
   ids?: IdGenerator;
   redis: Partial<RedisConfig> & { url: string };
   firestore: Partial<FirestoreConfig> & { projectId: string };
+  storage?: Partial<StorageConfig>;
   features?: FeatureFlagConfig;
   magicTicketSecret?: string;
 }
@@ -83,6 +90,11 @@ export function createCoreConfig(input: CoreConfigInput): CoreConfig {
     firestore: {
       projectId: input.firestore.projectId,
       databaseId: input.firestore.databaseId ?? '(default)',
+    },
+    storage: {
+      // Firebase's default bucket for a project. Override via
+      // FIREBASE_STORAGE_BUCKET when the bucket is named differently.
+      kycBucket: input.storage?.kycBucket ?? `${input.firestore.projectId}.firebasestorage.app`,
     },
     features: input.features ?? {},
     magicTicketSecret: input.magicTicketSecret ?? 'default-magic-ticket-secret-change-in-production',

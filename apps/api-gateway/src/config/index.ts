@@ -19,6 +19,8 @@ const envSchema = z.object({
   /** Firestore service-account credentials (only read/used when STORAGE_DRIVER=firestore). */
   FIREBASE_CLIENT_EMAIL: z.string().optional(),
   FIREBASE_PRIVATE_KEY: z.string().optional(),
+  /** Bucket for onboarding KYC images. Defaults to `<project>.firebasestorage.app`. */
+  FIREBASE_STORAGE_BUCKET: z.string().min(1).optional(),
   /** B10: Better Auth. */
   BETTER_AUTH_SECRET: z.string().min(1).default('dev-only-change-me'),
   BETTER_AUTH_URL: z.string().min(1).default('http://localhost:8080'),

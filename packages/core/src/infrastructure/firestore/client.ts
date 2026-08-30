@@ -10,12 +10,13 @@
  */
 import { cert, getApps, initializeApp, type App } from 'firebase-admin/app';
 import { getFirestore, type Firestore } from 'firebase-admin/firestore';
+import { getStorage, type Storage } from 'firebase-admin/storage';
 
 // Re-exported so callers outside this directory (e.g. the gateway's auth
 // plugin, which needs the type for `betterAuth-firestore`) never need their
 // own `firebase-admin` import — this directory stays the one place that
 // knows the storage engine exists (scripts/check-boundaries.mjs Rule 3).
-export type { Firestore };
+export type { Firestore, Storage };
 
 export interface FirestoreCredentials {
   projectId: string;
@@ -27,8 +28,7 @@ const APP_NAME = 'c1rcle-v2';
 
 let cachedApp: App | null = null;
 
-/** Idempotent: safe to call repeatedly (e.g. across `tsx watch` reloads). */
-export function getFirestoreClient(credentials: FirestoreCredentials): Firestore {
+function getApp(credentials: FirestoreCredentials): App {
   cachedApp ??=
     getApps().find((app) => app.name === APP_NAME) ??
     initializeApp(
@@ -43,5 +43,19 @@ export function getFirestoreClient(credentials: FirestoreCredentials): Firestore
       },
       APP_NAME,
     );
-  return getFirestore(cachedApp);
+  return cachedApp;
+}
+
+/** Idempotent: safe to call repeatedly (e.g. across `tsx watch` reloads). */
+export function getFirestoreClient(credentials: FirestoreCredentials): Firestore {
+  return getFirestore(getApp(credentials));
+}
+
+/**
+ * The Firebase Storage handle for the same app. Callers outside this directory
+ * never import `firebase-admin` — they take a `Storage` from here (Rule 3
+ * exemption, same as `getFirestoreClient`).
+ */
+export function getStorageClient(credentials: FirestoreCredentials): Storage {
+  return getStorage(getApp(credentials));
 }
