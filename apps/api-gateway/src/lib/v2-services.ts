@@ -116,8 +116,8 @@ export function createV2Services(logger?: Logger): PartnerV2Services {
  * `plugins/auth.ts`'s `onRequest` hook always populates `request.actor`
  * before this runs when there's a real session — this never fabricates one.
  */
-function actorFromRequest(gw: GatewayConfig, request: FastifyRequest): ActorContext {
-  if (gw.STORAGE_DRIVER === 'memory' && !request.actor) {
+export function actorFromRequest(gw: GatewayConfig, request: FastifyRequest): ActorContext {
+  if (gw.NODE_ENV !== 'production' && gw.STORAGE_DRIVER === 'memory' && !request.actor) {
     // "The memory driver has a single fixed dev actor" (see
     // `partner/invitations.test.ts`) — always fabricates on this driver,
     // never throws. Only `STORAGE_DRIVER=firestore` (real auth) reaches the

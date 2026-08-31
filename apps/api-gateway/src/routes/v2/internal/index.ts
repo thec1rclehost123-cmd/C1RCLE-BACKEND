@@ -1,3 +1,7 @@
+import { createGatewayRuntimeState, type GatewayRuntimeState } from '../../../lib/runtime-state.js';
+
+import type { GatewayConfig } from '../../../config/index.js';
+import type { ReadinessChecks } from '../route-manifest.js';
 import type { FastifyInstance } from 'fastify';
 
 /**
@@ -6,23 +10,48 @@ import type { FastifyInstance } from 'fastify';
  * probes, and the frontend's boot health checks.
  */
 
-export async function internalRoutes(app: FastifyInstance): Promise<void> {
-  const version = '0.1.0';
-  const startedAt = new Date().toISOString();
+export interface InternalRoutesOptions {
+  config: GatewayConfig;
+  runtimeState?: GatewayRuntimeState;
+  readinessChecks?: ReadinessChecks;
+}
+
+export async function internalRoutes(
+  app: FastifyInstance,
+  options: InternalRoutesOptions,
+): Promise<void> {
+  const runtimeState = options.runtimeState ?? createGatewayRuntimeState();
+  const readinessChecks = options.readinessChecks ?? {};
 
   await app.register(
     async (internal) => {
       internal.get('/health', async () => ({
         ok: true,
-        uptimeMs: Date.now() - Date.parse(startedAt),
+        uptimeMs: Date.now() - Date.parse(runtimeState.startedAt),
       }));
 
-      internal.get('/version', async () => ({ version, startedAt }));
+      internal.get('/version', async () => ({
+        version: options.config.APP_VERSION,
+        buildSha: options.config.BUILD_SHA,
+        startedAt: runtimeState.startedAt,
+      }));
 
       internal.get('/readiness', async (_request, reply) => {
-        // Readiness depends on infra (redis, firestore) once wired; for now the
-        // gateway itself is the only dependency and it is serving this request.
-        void reply.send({ ok: true, checks: { gateway: 'up' } });
+        const checks: Record<string, 'up' | 'down'> = {
+          configuration: 'up',
+          gateway: runtimeState.isShuttingDown ? 'down' : 'up',
+        };
+
+        for (const [name, check] of Object.entries(readinessChecks)) {
+          try {
+            checks[name] = (await check()) ? 'up' : 'down';
+          } catch {
+            checks[name] = 'down';
+          }
+        }
+
+        const ok = Object.values(checks).every((status) => status === 'up');
+        void reply.code(ok ? 200 : 503).send({ ok, checks });
       });
     },
     { prefix: '/internal' },

@@ -1,22 +1,31 @@
 import { buildV2ErrorResponse } from '@c1rcle/contracts';
 import { createLogger, type Logger } from '@c1rcle/core';
 import cors from '@fastify/cors';
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { LogController, type FastifyInstance } from 'fastify';
 
-import { getGatewayConfig, type GatewayConfig } from './config/index.js';
+import {
+  createTrustedProxyMatcher,
+  getAllowedOrigins,
+  getGatewayConfig,
+  getTrustedProxyCidrs,
+  type GatewayConfig,
+} from './config/index.js';
 import { redactPaths } from './lib/logger-config.js';
-import { genReqId, onRequestHook } from './lib/request-tracing.js';
+import { createRequestIdGenerator, onRequestHook } from './lib/request-tracing.js';
+import { createGatewayRuntimeState, type GatewayRuntimeState } from './lib/runtime-state.js';
 import { createV2Services } from './lib/v2-services.js';
 import cachePlugin from './plugins/cache.js';
 import { errorHandler } from './plugins/error-handler.js';
 import rateLimitPlugin from './plugins/rate-limit.js';
 import rbacPlugin from './plugins/rbac.js';
 import validateV2Plugin from './plugins/validate-v2.js';
-import { registerV2Routes } from './routes/v2/route-manifest.js';
+import { registerV2Routes, type ReadinessChecks } from './routes/v2/route-manifest.js';
 
 export interface BuildAppOptions {
   config?: GatewayConfig;
   logger?: Logger;
+  runtimeState?: GatewayRuntimeState;
+  readinessChecks?: ReadinessChecks;
 }
 
 /**
@@ -29,10 +38,13 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   const config = options.config ?? getGatewayConfig();
   const injectedLogger: Logger | undefined = options.logger;
   const logLevel = config.LOG_LEVEL === 'silent' ? 'silent' : config.LOG_LEVEL;
+  const runtimeState = options.runtimeState ?? createGatewayRuntimeState();
+  const trustedProxyMatcher = createTrustedProxyMatcher(getTrustedProxyCidrs(config));
 
   const app = Fastify({
-    genReqId,
-    disableRequestLogging: true,
+    trustProxy: (address) => trustedProxyMatcher(address),
+    genReqId: createRequestIdGenerator(trustedProxyMatcher),
+    logController: new LogController({ disableRequestLogging: true }),
     logger: {
       level: logLevel,
       redact: redactPaths,
@@ -56,15 +68,23 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   app.addHook('onRequest', onRequestHook);
 
-  // B10: cookie-based sessions require CORS credentials — the frontend apps
-  // run on different ports (3000-3002) than this gateway (8080). Different
-  // ports are still "same-site" for the SameSite cookie attribute (it only
-  // considers scheme + registrable domain), so this is sufficient in local
-  // dev without SameSite=None; prod cross-domain needs revisiting (see
-  // docs/architecture/decisions.md D-001).
+  // Cookie-based sessions require credentials. Origins are explicit and
+  // environment-driven so production cannot accidentally inherit localhost
+  // behavior or enable wildcard credentialed CORS.
   await app.register(cors, {
-    origin: ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:3002'],
+    origin: getAllowedOrigins(config),
     credentials: true,
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: [
+      'Authorization',
+      'Content-Type',
+      'X-Organization-Id',
+      'X-Request-Id',
+      'X-Client-Request-Id',
+      'Idempotency-Key',
+      'If-Match',
+    ],
+    exposedHeaders: ['X-Request-Id'],
   });
 
   await app.register(validateV2Plugin);
@@ -102,7 +122,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     void reply.status(404).send(body);
   });
 
-  await registerV2Routes(app);
+  await registerV2Routes(app, {
+    config,
+    runtimeState,
+    readinessChecks: options.readinessChecks,
+  });
 
   return app;
 }
