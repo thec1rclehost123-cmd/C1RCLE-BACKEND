@@ -116,6 +116,22 @@ export default fp(async (fastify: FastifyInstance, options: AuthContextPluginOpt
     // `request.actor` rather than `request.user`/`request.authContext`.
     request.authUser = { id: user.id, platformRole: user.role ?? 'guest' };
 
+    // Session-only actor: authenticated, not yet scoped to any organization.
+    // Routes that need an org still fail closed — the ABAC path check in
+    // plugins/rbac.ts and the services' own `requireOrgAccess` both reject the
+    // empty `organizationId`. The membership block below upgrades this to a
+    // full actor when an `X-Organization-Id` resolves. Without it, every
+    // "signed in but not yet in an org" route (GET/POST /organizations,
+    // onboarding, accept-invitation) 401s on the firestore driver, because
+    // `buildActorContext` treats a missing actor as "no session".
+    request.actor = {
+      userId: user.id,
+      organizationId: '',
+      role: 'member',
+      capabilities: [],
+      platformRole: user.role ?? 'guest',
+    };
+
     const organizationId = request.headers['x-organization-id'];
     // Matches `opaqueIdSchema` (packages/contracts). This hook is a global
     // `onRequest` — it runs before any route's `validateV2` preHandler, so an
