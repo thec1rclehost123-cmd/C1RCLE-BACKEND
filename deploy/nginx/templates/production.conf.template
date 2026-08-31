@@ -1,0 +1,39 @@
+# Production HTTPS profile. The deployment system must provide all values;
+# no domain, certificate path, or network allowlist is embedded in this file.
+
+upstream c1rcle_fastify {
+    server ${FASTIFY_UPSTREAM};
+    keepalive 32;
+}
+
+geo $c1rcle_readiness_allowed {
+    default 0;
+    ${NGINX_READINESS_ALLOWLIST_LINES}
+}
+
+server {
+    listen 80;
+    server_name ${NGINX_SERVER_NAME};
+    return 308 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name ${NGINX_SERVER_NAME};
+
+    ssl_certificate ${NGINX_TLS_CERTIFICATE};
+    ssl_certificate_key ${NGINX_TLS_CERTIFICATE_KEY};
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    include /etc/nginx/snippets/c1rcle/security-headers.conf;
+
+    client_max_body_size 1m;
+    limit_conn c1rcle_edge_connections 100;
+    limit_req_status 429;
+    limit_conn_status 429;
+
+    include /etc/nginx/snippets/c1rcle/api-locations.conf;
+}

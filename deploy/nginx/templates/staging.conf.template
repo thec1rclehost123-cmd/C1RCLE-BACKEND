@@ -1,0 +1,26 @@
+# HTTP-only staging profile. TLS belongs at the deployment boundary and is
+# intentionally not guessed here. Provide every value explicitly at runtime.
+
+upstream c1rcle_fastify {
+    server ${FASTIFY_UPSTREAM};
+    keepalive 32;
+}
+
+geo $c1rcle_readiness_allowed {
+    default 0;
+    ${NGINX_READINESS_ALLOWLIST_LINES}
+}
+
+server {
+    listen ${NGINX_HTTP_PORT};
+    server_name ${NGINX_SERVER_NAME};
+
+    client_max_body_size 1m;
+    limit_conn c1rcle_edge_connections 100;
+    limit_req_status 429;
+    limit_conn_status 429;
+
+    include /etc/nginx/snippets/c1rcle/security-headers.conf;
+
+    include /etc/nginx/snippets/c1rcle/api-locations.conf;
+}
