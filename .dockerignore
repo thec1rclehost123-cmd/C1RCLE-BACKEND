@@ -1,0 +1,23 @@
+# build context trimming — keep the Docker context small and secret-free
+**/node_modules
+**/dist
+**/.turbo
+**/coverage
+**/*.tsbuildinfo
+**/*.log
+
+.git
+.github
+.vscode
+.idea
+
+# never ship env files into an image — env comes from the platform
+**/.env
+**/.env.*
+!**/.env.example
+
+# not needed at runtime
+docs
+**/*.test.ts
+**/*.integration.test.ts
+**/vitest.config.*

@@ -58,6 +58,14 @@ const orgHeaders = z.looseObject({
   'idempotency-key': idempotencyKeySchema.optional(),
 });
 
+// Collection-level routes (list your orgs, create your first) have no single
+// org context — `X-Organization-Id` is not required there. The item routes
+// below keep `orgHeaders` (required + matched against the path param).
+const orgCollectionHeaders = z.looseObject({
+  'x-organization-id': opaqueIdSchema.optional(),
+  'idempotency-key': idempotencyKeySchema.optional(),
+});
+
 const orgListSchema = paginatedSchema(organizationDtoSchema);
 const memberListSchema = paginatedSchema(organizationMemberDtoSchema);
 const invitationListSchema = paginatedSchema(invitationDtoSchema);
@@ -70,7 +78,7 @@ export default async function partnerOrganizationRoutes(fastify: FastifyInstance
     {
       preHandler: [
         fastify.rateLimit('AUTH_READ'),
-        fastify.validateV2({ querystring: paginationQuerySchema, headers: orgHeaders }),
+        fastify.validateV2({ querystring: paginationQuerySchema, headers: orgCollectionHeaders }),
         fastify.requirePermission('organization.read'),
       ],
     },
@@ -138,7 +146,7 @@ export default async function partnerOrganizationRoutes(fastify: FastifyInstance
         fastify.rateLimit('STANDARD_COMMAND'),
         fastify.validateV2({
           body: createOrganizationBody,
-          headers: orgHeaders.extend({ 'idempotency-key': idempotencyKeySchema }),
+          headers: orgCollectionHeaders.extend({ 'idempotency-key': idempotencyKeySchema }),
         }),
       ],
     },
