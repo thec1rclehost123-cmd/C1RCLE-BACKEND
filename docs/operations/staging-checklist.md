@@ -6,6 +6,8 @@ check is NO-GO.
 ## Pre-deploy
 
 - [ ] Provide the values in [`staging-environment-contract.md`](./staging-environment-contract.md).
+- [ ] Run `deploy/staging/tests/run-container-integration.sh` and retain its
+      output as local container evidence.
 - [ ] Confirm the runtime platform, image registry, process supervisor, and
       rollback artifact.
 - [ ] Confirm the public staging hostname, DNS owner, TLS owner, and hop chain.

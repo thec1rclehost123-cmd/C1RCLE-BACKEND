@@ -27,6 +27,19 @@ The Fastify port must not be publicly exposed. If an external TLS hop exists,
 it must be the only party allowed to reach Nginx and must overwrite forwarded
 headers before Nginx evaluates them.
 
+For the minimum container topology, publish only the Nginx listener and place
+both containers on the same private network:
+
+```text
+public edge -> Nginx container -> Fastify container -> Firestore/Storage/Redis
+                         private service DNS: FASTIFY_UPSTREAM
+```
+
+Fastify must bind `HOST` to `0.0.0.0` (or `::`) inside its container while its
+`PORT` remains reachable only through the private network. Do not set
+`FASTIFY_UPSTREAM` to `localhost` when Nginx runs in a separate container;
+`localhost` would point back to Nginx itself.
+
 ## TLS and DNS
 
 `NGINX_TLS_MODE=external` requires no certificate or key variables. The outer

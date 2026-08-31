@@ -13,12 +13,19 @@ container scheduler, replica count, or external load balancer.
 ```text
 verified DNS/TLS boundary
           |
-       Nginx
+  Nginx container (public)
           |
-  one Fastify gateway instance
+  private Fastify container
           |
   packages/core -> Firebase/Firestore/Redis/external services
 ```
+
+The minimum staging shape is one Nginx container and one Fastify container on
+the same private network. Nginx resolves Fastify through the deployment
+service name in `FASTIFY_UPSTREAM` (for example, `fastify:8080` locally), and
+Fastify port `8080` is not host-published. A separately deployed TLS/CDN/WAF
+edge may sit in front of Nginx only when its hop, CIDRs, and header policy are
+verified and supplied through the environment contract.
 
 Start with one Fastify instance. Add replicas and a load-balancing policy only
 after the platform, session behavior, Redis coordination, idempotency behavior,
@@ -46,7 +53,11 @@ does not invent that topology.
    any production change.
 
 The repository's `deploy/nginx/tests/run-local-validation.sh` is the repeatable
-local proof for steps that do not require a real staging network. The staging
+local proof for host-process proxy checks. The
+`deploy/staging/tests/run-container-integration.sh` is the repeatable proof
+that the deployable Fastify and Nginx images work together on a private Docker
+network. The default mode does not prove real Better Auth; run its explicitly
+gated Firestore mode with disposable credentials for that evidence. The staging
 preflight and post-deploy suites fail on measured failures and explicitly mark
 unavailable external checks as unmeasured. None of these scripts proves DNS,
 certificate renewal, firewall policy, provider health-check routing, or

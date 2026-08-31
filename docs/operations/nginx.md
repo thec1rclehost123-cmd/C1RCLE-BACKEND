@@ -39,6 +39,11 @@ retry API requests.
 - `deploy/nginx/tests/run-local-validation.sh` — builds Fastify, builds Nginx,
   verifies config, proxies real health traffic, checks request IDs, 413/429
   protection, and structured upstream failures.
+- `deploy/staging/tests/run-container-integration.sh` — builds both images and
+  validates the real private Docker topology: Nginx resolves the Fastify
+  service name, Fastify has no host port mapping, edge boundaries and limits
+  work, organization scope behavior survives the proxy, and SIGTERM/restart
+  behavior is bounded.
 - `deploy/staging/validate-environment.mjs` — strict staging value and mode
   validation without printing secrets.
 - `deploy/staging/render-nginx.mjs` — deterministic, inspectable staging render.
@@ -81,6 +86,40 @@ network range into the repository. Supply the actual values at deployment
 time. For local-only validation, `127.0.0.1/32 1;` is used as an explicit
 example; it must not be reused for production unless it is the verified probe
 source.
+
+## Local container integration
+
+Run the provider-neutral container proof from the repository root:
+
+```sh
+deploy/staging/tests/run-container-integration.sh
+```
+
+It creates a uniquely named private Docker network, starts the Fastify image as
+`fastify` without publishing port `8080`, and publishes only the Nginx image.
+The integration value `FASTIFY_UPSTREAM=fastify:8080` is a local service-DNS
+example; staging must use the actual private service name supplied by the
+deployment platform. The harness removes only the containers, network, and
+temporary files it created.
+
+The default `memory` mode proves the container and proxy topology plus the
+unauthenticated organization contract. It intentionally does not register
+Better Auth routes. To execute signup, login, session, authenticated
+organization creation, and invalid-scope checks through Nginx, use a disposable
+Firestore environment and explicitly opt in:
+
+```sh
+STAGING_INTEGRATION_AUTH_MODE=firestore \
+STAGING_INTEGRATION_AUTH_CONFIRM=YES \
+FIRESTORE_PROJECT_ID=... FIREBASE_STORAGE_BUCKET=... \
+FIREBASE_CLIENT_EMAIL=... FIREBASE_PRIVATE_KEY=... \
+BETTER_AUTH_SECRET=... \
+deploy/staging/tests/run-container-integration.sh
+```
+
+The Firestore mode creates real test data and is never the default. A passing
+memory run must not be described as proof of real authentication or session
+behavior.
 
 ## Safety defaults
 
