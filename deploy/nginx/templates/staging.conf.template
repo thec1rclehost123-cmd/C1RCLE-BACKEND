@@ -6,6 +6,22 @@ upstream c1rcle_fastify {
     keepalive 32;
 }
 
+geo $c1rcle_edge_peer_trusted {
+    default 0;
+    ${NGINX_EDGE_TRUSTED_CIDR_LINES}
+}
+
+map "$c1rcle_edge_peer_trusted:$http_x_forwarded_proto" $c1rcle_forwarded_proto {
+    default $scheme;
+    "1:http" http;
+    "1:https" https;
+}
+
+map $host $c1rcle_host_allowed {
+    default 0;
+    ${NGINX_SERVER_NAME} 1;
+}
+
 geo $c1rcle_readiness_allowed {
     default 0;
     ${NGINX_READINESS_ALLOWLIST_LINES}
@@ -14,6 +30,8 @@ geo $c1rcle_readiness_allowed {
 server {
     listen ${NGINX_HTTP_PORT};
     server_name ${NGINX_SERVER_NAME};
+
+    if ($c1rcle_host_allowed = 0) { return 444; }
 
     client_max_body_size 1m;
     limit_conn c1rcle_edge_connections 100;

@@ -39,6 +39,17 @@ retry API requests.
 - `deploy/nginx/tests/run-local-validation.sh` — builds Fastify, builds Nginx,
   verifies config, proxies real health traffic, checks request IDs, 413/429
   protection, and structured upstream failures.
+- `deploy/staging/validate-environment.mjs` — strict staging value and mode
+  validation without printing secrets.
+- `deploy/staging/render-nginx.mjs` — deterministic, inspectable staging render.
+- `deploy/staging/preflight-staging.sh` — environment, render, syntax, DNS,
+  direct-health, public-health, and readiness preflight.
+- `deploy/staging/smoke-staging.sh` — ordered post-deploy functional checks.
+- `deploy/staging/security-tests.sh` — header, host, limits, readiness, TLS,
+  log, and direct-access security checks.
+- `deploy/staging/failure-tests.sh` — safe invalid-config check plus controlled
+  staging failure probes.
+- `deploy/staging/load-baseline.sh` — configurable p50/p95/p99 load scenarios.
 
 ## Forwarded headers and identity
 
@@ -90,7 +101,10 @@ source.
 
 ## Required deployment values
 
-The runtime must provide:
+For staging, provide the complete contract in
+[`staging-environment-contract.md`](./staging-environment-contract.md) and
+render it with `deploy/staging/render-nginx.mjs`. The runtime must provide at
+least:
 
 - `FASTIFY_UPSTREAM` — one resolvable Fastify host and port, such as an
   orchestrator service name; never a guessed address.
@@ -98,9 +112,16 @@ The runtime must provide:
 - `NGINX_READINESS_ALLOWLIST_LINES` — explicit Nginx `geo` entries for the
   verified health-check source networks, for example a deployment-generated
   set of `CIDR 1;` lines.
-- `NGINX_HTTP_PORT` — required by the staging profile.
-- `NGINX_TLS_CERTIFICATE` and `NGINX_TLS_CERTIFICATE_KEY` — required by the
-  production profile and supplied by the chosen certificate lifecycle.
+- `NGINX_HTTP_PORT` — the explicit staging or production HTTP listener.
+- `NGINX_EDGE_TRUSTED_CIDR_LINES` — required when staging uses external TLS;
+  these are the only peer networks allowed to supply the outer proto.
+- `NGINX_HTTPS_PORT`, `NGINX_TLS_CERTIFICATE`, and
+  `NGINX_TLS_CERTIFICATE_KEY` — required only when the Nginx-owned TLS profile
+  is selected.
+
+The entrypoint is a runtime renderer for already-authorized values. It is not a
+replacement for the strict staging validator: run the validator and renderer
+first, and preserve the rendered config as a deployment artifact.
 
 Before enabling the production profile, verify TLS termination, certificate
 renewal, the real health-check source, firewall rules, log collection, and

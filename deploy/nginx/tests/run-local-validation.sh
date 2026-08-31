@@ -95,6 +95,8 @@ openssl req -x509 -newkey rsa:2048 -nodes \
 docker run --rm \
     --env NGINX_PROFILE=production \
     --env FASTIFY_UPSTREAM=host.docker.internal:8080 \
+    --env NGINX_HTTP_PORT=80 \
+    --env NGINX_HTTPS_PORT=443 \
     --env NGINX_SERVER_NAME=localhost.test \
     --env 'NGINX_READINESS_ALLOWLIST_LINES=127.0.0.1/32 1;' \
     --env NGINX_TLS_CERTIFICATE=/tmp/c1rcle-test.crt \
@@ -119,7 +121,7 @@ docker run --detach --rm \
 
 nginx_ready=0
 for _ in $(seq 1 30); do
-    if curl -fsS http://127.0.0.1:18081/api/v2/internal/health >/dev/null 2>&1; then
+    if curl -fsS http://localhost:18081/api/v2/internal/health >/dev/null 2>&1; then
         nginx_ready=1
         break
     fi
@@ -133,7 +135,7 @@ if [ "$nginx_ready" != "1" ]; then
 fi
 
 echo "Checking health proxying and request-id response..."
-health_response=$(curl -fsS -D "$temp_dir/health.headers" http://127.0.0.1:18081/api/v2/internal/health)
+health_response=$(curl -fsS -D "$temp_dir/health.headers" http://localhost:18081/api/v2/internal/health)
 request_id=$(sed -n 's/^X-Request-Id: *//Ip' "$temp_dir/health.headers" | tr -d '\r' | head -n 1)
 
 if [ -z "$request_id" ]; then
@@ -152,7 +154,7 @@ esac
 echo "Checking request-id correlation through Fastify..."
 error_headers="$temp_dir/error.headers"
 error_body=$(curl -sS -D "$error_headers" -H 'X-Request-Id: client-supplied-id-must-be-replaced' \
-    http://127.0.0.1:18081/api/v2/route-that-does-not-exist)
+    http://localhost:18081/api/v2/route-that-does-not-exist)
 edge_request_id=$(sed -n 's/^X-Request-Id: *//Ip' "$error_headers" | tr -d '\r' | head -n 1)
 
 if [ -z "$edge_request_id" ] || [ "$edge_request_id" = "client-supplied-id-must-be-replaced" ]; then
@@ -172,7 +174,7 @@ echo "Checking edge body-size protection..."
 head -c 1100000 /dev/zero >"$temp_dir/oversized-body"
 oversized_status=$(curl -sS -o "$temp_dir/oversized-response" -w '%{http_code}' \
     -X POST --data-binary "@$temp_dir/oversized-body" \
-    http://127.0.0.1:18081/api/v2/edge-validation)
+    http://localhost:18081/api/v2/edge-validation)
 
 if [ "$oversized_status" != "413" ]; then
     echo "Expected 413 for an oversized request, received $oversized_status" >&2
@@ -182,7 +184,7 @@ fi
 echo "Checking edge rate protection..."
 rate_limited=0
 for _ in $(seq 1 40); do
-    status=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:18081/api/v2/route-that-does-not-exist)
+    status=$(curl -sS -o /dev/null -w '%{http_code}' http://localhost:18081/api/v2/route-that-does-not-exist)
     if [ "$status" = "429" ]; then
         rate_limited=1
         break
@@ -200,7 +202,7 @@ wait "$api_pid" >/dev/null 2>&1
 api_pid=""
 
 upstream_status=$(curl -sS -o "$temp_dir/upstream-response" -w '%{http_code}' \
-    http://127.0.0.1:18081/api/v2/internal/health)
+    http://localhost:18081/api/v2/internal/health)
 
 case "$upstream_status" in
     502|503|504) : ;;

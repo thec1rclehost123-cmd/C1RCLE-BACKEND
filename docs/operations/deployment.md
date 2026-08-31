@@ -27,25 +27,30 @@ does not invent that topology.
 
 ## Staging procedure
 
-1. Build the Nginx image from the repository root using
-   `deploy/docker/Dockerfile.nginx`.
-2. Supply the staging values described in
-   [`nginx.md`](./nginx.md), including the actual Fastify service name and
-   health-check allowlist.
-3. Render the HTTP-only staging profile and run `nginx -t` before starting it.
-4. Start one Fastify gateway and one Nginx instance.
+1. Supply the values in
+   [`staging-environment-contract.md`](./staging-environment-contract.md),
+   including the actual Fastify service name and health-check allowlist.
+2. Run `node deploy/staging/validate-environment.mjs`.
+3. Render with `node deploy/staging/render-nginx.mjs --output <file>` and run
+   `deploy/staging/preflight-staging.sh` before starting anything.
+4. Start one Fastify gateway and one Nginx instance. Use external TLS only when
+   the verified outer hop is private and its CIDRs are supplied; otherwise use
+   the Nginx-owned TLS profile with managed certificate files.
 5. Verify `/api/v2/internal/health` through Nginx, then verify the protected
    readiness path from the actual health-check source.
-6. Exercise one authenticated read and one representative mutation with a
-   known-safe test record. Confirm the same `X-Request-Id` appears at the edge,
-   Fastify, and centralized logs.
+6. Run the ordered smoke, security, failure, and small load baseline scripts
+   from [`staging-checklist.md`](./staging-checklist.md). Use only known-safe
+   fixtures for authenticated or mutation checks.
 7. Observe 413, 429, 502/503/504 behavior, upstream connection counts, request
-   latency, error rates, and graceful shutdown before any production change.
+   latency, error rates, logs, certificate status, and graceful shutdown before
+   any production change.
 
-The repository's `run-local-validation.sh` is the repeatable local proof for
-steps that do not require a real staging network. It does not prove DNS,
+The repository's `deploy/nginx/tests/run-local-validation.sh` is the repeatable
+local proof for steps that do not require a real staging network. The staging
+preflight and post-deploy suites fail on measured failures and explicitly mark
+unavailable external checks as unmeasured. None of these scripts proves DNS,
 certificate renewal, firewall policy, provider health-check routing, or
-production capacity.
+production capacity without real staging infrastructure.
 
 ## Production gate
 

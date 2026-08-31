@@ -6,20 +6,33 @@ upstream c1rcle_fastify {
     keepalive 32;
 }
 
+map $scheme $c1rcle_forwarded_proto {
+    default $scheme;
+}
+
+map $host $c1rcle_host_allowed {
+    default 0;
+    ${NGINX_SERVER_NAME} 1;
+}
+
 geo $c1rcle_readiness_allowed {
     default 0;
     ${NGINX_READINESS_ALLOWLIST_LINES}
 }
 
 server {
-    listen 80;
+    listen ${NGINX_HTTP_PORT};
     server_name ${NGINX_SERVER_NAME};
+
+    if ($c1rcle_host_allowed = 0) { return 444; }
     return 308 https://$host$request_uri;
 }
 
 server {
-    listen 443 ssl;
+    listen ${NGINX_HTTPS_PORT} ssl;
     server_name ${NGINX_SERVER_NAME};
+
+    if ($c1rcle_host_allowed = 0) { return 444; }
 
     ssl_certificate ${NGINX_TLS_CERTIFICATE};
     ssl_certificate_key ${NGINX_TLS_CERTIFICATE_KEY};

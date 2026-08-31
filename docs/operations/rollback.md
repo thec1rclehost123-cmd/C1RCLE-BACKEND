@@ -18,6 +18,25 @@ hand.
 5. If the issue is application behavior, roll back the Fastify artifact with
    the same edge boundary and preserve any data-integrity investigation.
 
+## Staging incident coverage
+
+The rollback owner must be able to identify the previous known-good Nginx
+config/image and Fastify build for each of these cases:
+
+- invalid Nginx config or failed reload;
+- Fastify proxy-readiness build failure;
+- CORS, Better Auth, cookie, or authorization failure;
+- bad TLS configuration or certificate mismatch;
+- DNS mistake or direct Fastify exposure;
+- 502/503/504 spike or latency regression;
+- missing/sensitive logging;
+- readiness failure or a dependency outage.
+
+For each case, preserve the rendered config, image digest, Fastify `BUILD_SHA`,
+request IDs, and the first failing timestamp before rollback. A rollback is not
+complete until public health, approved readiness, and a safe authenticated read
+work again.
+
 DNS changes and certificate revocation are not first-line rollback tools. Use
 them only under the approved incident procedure because propagation and
 certificate state are harder to reverse safely.
