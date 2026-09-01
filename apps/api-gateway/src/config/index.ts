@@ -254,7 +254,12 @@ export function getGatewayConfig(env: NodeJS.ProcessEnv = process.env): GatewayC
   // Keep the production process fast while allowing tests and tooling to
   // validate independent environment objects without mutating process.env.
   if (env === process.env && cached) return cached;
-  const parsed = validatedEnvSchema.safeParse(env);
+  // Render exposes the immutable deploy SHA as RENDER_GIT_COMMIT. Keep
+  // BUILD_SHA provider-neutral, but consume the documented Render value when
+  // an explicit BUILD_SHA override is not supplied.
+  const input =
+    env.BUILD_SHA || !env.RENDER_GIT_COMMIT ? env : { ...env, BUILD_SHA: env.RENDER_GIT_COMMIT };
+  const parsed = validatedEnvSchema.safeParse(input);
   if (!parsed.success) {
     const issues = parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
     throw new GatewayConfigError(`Invalid environment configuration: ${issues}`);

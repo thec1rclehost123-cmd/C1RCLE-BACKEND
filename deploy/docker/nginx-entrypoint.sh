@@ -4,6 +4,14 @@ set -eu
 
 profile="${NGINX_PROFILE:-staging}"
 
+# Render Web Services inject PORT at runtime. Keep NGINX_HTTP_PORT available
+# for provider-neutral deployments, but let the platform-owned listener win
+# when the explicit Nginx name is omitted.
+if [ -z "${NGINX_HTTP_PORT:-}" ] && [ -n "${PORT:-}" ]; then
+    NGINX_HTTP_PORT="$PORT"
+    export NGINX_HTTP_PORT
+fi
+
 require_value() {
     variable_name="$1"
     eval "variable_value=\${$variable_name:-}"
@@ -31,7 +39,7 @@ case "$profile" in
         require_value NGINX_HTTP_PORT
         require_value NGINX_SERVER_NAME
         require_value NGINX_READINESS_ALLOWLIST_LINES
-        require_value NGINX_EDGE_TRUSTED_CIDR_LINES
+        require_value NGINX_FORWARDED_PROTO
         template_path=/etc/nginx/c1rcle-templates/staging.conf.template
         ;;
     production)
@@ -51,6 +59,10 @@ case "$profile" in
 esac
 
 validate_port NGINX_HTTP_PORT
+case "${NGINX_FORWARDED_PROTO:-}" in
+    http|https|'') : ;;
+    *) echo "NGINX_FORWARDED_PROTO must be http or https" >&2; exit 64 ;;
+esac
 if [ "$profile" = "production" ]; then
     validate_port NGINX_HTTPS_PORT
     if [ "$NGINX_HTTP_PORT" = "$NGINX_HTTPS_PORT" ]; then
@@ -66,7 +78,7 @@ case "${FASTIFY_UPSTREAM:-}" in
         ;;
 esac
 
-envsubst '${FASTIFY_UPSTREAM} ${NGINX_HTTP_PORT} ${NGINX_HTTPS_PORT} ${NGINX_SERVER_NAME} ${NGINX_READINESS_ALLOWLIST_LINES} ${NGINX_EDGE_TRUSTED_CIDR_LINES} ${NGINX_TLS_CERTIFICATE} ${NGINX_TLS_CERTIFICATE_KEY}' \
+envsubst '${FASTIFY_UPSTREAM} ${NGINX_HTTP_PORT} ${NGINX_HTTPS_PORT} ${NGINX_SERVER_NAME} ${NGINX_READINESS_ALLOWLIST_LINES} ${NGINX_FORWARDED_PROTO} ${NGINX_TLS_CERTIFICATE} ${NGINX_TLS_CERTIFICATE_KEY}' \
     < "$template_path" \
     > /etc/nginx/conf.d/c1rcle-api.conf
 

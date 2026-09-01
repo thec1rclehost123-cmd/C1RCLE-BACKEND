@@ -31,6 +31,38 @@ require_command node
 require_command rg
 require_command docker
 
+if [ "${1:-}" = "--render-dry-run" ]; then
+    echo "Rendering the non-routable Render staging dry-run fixture..."
+    (
+        cd "$repo_root"
+        node "$script_dir/render-preflight-dry-run.mjs" --output "$temp_dir/c1rcle-api.conf"
+    )
+    if rg -n '\$\{' "$temp_dir/c1rcle-api.conf"; then
+        echo "Unresolved Nginx placeholder found in the Render dry-run profile" >&2
+        exit 1
+    fi
+    if ! docker info >/dev/null 2>&1; then
+        echo "Docker daemon is required for Nginx config validation" >&2
+        exit 1
+    fi
+    if ! docker image inspect "$image_name" >/dev/null 2>&1; then
+        echo "Building the Nginx validation image..."
+        (
+            cd "$repo_root"
+            docker build --file deploy/docker/Dockerfile.nginx --tag "$image_name" .
+        )
+    fi
+    docker run --rm \
+        --entrypoint nginx \
+        --add-host circle-v2-backend-staging.internal:127.0.0.1 \
+        --volume "$temp_dir/c1rcle-api.conf:/etc/nginx/conf.d/c1rcle-api.conf:ro" \
+        "$image_name" \
+        -t -c /etc/nginx/nginx.conf
+    echo "UNMEASURED: Render DNS, private reachability, health, auth, and proxy source CIDRs require created staging services."
+    echo "Render staging preflight dry-run passed."
+    exit 0
+fi
+
 echo "Validating the strict staging environment contract..."
 (
     cd "$repo_root"

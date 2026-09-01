@@ -39,7 +39,7 @@ export function renderStagingNginx(environment = process.env) {
     NGINX_TLS_CERTIFICATE: result.values.tlsCertificate,
     NGINX_TLS_CERTIFICATE_KEY: result.values.tlsCertificateKey,
     NGINX_READINESS_ALLOWLIST_LINES: cidrToGeoLines(result.values.readinessCidrs),
-    NGINX_EDGE_TRUSTED_CIDR_LINES: cidrToGeoLines(result.values.edgeTrustedCidrs),
+    NGINX_FORWARDED_PROTO: result.values.forwardedProto,
   };
 
   for (const [name, value] of Object.entries(replacements)) {

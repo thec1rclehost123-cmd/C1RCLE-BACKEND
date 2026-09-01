@@ -5,6 +5,8 @@ check is NO-GO.
 
 ## Pre-deploy
 
+- [ ] Complete the Render-specific two-service checklist in
+      [`render-staging.md`](./render-staging.md) when Render is the target.
 - [ ] Provide the values in [`staging-environment-contract.md`](./staging-environment-contract.md).
 - [ ] Run `deploy/staging/tests/run-container-integration.sh` and retain its
       output as local container evidence.

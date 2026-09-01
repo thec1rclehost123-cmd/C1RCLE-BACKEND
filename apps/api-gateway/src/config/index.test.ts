@@ -7,7 +7,7 @@ import {
   getTrustedProxyCidrs,
 } from './index.js';
 
-function productionEnvironment(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
+function productionEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return {
     NODE_ENV: 'production',
     STORAGE_DRIVER: 'firestore',
@@ -24,6 +24,22 @@ function productionEnvironment(overrides: Record<string, string> = {}): NodeJS.P
 }
 
 describe('gateway configuration', () => {
+  it('uses the documented Render deploy SHA when BUILD_SHA is not explicit', () => {
+    const config = getGatewayConfig(
+      productionEnvironment({ BUILD_SHA: undefined, RENDER_GIT_COMMIT: 'a'.repeat(40) }),
+    );
+
+    expect(config.BUILD_SHA).toBe('a'.repeat(40));
+  });
+
+  it('keeps an explicit BUILD_SHA ahead of Render metadata', () => {
+    const config = getGatewayConfig(
+      productionEnvironment({ BUILD_SHA: 'b'.repeat(40), RENDER_GIT_COMMIT: 'a'.repeat(40) }),
+    );
+
+    expect(config.BUILD_SHA).toBe('b'.repeat(40));
+  });
+
   it('parses explicit origins and trusted proxy CIDRs', () => {
     const config = getGatewayConfig(productionEnvironment());
     expect(getBetterAuthTrustedOrigins(config)).toEqual(['https://app.example.test']);

@@ -174,10 +174,10 @@ docker run --rm \
     --network "$network_name" \
     --env NGINX_PROFILE=staging \
     --env FASTIFY_UPSTREAM=fastify:8080 \
-    --env NGINX_HTTP_PORT=8081 \
+    --env PORT=8081 \
     --env NGINX_SERVER_NAME=localhost \
     --env 'NGINX_READINESS_ALLOWLIST_LINES=127.0.0.1/32 1;' \
-    --env 'NGINX_EDGE_TRUSTED_CIDR_LINES=127.0.0.1/32 1;' \
+    --env NGINX_FORWARDED_PROTO=http \
     --env NGINX_VALIDATE_ONLY=1 \
     "$nginx_image"
 
@@ -189,10 +189,10 @@ nginx_id=$(docker run --detach \
     --publish "$host_port:8081" \
     --env NGINX_PROFILE=staging \
     --env FASTIFY_UPSTREAM=fastify:8080 \
-    --env NGINX_HTTP_PORT=8081 \
+    --env PORT=8081 \
     --env NGINX_SERVER_NAME=localhost \
     --env 'NGINX_READINESS_ALLOWLIST_LINES=127.0.0.1/32 1;' \
-    --env 'NGINX_EDGE_TRUSTED_CIDR_LINES=127.0.0.1/32 1;' \
+    --env NGINX_FORWARDED_PROTO=http \
     "$nginx_image")
 nginx_started=1
 

@@ -157,9 +157,12 @@ least:
 - `NGINX_READINESS_ALLOWLIST_LINES` — explicit Nginx `geo` entries for the
   verified health-check source networks, for example a deployment-generated
   set of `CIDR 1;` lines.
-- `NGINX_HTTP_PORT` — the explicit staging or production HTTP listener.
-- `NGINX_EDGE_TRUSTED_CIDR_LINES` — required when staging uses external TLS;
-  these are the only peer networks allowed to supply the outer proto.
+- `NGINX_HTTP_PORT` — the explicit staging or production HTTP listener. The
+  container entrypoint falls back to the platform-provided `PORT` for Render
+  Web Services.
+- `NGINX_FORWARDED_PROTO` — the deployment-owned public scheme for the
+  HTTP-only staging profile. Render must set this to `https`; Nginx never
+  accepts a client-supplied forwarding scheme.
 - `NGINX_HTTPS_PORT`, `NGINX_TLS_CERTIFICATE`, and
   `NGINX_TLS_CERTIFICATE_KEY` — required only when the Nginx-owned TLS profile
   is selected.

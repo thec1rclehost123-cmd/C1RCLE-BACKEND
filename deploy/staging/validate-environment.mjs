@@ -189,6 +189,7 @@ export function cidrToGeoLines(entries) {
 export function validateStagingEnvironment(env = process.env) {
   const issues = [];
   const values = {};
+  const dryRun = env.STAGING_PREFLIGHT_DRY_RUN === '1';
 
   values.profile = requireValue(env, issues, 'NGINX_PROFILE');
   if (values.profile !== 'staging') addIssue(issues, 'NGINX_PROFILE', 'must be staging');
@@ -207,9 +208,10 @@ export function validateStagingEnvironment(env = process.env) {
   values.upstreamHost = upstream.host;
   values.upstreamPort = upstream.port;
 
+  const nginxHttpPortField = hasValue(env, 'NGINX_HTTP_PORT') ? 'NGINX_HTTP_PORT' : 'PORT';
   values.httpPort = parsePort(
-    requireValue(env, issues, 'NGINX_HTTP_PORT'),
-    'NGINX_HTTP_PORT',
+    requireValue(env, issues, nginxHttpPortField),
+    nginxHttpPortField,
     issues,
   );
   const httpsPortValue = hasValue(env, 'NGINX_HTTPS_PORT') ? env.NGINX_HTTPS_PORT.trim() : '';
@@ -228,7 +230,12 @@ export function validateStagingEnvironment(env = process.env) {
   if (values.tlsMode === 'external' && httpsPortValue) {
     addIssue(issues, 'NGINX_HTTPS_PORT', 'must be omitted when TLS is terminated before Nginx');
   }
-  values.fastifyPort = parsePort(requireValue(env, issues, 'PORT'), 'PORT', issues);
+  const fastifyPortField = hasValue(env, 'FASTIFY_PORT') ? 'FASTIFY_PORT' : 'PORT';
+  values.fastifyPort = parsePort(
+    requireValue(env, issues, fastifyPortField),
+    fastifyPortField,
+    issues,
+  );
   if (
     values.upstreamPort !== null &&
     values.fastifyPort !== null &&
@@ -251,27 +258,23 @@ export function validateStagingEnvironment(env = process.env) {
   );
   values.trustedProxyCidrs = trustedProxyCidrs;
 
-  const edgeTrustedRaw = hasValue(env, 'NGINX_EDGE_TRUSTED_CIDRS')
-    ? env.NGINX_EDGE_TRUSTED_CIDRS.trim()
+  values.forwardedProto = hasValue(env, 'NGINX_FORWARDED_PROTO')
+    ? env.NGINX_FORWARDED_PROTO.trim()
     : '';
-  const edgeTrustedCidrs = edgeTrustedRaw
-    ? validateCidrList(edgeTrustedRaw, 'NGINX_EDGE_TRUSTED_CIDRS', issues)
-    : [];
-  if (values.tlsMode === 'external' && edgeTrustedCidrs.length === 0) {
+  if (values.tlsMode === 'external' && !['http', 'https'].includes(values.forwardedProto)) {
     addIssue(
       issues,
-      'NGINX_EDGE_TRUSTED_CIDRS',
-      'is required when an external TLS/CDN/LB hop is trusted',
+      'NGINX_FORWARDED_PROTO',
+      'must be http or https when TLS terminates before Nginx',
     );
   }
-  if (values.tlsMode === 'nginx' && edgeTrustedCidrs.length > 0) {
+  if (values.tlsMode === 'nginx' && values.forwardedProto) {
     addIssue(
       issues,
-      'NGINX_EDGE_TRUSTED_CIDRS',
-      'must be omitted when Nginx owns TLS and is the TLS trust boundary',
+      'NGINX_FORWARDED_PROTO',
+      'must be omitted when Nginx owns TLS and derives the scheme locally',
     );
   }
-  values.edgeTrustedCidrs = edgeTrustedCidrs;
 
   values.publicApiUrl = requireValue(env, issues, 'PUBLIC_API_URL');
   const publicApiUrl = validateUrl(values.publicApiUrl, 'PUBLIC_API_URL', issues);
@@ -291,6 +294,20 @@ export function validateStagingEnvironment(env = process.env) {
   );
   values.betterAuthUrl = requireValue(env, issues, 'BETTER_AUTH_URL');
   validateUrl(values.betterAuthUrl, 'BETTER_AUTH_URL', issues);
+
+  if (!dryRun) {
+    for (const [field, value] of [
+      ['NGINX_SERVER_NAME', values.serverName],
+      ['FASTIFY_UPSTREAM', values.upstream],
+      ['PUBLIC_API_URL', values.publicApiUrl],
+      ['ALLOWED_ORIGINS', values.allowedOrigins.join(',')],
+      ['BETTER_AUTH_TRUSTED_ORIGINS', values.betterAuthOrigins.join(',')],
+      ['BETTER_AUTH_URL', values.betterAuthUrl],
+    ]) {
+      if (value.includes('.invalid'))
+        addIssue(issues, field, 'must not use a dry-run .invalid value');
+    }
+  }
 
   values.nodeEnv = requireValue(env, issues, 'NODE_ENV');
   if (values.nodeEnv !== 'production')
@@ -318,16 +335,18 @@ export function validateStagingEnvironment(env = process.env) {
     addIssue(issues, 'FIREBASE_PRIVATE_KEY', 'must contain a PEM private-key marker');
   }
 
-  values.redisUrl = requireValue(env, issues, 'REDIS_URL');
-  try {
-    const redisUrl = new URL(values.redisUrl);
-    if (!['redis:', 'rediss:'].includes(redisUrl.protocol))
-      addIssue(issues, 'REDIS_URL', 'must use redis:// or rediss://');
-    if (['localhost', '127.0.0.1', '::1'].includes(redisUrl.hostname)) {
-      addIssue(issues, 'REDIS_URL', 'must not use a local development endpoint');
+  values.redisUrl = hasValue(env, 'REDIS_URL') ? env.REDIS_URL.trim() : '';
+  if (values.redisUrl) {
+    try {
+      const redisUrl = new URL(values.redisUrl);
+      if (!['redis:', 'rediss:'].includes(redisUrl.protocol))
+        addIssue(issues, 'REDIS_URL', 'must use redis:// or rediss://');
+      if (['localhost', '127.0.0.1', '::1'].includes(redisUrl.hostname)) {
+        addIssue(issues, 'REDIS_URL', 'must not use a local development endpoint');
+      }
+    } catch {
+      addIssue(issues, 'REDIS_URL', 'must be a valid redis:// or rediss:// URL');
     }
-  } catch {
-    addIssue(issues, 'REDIS_URL', 'must be a valid redis:// or rediss:// URL');
   }
 
   values.betterAuthSecret = requireValue(env, issues, 'BETTER_AUTH_SECRET');
@@ -343,7 +362,9 @@ export function validateStagingEnvironment(env = process.env) {
   if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(values.appVersion)) {
     addIssue(issues, 'APP_VERSION', 'must be semantic-version shaped');
   }
-  values.buildSha = requireValue(env, issues, 'BUILD_SHA');
+  values.buildSha = hasValue(env, 'BUILD_SHA')
+    ? env.BUILD_SHA.trim()
+    : requireValue(env, issues, 'RENDER_GIT_COMMIT');
   if (!/^[0-9a-f]{7,64}$/i.test(values.buildSha))
     addIssue(issues, 'BUILD_SHA', 'must be a commit SHA');
   values.logLevel = requireValue(env, issues, 'LOG_LEVEL');

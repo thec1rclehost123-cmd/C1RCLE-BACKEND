@@ -10,10 +10,10 @@ function validEnvironment(overrides = {}) {
     NGINX_TLS_MODE: 'external',
     NGINX_SERVER_NAME: 'api.staging.c1rcle.com',
     FASTIFY_UPSTREAM: 'fastify.internal:8080',
-    PORT: '8080',
-    NGINX_HTTP_PORT: '8081',
+    FASTIFY_PORT: '8080',
+    PORT: '18080',
     NGINX_READINESS_ALLOWLIST_CIDRS: '10.20.0.0/16,2001:db8:1::/64',
-    NGINX_EDGE_TRUSTED_CIDRS: '10.30.0.0/16',
+    NGINX_FORWARDED_PROTO: 'https',
     TRUSTED_PROXY_CIDRS: '10.30.0.0/16,2001:db8:2::/64',
     PUBLIC_API_URL: 'https://api.staging.c1rcle.com',
     ALLOWED_ORIGINS: 'https://partner.staging.c1rcle.com',
@@ -54,13 +54,13 @@ test('rejects contradictory external TLS values', () => {
   assert.match(result.issues.join('\n'), /NGINX_TLS_CERTIFICATE_KEY/);
 });
 
-test('renders external TLS with a trusted outer proto boundary', () => {
+test('renders external TLS on the Render-provided public port without trusting a header', () => {
   const rendered = renderStagingNginx(validEnvironment());
   assert.match(rendered.templateName, /staging/);
   assert.match(rendered.content, /server fastify\.internal:8080;/);
-  assert.match(rendered.content, /10\.30\.0\.0\/16 1;/);
+  assert.match(rendered.content, /default https;/);
   assert.doesNotMatch(rendered.content, /\$\{/);
-  assert.match(rendered.content, /listen 8081;/);
+  assert.match(rendered.content, /listen 18080;/);
 });
 
 test('accepts bracketed IPv6 Fastify upstreams', () => {
@@ -77,15 +77,16 @@ test('requires Nginx-owned TLS material only in Nginx TLS mode', () => {
       NGINX_HTTPS_PORT: '8443',
       NGINX_TLS_CERTIFICATE: '/run/secrets/staging.crt',
       NGINX_TLS_CERTIFICATE_KEY: '/run/secrets/staging.key',
-      NGINX_EDGE_TRUSTED_CIDRS: undefined,
+      NGINX_FORWARDED_PROTO: undefined,
     }),
   );
   assert.equal(result.ok, true, result.issues.join('\n'));
   const rendered = renderStagingNginx({
     ...validEnvironment(),
     NGINX_TLS_MODE: 'nginx',
+    NGINX_HTTP_PORT: '8081',
     NGINX_HTTPS_PORT: '8443',
-    NGINX_EDGE_TRUSTED_CIDRS: undefined,
+    NGINX_FORWARDED_PROTO: undefined,
     NGINX_TLS_CERTIFICATE: '/run/secrets/staging.crt',
     NGINX_TLS_CERTIFICATE_KEY: '/run/secrets/staging.key',
   });
@@ -94,7 +95,7 @@ test('requires Nginx-owned TLS material only in Nginx TLS mode', () => {
   assert.match(rendered.content, /ssl_certificate \/run\/secrets\/staging\.crt;/);
 });
 
-test('rejects a TLS listener collision and external-edge CIDRs in Nginx TLS mode', () => {
+test('rejects a TLS listener collision and fixed forwarded proto in Nginx TLS mode', () => {
   const result = validateStagingEnvironment(
     validEnvironment({
       NGINX_TLS_MODE: 'nginx',
@@ -106,7 +107,32 @@ test('rejects a TLS listener collision and external-edge CIDRs in Nginx TLS mode
   );
   assert.equal(result.ok, false);
   assert.match(result.issues.join('\n'), /must differ/);
-  assert.match(result.issues.join('\n'), /NGINX_EDGE_TRUSTED_CIDRS/);
+  assert.match(result.issues.join('\n'), /NGINX_FORWARDED_PROTO/);
+});
+
+test('accepts omitted Redis and Render-provided build metadata', () => {
+  const result = validateStagingEnvironment(
+    validEnvironment({
+      REDIS_URL: undefined,
+      BUILD_SHA: undefined,
+      RENDER_GIT_COMMIT: 'b'.repeat(40),
+    }),
+  );
+  assert.equal(result.ok, true, result.issues.join('\n'));
+  assert.equal(result.values.redisUrl, '');
+  assert.equal(result.values.buildSha, 'b'.repeat(40));
+});
+
+test('rejects non-routable dry-run hosts outside explicit dry-run mode', () => {
+  const result = validateStagingEnvironment(
+    validEnvironment({
+      NGINX_SERVER_NAME: 'edge.invalid',
+      PUBLIC_API_URL: 'https://edge.invalid',
+      BETTER_AUTH_URL: 'https://edge.invalid',
+    }),
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.issues.join('\n'), /must not use a dry-run \.invalid value/);
 });
 
 test('rejects unspecified Fastify upstream addresses', () => {

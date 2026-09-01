@@ -79,10 +79,10 @@ echo "Checking the rendered staging profile..."
 docker run --rm \
     --env NGINX_PROFILE=staging \
     --env FASTIFY_UPSTREAM=host.docker.internal:8080 \
-    --env NGINX_HTTP_PORT=8081 \
+    --env PORT=8081 \
     --env NGINX_SERVER_NAME=localhost \
     --env 'NGINX_READINESS_ALLOWLIST_LINES=127.0.0.1/32 1;' \
-    --env 'NGINX_EDGE_TRUSTED_CIDR_LINES=127.0.0.1/32 1;' \
+    --env NGINX_FORWARDED_PROTO=http \
     --env NGINX_VALIDATE_ONLY=1 \
     --add-host host.docker.internal:host-gateway \
     "$image_name"
@@ -100,7 +100,6 @@ docker run --rm \
     --env NGINX_HTTPS_PORT=443 \
     --env NGINX_SERVER_NAME=localhost.test \
     --env 'NGINX_READINESS_ALLOWLIST_LINES=127.0.0.1/32 1;' \
-    --env 'NGINX_EDGE_TRUSTED_CIDR_LINES=127.0.0.1/32 1;' \
     --env NGINX_TLS_CERTIFICATE=/tmp/c1rcle-test.crt \
     --env NGINX_TLS_CERTIFICATE_KEY=/tmp/c1rcle-test.key \
     --env NGINX_VALIDATE_ONLY=1 \
@@ -116,10 +115,10 @@ docker run --detach --rm \
     --publish 18081:8081 \
     --env NGINX_PROFILE=staging \
     --env FASTIFY_UPSTREAM=host.docker.internal:8080 \
-    --env NGINX_HTTP_PORT=8081 \
+    --env PORT=8081 \
     --env NGINX_SERVER_NAME=localhost \
     --env 'NGINX_READINESS_ALLOWLIST_LINES=127.0.0.1/32 1;' \
-    --env 'NGINX_EDGE_TRUSTED_CIDR_LINES=127.0.0.1/32 1;' \
+    --env NGINX_FORWARDED_PROTO=http \
     "$image_name" >/dev/null
 
 nginx_ready=0

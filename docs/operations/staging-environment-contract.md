@@ -13,12 +13,13 @@ none are hardcoded in the repository. Run
 | `NGINX_TLS_MODE` | yes | `external` when a verified CDN/WAF/LB owns TLS; `nginx` when this Nginx process owns TLS. |
 | `NGINX_SERVER_NAME` | yes | Real staging API hostname; no localhost, example, `.test`, or guessed value. |
 | `FASTIFY_UPSTREAM` | yes | One private, resolvable `hostname:port` or `[IPv6]:port`; it must not be a public client endpoint. |
-| `PORT` | yes | Fastify listen port; must match the port in `FASTIFY_UPSTREAM`. |
-| `NGINX_HTTP_PORT` | yes | Nginx HTTP listen port. |
+| `FASTIFY_PORT` | Render split preflight | Private Fastify listen port; must match `FASTIFY_UPSTREAM`. Use `8080` on Render because private-network port `10000` is reserved. |
+| `PORT` | Render-provided for the public edge | Nginx Web Service listener. Do not hardcode Render's default. |
+| `NGINX_HTTP_PORT` | non-Render deployments only | Explicit Nginx HTTP listener; the container falls back to `PORT`. |
 | `NGINX_HTTPS_PORT` | only for `nginx` TLS | Nginx HTTPS listen port. It is not required when TLS is external. |
 | `TRUSTED_PROXY_CIDRS` | yes | Exact Nginx/LB/ingress peer CIDRs consumed by Fastify. `/0` is rejected. |
 | `NGINX_READINESS_ALLOWLIST_CIDRS` | yes | Exact health-check source CIDRs. `/0` is rejected. The renderer converts these into Nginx `geo` entries. |
-| `NGINX_EDGE_TRUSTED_CIDRS` | only for `external` TLS | Exact CDN/WAF/LB peer CIDRs allowed to supply the outer `X-Forwarded-Proto`. `/0` is rejected. |
+| `NGINX_FORWARDED_PROTO` | only for `external` TLS | Deployment-owned public scheme. Set `https` for Render. Incoming forwarding headers are ignored. |
 | `HOST` | yes | `0.0.0.0` or `::` inside the private Fastify runtime. |
 
 The public listen ports, private subnet/security-group rules, Nginx-to-Fastify
@@ -43,8 +44,10 @@ Fastify must bind `HOST` to `0.0.0.0` (or `::`) inside its container while its
 ## TLS and DNS
 
 `NGINX_TLS_MODE=external` requires no certificate or key variables. The outer
-TLS owner must provide HTTPS for the public `STAGING_BASE_URL` and a private
-Nginx hop. Nginx accepts the outer proto only from `NGINX_EDGE_TRUSTED_CIDRS`.
+TLS owner must provide HTTPS for the public `STAGING_BASE_URL`. For Render,
+set `NGINX_FORWARDED_PROTO=https`; Nginx writes that known deployment scheme
+and ignores incoming forwarding identity instead of relying on unpublished
+Render proxy CIDRs.
 
 `NGINX_TLS_MODE=nginx` requires:
 
@@ -77,9 +80,9 @@ in staging so development defaults cannot silently activate:
 | `BETTER_AUTH_SECRET` | Secret-manager value at least 32 characters; never the development default. |
 | `TRUSTED_PROXY_CIDRS` | Exact proxy peer list from the edge section. |
 | `APP_VERSION` | Semantic version returned by `/api/v2/internal/version`. |
-| `BUILD_SHA` | Actual immutable application commit SHA. |
+| `BUILD_SHA` | Optional explicit immutable commit SHA. On Render, the gateway and preflight fall back to documented `RENDER_GIT_COMMIT`. |
 | `LOG_LEVEL` | Explicit supported value, normally `info`. |
-| `REDIS_URL` | Explicit `redis://` or `rediss://` staging endpoint; no localhost fallback. Verify actual Redis usage before relying on it for coordination. |
+| `REDIS_URL` | Optional until a Redis client owns an active runtime path. If supplied, it must be a non-local `redis://` or `rediss://` endpoint. |
 
 The gateway's current production validation rejects memory storage, weak
 Better Auth secrets, HTTP origins, local hosts, and non-HTTPS public/Auth URLs.
@@ -91,6 +94,22 @@ Razorpay variables (`RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, and
 `RAZORPAY_WEBHOOK_SECRET`) are required only if the corresponding payment
 routes are activated in staging. They are not required by the current route
 manifest and must not be fabricated.
+
+## Render staging split
+
+The public `circle-v2-edge-staging` Web Service uses the Nginx Dockerfile and
+Render's injected `PORT`. The private `circle-v2-backend-staging` service uses
+the root Dockerfile with explicit `PORT=8080` and `HOST=0.0.0.0`. Both must be
+in the same Render workspace, environment, and Singapore region. Use the
+private service address from Render's Connect panel as `FASTIFY_UPSTREAM`.
+
+Render Private Services support only TCP health checks. Configure the public
+Nginx Web Service HTTP health path as `/api/v2/internal/health`; keep readiness
+and version restricted by `NGINX_READINESS_ALLOWLIST_LINES`. The exact stable
+source range that Fastify should trust for the Nginx private hop is not
+published in the repository or Render's general private-network documentation.
+`TRUSTED_PROXY_CIDRS` therefore remains a blocking value to obtain and verify;
+never replace it with `/0` or `trustProxy: true`.
 
 ## Dependencies and operations
 
