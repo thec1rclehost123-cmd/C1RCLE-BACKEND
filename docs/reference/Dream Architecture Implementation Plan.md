@@ -1,3 +1,16 @@
+> ⚠️ **REFERENCE ONLY — aspirational, not the shipped architecture.** This
+> describes a stack the project did **not** adopt: PostgreSQL as the
+> transactional store, Kafka/external queue, cursor pagination on the wire,
+> Firebase ID-token verification + `/v2/session`, `{ data, meta }` success
+> envelope, 5 first-class clients. The live V2 build is Fastify + **Firestore
+> only** (memory adapter in CI), **Better Auth** (not Firebase), **bare-DTO**
+> success + flat error envelope, **page-based** `PageInfo`, `InProcessEventBus`
+> + memory outbox, 2 real clients. Keep the *principles* (modular monolith,
+> thin routes, backend-owned contracts, outbox, explicit FSMs, idempotency,
+> optimistic locking) — all honoured. Ignore the *tech*. Binding authority:
+> master prompt → `docs/architecture/decisions.md` → live code → FE spec →
+> `docs/api-contracts/*` → `docs/roadmap/*`.
+
 ## Dream Architecture Implementation Plan Final destination
 
 At launch, THE C1RCLE will work like this:

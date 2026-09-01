@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED.** Written before Phases 5A/5B existed; `docs/PHASE_5_HTTP_WIRING_PLAN.md:3`
+> explicitly supersedes this ("written as if 5A/5B didn't exist yet; they do").
+> Current: `docs/roadmap/phase-05-door-scanner-cover-wallet.md` + `PHASE_5_HTTP_WIRING_PLAN.md`.
+
 # Phase 5 Implementation Plan: Door / Scanner / Cover Wallet
 
 **Version:** 1.0  

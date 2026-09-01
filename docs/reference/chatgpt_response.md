@@ -1,3 +1,16 @@
+> ⚠️ **REFERENCE ONLY — generic advice, predates the stack decisions.** This
+> ChatGPT conversation rates an early "PLAN 1" and assumes Kong (API gateway),
+> PostgreSQL, JWT + refresh tokens, Redux Toolkit / RTK Query, Kafka/RabbitMQ,
+> K8s, OpenSearch — **none** of which the project adopted (live: Fastify
+> in-process, Firestore, Better Auth httpOnly cookie + in-memory session token,
+> hand-rolled `useSyncExternalStore` store, `InProcessEventBus`). The
+> *principles* it endorses are all already honoured: modular monolith over
+> microservices, thin routes, backend-owned contracts, controlled V1→V2
+> parallel with parity tests, outbox, explicit FSMs, config isolation,
+> idempotency keys, optimistic locking, repository interfaces. Background
+> reading, never a spec. Binding authority: master prompt →
+> `docs/architecture/decisions.md` → live code.
+
 For an event management + ticket booking + payment platform, I would not recommend starting with microservices.
 
 The architecture used by many successful platforms today (Ticketmaster, Eventbrite, Airbnb, Shopify in their early stages, GitHub, Linear) is:

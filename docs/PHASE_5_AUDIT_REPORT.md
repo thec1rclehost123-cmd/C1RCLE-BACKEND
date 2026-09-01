@@ -1,3 +1,11 @@
+> ⚠️ **STALE (2026-08-20). Do not use for current status.** This audit graded
+> Phase 5 at 3.5/10 with "all 25 routes return 501" and "zero Phase 5
+> contracts/repos/tests". All of that was superseded by the 2026-08-21 HTTP
+> wiring session — Phase 5 is substantially done (≈95 live routes, 6 honest
+> 501s). Current truth: `docs/roadmap/phase-05-door-scanner-cover-wallet.md`
+> Session Log + `docs/PHASE_5_HTTP_WIRING_PLAN.md`. Kept for the historical
+> record of what the gaps were.
+
 # Phase 5 Comprehensive Architecture Audit Report
 
 **Generated**: 2026-08-20  

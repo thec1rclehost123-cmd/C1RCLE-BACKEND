@@ -1,3 +1,11 @@
+> ⚠️ **REFERENCE ONLY — aspirational.** Same caveat as
+> `Dream Architecture Implementation Plan.md`: assumes PostgreSQL, cursor
+> pagination, Firebase ID tokens, `{ data, meta }`, 5 clients — none of which
+> match the shipped Fastify / Firestore / Better Auth / bare-DTO / page-based
+> reality. Keep the principles, ignore the stack. Binding authority: master
+> prompt → `docs/architecture/decisions.md` → live code → FE spec →
+> `docs/api-contracts/*` → `docs/roadmap/*`.
+
 # THE C1RCLE Master Launch Implementation Plan
 
 ## Purpose

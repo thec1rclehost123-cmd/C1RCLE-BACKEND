@@ -1,6 +1,19 @@
 # Phase 4 — Guest checkout & tickets
 
-**Status:** in progress (2026-08-14) — domain layer done, wiring not started · **Depends on:** Phase 3 (event-catalog/tiers)
+**Status:** ⚠ DOMAIN DONE, HTTP SURFACE MISSING (see 2026-09-01 Session Log entry) · **Depends on:** Phase 3 (event-catalog/tiers)
+
+> The 2026-08-19 Session Log below claims the HTTP layer shipped with 302 tests
+> passing. **That is not true against any commit.** `a1bd2e7` ("Phase 4
+> complete") committed only `apps/api-gateway/src/lib/v2-services.ts` plus the
+> `packages/core` domain/service/adapter/contract files — **no route file for
+> checkout / payments / orders / tickets / wallet / webhooks / public was ever
+> committed.** Those route files existed only in the working tree destroyed in
+> the 2026-08-28 Windows-junction incident and were not part of the `7e2d6c9`
+> recovery (which restored `packages/core` + `packages/contracts` only). The
+> domain, `CheckoutService` (wired in `v2-services.ts`), `PricingService`,
+> `InventoryService`, the memory + Firestore adapters and the `checkout` /
+> `phase4` contracts are all intact and tested. The rebuild is route-layer +
+> route tests + moving `razorpay-adapter.ts` out of `packages/core`.
 
 Guest Portal (`C1RCLE-FRONTEND/apps/guest-portal`) is 100% fixture-driven
 today — zero `fetch()` calls anywhere. `apps/guest-portal/docs/frontend-backend-handoff.md`
@@ -202,3 +215,37 @@ original doc are now **done**.
 - **Boundaries**: `pnpm boundaries` ✅ PASS
 - **Format**: `pnpm format:check` ✅ PASS
 - **Contract Parity**: `scripts/contract-parity.mjs` ✅ 33/33 checks agree
+
+---
+
+### 2026-09-01 — the 2026-08-19 entry above is not real; Phase 4 has no HTTP surface
+
+Verified against git, not memory:
+
+- `git log --diff-filter=D` finds **no deleted** `checkout*`/`orders*`/`public*`/
+  `payments*`/`tickets*` route file — they were never committed.
+- `git show a1bd2e7 --name-only` touches, under `apps/`, only
+  `apps/api-gateway/src/lib/v2-services.ts` and `apps/api-gateway/src/config/index.ts`.
+  Everything else in that commit is `packages/core` / `packages/contracts` / docs.
+- The current tree's `apps/api-gateway/src/routes/v2/` has: `auth/`, `onboarding.ts`,
+  `partner/*`, `door/*`, `admin/`, `phase5-routes.ts`, `internal/`, `route-manifest.ts`.
+  **No checkout / payments / orders / tickets / wallet / webhooks / public.**
+- `route-manifest.ts` header explicitly says the blocked slices
+  (orders/checkout/payments/refunds/payouts/webhooks) "must NOT be registered …
+  they 404 by absence, never by a 501 stub" — and `app.test.ts` asserts it.
+
+**What IS committed and green** (`pnpm --filter @c1rcle/core test` 232/232):
+`domain/models/{pricing,order,entitlement,cart-reservation}.ts`,
+`application/checkout/checkout-service.ts` (wired into `v2-services.ts`),
+`application/{pricing,inventory}/*`, `application/payments/razorpay-adapter.ts`
+(with the one `pnpm boundaries` violation — raw `fetch()` in core),
+memory + Firestore repos for Order/Entitlement/CartReservation/PromoRedemption,
+`packages/contracts` checkout/phase4 schemas.
+
+**Rebuild plan** — `C1RCLE-FRONTEND/docs/superpowers/SPRINT-2026-08-31.md` §P1-A:
+PR1 public/discovery → PR2 checkout/payments/webhook → PR3 orders/tickets/wallet.
+Each route thin, each its own test, register in `route-manifest.ts`,
+`assertReconciles` on every pricing calc. Move `razorpay-adapter.ts` to
+`apps/api-gateway/src/infrastructure/payments/` (or behind an `HttpClientPort`)
+as part of PR2. Expect latent `CheckoutService` bugs — it has no service/route
+test today.
