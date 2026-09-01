@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED.** Built on `PHASE_5_AUDIT_REPORT.md`, which is itself stale
+> (see its banner). Phase 5 was wired 2026-08-21. Current:
+> `docs/roadmap/phase-05-door-scanner-cover-wallet.md` + `docs/PHASE_5_HTTP_WIRING_PLAN.md`.
+
 # Phase 5 Detailed Implementation Plan
 
 **Based on**: Comprehensive Audit Report (PHASE_5_AUDIT_REPORT.md)  
