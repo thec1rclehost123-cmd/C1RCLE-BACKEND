@@ -53,6 +53,9 @@ function validateHost(host, field, issues, { rejectLocal = true } = {}) {
 
   const ipVersion = isIP(host);
   if (ipVersion > 0) {
+    if (lower === '0.0.0.0' || lower === '::') {
+      addIssue(issues, field, 'must not use an unspecified address as an upstream host');
+    }
     if (
       rejectLocal &&
       ((ipVersion === 4 && (lower === '127.0.0.1' || lower.startsWith('127.'))) || lower === '::1')
@@ -214,6 +217,17 @@ export function validateStagingEnvironment(env = process.env) {
   if (values.tlsMode === 'nginx' && values.httpsPort === null) {
     addIssue(issues, 'NGINX_HTTPS_PORT', 'is required when Nginx owns TLS');
   }
+  if (
+    values.tlsMode === 'nginx' &&
+    values.httpPort !== null &&
+    values.httpsPort !== null &&
+    values.httpPort === values.httpsPort
+  ) {
+    addIssue(issues, 'NGINX_HTTPS_PORT', 'must differ from NGINX_HTTP_PORT');
+  }
+  if (values.tlsMode === 'external' && httpsPortValue) {
+    addIssue(issues, 'NGINX_HTTPS_PORT', 'must be omitted when TLS is terminated before Nginx');
+  }
   values.fastifyPort = parsePort(requireValue(env, issues, 'PORT'), 'PORT', issues);
   if (
     values.upstreamPort !== null &&
@@ -248,6 +262,13 @@ export function validateStagingEnvironment(env = process.env) {
       issues,
       'NGINX_EDGE_TRUSTED_CIDRS',
       'is required when an external TLS/CDN/LB hop is trusted',
+    );
+  }
+  if (values.tlsMode === 'nginx' && edgeTrustedCidrs.length > 0) {
+    addIssue(
+      issues,
+      'NGINX_EDGE_TRUSTED_CIDRS',
+      'must be omitted when Nginx owns TLS and is the TLS trust boundary',
     );
   }
   values.edgeTrustedCidrs = edgeTrustedCidrs;
@@ -335,6 +356,20 @@ export function validateStagingEnvironment(env = process.env) {
     rejectPlaceholder(values.tlsCertificate, 'NGINX_TLS_CERTIFICATE', issues);
     rejectPlaceholder(values.tlsCertificateKey, 'NGINX_TLS_CERTIFICATE_KEY', issues);
   } else {
+    if (hasValue(env, 'NGINX_TLS_CERTIFICATE')) {
+      addIssue(
+        issues,
+        'NGINX_TLS_CERTIFICATE',
+        'must be omitted when TLS is terminated before Nginx',
+      );
+    }
+    if (hasValue(env, 'NGINX_TLS_CERTIFICATE_KEY')) {
+      addIssue(
+        issues,
+        'NGINX_TLS_CERTIFICATE_KEY',
+        'must be omitted when TLS is terminated before Nginx',
+      );
+    }
     values.tlsCertificate = '';
     values.tlsCertificateKey = '';
   }

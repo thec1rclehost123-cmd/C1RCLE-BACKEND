@@ -82,6 +82,7 @@ docker run --rm \
     --env NGINX_HTTP_PORT=8081 \
     --env NGINX_SERVER_NAME=localhost \
     --env 'NGINX_READINESS_ALLOWLIST_LINES=127.0.0.1/32 1;' \
+    --env 'NGINX_EDGE_TRUSTED_CIDR_LINES=127.0.0.1/32 1;' \
     --env NGINX_VALIDATE_ONLY=1 \
     --add-host host.docker.internal:host-gateway \
     "$image_name"
@@ -99,6 +100,7 @@ docker run --rm \
     --env NGINX_HTTPS_PORT=443 \
     --env NGINX_SERVER_NAME=localhost.test \
     --env 'NGINX_READINESS_ALLOWLIST_LINES=127.0.0.1/32 1;' \
+    --env 'NGINX_EDGE_TRUSTED_CIDR_LINES=127.0.0.1/32 1;' \
     --env NGINX_TLS_CERTIFICATE=/tmp/c1rcle-test.crt \
     --env NGINX_TLS_CERTIFICATE_KEY=/tmp/c1rcle-test.key \
     --env NGINX_VALIDATE_ONLY=1 \
@@ -117,6 +119,7 @@ docker run --detach --rm \
     --env NGINX_HTTP_PORT=8081 \
     --env NGINX_SERVER_NAME=localhost \
     --env 'NGINX_READINESS_ALLOWLIST_LINES=127.0.0.1/32 1;' \
+    --env 'NGINX_EDGE_TRUSTED_CIDR_LINES=127.0.0.1/32 1;' \
     "$image_name" >/dev/null
 
 nginx_ready=0
@@ -134,6 +137,11 @@ if [ "$nginx_ready" != "1" ]; then
     exit 1
 fi
 
+echo "Checking safe Nginx reload..."
+docker exec "$container_name" nginx -s reload
+sleep 1
+curl -fsS http://localhost:18081/api/v2/internal/health >/dev/null
+
 echo "Checking health proxying and request-id response..."
 health_response=$(curl -fsS -D "$temp_dir/health.headers" http://localhost:18081/api/v2/internal/health)
 request_id=$(sed -n 's/^X-Request-Id: *//Ip' "$temp_dir/health.headers" | tr -d '\r' | head -n 1)
@@ -150,6 +158,22 @@ case "$health_response" in
         exit 1
         ;;
 esac
+
+echo "Checking access-log query redaction and no-store headers..."
+query_sentinel="query-log-sentinel-$$"
+curl -fsS -D "$temp_dir/query.headers" -o /dev/null \
+    "http://localhost:18081/api/v2/internal/health?token=$query_sentinel"
+container_logs=$(docker logs "$container_name" 2>&1)
+case "$container_logs" in
+    *"$query_sentinel"*)
+    echo "A query-string sentinel appeared in the Nginx access log" >&2
+    exit 1
+    ;;
+esac
+if ! rg -qi '^Cache-Control: *no-store' "$temp_dir/query.headers"; then
+    echo "Expected API responses to include Cache-Control: no-store" >&2
+    exit 1
+fi
 
 echo "Checking request-id correlation through Fastify..."
 error_headers="$temp_dir/error.headers"
@@ -220,5 +244,18 @@ case "$(sed 's/[[:space:]]//g' "$temp_dir/upstream-response")" in
         exit 1
         ;;
 esac
+
+echo "Checking bounded mutation failures with retries disabled..."
+for method in POST PUT PATCH DELETE; do
+    mutation_status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 \
+        -X "$method" http://localhost:18081/api/v2/internal/health || true)
+    case "$mutation_status" in
+        502|503|504) : ;;
+        *)
+            echo "Expected bounded $method upstream failure, received $mutation_status" >&2
+            exit 1
+            ;;
+    esac
+done
 
 echo "Nginx local validation passed."

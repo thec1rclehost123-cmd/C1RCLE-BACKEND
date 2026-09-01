@@ -25,18 +25,25 @@ export async function internalRoutes(
 
   await app.register(
     async (internal) => {
-      internal.get('/health', async () => ({
-        ok: true,
-        uptimeMs: Date.now() - Date.parse(runtimeState.startedAt),
-      }));
+      internal.get('/health', async (_request, reply) => {
+        void reply.header('cache-control', 'no-store');
+        return {
+          ok: true,
+          uptimeMs: Date.now() - Date.parse(runtimeState.startedAt),
+        };
+      });
 
-      internal.get('/version', async () => ({
-        version: options.config.APP_VERSION,
-        buildSha: options.config.BUILD_SHA,
-        startedAt: runtimeState.startedAt,
-      }));
+      internal.get('/version', async (_request, reply) => {
+        void reply.header('cache-control', 'no-store');
+        return {
+          version: options.config.APP_VERSION,
+          buildSha: options.config.BUILD_SHA,
+          startedAt: runtimeState.startedAt,
+        };
+      });
 
       internal.get('/readiness', async (_request, reply) => {
+        void reply.header('cache-control', 'no-store');
         const checks: Record<string, 'up' | 'down'> = {
           configuration: 'up',
           gateway: runtimeState.isShuttingDown ? 'down' : 'up',

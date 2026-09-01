@@ -177,6 +177,7 @@ docker run --rm \
     --env NGINX_HTTP_PORT=8081 \
     --env NGINX_SERVER_NAME=localhost \
     --env 'NGINX_READINESS_ALLOWLIST_LINES=127.0.0.1/32 1;' \
+    --env 'NGINX_EDGE_TRUSTED_CIDR_LINES=127.0.0.1/32 1;' \
     --env NGINX_VALIDATE_ONLY=1 \
     "$nginx_image"
 
@@ -191,6 +192,7 @@ nginx_id=$(docker run --detach \
     --env NGINX_HTTP_PORT=8081 \
     --env NGINX_SERVER_NAME=localhost \
     --env 'NGINX_READINESS_ALLOWLIST_LINES=127.0.0.1/32 1;' \
+    --env 'NGINX_EDGE_TRUSTED_CIDR_LINES=127.0.0.1/32 1;' \
     "$nginx_image")
 nginx_started=1
 
@@ -238,6 +240,9 @@ fi
 echo "PASS Nginx is the only published API boundary ($nginx_port_binding)."
 
 echo "9. Version and readiness boundary..."
+docker exec "$nginx_name" nginx -s reload
+sleep 1
+assert_status "health after Nginx reload" "$(url_status "$integration_url/api/v2/internal/health")" "200"
 version_status=$(url_status "$integration_url/api/v2/internal/version")
 assert_status "public version is restricted" "$version_status" "404"
 public_readiness_status=$(url_status "$integration_url/api/v2/internal/readiness")
@@ -417,6 +422,12 @@ else
 fi
 stopped_status=$(url_status "$integration_url/api/v2/internal/health")
 assert_status "bounded Nginx response while Fastify is stopped" "$stopped_status" "502,503,504"
+
+for method in POST PUT PATCH DELETE; do
+    mutation_status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+        --max-time 10 -X "$method" "$integration_url/api/v2/internal/health" || true)
+    assert_status "bounded $method response while Fastify is stopped" "$mutation_status" "502,503,504"
+done
 
 docker start "$api_name" >/dev/null
 restarted_status=000

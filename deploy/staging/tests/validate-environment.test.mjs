@@ -40,6 +40,20 @@ test('accepts external TLS without certificate variables or HTTPS listener', () 
   assert.equal(result.ok, true, result.issues.join('\n'));
 });
 
+test('rejects contradictory external TLS values', () => {
+  const result = validateStagingEnvironment(
+    validEnvironment({
+      NGINX_HTTPS_PORT: '8443',
+      NGINX_TLS_CERTIFICATE: '/run/secrets/unexpected.crt',
+      NGINX_TLS_CERTIFICATE_KEY: '/run/secrets/unexpected.key',
+    }),
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.issues.join('\n'), /NGINX_HTTPS_PORT/);
+  assert.match(result.issues.join('\n'), /NGINX_TLS_CERTIFICATE/);
+  assert.match(result.issues.join('\n'), /NGINX_TLS_CERTIFICATE_KEY/);
+});
+
 test('renders external TLS with a trusted outer proto boundary', () => {
   const rendered = renderStagingNginx(validEnvironment());
   assert.match(rendered.templateName, /staging/);
@@ -71,12 +85,34 @@ test('requires Nginx-owned TLS material only in Nginx TLS mode', () => {
     ...validEnvironment(),
     NGINX_TLS_MODE: 'nginx',
     NGINX_HTTPS_PORT: '8443',
+    NGINX_EDGE_TRUSTED_CIDRS: undefined,
     NGINX_TLS_CERTIFICATE: '/run/secrets/staging.crt',
     NGINX_TLS_CERTIFICATE_KEY: '/run/secrets/staging.key',
   });
   assert.match(rendered.templateName, /production/);
   assert.match(rendered.content, /listen 8443 ssl;/);
   assert.match(rendered.content, /ssl_certificate \/run\/secrets\/staging\.crt;/);
+});
+
+test('rejects a TLS listener collision and external-edge CIDRs in Nginx TLS mode', () => {
+  const result = validateStagingEnvironment(
+    validEnvironment({
+      NGINX_TLS_MODE: 'nginx',
+      NGINX_HTTP_PORT: '8443',
+      NGINX_HTTPS_PORT: '8443',
+      NGINX_TLS_CERTIFICATE: '/run/secrets/staging.crt',
+      NGINX_TLS_CERTIFICATE_KEY: '/run/secrets/staging.key',
+    }),
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.issues.join('\n'), /must differ/);
+  assert.match(result.issues.join('\n'), /NGINX_EDGE_TRUSTED_CIDRS/);
+});
+
+test('rejects unspecified Fastify upstream addresses', () => {
+  const result = validateStagingEnvironment(validEnvironment({ FASTIFY_UPSTREAM: '0.0.0.0:8080' }));
+  assert.equal(result.ok, false);
+  assert.match(result.issues.join('\n'), /unspecified address/);
 });
 
 test('reports missing values and malformed infrastructure inputs together', () => {

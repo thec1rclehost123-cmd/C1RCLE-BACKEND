@@ -11,6 +11,7 @@ import {
   type GatewayConfig,
 } from './config/index.js';
 import { redactPaths } from './lib/logger-config.js';
+import { createReadinessChecks } from './lib/readiness.js';
 import { createRequestIdGenerator, onRequestHook } from './lib/request-tracing.js';
 import { createGatewayRuntimeState, type GatewayRuntimeState } from './lib/runtime-state.js';
 import { createV2Services } from './lib/v2-services.js';
@@ -40,6 +41,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   const logLevel = config.LOG_LEVEL === 'silent' ? 'silent' : config.LOG_LEVEL;
   const runtimeState = options.runtimeState ?? createGatewayRuntimeState();
   const trustedProxyMatcher = createTrustedProxyMatcher(getTrustedProxyCidrs(config));
+  const readinessChecks = options.readinessChecks ?? createReadinessChecks(config);
 
   const app = Fastify({
     trustProxy: (address) => trustedProxyMatcher(address),
@@ -125,7 +127,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await registerV2Routes(app, {
     config,
     runtimeState,
-    readinessChecks: options.readinessChecks,
+    readinessChecks,
   });
 
   return app;

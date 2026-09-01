@@ -8,6 +8,10 @@ harness, but it is not a production deployment. DNS, certificates, firewall
 rules, provider load balancers, and process orchestration remain
 deployment-owned decisions.
 
+See [`nginx-implementation-status.md`](./nginx-implementation-status.md) for
+the current local completion boundary and the Render wiring that remains
+deployment-owned.
+
 The request path is:
 
 ```text
@@ -60,8 +64,9 @@ retry API requests.
 
 Nginx overwrites `Host`, `X-Real-IP`, `X-Forwarded-For`,
 `X-Forwarded-Proto`, `X-Forwarded-Host`, and `X-Request-Id`. It explicitly
-removes `X-User-Id`, `Forwarded`, and `X-Forwarded-Server` rather than allowing
-the client to supply an application identity or an untrusted proxy chain.
+removes application identity, alternate proxy-chain, and common CDN client-IP
+headers rather than allowing the client to supply an application identity or
+an untrusted proxy chain.
 
 `Authorization`, `Cookie`, `X-Organization-Id`, `Idempotency-Key`, `If-Match`,
 and `X-Client-Request-Id` are preserved for the existing API contract.
@@ -133,7 +138,8 @@ behavior.
   at `5r/s` with a burst of `10`. These are edge protections, not user or
   organization quotas.
 - JSON responses are returned for edge-generated `413`, `429`, `502`, `503`,
-  and `504` failures, including the edge request ID.
+  and `504` failures, including the edge request ID. API and edge-generated
+  responses carry `Cache-Control: no-store`.
 - Compression is limited to text and JSON-like content. There is no upload,
   download, WebSocket, HTTP/3, or cache-specific location in the active
   profile.
