@@ -44,6 +44,6 @@
     "build": "tsc -p tsconfig.build.json"
   },
   "dependencies": {
-    "firebase-admin": "^13.0.0"
+    "firebase-admin": "^14.3.0"
   }
 }
