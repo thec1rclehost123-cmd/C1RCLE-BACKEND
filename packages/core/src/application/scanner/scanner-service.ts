@@ -1,47 +1,19 @@
 import { InvalidOperationError, ForbiddenError, NotFoundError } from '../../domain/errors.js';
-import { bumpVersion } from '../../domain/identity.js';
-import type { ServiceDeps, ActorContext } from '../context.js';
+import { isSessionValid, canSessionScan } from '../../domain/models/event-code.js';
+
 import type { EntityId } from '../../domain/identity.js';
 import type {
-  ScanLedger,
-  ScanLedgerStatus,
-  ScanLedgerCreateInput,
-  ScanDenyReason,
-  canTransitionScan,
-} from '../../domain/models/scan-ledger.js';
-import { createScanLedger, transitionScanLedger } from '../../domain/models/scan-ledger.js';
-import type {
   EventCode,
-  EventCodeType,
-  EventCodeStatus,
   EventCodeCreateInput,
   ScannerSession,
   ScannerSessionCreateInput,
-  getSessionPermissions,
-} from '../../domain/models/event-code.js';
-import {
-  createEventCode as createEventCodeModel,
-  isSessionValid,
-  canSessionScan,
-  canSessionDoorEntry,
-  canSessionWalkIn,
-  canSessionCharge,
 } from '../../domain/models/event-code.js';
 import type {
-  CoverWallet,
-  CoverWalletTxn,
-  CoverWalletCreateInput,
-  CoverWalletCreditInput,
-  CoverWalletDebitInput,
-} from '../../domain/models/cover-wallet.js';
-import {
-  createCoverWallet,
-  computeTerminationTime,
-  isWalletActive,
-  canWalletDebit,
-  applyCredit,
-  applyDebit,
-} from '../../domain/models/cover-wallet.js';
+  ScanLedger,
+  ScanLedgerCreateInput,
+  ScanDenyReason,
+} from '../../domain/models/scan-ledger.js';
+import type { ServiceDeps, ActorContext } from '../context.js';
 
 /**
  * ─── Scanner Service (Phase 5) ──────────────────────────────────────────────────
@@ -177,24 +149,14 @@ export interface ScanResult {
 }
 
 function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
-  const {
-    scanLedger,
-    eventCodes,
-    scannerSessions,
-    entitlements,
-    config,
-    logger,
-    outbox,
-    adminAudit,
-  } = deps;
+  const { scanLedger, eventCodes, scannerSessions, entitlements, config, adminAudit } = deps;
 
   async function createEventCode(
     input: EventCodeCreateInput,
     actor: ActorContext,
   ): Promise<EventCode> {
     requireOrgAccess(actor, input.organizationId);
-    const code = createEventCodeModel(input);
-    const created = await eventCodes.create(code);
+    const created = await eventCodes.create(input);
     await adminAudit.write({
       id: `audit-${created.id}-${Date.now()}`,
       adminId: actor.userId,
@@ -203,7 +165,7 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
       action: 'event_code.create',
       targetType: 'event_code',
       targetId: created.id,
-      after: created as any,
+      after: { ...created },
     });
     return created;
   }
@@ -246,8 +208,8 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
       action: 'event_code.revoke',
       targetType: 'event_code',
       targetId: codeId,
-      before: code as any,
-      after: updated as any,
+      before: { ...code },
+      after: { ...updated },
     });
     return updated;
   }
@@ -293,7 +255,7 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
       action: 'scanner_session.create',
       targetType: 'scanner_session',
       targetId: result.sessionId,
-      after: result.session as any,
+      after: { ...result.session },
     });
 
     return result;
@@ -335,8 +297,8 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
       action: 'scanner_session.revoke',
       targetType: 'scanner_session',
       targetId: sessionId,
-      before: session as any,
-      after: updated as any,
+      before: { ...session },
+      after: { ...updated },
     });
 
     return updated;
@@ -356,8 +318,18 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
     // Check for duplicate scan
     const existing = await scanLedger.findByEventAndEntitlement(input.eventId, input.entitlementId);
     if (existing && existing.status === 'consumed') {
-      const denyResult = await scanLedger.create({
+      const denyInput: ScanLedgerCreateInput = {
         ...input,
+        organizationId: actor.organizationId,
+        venueId: event.venueId,
+        doorSaleId: null,
+        entryType: null,
+        tierName: null,
+        tierId: null,
+        deviceName: session.deviceName,
+        deviceBound: true,
+        isOffline: input.isOffline ?? false,
+        offlineDeviceId: input.offlineDeviceId ?? null,
         status: 'denied',
         denyReason: 'already_used',
         denyMessage: 'Ticket already scanned',
@@ -367,7 +339,8 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
         admittedCount: 0,
         scanCountUsed: existing.scanCountUsed,
         scanCountAllowed: existing.scanCountAllowed,
-      } as any);
+      };
+      const denyResult = await scanLedger.create(denyInput);
       return {
         scan: denyResult,
         status: 'denied',
@@ -379,8 +352,18 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
     // Get entitlement
     const entitlement = await entitlements.findById(input.entitlementId);
     if (!entitlement) {
-      const denyResult = await scanLedger.create({
+      const denyInput: ScanLedgerCreateInput = {
         ...input,
+        organizationId: actor.organizationId,
+        venueId: event.venueId,
+        doorSaleId: null,
+        entryType: null,
+        tierName: null,
+        tierId: null,
+        deviceName: session.deviceName,
+        deviceBound: true,
+        isOffline: input.isOffline ?? false,
+        offlineDeviceId: input.offlineDeviceId ?? null,
         status: 'denied',
         denyReason: 'invalid_signature',
         denyMessage: 'Entitlement not found',
@@ -390,7 +373,8 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
         admittedCount: 0,
         scanCountUsed: null,
         scanCountAllowed: null,
-      } as any);
+      };
+      const denyResult = await scanLedger.create(denyInput);
       return {
         scan: denyResult,
         status: 'denied',
@@ -401,8 +385,18 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
 
     // Verify entitlement belongs to event
     if (entitlement.eventId !== input.eventId) {
-      const denyResult = await scanLedger.create({
+      const denyInput: ScanLedgerCreateInput = {
         ...input,
+        organizationId: actor.organizationId,
+        venueId: event.venueId,
+        doorSaleId: null,
+        entryType: null,
+        tierName: entitlement.tierName,
+        tierId: entitlement.tierId,
+        deviceName: session.deviceName,
+        deviceBound: true,
+        isOffline: input.isOffline ?? false,
+        offlineDeviceId: input.offlineDeviceId ?? null,
         status: 'denied',
         denyReason: 'wrong_event',
         denyMessage: 'Ticket for different event',
@@ -412,7 +406,8 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
         admittedCount: 0,
         scanCountUsed: null,
         scanCountAllowed: null,
-      } as any);
+      };
+      const denyResult = await scanLedger.create(denyInput);
       return {
         scan: denyResult,
         status: 'denied',
@@ -423,8 +418,18 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
 
     // Check entitlement status
     if (entitlement.status === 'void') {
-      const denyResult = await scanLedger.create({
+      const denyInput: ScanLedgerCreateInput = {
         ...input,
+        organizationId: actor.organizationId,
+        venueId: event.venueId,
+        doorSaleId: null,
+        entryType: null,
+        tierName: entitlement.tierName,
+        tierId: entitlement.tierId,
+        deviceName: session.deviceName,
+        deviceBound: true,
+        isOffline: input.isOffline ?? false,
+        offlineDeviceId: input.offlineDeviceId ?? null,
         status: 'denied',
         denyReason: 'void_ticket',
         denyMessage: 'Ticket is void',
@@ -434,7 +439,8 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
         admittedCount: 0,
         scanCountUsed: entitlement.scanCount,
         scanCountAllowed: entitlement.scanCountAllowed,
-      } as any);
+      };
+      const denyResult = await scanLedger.create(denyInput);
       return {
         scan: denyResult,
         status: 'denied',
@@ -449,8 +455,18 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
         ? entitlement.scannedAt[entitlement.scannedAt.length - 1]
         : null;
     if (lastScanTime && new Date(lastScanTime) < new Date()) {
-      const denyResult = await scanLedger.create({
+      const denyInput: ScanLedgerCreateInput = {
         ...input,
+        organizationId: actor.organizationId,
+        venueId: event.venueId,
+        doorSaleId: null,
+        entryType: null,
+        tierName: entitlement.tierName,
+        tierId: entitlement.tierId,
+        deviceName: session.deviceName,
+        deviceBound: true,
+        isOffline: input.isOffline ?? false,
+        offlineDeviceId: input.offlineDeviceId ?? null,
         status: 'denied',
         denyReason: 'expired',
         denyMessage: 'Ticket has expired',
@@ -460,7 +476,8 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
         admittedCount: 0,
         scanCountUsed: entitlement.scanCount,
         scanCountAllowed: entitlement.scanCountAllowed,
-      } as any);
+      };
+      const denyResult = await scanLedger.create(denyInput);
       return {
         scan: denyResult,
         status: 'denied',
@@ -473,8 +490,18 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
     const scansUsed = entitlement.scanCount ?? 0;
     const scansAllowed = entitlement.scanCountAllowed ?? 1;
     if (scansUsed >= scansAllowed) {
-      const denyResult = await scanLedger.create({
+      const denyInput: ScanLedgerCreateInput = {
         ...input,
+        organizationId: actor.organizationId,
+        venueId: event.venueId,
+        doorSaleId: null,
+        entryType: null,
+        tierName: entitlement.tierName,
+        tierId: entitlement.tierId,
+        deviceName: session.deviceName,
+        deviceBound: true,
+        isOffline: input.isOffline ?? false,
+        offlineDeviceId: input.offlineDeviceId ?? null,
         status: 'denied',
         denyReason: 'already_used',
         denyMessage: 'All scans for this ticket have been used',
@@ -484,7 +511,8 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
         admittedCount: 0,
         scanCountUsed: scansUsed,
         scanCountAllowed: scansAllowed,
-      } as any);
+      };
+      const denyResult = await scanLedger.create(denyInput);
       return {
         scan: denyResult,
         status: 'denied',
@@ -521,9 +549,7 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
       offlineDeviceId: input.offlineDeviceId ?? null,
     };
 
-    const scan = createScanLedger(scanInput);
-    const consumed = transitionScanLedger(scan, 'consumed');
-    const created = await scanLedger.create(consumed);
+    const created = await scanLedger.create({ ...scanInput, status: 'consumed' });
 
     await adminAudit.write({
       id: `audit-${created.id}-${Date.now()}`,
@@ -533,7 +559,7 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
       action: 'scan.consume',
       targetType: 'scan_ledger',
       targetId: created.id,
-      after: created as any,
+      after: { ...created },
     });
 
     return {
@@ -567,7 +593,7 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
       throw new InvalidOperationError('Invalid QR payload format');
     }
 
-    const entitlementId = parts[0] as EntityId;
+    const entitlementId = parts[0] ?? '';
     const timestampStr = parts[1];
     const hmac = parts[2];
     if (!timestampStr) {
@@ -757,12 +783,11 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
 
   async function syncOfflineScans(
     scans: ScanLedgerCreateInput[],
-    actor: ActorContext,
+    _actor: ActorContext,
   ): Promise<ScanLedger[]> {
     const results: ScanLedger[] = [];
     for (const scanInput of scans) {
-      const scan = createScanLedger(scanInput);
-      const created = await scanLedger.create(scan);
+      const created = await scanLedger.create(scanInput);
       results.push(created);
     }
     return results;

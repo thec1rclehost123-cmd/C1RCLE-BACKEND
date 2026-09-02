@@ -61,7 +61,8 @@ function isRazorpayOrderResponse(data: unknown): data is RazorpayOrderResponse {
 
 function isRazorpayPaymentResponse(data: unknown): data is RazorpayPaymentResponse {
   return (
-    isRazorpayOrderResponse(data) && typeof (data as unknown as Record<string, unknown>).captured === 'boolean'
+    isRazorpayOrderResponse(data) &&
+    typeof (data as unknown as Record<string, unknown>).captured === 'boolean'
   );
 }
 

@@ -1,0 +1,6 @@
+# Whole-project gates that a staged-file check cannot cover. These are the ones
+# that actually catch breakage before it reaches the shared branch.
+set -e
+pnpm typecheck
+pnpm boundaries
+pnpm test

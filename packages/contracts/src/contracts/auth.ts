@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { opaqueIdSchema } from './shared.js';
 
 /**
  * ─── Auth / Session Contracts ─────────────────────────────────────────────────

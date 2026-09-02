@@ -301,7 +301,10 @@ export default async function phase5CoverWalletRoutes(fastify: FastifyInstance) 
   fastify.post(
     '/cover-wallets/:walletId/freeze',
     {
-      preHandler: [fastify.rateLimit('STANDARD_COMMAND'), fastify.validateV2({ params: walletIdParam })],
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({ params: walletIdParam }),
+      ],
     },
     async (request, reply) => {
       return reply.status(501).send(
@@ -323,7 +326,10 @@ export default async function phase5CoverWalletRoutes(fastify: FastifyInstance) 
   fastify.post(
     '/cover-wallets/:walletId/unfreeze',
     {
-      preHandler: [fastify.rateLimit('STANDARD_COMMAND'), fastify.validateV2({ params: walletIdParam })],
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({ params: walletIdParam }),
+      ],
     },
     async (request, reply) => {
       return reply.status(501).send(

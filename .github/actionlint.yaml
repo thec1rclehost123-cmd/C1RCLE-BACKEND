@@ -1,0 +1,15 @@
+# actionlint configuration. Kept minimal on purpose — the defaults plus
+# shellcheck on inline `run:` blocks are what catch real defects.
+self-hosted-runner:
+  labels: []
+
+# Repository variables actionlint cannot infer. Declaring them stops it from
+# flagging `vars.X` as an unknown key.
+config-variables:
+  - CONTRACT_PARITY_ENABLED
+  - FRONTEND_REPO
+  - FRONTEND_REF
+  - COVERAGE_MIN_LINES
+  - COVERAGE_MIN_STATEMENTS
+  - COVERAGE_MIN_FUNCTIONS
+  - COVERAGE_MIN_BRANCHES

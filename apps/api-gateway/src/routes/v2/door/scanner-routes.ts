@@ -12,9 +12,8 @@ import {
 import { InvalidOperationError } from '@c1rcle/core/domain';
 import { z } from 'zod';
 
-
 import type { ScanResult, TicketResolution } from '@c1rcle/core/application';
-import type { ScanLedger, ScannerSession, SessionPermissions } from '@c1rcle/core/domain';
+import type { ScanLedger, ScannerSession } from '@c1rcle/core/domain';
 
 import { runIdempotent } from '../../../lib/v2-idempotency.js';
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
@@ -53,7 +52,9 @@ const services: PartnerV2Services = createV2Services();
  * is therefore treated as a direct entitlementId, matching `scanTicket`'s
  * input contract (`entitlementId: EntityId`) exactly.
  */
-function decodeQrPayload(qrPayload: string): { kind: 'magic' } | { kind: 'direct'; entitlementId: string } {
+function decodeQrPayload(
+  qrPayload: string,
+): { kind: 'magic' } | { kind: 'direct'; entitlementId: string } {
   const parts = qrPayload.split(':');
   if (parts.length === 3 && parts.every((part) => part.length > 0)) {
     return { kind: 'magic' };
@@ -65,9 +66,7 @@ const sessionIdParam = z.object({ sessionId: opaqueIdSchema });
 const checkInIdParam = z.object({ checkInId: opaqueIdSchema });
 const ticketIdParam = z.object({ ticketId: opaqueIdSchema });
 
-const overrideBody = z
-  .object({ checkInId: opaqueIdSchema, reason: z.string().min(1) })
-  .strict();
+const overrideBody = z.object({ checkInId: opaqueIdSchema, reason: z.string().min(1) }).strict();
 
 const offlineManifestQuery = z
   .object({
@@ -174,7 +173,7 @@ export default async function phase5ScannerRoutes(fastify: FastifyInstance) {
             codeId: created.session.codeId,
             sessionToken: created.sessionToken,
             sessionExpiresAt: created.sessionExpiresAt,
-            permissions: created.session.permissions as SessionPermissions,
+            permissions: created.session.permissions,
             status: 'active' as const,
             createdAt: created.session.createdAt,
           };
@@ -199,7 +198,9 @@ export default async function phase5ScannerRoutes(fastify: FastifyInstance) {
       const actor = services.actor(request);
       const session = await services.scanner
         .getSession(sessionId, actor)
-        .catch((error: unknown) => mapDomainError(reply, request, sessionId, error, { hideForbidden: true }));
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, sessionId, error, { hideForbidden: true }),
+        );
       if (session === undefined) return reply;
       const dto = sessionToReadDto(session);
       const validated = validateV2Response(reply, request, scannerSessionReadDto, dto);
@@ -300,7 +301,11 @@ export default async function phase5ScannerRoutes(fastify: FastifyInstance) {
                 actor,
               )
             : await services.scanner.resolveTicket(
-                { eventId: body.eventId, entitlementId: decoded.entitlementId, deviceId: body.deviceId ?? '' },
+                {
+                  eventId: body.eventId,
+                  entitlementId: decoded.entitlementId,
+                  deviceId: body.deviceId ?? '',
+                },
                 actor,
               );
       } catch (error) {
@@ -324,7 +329,9 @@ export default async function phase5ScannerRoutes(fastify: FastifyInstance) {
       const actor = services.actor(request);
       const scan = await services.scanner
         .getScan(checkInId, actor)
-        .catch((error: unknown) => mapDomainError(reply, request, checkInId, error, { hideForbidden: true }));
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, checkInId, error, { hideForbidden: true }),
+        );
       if (scan === undefined) return reply;
       const dto = scanToDetailDto(scan);
       const validated = validateV2Response(reply, request, checkInDetailDto, dto);
@@ -356,7 +363,11 @@ export default async function phase5ScannerRoutes(fastify: FastifyInstance) {
                 actor,
               )
             : await services.scanner.resolveTicket(
-                { eventId: body.eventId, entitlementId: decoded.entitlementId, deviceId: body.deviceId ?? '' },
+                {
+                  eventId: body.eventId,
+                  entitlementId: decoded.entitlementId,
+                  deviceId: body.deviceId ?? '',
+                },
                 actor,
               );
       } catch (error) {
@@ -405,7 +416,10 @@ export default async function phase5ScannerRoutes(fastify: FastifyInstance) {
   fastify.get(
     '/door/offline-manifest',
     {
-      preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({ querystring: offlineManifestQuery })],
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({ querystring: offlineManifestQuery }),
+      ],
     },
     async (_request, reply) => {
       return reply.status(501).send({
@@ -452,7 +466,8 @@ export default async function phase5ScannerRoutes(fastify: FastifyInstance) {
           const session = await services.scanner.getSession(body.scannerSessionId, actor);
           const scanInputs = body.scans.map((scan) => {
             const decoded = decodeQrPayload(scan.payload);
-            const entitlementId = decoded.kind === 'magic' ? scan.payload.split(':')[0] ?? '' : decoded.entitlementId;
+            const entitlementId =
+              decoded.kind === 'magic' ? (scan.payload.split(':')[0] ?? '') : decoded.entitlementId;
             return {
               eventId: session.eventId,
               organizationId: actor.organizationId,
@@ -481,7 +496,10 @@ export default async function phase5ScannerRoutes(fastify: FastifyInstance) {
             };
           });
           const created = await services.scanner.syncOfflineScans(scanInputs, actor);
-          const dto = { synced: created.length, conflicts: [] as { payload: string; reason: string }[] };
+          const dto = {
+            synced: created.length,
+            conflicts: [] as { payload: string; reason: string }[],
+          };
           const validated = validateV2Response(reply, request, offlineSyncResponseSchema, dto);
           if (validated === undefined) throw new Error('v2 response validation failed');
           return { statusCode: 200, body: validated };
@@ -506,7 +524,9 @@ export default async function phase5ScannerRoutes(fastify: FastifyInstance) {
       const actor = services.actor(request);
       const result = await services.scanner
         .generateMagicTicketQr(ticketId, actor)
-        .catch((error: unknown) => mapDomainError(reply, request, ticketId, error, { hideForbidden: true }));
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, ticketId, error, { hideForbidden: true }),
+        );
       if (result === undefined) return reply;
       const validated = validateV2Response(reply, request, magicQrResponseSchema, result);
       if (validated === undefined) return reply;
@@ -527,7 +547,7 @@ function sessionToReadDto(session: ScannerSession) {
     codeId: session.codeId,
     sessionToken: null,
     sessionExpiresAt: session.expiresAt,
-    permissions: session.permissions as SessionPermissions,
+    permissions: session.permissions,
     status,
     createdAt: session.createdAt,
   };

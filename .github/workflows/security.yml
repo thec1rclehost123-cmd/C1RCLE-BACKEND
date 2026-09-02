@@ -1,0 +1,215 @@
+# ─── Security ─────────────────────────────────────────────────────────────────
+# Split out from CI because it runs on a different cadence (per-PR *and* weekly)
+# and needs elevated `security-events: write`, which CI's fast gates must not
+# inherit. Everything here is a real gate — nothing is `continue-on-error`.
+name: Security
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    # Mondays 06:15 UTC. Catches CVEs published against unchanged code.
+    - cron: '15 6 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Static analysis ────────────────────────────────────────────────────────
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [javascript-typescript, actions]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        with:
+          languages: ${{ matrix.language }}
+          # `none` is the modern replacement for autobuild on interpreted
+          # languages; autobuild on a pure TypeScript repo is wasted minutes.
+          build-mode: none
+          queries: security-and-quality
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        with:
+          category: /language:${{ matrix.language }}
+
+  # ── Dependency supply chain ────────────────────────────────────────────────
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write # inline summary comment
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
+        with:
+          # `critical` (the V1 setting) waves through every high-severity CVE.
+          fail-on-severity: high
+          # Copyleft licences are incompatible with a closed commercial backend.
+          deny-licenses: GPL-2.0, GPL-3.0, AGPL-1.0, AGPL-3.0, LGPL-2.0, LGPL-2.1, LGPL-3.0, SSPL-1.0
+          comment-summary-in-pr: on-failure
+
+  # ── Dependency, secret and configuration scanning ──────────────────────────
+  # One runner for three scanners. They were three jobs; each needed its own
+  # checkout, and two of them needed the same install, so the split bought
+  # nothing but wall-clock parallelism on checks that finish in a couple of
+  # minutes anyway. `if: always()` keeps them independent — a TruffleHog hit
+  # still lets the Trivy result through, so one run tells you everything.
+  scan:
+    name: Dependency, secret & config scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # TruffleHog diffs commit ranges, so it needs the full history.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup
+        with:
+          turbo-cache: 'false'
+
+      - name: Audit dependencies
+        id: audit
+        run: pnpm audit --audit-level=high
+
+      - name: Scan for verified secrets
+        id: secrets
+        if: always()
+        uses: trufflesecurity/trufflehog@20652fbbdefffcdaa493a5bf57ab2ac6b1db715b # v3.97.1
+        with:
+          extra_args: --results=verified,unknown
+
+      - name: Scan Dockerfile and workflow configuration
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: config
+          scan-ref: .
+          format: sarif
+          output: trivy-config.sarif
+          severity: HIGH,CRITICAL
+
+      - name: Upload config scan results
+        if: always()
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        with:
+          sarif_file: trivy-config.sarif
+          category: trivy-config
+
+      # The SARIF upload above is a report. This is the gate — a scanner that
+      # cannot fail the build is not one.
+      - name: Fail on HIGH/CRITICAL misconfiguration
+        id: config
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: config
+          scan-ref: .
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+
+      - name: Scan the dependency tree for known CVEs
+        id: cve
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+
+      - name: Summarize
+        if: always()
+        run: |
+          {
+            echo "| Scan | Result |"
+            echo "| --- | :--- |"
+            echo "| pnpm audit | ${{ steps.audit.outcome }} |"
+            echo "| Secrets | ${{ steps.secrets.outcome }} |"
+            echo "| Config misconfiguration | ${{ steps.config.outcome }} |"
+            echo "| Dependency CVEs | ${{ steps.cve.outcome }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── Supply-chain posture ───────────────────────────────────────────────────
+  scorecard:
+    name: OSSF Scorecard
+    # Scorecard grades the default branch; running it per-PR is noise.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+      id-token: write # publish results to the OpenSSF API
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Run Scorecard
+        uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
+        with:
+          results_file: scorecard.sarif
+          results_format: sarif
+          publish_results: true
+      - name: Upload Scorecard results
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        with:
+          sarif_file: scorecard.sarif
+          category: scorecard
+
+  security-ok:
+    name: Security OK
+    if: always()
+    needs: [codeql, dependency-review, scan, scorecard]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Assert every scan passed or was skipped
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key)\t\(.value.result)"'
+          bad=$(echo "$NEEDS" | jq -r 'to_entries[]
+            | select(.value.result != "success" and .value.result != "skipped")
+            | .key')
+          if [ -n "$bad" ]; then
+            echo "::error::These scans did not pass: $(echo "$bad" | tr '\n' ' ')"
+            exit 1
+          fi
+          echo "All security scans green."

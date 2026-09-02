@@ -1,14 +1,16 @@
-import { compareAndSet } from './compare-and-set.js';
+import { createDoorSale } from '../../domain/models/door-sale.js';
+
 import { paginateQuery } from './pagination.js';
 
 import type { EntityId } from '../../domain/identity.js';
-import type { DoorSale, DoorSaleStatus, DoorSaleCategory, DoorSalePaymentMode } from '../../domain/models/door-sale.js';
 import type {
-  DoorSaleRepository,
-  Page,
-  PaginationQuery,
-  TxContext,
-} from '../../domain/ports/repositories.js';
+  DoorSale,
+  DoorSaleCreateInput,
+  DoorSaleCategory,
+  DoorSalePaymentMode,
+  DoorSaleStatus,
+} from '../../domain/models/door-sale.js';
+import type { DoorSaleRepository, Page, PaginationQuery } from '../../domain/ports/repositories.js';
 import type { DocumentData, Firestore } from 'firebase-admin/firestore';
 
 const COLLECTION = 'v2_door_sales';
@@ -25,7 +27,17 @@ export class FirestoreDoorSaleRepository implements DoorSaleRepository {
     return this.db.collection(IDEMPOTENCY_COLLECTION);
   }
 
-  async create(sale: any): Promise<any> {
+  /**
+   * The port owns entity creation (`create(input): Promise<DoorSale>`), so the
+   * adapter — not the caller — mints the id/version/timestamps via
+   * `createDoorSale`. Previously this took an already-built `DoorSale` and
+   * persisted it verbatim (only compiling because TS method parameters are
+   * bivariant), so the same call returned a different id depending on which
+   * adapter was wired, and a port-shaped call would have written `id:
+   * undefined`. Matches `MemoryDoorSaleRepository.create` exactly.
+   */
+  async create(input: DoorSaleCreateInput): Promise<DoorSale> {
+    const sale = createDoorSale(input);
     await this.collection.doc(sale.id).set(toDoc(sale));
     if (sale.idempotencyKey) {
       await this.idempotencyCollection.doc(sale.idempotencyKey).set({ saleId: sale.id });
@@ -33,52 +45,64 @@ export class FirestoreDoorSaleRepository implements DoorSaleRepository {
     return sale;
   }
 
-  async findById(id: EntityId): Promise<any | null> {
+  async findById(id: EntityId): Promise<DoorSale | null> {
     const snap = await this.collection.doc(id).get();
-    return snap.exists ? toSale(snap.data()!) : null;
+    const data = snap.data();
+    return data ? toSale(data) : null;
   }
 
-  async findByIdempotencyKey(idempotencyKey: string): Promise<any | null> {
+  async findByIdempotencyKey(idempotencyKey: string): Promise<DoorSale | null> {
     const idDoc = await this.idempotencyCollection.doc(idempotencyKey).get();
-    if (!idDoc.exists) return null;
-    const saleId = idDoc.data()!.saleId;
+    const idData = idDoc.data();
+    if (!idData) return null;
+    const saleId = idData.saleId as string;
     const snap = await this.collection.doc(saleId).get();
-    return snap.exists ? toSale(snap.data()!) : null;
+    const data = snap.data();
+    return data ? toSale(data) : null;
   }
 
-  async findByEvent(eventId: EntityId, input: any): Promise<any> {
+  async findByEvent(eventId: EntityId, input: PaginationQuery): Promise<Page<DoorSale>> {
     const base = this.collection.where('eventId', '==', eventId).orderBy('createdAt', 'desc');
     return paginateQuery(base, input, toSale);
   }
 
-  async findByOrganization(organizationId: EntityId, input: any): Promise<any> {
-    const base = this.collection.where('organizationId', '==', organizationId).orderBy('createdAt', 'desc');
+  async findByOrganization(
+    organizationId: EntityId,
+    input: PaginationQuery,
+  ): Promise<Page<DoorSale>> {
+    const base = this.collection
+      .where('organizationId', '==', organizationId)
+      .orderBy('createdAt', 'desc');
     return paginateQuery(base, input, toSale);
   }
 
-  async findByVenue(venueId: EntityId, input: any): Promise<any> {
+  async findByVenue(venueId: EntityId, input: PaginationQuery): Promise<Page<DoorSale>> {
     const base = this.collection.where('venueId', '==', venueId).orderBy('createdAt', 'desc');
     return paginateQuery(base, input, toSale);
   }
 
-  async findByCategory(category: string, input: any): Promise<any> {
+  async findByCategory(
+    category: DoorSaleCategory,
+    input: PaginationQuery,
+  ): Promise<Page<DoorSale>> {
     const base = this.collection.where('category', '==', category).orderBy('createdAt', 'desc');
     return paginateQuery(base, input, toSale);
   }
 
-  async findByCreator(createdBy: EntityId, input: any): Promise<any> {
+  async findByCreator(createdBy: EntityId, input: PaginationQuery): Promise<Page<DoorSale>> {
     const base = this.collection.where('createdBy', '==', createdBy).orderBy('createdAt', 'desc');
     return paginateQuery(base, input, toSale);
   }
 
-  async updateStatus(id: EntityId, status: string): Promise<any | null> {
+  async updateStatus(id: EntityId, status: DoorSaleStatus): Promise<DoorSale | null> {
     const ref = this.collection.doc(id);
     await ref.update({ status, updatedAt: new Date().toISOString() });
     const snap = await ref.get();
-    return snap.exists ? toSale(snap.data()!) : null;
+    const data = snap.data();
+    return data ? toSale(data) : null;
   }
 
-  async voidSale(id: EntityId, voidedBy: EntityId, reason: string): Promise<any | null> {
+  async voidSale(id: EntityId, voidedBy: EntityId, reason: string): Promise<DoorSale | null> {
     const ref = this.collection.doc(id);
     await ref.update({
       status: 'voided',
@@ -88,10 +112,15 @@ export class FirestoreDoorSaleRepository implements DoorSaleRepository {
       updatedAt: new Date().toISOString(),
     });
     const snap = await ref.get();
-    return snap.exists ? toSale(snap.data()!) : null;
+    const data = snap.data();
+    return data ? toSale(data) : null;
   }
 
-  async refundSale(id: EntityId, refundedBy: EntityId, amountPaise: number): Promise<any | null> {
+  async refundSale(
+    id: EntityId,
+    refundedBy: EntityId,
+    amountPaise: number,
+  ): Promise<DoorSale | null> {
     const ref = this.collection.doc(id);
     await ref.update({
       status: 'refunded',
@@ -101,7 +130,8 @@ export class FirestoreDoorSaleRepository implements DoorSaleRepository {
       updatedAt: new Date().toISOString(),
     });
     const snap = await ref.get();
-    return snap.exists ? toSale(snap.data()!) : null;
+    const data = snap.data();
+    return data ? toSale(data) : null;
   }
 
   async getEventStats(eventId: EntityId): Promise<{
@@ -118,22 +148,34 @@ export class FirestoreDoorSaleRepository implements DoorSaleRepository {
     const byPaymentMode: Record<string, { count: number; revenue: number }> = {};
     for (const s of sales) {
       const key = s.paymentMode;
-      if (!byPaymentMode[key]) byPaymentMode[key] = { count: 0, revenue: 0 };
-      byPaymentMode[key].count++;
-      byPaymentMode[key].revenue += s.amountPaise;
+      let entry = byPaymentMode[key];
+      if (!entry) {
+        entry = { count: 0, revenue: 0 };
+        byPaymentMode[key] = entry;
+      }
+      entry.count++;
+      entry.revenue += s.amountPaise;
     }
     return {
       totalSales: sales.length,
       totalRevenue: sales.reduce((sum, s) => sum + s.amountPaise, 0),
       walkinCount: sales.filter((s) => s.category === 'walkin').length,
       dineinCount: sales.filter((s) => s.category === 'dinein').length,
-      walkinRevenue: sales.filter((s) => s.category === 'walkin').reduce((sum, s) => sum + s.amountPaise, 0),
-      dineinRevenue: sales.filter((s) => s.category === 'dinein').reduce((sum, s) => sum + s.amountPaise, 0),
+      walkinRevenue: sales
+        .filter((s) => s.category === 'walkin')
+        .reduce((sum, s) => sum + s.amountPaise, 0),
+      dineinRevenue: sales
+        .filter((s) => s.category === 'dinein')
+        .reduce((sum, s) => sum + s.amountPaise, 0),
       byPaymentMode,
     };
   }
 
-  async getOrganizationStats(organizationId: EntityId, from: Date, to: Date): Promise<{
+  async getOrganizationStats(
+    organizationId: EntityId,
+    from: Date,
+    to: Date,
+  ): Promise<{
     totalSales: number;
     totalRevenue: number;
     byCategory: Record<string, { count: number; revenue: number }>;
@@ -173,7 +215,7 @@ export class FirestoreDoorSaleRepository implements DoorSaleRepository {
   }
 }
 
-function toDoc(sale: any): DocumentData {
+function toDoc(sale: DoorSale): DocumentData {
   return {
     id: sale.id,
     eventId: sale.eventId,
@@ -208,13 +250,13 @@ function toDoc(sale: any): DocumentData {
   };
 }
 
-function toSale(data: DocumentData): any {
+function toSale(data: DocumentData): DoorSale {
   return {
     id: data.id as string,
     eventId: data.eventId as string,
     organizationId: data.organizationId as string,
     venueId: data.venueId as string | null,
-    category: data.category as 'walkin' | 'dinein',
+    category: data.category as DoorSaleCategory,
     guestName: data.guestName as string,
     guestPhone: data.guestPhone as string | null,
     guestAge: data.guestAge as number | null,
@@ -223,13 +265,13 @@ function toSale(data: DocumentData): any {
     totalGuests: data.totalGuests as number,
     tableNumber: data.tableNumber as string | null,
     gate: data.gate as string | null,
-    paymentMode: data.paymentMode as 'cash' | 'card' | 'upi' | 'other',
+    paymentMode: data.paymentMode as DoorSalePaymentMode,
     amountPaise: data.amountPaise as number,
-    paymentStatus: data.paymentStatus as 'collected' | 'pending' | 'failed',
+    paymentStatus: data.paymentStatus as DoorSale['paymentStatus'],
     paymentRef: data.paymentRef as string | null,
     createdBy: data.createdBy as string,
     createdByName: data.createdByName as string | null,
-    status: data.status as 'active' | 'voided' | 'refunded',
+    status: data.status as DoorSaleStatus,
     voidedAt: data.voidedAt as string | null,
     voidedBy: data.voidedBy as string | null,
     voidReason: data.voidReason as string | null,

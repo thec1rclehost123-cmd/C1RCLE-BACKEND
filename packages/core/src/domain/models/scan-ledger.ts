@@ -1,4 +1,3 @@
-import { InvalidOperationError } from '../errors.js';
 import { bumpVersion, newVersionedEntity } from '../identity.js';
 
 import type { EntityId, VersionedEntity } from '../identity.js';
@@ -50,7 +49,6 @@ export type ScanDenyReason =
   | 'wrong_gate'
   | 'offline_expired'
   | 'override_required'
-  | 'capacity_exceeded'
   | 'promoter_not_authorized';
 
 export interface ScanLedger extends VersionedEntity {
@@ -110,10 +108,7 @@ export interface ScanLedger extends VersionedEntity {
   offlineDeviceId: string | null;
 }
 
-export function canTransitionScan(
-  from: ScanLedgerStatus,
-  to: ScanLedgerStatus,
-): boolean {
+export function canTransitionScan(from: ScanLedgerStatus, to: ScanLedgerStatus): boolean {
   return SCAN_LEDGER_TRANSITIONS[from]?.includes(to) ?? false;
 }
 
@@ -142,6 +137,16 @@ export interface ScanLedgerCreateInput {
   scanCountAllowed: number | null;
   isOffline: boolean;
   offlineDeviceId: string | null;
+  /**
+   * Terminal status to record at creation. A scan is decided before it is
+   * written — an accepted entry is `consumed`, a rejected one is `denied` —
+   * so the repository mints the record already in that state rather than
+   * writing `pending` and immediately transitioning it. Defaults to `pending`
+   * for callers that genuinely stage a scan first.
+   */
+  status?: ScanLedgerStatus;
+  denyReason?: ScanDenyReason | null;
+  denyMessage?: string | null;
   now?: Date;
 }
 
@@ -164,9 +169,9 @@ export function createScanLedger(input: ScanLedgerCreateInput): ScanLedger {
     deviceId: input.deviceId,
     deviceName: input.deviceName,
     deviceBound: input.deviceBound,
-    status: 'pending',
-    denyReason: null,
-    denyMessage: null,
+    status: input.status ?? 'pending',
+    denyReason: input.denyReason ?? null,
+    denyMessage: input.denyMessage ?? null,
     guestName: input.guestName,
     guestEmail: input.guestEmail,
     guestPhone: input.guestPhone,
@@ -182,12 +187,12 @@ export function createScanLedger(input: ScanLedgerCreateInput): ScanLedger {
 }
 
 export function transitionScanLedger(
-  ledger: any,
+  ledger: ScanLedger,
   to: ScanLedgerStatus,
-  denyReason: any = null,
-  denyMessage: any = null,
+  denyReason: ScanDenyReason | null = null,
+  denyMessage: string | null = null,
   now?: Date,
-): any {
+): ScanLedger {
   if (!canTransitionScan(ledger.status, to)) {
     throw new Error(`Cannot transition scan ledger from ${ledger.status} to ${to}`);
   }
@@ -207,53 +212,47 @@ export function transitionScanLedger(
   return next;
 }
 
-export function markScanConsumed(
-  ledger: any,
-  now?: Date,
-): any {
+export function markScanConsumed(ledger: ScanLedger, now?: Date): ScanLedger {
   return transitionScanLedger(ledger, 'consumed', null, null, now);
 }
 
 export function markScanDenied(
-  ledger: any,
-  reason: any,
-  message: any,
+  ledger: ScanLedger,
+  reason: ScanDenyReason,
+  message: string,
   now?: Date,
-): any {
+): ScanLedger {
   return transitionScanLedger(ledger, 'denied', reason, message, now);
 }
 
-export function markScanCancelled(
-  ledger: any,
-  now?: Date,
-): any {
+export function markScanCancelled(ledger: ScanLedger, now?: Date): ScanLedger {
   return transitionScanLedger(ledger, 'cancelled', null, null, now);
 }
 
-export function isScanPending(ledger: any): boolean {
+export function isScanPending(ledger: ScanLedger): boolean {
   return ledger.status === 'pending';
 }
 
-export function isScanConsumed(ledger: any): boolean {
+export function isScanConsumed(ledger: ScanLedger): boolean {
   return ledger.status === 'consumed';
 }
 
-export function isScanDenied(ledger: any): boolean {
+export function isScanDenied(ledger: ScanLedger): boolean {
   return ledger.status === 'denied';
 }
 
-export function isScanTerminal(ledger: any): boolean {
+export function isScanTerminal(ledger: ScanLedger): boolean {
   return ['consumed', 'denied', 'revoked', 'expired'].includes(ledger.status);
 }
 
-export function isScanDeniedFor(ledger: any, reason: any): boolean {
+export function isScanDeniedFor(ledger: ScanLedger, reason: ScanDenyReason): boolean {
   return ledger.status === 'denied' && ledger.denyReason === reason;
 }
 
-export function isScanAlreadyConsumed(ledger: any): boolean {
+export function isScanAlreadyConsumed(ledger: ScanLedger): boolean {
   return ledger.status === 'consumed';
 }
 
-export function isScanPendingOrActive(ledger: any): boolean {
+export function isScanPendingOrActive(ledger: ScanLedger): boolean {
   return ledger.status === 'pending';
 }

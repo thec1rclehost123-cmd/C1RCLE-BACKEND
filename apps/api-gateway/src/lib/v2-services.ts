@@ -24,7 +24,9 @@ import {
   createCoverWalletService,
   type ScannerService,
   type DoorService,
-  type CoverWalletService, type ServiceDeps, type ActorContext 
+  type CoverWalletService,
+  type ServiceDeps,
+  type ActorContext,
 } from '@c1rcle/core/application';
 import { createCoreConfig } from '@c1rcle/core/config';
 import { EchoObjectStorage, FormatCheckVerificationProvider } from '@c1rcle/core/domain';
@@ -135,7 +137,8 @@ function actorFromRequest(gw: GatewayConfig, request: FastifyRequest): ActorCont
     // invitation itself).
     const membership = request.authContext?.activeMembership;
     const orgHeader = request.headers['x-organization-id'];
-    const organizationId = membership?.organizationId ?? (Array.isArray(orgHeader) ? orgHeader[0] : orgHeader);
+    const organizationId =
+      membership?.organizationId ?? (Array.isArray(orgHeader) ? orgHeader[0] : orgHeader);
     const userHeader = request.headers['x-user-id'];
     const userId = request.user?.uid ?? (Array.isArray(userHeader) ? userHeader[0] : userHeader);
     return {
@@ -157,7 +160,6 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     storage: gw.FIREBASE_STORAGE_BUCKET ? { kycBucket: gw.FIREBASE_STORAGE_BUCKET } : undefined,
   });
 
-   
   const repositories: ServiceDeps['repositories'] = buildRepositories(gw);
 
   // T13 event infrastructure: memory outbox store + in-process bus + audit.
@@ -172,12 +174,11 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   const adminAudits: AdminAuditRepository =
     gw.STORAGE_DRIVER === 'memory'
       ? new MemoryAdminAuditRepository()
-      :  
-        new FirestoreAdminAuditRepository(firestoreClient(gw));
+      : new FirestoreAdminAuditRepository(firestoreClient(gw));
 
   // Phase 4: Payment provider, pricing, inventory
   const gwConfig = getGatewayConfig();
-   
+
   const paymentProvider = new RazorpayPaymentProvider({
     keyId: gwConfig.RAZORPAY_KEY_ID ?? 'test_key_id',
     keySecret: gwConfig.RAZORPAY_KEY_SECRET ?? 'test_key_secret',
@@ -270,7 +271,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     checkout: new CheckoutService(deps),
     // Replay protection must outlive the process: a restart mid-retry with an
     // in-memory store turns a client's retry into a second business result.
-     
+
     idempotency: new IdempotencyService(buildIdempotencyStore(), logger),
     actor: (request: FastifyRequest) => actorFromRequest(gw, request),
     repos: () => repositories,

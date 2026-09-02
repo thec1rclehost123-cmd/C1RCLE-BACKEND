@@ -2,13 +2,13 @@ import { VersionConflictError } from '../../domain/errors.js';
 import { createDoorSale } from '../../domain/models/door-sale.js';
 
 import type { EntityId } from '../../domain/identity.js';
-import type { DoorSale, DoorSaleCreateInput, DoorSaleCategory, DoorSaleStatus, DoorSalePaymentMode } from '../../domain/models/door-sale.js';
 import type {
-  DoorSaleRepository,
-  Page,
-  PaginationQuery,
-  TxContext,
-} from '../../domain/ports/repositories.js';
+  DoorSale,
+  DoorSaleCreateInput,
+  DoorSaleCategory,
+  DoorSaleStatus,
+} from '../../domain/models/door-sale.js';
+import type { DoorSaleRepository, Page, PaginationQuery } from '../../domain/ports/repositories.js';
 
 function casSet<T extends { id: EntityId; version: number }>(
   map: Map<EntityId, T>,
@@ -21,20 +21,21 @@ function casSet<T extends { id: EntityId; version: number }>(
   map.set(entity.id, entity);
 }
 
-function serializeSlice<T>(all: T[], query: any): any {
+function serializeSlice<T extends { id: EntityId }>(all: T[], query: PaginationQuery): Page<T> {
   const { cursor, limit } = query;
-  const start = cursor ? all.findIndex((item: any) => item.id === cursor) + 1 : 0;
+  const start = cursor ? all.findIndex((item) => item.id === cursor) + 1 : 0;
   const end = Math.min(start + limit, all.length);
   const items = all.slice(start, end);
-  const nextCursor = end < all.length && items.length > 0 ? (items[items.length - 1] as any).id : null;
+  const last = items[items.length - 1];
+  const nextCursor = end < all.length && last ? last.id : null;
   return { items, total: all.length, nextCursor };
 }
 
 export class MemoryDoorSaleRepository implements DoorSaleRepository {
-  sales = new Map<EntityId, any>();
+  sales = new Map<EntityId, DoorSale>();
   byIdempotencyKey = new Map<string, EntityId>();
 
-  async create(input: DoorSaleCreateInput): Promise<any> {
+  async create(input: DoorSaleCreateInput): Promise<DoorSale> {
     // Check for existing sale with same idempotency key
     if (input.idempotencyKey) {
       const existingId = this.byIdempotencyKey.get(input.idempotencyKey);
@@ -51,61 +52,92 @@ export class MemoryDoorSaleRepository implements DoorSaleRepository {
     return sale;
   }
 
-  async findById(id: EntityId): Promise<any | null> {
+  async findById(id: EntityId): Promise<DoorSale | null> {
     return this.sales.get(id) ?? null;
   }
 
-  async findByIdempotencyKey(idempotencyKey: string): Promise<any | null> {
+  async findByIdempotencyKey(idempotencyKey: string): Promise<DoorSale | null> {
     const id = this.byIdempotencyKey.get(idempotencyKey);
     if (!id) return null;
     return this.sales.get(id) ?? null;
   }
 
-  async findByEvent(eventId: EntityId, input: PaginationQuery): Promise<Page<any>> {
+  async findByEvent(eventId: EntityId, input: PaginationQuery): Promise<Page<DoorSale>> {
     const all = [...this.sales.values()].filter((s) => s.eventId === eventId);
     return serializeSlice(all, input);
   }
 
-  async findByOrganization(organizationId: EntityId, input: PaginationQuery): Promise<Page<any>> {
+  async findByOrganization(
+    organizationId: EntityId,
+    input: PaginationQuery,
+  ): Promise<Page<DoorSale>> {
     const all = [...this.sales.values()].filter((s) => s.organizationId === organizationId);
     return serializeSlice(all, input);
   }
 
-  async findByVenue(venueId: EntityId, input: PaginationQuery): Promise<Page<any>> {
+  async findByVenue(venueId: EntityId, input: PaginationQuery): Promise<Page<DoorSale>> {
     const all = [...this.sales.values()].filter((s) => s.venueId === venueId);
     return serializeSlice(all, input);
   }
 
-  async findByCategory(category: DoorSaleCategory, input: PaginationQuery): Promise<Page<any>> {
+  async findByCategory(
+    category: DoorSaleCategory,
+    input: PaginationQuery,
+  ): Promise<Page<DoorSale>> {
     const all = [...this.sales.values()].filter((s) => s.category === category);
     return serializeSlice(all, input);
   }
 
-  async findByCreator(createdBy: EntityId, input: PaginationQuery): Promise<Page<any>> {
+  async findByCreator(createdBy: EntityId, input: PaginationQuery): Promise<Page<DoorSale>> {
     const all = [...this.sales.values()].filter((s) => s.createdBy === createdBy);
     return serializeSlice(all, input);
   }
 
-  async updateStatus(id: EntityId, status: DoorSaleStatus): Promise<any | null> {
+  async updateStatus(id: EntityId, status: DoorSaleStatus): Promise<DoorSale | null> {
     const sale = this.sales.get(id);
     if (!sale) return null;
-    const updated = { ...sale, status, version: sale.version + 1, updatedAt: new Date().toISOString() };
+    const updated: DoorSale = {
+      ...sale,
+      status,
+      version: sale.version + 1,
+      updatedAt: new Date().toISOString(),
+    };
     this.sales.set(id, updated);
     return updated;
   }
 
-  async voidSale(id: EntityId, voidedBy: EntityId, reason: string): Promise<any | null> {
+  async voidSale(id: EntityId, voidedBy: EntityId, reason: string): Promise<DoorSale | null> {
     const sale = this.sales.get(id);
     if (!sale) return null;
-    const updated = { ...sale, status: 'voided', voidedAt: new Date().toISOString(), voidedBy, voidReason: reason, version: sale.version + 1, updatedAt: new Date().toISOString() };
+    const updated: DoorSale = {
+      ...sale,
+      status: 'voided',
+      voidedAt: new Date().toISOString(),
+      voidedBy,
+      voidReason: reason,
+      version: sale.version + 1,
+      updatedAt: new Date().toISOString(),
+    };
     this.sales.set(id, updated);
     return updated;
   }
 
-  async refundSale(id: EntityId, refundedBy: EntityId, amountPaise: number): Promise<any | null> {
+  async refundSale(
+    id: EntityId,
+    refundedBy: EntityId,
+    amountPaise: number,
+  ): Promise<DoorSale | null> {
     const sale = this.sales.get(id);
     if (!sale) return null;
-    const updated = { ...sale, status: 'refunded', refundedAmountPaise: amountPaise, refundedAt: new Date().toISOString(), refundedBy, version: sale.version + 1, updatedAt: new Date().toISOString() };
+    const updated: DoorSale = {
+      ...sale,
+      status: 'refunded',
+      refundedAmountPaise: amountPaise,
+      refundedAt: new Date().toISOString(),
+      refundedBy,
+      version: sale.version + 1,
+      updatedAt: new Date().toISOString(),
+    };
     this.sales.set(id, updated);
     return updated;
   }
@@ -123,29 +155,44 @@ export class MemoryDoorSaleRepository implements DoorSaleRepository {
     const byPaymentMode: Record<string, { count: number; revenue: number }> = {};
     for (const s of all) {
       const key = s.paymentMode;
-      if (!byPaymentMode[key]) byPaymentMode[key] = { count: 0, revenue: 0 };
-      byPaymentMode[key].count++;
-      byPaymentMode[key].revenue += s.amountPaise;
+      let entry = byPaymentMode[key];
+      if (!entry) {
+        entry = { count: 0, revenue: 0 };
+        byPaymentMode[key] = entry;
+      }
+      entry.count++;
+      entry.revenue += s.amountPaise;
     }
     return {
       totalSales: all.length,
       totalRevenue: all.reduce((sum, s) => sum + s.amountPaise, 0),
       walkinCount: all.filter((s) => s.category === 'walkin').length,
       dineinCount: all.filter((s) => s.category === 'dinein').length,
-      walkinRevenue: all.filter((s) => s.category === 'walkin').reduce((sum, s) => sum + s.amountPaise, 0),
-      dineinRevenue: all.filter((s) => s.category === 'dinein').reduce((sum, s) => sum + s.amountPaise, 0),
+      walkinRevenue: all
+        .filter((s) => s.category === 'walkin')
+        .reduce((sum, s) => sum + s.amountPaise, 0),
+      dineinRevenue: all
+        .filter((s) => s.category === 'dinein')
+        .reduce((sum, s) => sum + s.amountPaise, 0),
       byPaymentMode,
     };
   }
 
-  async getOrganizationStats(organizationId: EntityId, from: Date, to: Date): Promise<{
+  async getOrganizationStats(
+    organizationId: EntityId,
+    from: Date,
+    to: Date,
+  ): Promise<{
     totalSales: number;
     totalRevenue: number;
     byCategory: Record<string, { count: number; revenue: number }>;
     byPaymentMode: Record<string, { count: number; revenue: number }>;
   }> {
     const all = [...this.sales.values()].filter(
-      (s) => s.organizationId === organizationId && new Date(s.createdAt) >= from && new Date(s.createdAt) <= to,
+      (s) =>
+        s.organizationId === organizationId &&
+        new Date(s.createdAt) >= from &&
+        new Date(s.createdAt) <= to,
     );
     const byCategory: Record<string, { count: number; revenue: number }> = {};
     const byPaymentMode: Record<string, { count: number; revenue: number }> = {};

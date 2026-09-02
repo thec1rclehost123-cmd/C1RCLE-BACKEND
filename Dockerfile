@@ -52,6 +52,12 @@ USER app
 WORKDIR /app/apps/api-gateway
 EXPOSE 8080
 
+# Container-level liveness, independent of the platform's own probe. Render uses
+# its `healthCheckPath` setting (see render.yaml); this makes the same guarantee
+# hold anywhere else the image runs — docker compose, k8s, a CI smoke boot.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT??8080)+'/api/v2/internal/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
 # Cloud Run / k8s health probe: GET /api/v2/internal/health
 # tsx (a devDependency of api-gateway) strips types across the whole workspace
 # graph — including @c1rcle/core/src — at load time.

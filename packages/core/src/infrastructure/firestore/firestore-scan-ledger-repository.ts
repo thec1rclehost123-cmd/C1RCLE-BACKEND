@@ -1,13 +1,18 @@
-import { compareAndSet } from './compare-and-set.js';
+import { createScanLedger } from '../../domain/models/scan-ledger.js';
+
 import { paginateQuery } from './pagination.js';
 
 import type { EntityId } from '../../domain/identity.js';
-import type { ScanLedger, ScanLedgerStatus, ScanDenyReason } from '../../domain/models/scan-ledger.js';
+import type {
+  ScanLedger,
+  ScanLedgerCreateInput,
+  ScanLedgerStatus,
+  ScanDenyReason,
+} from '../../domain/models/scan-ledger.js';
 import type {
   ScanLedgerRepository,
   Page,
   PaginationQuery,
-  TxContext,
 } from '../../domain/ports/repositories.js';
 import type { DocumentData, Firestore } from 'firebase-admin/firestore';
 
@@ -20,17 +25,22 @@ export class FirestoreScanLedgerRepository implements ScanLedgerRepository {
     return this.db.collection(COLLECTION);
   }
 
-  async create(scan: ScanLedger): Promise<ScanLedger> {
+  async create(input: ScanLedgerCreateInput): Promise<ScanLedger> {
+    const scan = createScanLedger(input);
     await this.collection.doc(scan.id).set(toDoc(scan));
     return scan;
   }
 
   async findById(id: EntityId): Promise<ScanLedger | null> {
     const snap = await this.collection.doc(id).get();
-    return snap.exists ? toScanLedger(snap.data()!) : null;
+    const data = snap.data();
+    return data ? toScanLedger(data) : null;
   }
 
-  async findByEventAndEntitlement(eventId: EntityId, entitlementId: EntityId): Promise<ScanLedger | null> {
+  async findByEventAndEntitlement(
+    eventId: EntityId,
+    entitlementId: EntityId,
+  ): Promise<ScanLedger | null> {
     const snap = await this.collection
       .where('eventId', '==', eventId)
       .where('entitlementId', '==', entitlementId)
@@ -46,8 +56,13 @@ export class FirestoreScanLedgerRepository implements ScanLedgerRepository {
     return paginateQuery(base, input, toScanLedger);
   }
 
-  async findByOrganization(organizationId: EntityId, input: PaginationQuery): Promise<Page<ScanLedger>> {
-    const base = this.collection.where('organizationId', '==', organizationId).orderBy('scannedAt', 'desc');
+  async findByOrganization(
+    organizationId: EntityId,
+    input: PaginationQuery,
+  ): Promise<Page<ScanLedger>> {
+    const base = this.collection
+      .where('organizationId', '==', organizationId)
+      .orderBy('scannedAt', 'desc');
     return paginateQuery(base, input, toScanLedger);
   }
 
@@ -57,7 +72,9 @@ export class FirestoreScanLedgerRepository implements ScanLedgerRepository {
   }
 
   async findByOperator(operatorUid: string, input: PaginationQuery): Promise<Page<ScanLedger>> {
-    const base = this.collection.where('operatorUid', '==', operatorUid).orderBy('scannedAt', 'desc');
+    const base = this.collection
+      .where('operatorUid', '==', operatorUid)
+      .orderBy('scannedAt', 'desc');
     return paginateQuery(base, input, toScanLedger);
   }
 
@@ -73,14 +90,19 @@ export class FirestoreScanLedgerRepository implements ScanLedgerRepository {
     if (denyMessage) updates.denyMessage = denyMessage;
     await ref.update(updates);
     const snap = await ref.get();
-    return snap.exists ? toScanLedger(snap.data()!) : null;
+    const data = snap.data();
+    return data ? toScanLedger(data) : null;
   }
 
   async markConsumed(id: EntityId): Promise<ScanLedger | null> {
     return this.updateStatus(id, 'consumed');
   }
 
-  async markDenied(id: EntityId, reason: ScanDenyReason, message: string): Promise<ScanLedger | null> {
+  async markDenied(
+    id: EntityId,
+    reason: ScanDenyReason,
+    message: string,
+  ): Promise<ScanLedger | null> {
     return this.updateStatus(id, 'denied', reason, message);
   }
 
@@ -171,8 +193,8 @@ function toScanLedger(data: DocumentData): ScanLedger {
     deviceId: data.deviceId as string | null,
     deviceName: data.deviceName as string | null,
     deviceBound: data.deviceBound as boolean,
-    status: data.status as any,
-    denyReason: data.denyReason as any | null,
+    status: data.status as ScanLedgerStatus,
+    denyReason: data.denyReason as ScanDenyReason | null,
     denyMessage: data.denyMessage as string | null,
     guestName: data.guestName as string | null,
     guestEmail: data.guestEmail as string | null,

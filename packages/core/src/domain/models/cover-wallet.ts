@@ -20,9 +20,9 @@ import type { EntityId, VersionedEntity } from '../identity.js';
 export type CoverWalletStatus = 'active' | 'terminated' | 'closed';
 
 export type CoverWalletTxnType =
-  | 'credit'      // top-up, referral bonus, promo
-  | 'debit'       // entry cover charge
-  | 'refund'      // refund of debit
+  | 'credit' // top-up, referral bonus, promo
+  | 'debit' // entry cover charge
+  | 'refund' // refund of debit
   | 'adjustment'; // admin correction
 
 export type CoverWalletTxnStatus = 'pending' | 'committed' | 'failed' | 'reversed';
@@ -57,7 +57,7 @@ export interface CoverWallet extends VersionedEntity {
   /** Last debit timestamp */
   lastDebitAt: string | null;
   /** Metadata */
-  metadata: Record<string, any>;
+  metadata: Record<string, unknown>;
 }
 
 export interface CoverWalletTxn extends VersionedEntity {
@@ -101,15 +101,15 @@ export interface CoverWalletCreateInput {
   organizationId: EntityId;
   venueId: EntityId | null;
   openingBalance: number;
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
   now?: Date;
 }
 
 export function createCoverWallet(input: CoverWalletCreateInput): CoverWallet {
   const now = input.now ?? new Date();
   // Compute termination time: next day 05:00 local (tzOffset +05:30)
-  const terminationTime = computeTerminationTime(now);
-  
+  const _terminationTime = computeTerminationTime(now);
+
   return {
     id: `CW-${input.eventId}-${input.userId}-${Date.now()}`,
     userId: input.userId,
@@ -164,11 +164,11 @@ export interface CoverWalletDebitInput {
 export function computeTerminationTime(from: Date = new Date()): string {
   const tzOffsetMinutes = 5 * 60 + 30; // +05:30
   const local = new Date(from.getTime() + tzOffsetMinutes * 60 * 1000);
-  
+
   // Next day 05:00 local
   local.setDate(local.getDate() + 1);
   local.setUTCHours(5, 0, 0, 0);
-  
+
   // Convert back to UTC
   const utc = new Date(local.getTime() - tzOffsetMinutes * 60 * 1000);
   return utc.toISOString();
@@ -223,7 +223,11 @@ export function applyDebit(wallet: CoverWallet, input: CoverWalletDebitInput): C
   };
 }
 
-export function applyRefund(wallet: CoverWallet, amount: number, now: Date = new Date()): CoverWallet {
+export function applyRefund(
+  wallet: CoverWallet,
+  amount: number,
+  now: Date = new Date(),
+): CoverWallet {
   if (!isWalletActive(wallet)) {
     throw new InvalidOperationError('Wallet is not active');
   }

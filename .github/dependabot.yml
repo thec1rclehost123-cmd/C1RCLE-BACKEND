@@ -1,0 +1,74 @@
+version: 2
+
+updates:
+  # ── Workspace dependencies ────────────────────────────────────────────────
+  # pnpm workspaces: dependabot only needs the root, it resolves the whole
+  # graph from pnpm-lock.yaml.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Asia/Kolkata
+    open-pull-requests-limit: 8
+    target-branch: main
+    rebase-strategy: disabled
+    labels: [dependencies]
+    # Grouping keeps the noise down: one PR for routine patch/minor bumps,
+    # majors isolated so a breaking change is never buried in a batch.
+    groups:
+      production-minor-patch:
+        dependency-type: production
+        update-types: [minor, patch]
+      development-minor-patch:
+        dependency-type: development
+        update-types: [minor, patch]
+      typescript-toolchain:
+        patterns:
+          - typescript
+          - typescript-eslint
+          - '@typescript-eslint/*'
+          - eslint
+          - '@eslint/*'
+          - eslint-*
+          - prettier
+      vitest:
+        patterns:
+          - vitest
+          - '@vitest/*'
+    ignore:
+      # Node major bumps are a Dockerfile + .nvmrc + engines decision, not a
+      # dependency bump. Handle deliberately.
+      - dependency-name: '@types/node'
+        update-types: [version-update:semver-major]
+
+  # ── The workflows themselves ──────────────────────────────────────────────
+  # Every action is SHA-pinned; dependabot updates the SHA and rewrites the
+  # trailing version comment, so pinning costs nothing to maintain.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Asia/Kolkata
+    open-pull-requests-limit: 5
+    target-branch: main
+    rebase-strategy: disabled
+    labels: [dependencies, ci]
+    groups:
+      actions:
+        patterns: ['*']
+
+  # ── Base image ────────────────────────────────────────────────────────────
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Asia/Kolkata
+    open-pull-requests-limit: 3
+    target-branch: main
+    labels: [dependencies, docker]

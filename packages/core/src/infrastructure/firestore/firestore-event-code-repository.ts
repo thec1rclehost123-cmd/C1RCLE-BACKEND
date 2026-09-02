@@ -1,18 +1,26 @@
-import { compareAndSet } from './compare-and-set.js';
-import { paginateQuery } from './pagination.js';
+import { FieldValue } from 'firebase-admin/firestore';
+
 import { createEventCode, createScannerSession } from '../../domain/models/event-code.js';
 
+import { paginateQuery } from './pagination.js';
+
 import type { EntityId } from '../../domain/identity.js';
-import type { EventCode, EventCodeStatus, EventCodeCreateInput, ScannerSession, ScannerSessionCreateInput } from '../../domain/models/event-code.js';
+import type {
+  EventCode,
+  EventCodeCreateInput,
+  EventCodeStats,
+  EventCodeStatus,
+  ScannerSession,
+  ScannerSessionCreateInput,
+  SessionPermissions,
+} from '../../domain/models/event-code.js';
 import type {
   EventCodeRepository,
   ScannerSessionRepository,
   Page,
   PaginationQuery,
-  TxContext,
 } from '../../domain/ports/repositories.js';
 import type { DocumentData, Firestore } from 'firebase-admin/firestore';
-import { FieldValue } from 'firebase-admin/firestore';
 
 const CODES_COLLECTION = 'v2_event_codes';
 const SESSIONS_COLLECTION = 'v2_scanner_sessions';
@@ -33,7 +41,8 @@ export class FirestoreEventCodeRepository implements EventCodeRepository {
 
   async findById(id: EntityId): Promise<EventCode | null> {
     const snap = await this.collection.doc(id).get();
-    return snap.exists ? toEventCode(snap.data()!) : null;
+    const data = snap.data();
+    return data ? toEventCode(data) : null;
   }
 
   async findByCode(code: string): Promise<EventCode | null> {
@@ -43,17 +52,22 @@ export class FirestoreEventCodeRepository implements EventCodeRepository {
     return doc ? toEventCode(doc.data()) : null;
   }
 
-  async findByEvent(eventId: EntityId, input: PaginationQuery): Promise<any> {
+  async findByEvent(eventId: EntityId, input: PaginationQuery): Promise<Page<EventCode>> {
     const base = this.collection.where('eventId', '==', eventId).orderBy('createdAt', 'desc');
     return paginateQuery(base, input, toEventCode);
   }
 
-  async findByOrganization(organizationId: EntityId, input: PaginationQuery): Promise<any> {
-    const base = this.collection.where('organizationId', '==', organizationId).orderBy('createdAt', 'desc');
+  async findByOrganization(
+    organizationId: EntityId,
+    input: PaginationQuery,
+  ): Promise<Page<EventCode>> {
+    const base = this.collection
+      .where('organizationId', '==', organizationId)
+      .orderBy('createdAt', 'desc');
     return paginateQuery(base, input, toEventCode);
   }
 
-  async findActiveByEvent(eventId: EntityId): Promise<any[]> {
+  async findActiveByEvent(eventId: EntityId): Promise<EventCode[]> {
     const snap = await this.collection
       .where('eventId', '==', eventId)
       .where('status', '==', 'active')
@@ -61,17 +75,22 @@ export class FirestoreEventCodeRepository implements EventCodeRepository {
     return snap.docs.map((doc) => toEventCode(doc.data()));
   }
 
-  async updateStatus(id: EntityId, status: 'active' | 'revoked' | 'expired', revokedReason?: string): Promise<any | null> {
+  async updateStatus(
+    id: EntityId,
+    status: EventCodeStatus,
+    revokedReason?: string,
+  ): Promise<EventCode | null> {
     const ref = this.collection.doc(id);
     const updates: Record<string, unknown> = { status, updatedAt: new Date().toISOString() };
     if (revokedReason) updates.revokedReason = revokedReason;
     if (status === 'revoked') updates.revokedAt = new Date().toISOString();
     await ref.update(updates);
     const snap = await ref.get();
-    return snap.exists ? toEventCode(snap.data()!) : null;
+    const data = snap.data();
+    return data ? toEventCode(data) : null;
   }
 
-  async revoke(id: EntityId, reason: string): Promise<any | null> {
+  async revoke(id: EntityId, reason: string): Promise<EventCode | null> {
     return this.updateStatus(id, 'revoked', reason);
   }
 
@@ -116,7 +135,12 @@ export class FirestoreScannerSessionRepository implements ScannerSessionReposito
     return this.db.collection(TOKENS_COLLECTION);
   }
 
-  async create(input: ScannerSessionCreateInput): Promise<{ session: any; sessionToken: string; sessionExpiresAt: string; sessionId: string }> {
+  async create(input: ScannerSessionCreateInput): Promise<{
+    session: ScannerSession;
+    sessionToken: string;
+    sessionExpiresAt: string;
+    sessionId: string;
+  }> {
     const result = createScannerSession(input);
     await this.sessionsCollection.doc(result.session.id).set(toSessionDoc(result.session));
     const crypto = await import('crypto');
@@ -125,27 +149,34 @@ export class FirestoreScannerSessionRepository implements ScannerSessionReposito
     return result;
   }
 
-  async findById(id: EntityId): Promise<any | null> {
+  async findById(id: EntityId): Promise<ScannerSession | null> {
     const snap = await this.db.collection(SESSIONS_COLLECTION).doc(id).get();
-    return snap.exists ? toSession(snap.data()!) : null;
+    const data = snap.data();
+    return data ? toSession(data) : null;
   }
 
-  async findByTokenHash(tokenHash: string): Promise<any | null> {
+  async findByTokenHash(tokenHash: string): Promise<ScannerSession | null> {
     const tokenDoc = await this.tokensCollection.doc(tokenHash).get();
-    if (!tokenDoc.exists) return null;
-    const sessionId = tokenDoc.data()!.sessionId;
+    const tokenData = tokenDoc.data();
+    if (!tokenData) return null;
+    const sessionId = tokenData.sessionId as EntityId;
     const snap = await this.db.collection(SESSIONS_COLLECTION).doc(sessionId).get();
-    return snap.exists ? toSession(snap.data()!) : null;
+    const data = snap.data();
+    return data ? toSession(data) : null;
   }
 
-  async findByCode(codeId: EntityId, input: PaginationQuery): Promise<any> {
-    const base = this.db.collection(SESSIONS_COLLECTION).where('codeId', '==', codeId).orderBy('createdAt', 'desc');
+  async findByCode(codeId: EntityId, input: PaginationQuery): Promise<Page<ScannerSession>> {
+    const base = this.db
+      .collection(SESSIONS_COLLECTION)
+      .where('codeId', '==', codeId)
+      .orderBy('createdAt', 'desc');
     return paginateQuery(base, input, toSession);
   }
 
-  async findActiveByCode(codeId: EntityId): Promise<any[]> {
+  async findActiveByCode(codeId: EntityId): Promise<ScannerSession[]> {
     const now = new Date().toISOString();
-    const snap = await this.db.collection(SESSIONS_COLLECTION)
+    const snap = await this.db
+      .collection(SESSIONS_COLLECTION)
       .where('codeId', '==', codeId)
       .where('revokedAt', '==', null)
       .where('expiresAt', '>', now)
@@ -153,32 +184,48 @@ export class FirestoreScannerSessionRepository implements ScannerSessionReposito
     return snap.docs.map((doc) => toSession(doc.data()));
   }
 
-  async findByDevice(deviceId: string, input: PaginationQuery): Promise<any> {
-    const base = this.db.collection(SESSIONS_COLLECTION).where('deviceId', '==', deviceId).orderBy('createdAt', 'desc');
+  async findByDevice(deviceId: string, input: PaginationQuery): Promise<Page<ScannerSession>> {
+    const base = this.db
+      .collection(SESSIONS_COLLECTION)
+      .where('deviceId', '==', deviceId)
+      .orderBy('createdAt', 'desc');
     return paginateQuery(base, input, toSession);
   }
 
   async updateLastUsed(id: EntityId): Promise<void> {
-    await this.db.collection(SESSIONS_COLLECTION).doc(id).update({ lastUsedAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+    await this.db
+      .collection(SESSIONS_COLLECTION)
+      .doc(id)
+      .update({ lastUsedAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
   }
 
-  async revoke(id: EntityId, reason: string): Promise<any | null> {
+  async revoke(id: EntityId, reason: string): Promise<ScannerSession | null> {
     const ref = this.db.collection(SESSIONS_COLLECTION).doc(id);
-    await ref.update({ revokedAt: new Date().toISOString(), revokedReason: reason, updatedAt: new Date().toISOString() });
+    await ref.update({
+      revokedAt: new Date().toISOString(),
+      revokedReason: reason,
+      updatedAt: new Date().toISOString(),
+    });
     const snap = await ref.get();
-    return snap.exists ? toSession(snap.data()!) : null;
+    const data = snap.data();
+    return data ? toSession(data) : null;
   }
 
   async cleanupExpired(): Promise<number> {
     const now = new Date().toISOString();
-    const snap = await this.db.collection(SESSIONS_COLLECTION)
+    const snap = await this.db
+      .collection(SESSIONS_COLLECTION)
       .where('revokedAt', '==', null)
       .where('expiresAt', '<=', now)
       .get();
     const batch = this.db.batch();
     let count = 0;
     for (const doc of snap.docs) {
-      batch.update(doc.ref, { revokedAt: new Date().toISOString(), revokedReason: 'expired', updatedAt: new Date().toISOString() });
+      batch.update(doc.ref, {
+        revokedAt: new Date().toISOString(),
+        revokedReason: 'expired',
+        updatedAt: new Date().toISOString(),
+      });
       count++;
     }
     if (count > 0) await batch.commit();
@@ -186,7 +233,7 @@ export class FirestoreScannerSessionRepository implements ScannerSessionReposito
   }
 }
 
-function toDoc(code: any): DocumentData {
+function toDoc(code: EventCode): DocumentData {
   return {
     id: code.id,
     code: code.code,
@@ -210,29 +257,30 @@ function toDoc(code: any): DocumentData {
   };
 }
 
-function toEventCode(data: DocumentData): any {
+function toEventCode(data: DocumentData): EventCode {
+  const stats = data.stats as Partial<EventCodeStats> | undefined;
   return {
     id: data.id as string,
     code: data.code as string,
     eventId: data.eventId as string,
     organizationId: data.organizationId as string,
     venueId: data.venueId as string | null,
-    type: data.type as 'full' | 'scan_only' | 'charge',
+    type: data.type as EventCode['type'],
     gate: data.gate as string | null,
     createdBy: data.createdBy as string | null,
     createdByName: data.createdByName as string | null,
-    status: data.status as 'active' | 'revoked' | 'expired',
+    status: data.status as EventCodeStatus,
     revokedAt: data.revokedAt as string | null,
     revokedReason: data.revokedReason as string | null,
     expiresAt: data.expiresAt as string | null,
     maxDevices: data.maxDevices as number,
     allowReuse: data.allowReuse as boolean,
     stats: {
-      scansCount: data.stats?.scansCount as number ?? 0,
-      doorEntriesCount: data.stats?.doorEntriesCount as number ?? 0,
-      doorRevenue: data.stats?.doorRevenue as number ?? 0,
-      lastUsedAt: data.stats?.lastUsedAt as string | null,
-      activeSessions: data.stats?.activeSessions as number ?? 0,
+      scansCount: stats?.scansCount ?? 0,
+      doorEntriesCount: stats?.doorEntriesCount ?? 0,
+      doorRevenue: stats?.doorRevenue ?? 0,
+      lastUsedAt: stats?.lastUsedAt ?? null,
+      activeSessions: stats?.activeSessions ?? 0,
     },
     version: data.version as number,
     createdAt: data.createdAt as string,
@@ -240,7 +288,7 @@ function toEventCode(data: DocumentData): any {
   };
 }
 
-function toSessionDoc(session: any): DocumentData {
+function toSessionDoc(session: ScannerSession): DocumentData {
   return {
     id: session.id,
     sessionToken: session.sessionToken,
@@ -264,7 +312,7 @@ function toSessionDoc(session: any): DocumentData {
   };
 }
 
-function toSession(data: DocumentData): any {
+function toSession(data: DocumentData): ScannerSession {
   return {
     id: data.id as string,
     sessionToken: data.sessionToken as string | null,
@@ -272,14 +320,14 @@ function toSession(data: DocumentData): any {
     eventId: data.eventId as string,
     organizationId: data.organizationId as string,
     venueId: data.venueId as string | null,
-    type: data.type as 'staff' | 'device',
+    type: data.type as ScannerSession['type'],
     deviceId: data.deviceId as string | null,
     deviceName: data.deviceName as string | null,
     expiresAt: data.expiresAt as string,
     lastUsedAt: data.lastUsedAt as string | null,
     revokedAt: data.revokedAt as string | null,
     revokedReason: data.revokedReason as string | null,
-    permissions: data.permissions as { canScan: boolean; canDoorEntry: boolean; canWalkIn: boolean; canCharge: boolean },
+    permissions: data.permissions as SessionPermissions,
     createdBy: data.createdBy as string,
     createdByName: data.createdByName as string | null,
     version: data.version as number,

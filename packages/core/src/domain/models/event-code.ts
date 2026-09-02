@@ -1,5 +1,4 @@
-import { InvalidOperationError } from '../errors.js';
-import { bumpVersion, newVersionedEntity } from '../identity.js';
+import { newVersionedEntity } from '../identity.js';
 
 import type { EntityId, VersionedEntity } from '../identity.js';
 
@@ -81,7 +80,7 @@ export interface EventCodeCreateInput {
   now?: Date;
 }
 
-export function createEventCode(input: EventCodeCreateInput): any {
+export function createEventCode(input: EventCodeCreateInput): EventCode {
   const now = input.now ?? new Date();
   const randomPart = Math.random().toString(36).substring(2, 8).toUpperCase();
   const code = `C1R-${randomPart}`;
@@ -154,7 +153,7 @@ export interface ScannerSession extends VersionedEntity {
   /** Revocation reason */
   revokedReason: string | null;
   /** Permissions derived from code type */
-  permissions: any;
+  permissions: SessionPermissions;
   /** Session creator (staff UID) */
   createdBy: EntityId;
   /** Human-readable creator name */
@@ -196,16 +195,19 @@ export interface ScannerSessionCreateInput {
  * Creates a new scanner session with deterministic ID (hash of token).
  * Returns session with raw token (only time token is exposed).
  */
-export function createScannerSession(
-  input: ScannerSessionCreateInput,
-): { session: any; sessionToken: string; sessionExpiresAt: string; sessionId: string } {
+export function createScannerSession(input: ScannerSessionCreateInput): {
+  session: ScannerSession;
+  sessionToken: string;
+  sessionExpiresAt: string;
+  sessionId: string;
+} {
   const now = input.now ?? new Date();
   const sessionToken = `sess_${input.codeData.code}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
   const sessionId = `SESS-${input.codeId}-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
   const expiresAt = new Date(now.getTime() + 12 * 60 * 60 * 1000).toISOString(); // 12 hours
 
   const codeType = input.codeData.type;
-  const permissions: any = {
+  const permissions: SessionPermissions = {
     canScan: codeType === 'full' || codeType === 'scan_only',
     canDoorEntry: codeType === 'full',
     canWalkIn: codeType === 'full' || codeType === 'scan_only',
@@ -240,7 +242,7 @@ export function createScannerSession(
   };
 }
 
-export function getSessionPermissions(codeType: any): any {
+export function getSessionPermissions(codeType: EventCodeType): SessionPermissions {
   return {
     canScan: codeType === 'full' || codeType === 'scan_only',
     canDoorEntry: codeType === 'full',
@@ -249,10 +251,7 @@ export function getSessionPermissions(codeType: any): any {
   };
 }
 
-export function isSessionValid(session: {
-  expiresAt: string;
-  revokedAt: string | null;
-}): boolean {
+export function isSessionValid(session: { expiresAt: string; revokedAt: string | null }): boolean {
   if (session.revokedAt) return false;
   if (new Date(session.expiresAt) < new Date()) return false;
   return true;

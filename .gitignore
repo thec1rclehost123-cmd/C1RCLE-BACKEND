@@ -12,3 +12,5 @@ coverage/
 .env.docker
 .env.*.local
 .temp
+# CI writes the coverage ratchet baseline here from the Actions cache.
+.coverage-baseline/

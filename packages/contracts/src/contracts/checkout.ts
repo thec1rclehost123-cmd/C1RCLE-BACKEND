@@ -1,4 +1,5 @@
 import { z } from 'zod';
+
 import { opaqueIdSchema, paginatedSchema, idempotencyKeySchema } from './shared.js';
 
 /**
@@ -13,7 +14,7 @@ export const checkoutQuoteRequestSchema = z
         z.object({
           tierId: opaqueIdSchema,
           quantity: z.number().int().positive().max(100),
-        })
+        }),
       )
       .min(1),
     promoCode: z.string().optional().nullable(),
@@ -35,7 +36,7 @@ export const checkoutQuoteResponseSchema = z.object({
         quantity: z.number().int().positive(),
         unitPricePaise: z.number().int().nonnegative(),
         lineTotalPaise: z.number().int().nonnegative(),
-      })
+      }),
     ),
     subtotalPaise: z.number().int().nonnegative(),
     feesPaise: z.number().int().nonnegative(),
@@ -63,7 +64,7 @@ export const checkoutHoldRequestSchema = z
         z.object({
           tierId: opaqueIdSchema,
           quantity: z.number().int().positive().max(100),
-        })
+        }),
       )
       .min(1),
     promoCode: z.string().optional().nullable(),
@@ -123,14 +124,16 @@ export const orderDtoSchema = z.object({
 });
 export type OrderDto = z.infer<typeof orderDtoSchema>;
 
-export const ordersListResponseSchema = paginatedSchema(z.object({
-  id: opaqueIdSchema,
-  eventId: opaqueIdSchema,
-  eventTitle: z.string(),
-  totalPaise: z.number().int().nonnegative(),
-  status: orderStatusSchema,
-  createdAt: z.iso.datetime(),
-}));
+export const ordersListResponseSchema = paginatedSchema(
+  z.object({
+    id: opaqueIdSchema,
+    eventId: opaqueIdSchema,
+    eventTitle: z.string(),
+    totalPaise: z.number().int().nonnegative(),
+    status: orderStatusSchema,
+    createdAt: z.iso.datetime(),
+  }),
+);
 export type OrdersListResponse = z.infer<typeof ordersListResponseSchema>;
 
 /* ─── Entitlements / Tickets ───────────────────────────────────────────────── */

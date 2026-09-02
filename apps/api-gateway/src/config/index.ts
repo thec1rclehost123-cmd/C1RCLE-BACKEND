@@ -7,6 +7,9 @@
 
 import { z } from 'zod';
 
+/** Placeholder secret for local development. Rejected in production below. */
+const DEV_AUTH_SECRET = 'dev-only-change-me';
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(8080),
@@ -22,8 +25,14 @@ const envSchema = z.object({
   /** Bucket for onboarding KYC images. Defaults to `<project>.firebasestorage.app`. */
   FIREBASE_STORAGE_BUCKET: z.string().min(1).optional(),
   /** B10: Better Auth. */
-  BETTER_AUTH_SECRET: z.string().min(1).default('dev-only-change-me'),
+  BETTER_AUTH_SECRET: z.string().min(1).default(DEV_AUTH_SECRET),
   BETTER_AUTH_URL: z.string().min(1).default('http://localhost:8080'),
+  /**
+   * Commit SHA of the running build. Render injects `RENDER_GIT_COMMIT`
+   * automatically; CI reads it back from `/api/v2/internal/version` to tell a
+   * finished deploy apart from the previous one still serving traffic.
+   */
+  RENDER_GIT_COMMIT: z.string().min(1).optional(),
   /** Phase 4: Razorpay credentials. */
   RAZORPAY_KEY_ID: z.string().min(1).optional(),
   RAZORPAY_KEY_SECRET: z.string().min(1).optional(),
@@ -32,6 +41,37 @@ const envSchema = z.object({
 
 /** Fail closed: STORAGE_DRIVER=firestore requires real credentials, never a silent memory fallback. */
 const validatedEnvSchema = envSchema.superRefine((value, ctx) => {
+  // A development default that survives into production is not a default, it is
+  // a published secret. Better Auth signs sessions with this value, so shipping
+  // `dev-only-change-me` means anyone who has read this repository can mint a
+  // session. Fail the boot instead.
+  if (value.NODE_ENV === 'production') {
+    if (value.BETTER_AUTH_SECRET === DEV_AUTH_SECRET) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['BETTER_AUTH_SECRET'],
+        message:
+          'Must be set to a real secret in production — the development default is public. ' +
+          'Generate one with `openssl rand -hex 32`.',
+      });
+    } else if (value.BETTER_AUTH_SECRET.length < 32) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['BETTER_AUTH_SECRET'],
+        message: 'Must be at least 32 characters in production.',
+      });
+    }
+    if (value.BETTER_AUTH_URL.startsWith('http://')) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['BETTER_AUTH_URL'],
+        message:
+          'Must be an https:// URL in production — session cookies issued against ' +
+          'an http:// origin are not marked Secure.',
+      });
+    }
+  }
+
   if (value.STORAGE_DRIVER !== 'firestore') return;
   if (!value.FIREBASE_CLIENT_EMAIL) {
     ctx.addIssue({

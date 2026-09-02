@@ -54,8 +54,12 @@ let server: FastifyInstance;
 
 beforeEach(async () => {
   const repos = services.repos();
-  (repos.eventCodes as unknown as { codes: Map<string, unknown>; byCode: Map<string, string> }).codes.clear();
-  (repos.eventCodes as unknown as { codes: Map<string, unknown>; byCode: Map<string, string> }).byCode.clear();
+  (
+    repos.eventCodes as unknown as { codes: Map<string, unknown>; byCode: Map<string, string> }
+  ).codes.clear();
+  (
+    repos.eventCodes as unknown as { codes: Map<string, unknown>; byCode: Map<string, string> }
+  ).byCode.clear();
   (
     repos.scannerSessions as unknown as {
       sessions: Map<string, unknown>;
@@ -81,7 +85,9 @@ beforeEach(async () => {
   });
 });
 
-async function seedEventCode(overrides: Partial<Parameters<typeof services.scanner.createEventCode>[0]> = {}) {
+async function seedEventCode(
+  overrides: Partial<Parameters<typeof services.scanner.createEventCode>[0]> = {},
+) {
   return services.scanner.createEventCode(
     {
       eventId: EVENT_ID,
@@ -271,7 +277,13 @@ describe('POST /door/offline-sync', () => {
       headers: HEADERS,
       payload: {
         scannerSessionId: 'no-such-session',
-        scans: [{ payload: 'ENT-does-not-matter', scannedAt: new Date().toISOString(), deviceId: 'device_1' }],
+        scans: [
+          {
+            payload: 'ENT-does-not-matter',
+            scannedAt: new Date().toISOString(),
+            deviceId: 'device_1',
+          },
+        ],
       },
     });
     expect(response.statusCode).toBe(404);

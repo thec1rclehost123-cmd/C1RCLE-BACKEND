@@ -8,14 +8,14 @@
 export * from './client.js';
 
 // Error envelope utilities (from shared)
-export { 
-  buildErrorResponse, 
-  buildSuccessResponse, 
-  buildValidationDetails, 
-  errorCodeForStatus, 
-  buildV2ErrorResponse, 
-  zodToFieldErrors, 
-  STATUS_CODE_TO_ERROR_CODE 
+export {
+  buildErrorResponse,
+  buildSuccessResponse,
+  buildValidationDetails,
+  errorCodeForStatus,
+  buildV2ErrorResponse,
+  zodToFieldErrors,
+  STATUS_CODE_TO_ERROR_CODE,
 } from './contracts/shared.js';
 export type { ApiErrorCode, FieldErrors, RequestId } from './contracts/shared.js';
 export type {

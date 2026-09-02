@@ -97,7 +97,8 @@ export function createCoreConfig(input: CoreConfigInput): CoreConfig {
       kycBucket: input.storage?.kycBucket ?? `${input.firestore.projectId}.firebasestorage.app`,
     },
     features: input.features ?? {},
-    magicTicketSecret: input.magicTicketSecret ?? 'default-magic-ticket-secret-change-in-production',
+    magicTicketSecret:
+      input.magicTicketSecret ?? 'default-magic-ticket-secret-change-in-production',
   };
 }
 

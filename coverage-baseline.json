@@ -1,0 +1,9 @@
+{
+  "_comment": "Seed floor for scripts/ci/coverage-ratchet.mjs, used when the default-branch Actions cache is cold. Measured 2026-09-02 via `pnpm test:coverage` in a node:24-slim container: 394 passing, 3 skipped. CI ratchets upward from the cache on its own; update this file only to raise the committed floor.",
+  "total": {
+    "lines": { "pct": 54.03 },
+    "statements": { "pct": 50.85 },
+    "functions": { "pct": 44.59 },
+    "branches": { "pct": 43.43 }
+  }
+}

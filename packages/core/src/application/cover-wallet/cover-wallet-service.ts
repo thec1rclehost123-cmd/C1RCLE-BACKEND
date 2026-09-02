@@ -1,37 +1,28 @@
 import { InvalidOperationError, ForbiddenError, NotFoundError } from '../../domain/errors.js';
-import { bumpVersion } from '../../domain/identity.js';
-import type { ServiceDeps, ActorContext } from '../context.js';
-import type { EntityId } from '../../domain/identity.js';
-import type {
-  CoverWallet,
-  CoverWalletTxn,
-  CoverWalletCreateInput,
-  CoverWalletCreditInput,
-  CoverWalletDebitInput,
-  CoverWalletStatus,
-  CoverWalletTxnType,
-  CoverWalletTxnStatus,
-} from '../../domain/models/cover-wallet.js';
+import { createReconciliation } from '../../domain/models/cover-wallet-reconciliation.js';
 import {
   createCoverWallet,
-  computeTerminationTime,
   isWalletActive,
   isWalletTerminated,
-  canWalletDebit,
-  applyCredit,
-  applyDebit,
-  applyRefund,
 } from '../../domain/models/cover-wallet.js';
+
+import type { EntityId } from '../../domain/identity.js';
 import type {
   CoverWalletReconciliation,
   CoverWalletReconciliationCreateInput,
   CoverWalletReconciliationDiscrepancy,
   ReconciliationStatus,
 } from '../../domain/models/cover-wallet-reconciliation.js';
-import {
-  createReconciliation,
-  resolveReconciliation,
-} from '../../domain/models/cover-wallet-reconciliation.js';
+import type {
+  CoverWallet,
+  CoverWalletTxn,
+  CoverWalletCreateInput,
+  CoverWalletStatus,
+  CoverWalletTxnType,
+  CoverWalletTxnStatus,
+} from '../../domain/models/cover-wallet.js';
+import type { AdminAuditRecord } from '../../domain/ports/audit.js';
+import type { ServiceDeps, ActorContext } from '../context.js';
 
 /**
  * ─── Cover Wallet Service (Phase 5) ─────────────────────────────────────────────
@@ -138,7 +129,7 @@ export interface CreateWalletInput {
   eventId: EntityId;
   userId: EntityId;
   openingBalance: number; // paise
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
 }
 
 export interface CreditWalletInput {
@@ -236,26 +227,20 @@ export interface WalletOrgStats {
   totalDiscrepancyAmount: number;
 }
 
+/** Entity states an audit record carries as its `before`/`after` snapshot. */
+type AuditSnapshot = CoverWallet | CoverWalletReconciliation;
+
 function createCoverWalletServiceImpl(deps: CoverWalletServiceDeps): CoverWalletService {
-  const {
-    coverWallets,
-    coverWalletTxns,
-    coverWalletReconciliations,
-    events,
-    config,
-    logger,
-    outbox,
-    adminAudit,
-  } = deps;
+  const { coverWallets, coverWalletTxns, coverWalletReconciliations, events, adminAudit } = deps;
 
   function auditRecord(
     actor: ActorContext,
     action: string,
     targetType: string,
     targetId: EntityId,
-    before?: any,
-    after?: any,
-  ): any {
+    before?: AuditSnapshot,
+    after?: AuditSnapshot,
+  ): AdminAuditRecord {
     return {
       id: `audit-${targetId}-${Date.now()}`,
       adminId: actor.userId,
@@ -264,8 +249,8 @@ function createCoverWalletServiceImpl(deps: CoverWalletServiceDeps): CoverWallet
       action,
       targetType,
       targetId,
-      before,
-      after,
+      before: before ? { ...before } : before,
+      after: after ? { ...after } : after,
       occurredAt: Date.now(),
     };
   }
@@ -311,8 +296,9 @@ function createCoverWalletServiceImpl(deps: CoverWalletServiceDeps): CoverWallet
       operatorUid: actor.userId,
       operatorName: actor.userId,
       description: 'Wallet activation',
+      failureReason: null,
       processedAt: new Date().toISOString(),
-    } as any);
+    });
 
     await adminAudit.write(
       auditRecord(actor, 'cover_wallet.create', 'cover_wallet', created.id, undefined, created),
@@ -352,7 +338,7 @@ function createCoverWalletServiceImpl(deps: CoverWalletServiceDeps): CoverWallet
     const allWallets = await coverWallets.findByEvent(eventId, {
       limit: 1000,
       cursor: null,
-    } as any);
+    });
     let filtered = allWallets.items;
 
     if (filters?.status) {
@@ -362,16 +348,20 @@ function createCoverWalletServiceImpl(deps: CoverWalletServiceDeps): CoverWallet
       filtered = filtered.filter((w) => w.userId === filters.userId);
     }
     if (filters?.from) {
-      filtered = filtered.filter((w) => new Date(w.createdAt) >= filters.from!);
+      const from = filters.from;
+      filtered = filtered.filter((w) => new Date(w.createdAt) >= from);
     }
     if (filters?.to) {
-      filtered = filtered.filter((w) => new Date(w.createdAt) <= filters.to!);
+      const to = filters.to;
+      filtered = filtered.filter((w) => new Date(w.createdAt) <= to);
     }
     if (filters?.minBalance !== undefined) {
-      filtered = filtered.filter((w) => w.balance >= filters.minBalance!);
+      const minBalance = filters.minBalance;
+      filtered = filtered.filter((w) => w.balance >= minBalance);
     }
     if (filters?.maxBalance !== undefined) {
-      filtered = filtered.filter((w) => w.balance <= filters.maxBalance!);
+      const maxBalance = filters.maxBalance;
+      filtered = filtered.filter((w) => w.balance <= maxBalance);
     }
 
     return filtered;
@@ -393,7 +383,8 @@ function createCoverWalletServiceImpl(deps: CoverWalletServiceDeps): CoverWallet
     const existingTxn = await coverWalletTxns.findByIdempotencyKey(input.idempotencyKey);
     if (existingTxn) {
       const existingWallet = await coverWallets.findById(existingTxn.walletId);
-      return { wallet: existingWallet!, txn: existingTxn };
+      if (!existingWallet) throw new NotFoundError('Wallet', existingTxn.walletId);
+      return { wallet: existingWallet, txn: existingTxn };
     }
 
     const result = await coverWallets.credit({
@@ -448,7 +439,8 @@ function createCoverWalletServiceImpl(deps: CoverWalletServiceDeps): CoverWallet
     const existingTxn = await coverWalletTxns.findByIdempotencyKey(input.idempotencyKey);
     if (existingTxn) {
       const existingWallet = await coverWallets.findById(existingTxn.walletId);
-      return { wallet: existingWallet!, txn: existingTxn };
+      if (!existingWallet) throw new NotFoundError('Wallet', existingTxn.walletId);
+      return { wallet: existingWallet, txn: existingTxn };
     }
 
     const result = await coverWallets.debit({
@@ -493,7 +485,8 @@ function createCoverWalletServiceImpl(deps: CoverWalletServiceDeps): CoverWallet
     const existingTxn = await coverWalletTxns.findByIdempotencyKey(input.idempotencyKey);
     if (existingTxn) {
       const existingWallet = await coverWallets.findById(existingTxn.walletId);
-      return { wallet: existingWallet!, txn: existingTxn };
+      if (!existingWallet) throw new NotFoundError('Wallet', existingTxn.walletId);
+      return { wallet: existingWallet, txn: existingTxn };
     }
 
     const result = await coverWallets.refund(
@@ -539,7 +532,8 @@ function createCoverWalletServiceImpl(deps: CoverWalletServiceDeps): CoverWallet
     const existingTxn = await coverWalletTxns.findByIdempotencyKey(input.idempotencyKey);
     if (existingTxn) {
       const existingWallet = await coverWallets.findById(existingTxn.walletId);
-      return { wallet: existingWallet!, txn: existingTxn };
+      if (!existingWallet) throw new NotFoundError('Wallet', existingTxn.walletId);
+      return { wallet: existingWallet, txn: existingTxn };
     }
 
     const result = await coverWallets.adjust(
@@ -634,10 +628,12 @@ function createCoverWalletServiceImpl(deps: CoverWalletServiceDeps): CoverWallet
       filtered = filtered.filter((t) => t.deviceId === filters.deviceId);
     }
     if (filters?.from) {
-      filtered = filtered.filter((t) => new Date(t.createdAt) >= filters.from!);
+      const from = filters.from;
+      filtered = filtered.filter((t) => new Date(t.createdAt) >= from);
     }
     if (filters?.to) {
-      filtered = filtered.filter((t) => new Date(t.createdAt) <= filters.to!);
+      const to = filters.to;
+      filtered = filtered.filter((t) => new Date(t.createdAt) <= to);
     }
 
     return filtered;
@@ -692,7 +688,7 @@ function createCoverWalletServiceImpl(deps: CoverWalletServiceDeps): CoverWallet
       const allWallets = await coverWallets.findByEvent(input.eventId, {
         limit: 1000,
         cursor: null,
-      } as any);
+      });
       wallets = allWallets.items;
     }
 
@@ -810,7 +806,7 @@ function createCoverWalletServiceImpl(deps: CoverWalletServiceDeps): CoverWallet
     const allRecons = await coverWalletReconciliations.findByEvent(eventId, {
       limit: 1000,
       cursor: null,
-    } as any);
+    });
     let filtered = allRecons.items;
 
     if (filters?.status) {
@@ -823,10 +819,12 @@ function createCoverWalletServiceImpl(deps: CoverWalletServiceDeps): CoverWallet
       filtered = filtered.filter((r) => r.userId === filters.userId);
     }
     if (filters?.from) {
-      filtered = filtered.filter((r) => new Date(r.createdAt) >= filters.from!);
+      const from = filters.from;
+      filtered = filtered.filter((r) => new Date(r.createdAt) >= from);
     }
     if (filters?.to) {
-      filtered = filtered.filter((r) => new Date(r.createdAt) <= filters.to!);
+      const to = filters.to;
+      filtered = filtered.filter((r) => new Date(r.createdAt) <= to);
     }
     if (filters?.hasDiscrepancy) {
       filtered = filtered.filter((r) => r.discrepancies.length > 0);

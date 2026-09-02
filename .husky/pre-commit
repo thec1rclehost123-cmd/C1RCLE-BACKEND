@@ -1,0 +1,4 @@
+# Format + lint only what is staged. Keeps the fast, high-frequency checks off
+# GitHub Actions entirely — CI still re-runs them as a backstop, because
+# `--no-verify` exists.
+pnpm exec lint-staged

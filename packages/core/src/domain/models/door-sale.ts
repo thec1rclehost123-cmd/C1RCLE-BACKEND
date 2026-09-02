@@ -1,5 +1,4 @@
-import { InvalidOperationError } from '../errors.js';
-import { bumpVersion, newVersionedEntity } from '../identity.js';
+import { newVersionedEntity } from '../identity.js';
 
 import type { EntityId, VersionedEntity } from '../identity.js';
 
@@ -69,7 +68,9 @@ export interface DoorSale extends VersionedEntity {
   /** Refund timestamp */
   refundedAt: string | null;
   /** Refunded by */
-  refundedBy: EntityId | null,
+  refundedBy: EntityId | null;
+  /** Client-supplied idempotency key the sale was created under */
+  idempotencyKey: string | null;
 }
 
 export interface DoorSaleCreateInput {
@@ -93,7 +94,7 @@ export interface DoorSaleCreateInput {
   now?: Date;
 }
 
-export function createDoorSale(input: DoorSaleCreateInput): any {
+export function createDoorSale(input: DoorSaleCreateInput): DoorSale {
   const now = input.now ?? new Date();
 
   return {
