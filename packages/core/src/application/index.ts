@@ -34,6 +34,7 @@ export { ReferralLinkService } from './promoters/referral-link-service.js';
 export type { CreateReferralLinkCommand } from './promoters/referral-link-service.js';
 export { PartnershipService } from './partnerships/partnership-service.js';
 export type { RequestPartnershipCommand } from './partnerships/partnership-service.js';
+export { PublicService } from './public/public-service.js';
 export { AdminAuthorityService } from './admin/admin-authority-service.js';
 export type { ProposeCommand, AuditInput } from './admin/admin-authority-service.js';
 export { OnboardingService } from './onboarding/onboarding-service.js';
