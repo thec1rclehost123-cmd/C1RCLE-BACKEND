@@ -20,15 +20,18 @@ import promoterConnectionRoutes from './partner/promoter-connections.js';
 import partnerReferralLinkRoutes from './partner/referral-links.js';
 import partnerVenueRoutes from './partner/venues.js';
 import phase5Routes from './phase5-routes.js';
+import publicDiscoveryRoutes from './public/discovery.js';
 
 import type { BetterAuthInstance } from '../../plugins/auth.js';
 import type { FastifyInstance } from 'fastify';
 
 /**
  * ─── V2 route manifest ─────────────────────────────────────────────────────────
- * The single registration surface for all `/api/v2` routes. BLOCKED feature
- * slices (orders/checkout/payments/refunds/payouts/door/webhooks) must NOT be
- * registered here — they 404 by absence, never by a 501 stub.
+ * The single registration surface for all `/api/v2` routes. Phase 4's public
+ * discovery slice (PR1) is registered below, unauthenticated, under `/public`.
+ * The remaining Phase 4 feature slices — checkout/payments/orders/tickets/
+ * wallet/webhooks — are PR2/PR3 and are still BLOCKED: they must NOT be
+ * registered here yet. They 404 by absence, never by a 501 stub (D-006).
  */
 export async function registerV2Routes(app: FastifyInstance): Promise<void> {
   const gw = getGatewayConfig();
@@ -69,6 +72,9 @@ export async function registerV2Routes(app: FastifyInstance): Promise<void> {
     async (v2) => {
       await internalRoutes(v2);
       await v2.register(async (a) => authRoutes(a, { auth }), { prefix: '/auth' });
+      // Phase 4 PR1: unauthenticated guest-facing discovery reads — never
+      // nested under the org-scoped/authenticated route group above.
+      await v2.register(publicDiscoveryRoutes, { prefix: '/public' });
       await partnerOrganizationRoutes(v2);
       await partnerVenueRoutes(v2);
       await partnerEventRoutes(v2);

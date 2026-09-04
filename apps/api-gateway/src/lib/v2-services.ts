@@ -3,6 +3,7 @@ import {
   OrganizationService,
   VenueService,
   PartnershipService,
+  PublicService,
   ReferralLinkService,
   PromoterConnectionService,
   VenueCalendarService,
@@ -76,6 +77,8 @@ export interface PartnerV2Services {
   /** Phase 2: platform-admin resolution, tiering and dual control. */
   adminAuthority: AdminAuthorityService;
   checkout: CheckoutService;
+  /** Phase 4 PR1: unauthenticated guest-facing discovery reads. */
+  public: PublicService;
   /** T09 idempotency — durable on the firestore driver, in-memory on `memory`. */
   idempotency: IdempotencyService;
   /** Builds the service actor from the authenticated request state. */
@@ -269,6 +272,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     onboarding: new OnboardingService(deps, adminAuthority),
     adminAuthority,
     checkout: new CheckoutService(deps),
+    public: new PublicService(deps),
     // Replay protection must outlive the process: a restart mid-retry with an
     // in-memory store turns a client's retry into a second business result.
 
