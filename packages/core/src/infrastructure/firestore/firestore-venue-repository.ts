@@ -37,6 +37,12 @@ export class FirestoreVenueRepository implements VenueRepository {
     return doc ? toVenue(doc.data()) : null;
   }
 
+  async getBySlugGlobal(slug: string): Promise<Venue | null> {
+    const snap = await this.collection.where('public.slug', '==', slug).limit(1).get();
+    const doc = snap.docs[0];
+    return doc ? toVenue(doc.data()) : null;
+  }
+
   async listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Venue>> {
     const base = this.collection.where('organizationId', '==', organizationId);
     return paginateQuery(base, query, toVenue);

@@ -93,6 +93,13 @@ export class MemoryEventRepository implements EventRepository {
     return this.getById(eventId);
   }
 
+  async getBySlug(slug: string): Promise<Event | null> {
+    for (const event of this.events.values()) {
+      if (event.slug === slug) return event;
+    }
+    return null;
+  }
+
   async listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Event>> {
     const all = [...this.events.values()].filter((e) => e.organizationId === organizationId);
     return serializeSlice(all, query);
@@ -123,6 +130,13 @@ export class MemoryOrganizationRepository implements OrganizationRepository {
 
   async getById(organizationId: EntityId): Promise<Organization | null> {
     return this.organizations.get(organizationId) ?? null;
+  }
+
+  async getBySlug(slug: string): Promise<Organization | null> {
+    for (const org of this.organizations.values()) {
+      if (org.slug === slug) return org;
+    }
+    return null;
   }
 
   async listForMember(userId: EntityId, query: PaginationQuery): Promise<Page<Organization>> {
@@ -174,6 +188,13 @@ export class MemoryVenueRepository implements VenueRepository {
   async getBySlug(slug: string, organizationId: EntityId): Promise<Venue | null> {
     for (const venue of this.venues.values()) {
       if (venue.public.slug === slug && venue.organizationId === organizationId) return venue;
+    }
+    return null;
+  }
+
+  async getBySlugGlobal(slug: string): Promise<Venue | null> {
+    for (const venue of this.venues.values()) {
+      if (venue.public.slug === slug) return venue;
     }
     return null;
   }

@@ -93,6 +93,9 @@ export interface PaginationQuery {
 
 export interface OrganizationRepository {
   getById(organizationId: EntityId): Promise<Organization | null>;
+  /** Public host-profile lookup — global (not org-scoped): a guest reaches an
+   * organization by its slug alone, with no tenant context of their own. */
+  getBySlug(slug: string): Promise<Organization | null>;
   /** All orgs a user id belongs to as a member. */
   listForMember(userId: EntityId, query: PaginationQuery): Promise<Page<Organization>>;
   listMembers(organizationId: EntityId, query: PaginationQuery): Promise<Page<OrganizationMember>>;
@@ -163,6 +166,9 @@ export interface InvitationRepository {
 export interface VenueRepository {
   getById(venueId: EntityId): Promise<Venue | null>;
   getBySlug(slug: string, organizationId: EntityId): Promise<Venue | null>;
+  /** Public venue-profile lookup — global (not org-scoped): the guest surface
+   * addresses a venue by slug alone, with no tenant context of its own. */
+  getBySlugGlobal(slug: string): Promise<Venue | null>;
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Venue>>;
   save(venue: Venue, tx?: TxContext | null): Promise<void>;
 }
@@ -183,6 +189,9 @@ export interface VenueSlotRepository {
 export interface EventRepository {
   getById(eventId: EntityId): Promise<Event | null>;
   findById(eventId: EntityId): Promise<Event | null>;
+  /** Public detail lookup by slug — global (not org-scoped): the guest
+   * `idOrSlug` route falls back to this when the path segment isn't a known id. */
+  getBySlug(slug: string): Promise<Event | null>;
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Event>>;
   listByVenue(venueId: EntityId, query: PaginationQuery): Promise<Page<Event>>;
   listPublic(query: PaginationQuery): Promise<Page<Event>>;

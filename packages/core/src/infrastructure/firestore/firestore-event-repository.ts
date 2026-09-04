@@ -33,6 +33,12 @@ export class FirestoreEventRepository implements EventRepository {
     return data ? toEvent(data) : null;
   }
 
+  async getBySlug(slug: string): Promise<Event | null> {
+    const snap = await this.collection.where('slug', '==', slug).limit(1).get();
+    const doc = snap.docs[0];
+    return doc ? toEvent(doc.data()) : null;
+  }
+
   async listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Event>> {
     const base = this.collection.where('organizationId', '==', organizationId);
     return paginateQuery(base, query, toEvent);
