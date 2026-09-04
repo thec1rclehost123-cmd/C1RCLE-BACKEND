@@ -293,3 +293,7 @@ export {
   coverWalletReconciliationResponseSchema,
   phase5ErrorCodeSchema,
 } from './contracts/phase5.js';
+
+// Public / discovery (Phase 4 PR1)
+export type { HostPublicDto, DiscoveryFeedDto } from './contracts/public.js';
+export { hostPublicDtoSchema, discoveryFeedDtoSchema } from './contracts/public.js';
