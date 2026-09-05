@@ -212,10 +212,17 @@ export {
 
 // Checkout / Orders / Payments / Entitlements
 export type {
+  PricingLineDto,
+  PricingBreakdownDto,
   CheckoutQuoteRequest,
   CheckoutQuoteResponse,
   CheckoutHoldRequest,
   CheckoutHoldResponse,
+  PaymentAttemptRequest,
+  PaymentAttemptResponse,
+  PaymentConfirmRequest,
+  PaymentConfirmResponse,
+  CheckoutOrderDto,
   OrderDto,
   OrdersListResponse,
   EntitlementDto,
@@ -229,10 +236,18 @@ export type {
 } from './contracts/checkout.js';
 
 export {
+  pricingLineDtoSchema,
+  pricingBreakdownDtoSchema,
   checkoutQuoteRequestSchema,
   checkoutQuoteResponseSchema,
+  cartReservationStatusSchema,
   checkoutHoldRequestSchema,
   checkoutHoldResponseSchema,
+  paymentAttemptRequestSchema,
+  paymentAttemptResponseSchema,
+  paymentConfirmRequestSchema,
+  paymentConfirmResponseSchema,
+  checkoutOrderDtoSchema,
   orderDtoSchema,
   ordersListResponseSchema,
   entitlementDtoSchema,

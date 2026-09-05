@@ -6,6 +6,9 @@ import authContextPlugin, { buildBetterAuth } from '../../plugins/auth.js';
 
 import adminRoutes from './admin/onboarding-review.js';
 import authRoutes from './auth/index.js';
+import checkoutRoutes from './checkout/checkout-routes.js';
+import paymentRoutes from './checkout/payment-routes.js';
+import webhookRoutes from './checkout/webhook-routes.js';
 import phase5CoverWalletRoutes from './door/cover-wallet-routes.js';
 import phase5DoorSaleRoutes from './door/door-sale-routes.js';
 import phase5ScannerRoutes from './door/scanner-routes.js';
@@ -28,10 +31,11 @@ import type { FastifyInstance } from 'fastify';
 /**
  * ─── V2 route manifest ─────────────────────────────────────────────────────────
  * The single registration surface for all `/api/v2` routes. Phase 4's public
- * discovery slice (PR1) is registered below, unauthenticated, under `/public`.
- * The remaining Phase 4 feature slices — checkout/payments/orders/tickets/
- * wallet/webhooks — are PR2/PR3 and are still BLOCKED: they must NOT be
- * registered here yet. They 404 by absence, never by a 501 stub (D-006).
+ * discovery slice (PR1, unauthenticated, under `/public`) and checkout/
+ * payments/webhook slice (PR2 — `checkout/checkout-routes.ts`,
+ * `checkout/payment-routes.ts`, `checkout/webhook-routes.ts`) are LIVE.
+ * Orders/tickets/wallet (PR3) is still BLOCKED: it must NOT be registered
+ * here yet. BLOCKED slices 404 by absence, never by a 501 stub (D-006).
  */
 export async function registerV2Routes(app: FastifyInstance): Promise<void> {
   const gw = getGatewayConfig();
@@ -87,6 +91,10 @@ export async function registerV2Routes(app: FastifyInstance): Promise<void> {
       // platform admin acts across all of them.
       await onboardingRoutes(v2);
       await adminRoutes(v2);
+      // Phase 4 PR2: guest checkout + payments + Razorpay webhook.
+      await checkoutRoutes(v2);
+      await paymentRoutes(v2);
+      await webhookRoutes(v2);
       // Phase 5: Door / Scanner / Cover-wallet
       await phase5DoorSaleRoutes(v2);
       await phase5CoverWalletRoutes(v2);

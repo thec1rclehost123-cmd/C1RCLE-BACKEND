@@ -1,4 +1,4 @@
-import { InvalidOperationError } from '../../domain/errors.js';
+import { InvalidOperationError, VersionConflictError } from '../../domain/errors.js';
 import { issueEntitlements } from '../../domain/models/entitlement.js';
 
 import type { EntityId } from '../../domain/identity.js';
@@ -7,6 +7,13 @@ import type { Entitlement } from '../../domain/models/entitlement.js';
 import type { Order } from '../../domain/models/order.js';
 import type { PricingBreakdown } from '../../domain/models/pricing.js';
 import type { ActorContext, ServiceDeps } from '../context.js';
+
+/** Referral attribution captured at quote time, carried through to the hold. */
+export interface CheckoutAttribution {
+  referralLinkId: EntityId;
+  promoterId: EntityId;
+  code: string;
+}
 
 /**
  * ─── CheckoutService (Phase 4) ─────────────────────────────────────────────────
@@ -27,27 +34,20 @@ export class CheckoutService {
     lines: { tierId: EntityId; quantity: number }[];
     promoCode?: string | null;
     referralCode?: string | null;
-  }): Promise<PricingBreakdown> {
+  }): Promise<{ pricing: PricingBreakdown; attribution: CheckoutAttribution | null }> {
     const { eventId, lines, promoCode, referralCode } = input;
-
-    // Load event catalog (tiers + promos)
-    const catalog = await this.deps.repositories.catalog.listTiers(eventId);
-    const _tierMap = new Map(catalog.map((t) => [t.id, t]));
 
     const pricingLines = lines.map((l) => ({ tierId: l.tierId, quantity: l.quantity }));
 
-    let promo = null;
-    if (promoCode) {
-      promo = await this.deps.repositories.catalog.getPromoByCode(promoCode, eventId);
-      if (!promo) throw new InvalidOperationError(`Promo code ${promoCode} not found`);
-    }
-
-    // Build referral attribution if code provided
-    let _attribution = null;
+    // Build referral attribution if code provided. Previously computed and
+    // then discarded (dead `_attribution` local) — `createHold` needs this to
+    // freeze attribution onto the hold/order, so it must actually be
+    // returned to the caller rather than thrown away here.
+    let attribution: CheckoutAttribution | null = null;
     if (referralCode) {
       const link = await this.deps.repositories.referralLinks.findByCode(eventId, referralCode);
       if (link && link.isActive) {
-        _attribution = {
+        attribution = {
           referralLinkId: link.id,
           promoterId: link.promoterId,
           code: link.code,
@@ -61,7 +61,7 @@ export class CheckoutService {
       promoCode,
     });
 
-    return pricing;
+    return { pricing, attribution };
   }
 
   /**
@@ -179,9 +179,11 @@ export class CheckoutService {
     holdId: EntityId;
     _idempotencyKey: string;
   }): Promise<{ order: Order; entitlements: Entitlement[] }> {
-    const { paymentId, paymentIntentId, holdId, _idempotencyKey } = input;
+    const { paymentId, paymentIntentId, holdId } = input;
 
-    // Check for existing order with this payment id (idempotency)
+    // Check for existing order with this payment id (idempotency) — both the
+    // webhook and the client-redirect path call this method for the same
+    // payment, and whichever arrives second must be a no-op.
     const existingOrder = await this.deps.repositories.orders.getByPaymentId(paymentId);
     if (existingOrder) {
       const existingEntitlements = await this.deps.repositories.entitlements.getByOrderId(
@@ -192,11 +194,47 @@ export class CheckoutService {
 
     const hold = await this.deps.repositories.cartReservations.getById(holdId);
     if (!hold) throw new InvalidOperationError('Hold not found');
+
+    // The hold already lost this exact race — some other caller converted it
+    // (or is converting it) to an order. Rather than throwing, converge on
+    // whatever that caller produces/produced. This is the idempotent claim:
+    // the hold's `active -> converted` transition is the single point of
+    // contention, and losing it is not an error for a dual confirmation path.
+    if (hold.status === 'converted' && hold.convertedOrderId) {
+      const convertedOrder = await this.deps.repositories.orders.getById(hold.convertedOrderId);
+      if (convertedOrder) {
+        const convertedEntitlements = await this.deps.repositories.entitlements.getByOrderId(
+          convertedOrder.id,
+        );
+        return { order: convertedOrder, entitlements: convertedEntitlements };
+      }
+    }
     if (hold.status !== 'active')
       throw new InvalidOperationError(`Hold is ${hold.status}, cannot confirm`);
     if (new Date().getTime() > Date.parse(hold.expiresAt)) {
       await this.deps.repositories.cartReservations.release(holdId);
       throw new InvalidOperationError('Hold has expired');
+    }
+
+    // Verify with the payment provider before fulfilling — never trust a
+    // caller-supplied paymentId/paymentIntentId. This was previously entirely
+    // unchecked: any actor could call this method (via the redirect-confirm
+    // route) with an arbitrary paymentId and be issued a paid order and
+    // entitlements without ever paying. HMAC verification at the webhook
+    // route and signature verification at the redirect route authenticate
+    // *who* is calling; this authenticates *what actually happened* with the
+    // money, which is a separate and equally required check (D-022).
+    const verified = await this.deps.paymentProvider.getPayment(paymentId);
+    if (!verified) {
+      throw new InvalidOperationError(`Payment ${paymentId} was not found with the provider`);
+    }
+    if (!verified.captured) {
+      throw new InvalidOperationError(`Payment ${paymentId} has not been captured`);
+    }
+    if (verified.amountPaise !== hold.pricing.grandTotalPaise) {
+      throw new InvalidOperationError(
+        `Payment amount ${verified.amountPaise} does not match hold total ${hold.pricing.grandTotalPaise}`,
+      );
     }
 
     // Create order
@@ -237,7 +275,24 @@ export class CheckoutService {
     };
 
     // Atomic transaction: Order + CartReservation conversion + Entitlements + PromoRedemption + Outbox events
-    await this.deps.repositories.orders.save(order);
+    try {
+      await this.deps.repositories.orders.save(order);
+    } catch (error) {
+      // Lost a concurrent race to claim this payment (webhook + redirect
+      // both reached here before either had written) — the optimistic-lock
+      // write of the loser fails with a version conflict. That is not a
+      // caller-facing error: converge on whichever write actually landed.
+      if (error instanceof VersionConflictError) {
+        const winner = await this.deps.repositories.orders.getByPaymentId(paymentId);
+        if (winner) {
+          const winnerEntitlements = await this.deps.repositories.entitlements.getByOrderId(
+            winner.id,
+          );
+          return { order: winner, entitlements: winnerEntitlements };
+        }
+      }
+      throw error;
+    }
     await this.deps.repositories.cartReservations.convertToOrder(holdId, orderId);
     await this.deps.repositories.promoRedemptions.create({
       id: `RED-${orderId}-${hold.appliedPromoCode ?? 'none'}`,
