@@ -33,6 +33,12 @@ just when a task finishes.
 - [`decisions.md`](architecture/decisions.md) — the decision log (D-001…).
   Append-only: every architectural choice that must survive a session, with
   its problem/options/choice/why. Never rewrite past entries.
+- [`IMPLEMENTATION-STATUS-2026-08-31.md`](architecture/IMPLEMENTATION-STATUS-2026-08-31.md)
+  — point-in-time implementation-vs-design gap analysis (target architecture,
+  the 25 non-negotiable rules, a 15-item cross-doc contradiction log, a
+  per-domain LIVE/NO-BACKEND status table, the complete honest-501 list).
+  Numbers are dated to its audited commit — cross-check `ROADMAP.md` /
+  `git log` / `pnpm check` before citing a count as current.
 
 ## `docs/reference/` — point-in-time material, not maintained
 

@@ -14,3 +14,7 @@ coverage/
 .temp
 # CI writes the coverage ratchet baseline here from the Actions cache.
 .coverage-baseline/
+# Claude Code session state + agent worktrees (each a full checkout, some
+# with their own node_modules) — was untracked-but-unignored, one `git add -A`
+# away from staging both worktrees' entire source trees into this repo.
+.claude/
