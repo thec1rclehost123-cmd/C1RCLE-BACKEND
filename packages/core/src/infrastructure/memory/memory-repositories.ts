@@ -386,6 +386,13 @@ export class MemoryCartReservationRepository implements CartReservationRepositor
     }
     return count;
   }
+
+  async listActiveByEvent(eventId: EntityId, now: Date): Promise<CartReservation[]> {
+    return [...this.reservations.values()].filter(
+      (r) =>
+        r.eventId === eventId && r.status === 'active' && Date.parse(r.expiresAt) > now.getTime(),
+    );
+  }
 }
 
 export class MemoryOrderRepository implements OrderRepository {

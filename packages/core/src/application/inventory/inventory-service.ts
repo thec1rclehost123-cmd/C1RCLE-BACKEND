@@ -35,30 +35,50 @@ export class InventoryService {
     const totalQuantity = tier.quantity ?? 0;
     if (totalQuantity <= 0) return 0;
 
-    const sold = await this.getSoldCount(tierId);
-    const activeHolds = await this.getActiveHoldsCount(tierId);
+    const sold = await this.getSoldCount(eventId, tierId);
+    const activeHolds = await this.getActiveHoldsCount(eventId, tierId);
 
     const effective = totalQuantity - sold - activeHolds;
     return Math.max(0, effective);
   }
 
   /**
-   * Gets the number of tickets sold for a tier (from paid orders).
+   * Gets the number of tickets sold for a tier (from paid orders). Was
+   * previously a hardcoded `return 0` — oversell protection did not actually
+   * check anything sold. Pages through every order for the event rather
+   * than trusting a single page, since a popular event can exceed one page.
    */
-  private async getSoldCount(_tierId: EntityId): Promise<number> {
-    // Sum quantities from paid orders for this tier
-    // This would be a query on orders with status='paid' and line.tierId = tierId
-    // For now, use a simplified approach - in production this would be a proper query
-    return 0;
+  private async getSoldCount(eventId: string, tierId: EntityId): Promise<number> {
+    let sold = 0;
+    let cursor: string | null | undefined;
+    for (;;) {
+      const page = await this.deps.order.listByEvent(eventId, { cursor, limit: 100 });
+      for (const order of page.items) {
+        if (order.status !== 'paid') continue;
+        for (const line of order.lines) {
+          if (line.tierId === tierId) sold += line.quantity;
+        }
+      }
+      if (!page.nextCursor) break;
+      cursor = page.nextCursor;
+    }
+    return sold;
   }
 
   /**
-   * Gets the number of active cart reservations (holds) for a tier.
+   * Gets the number of active (non-expired) cart reservations for a tier.
+   * Was previously a hardcoded `return 0` — two concurrent holds on the last
+   * ticket would both have succeeded.
    */
-  private async getActiveHoldsCount(_tierId: EntityId): Promise<number> {
-    // Sum quantities from active cart reservations for this tier
-    // This would query cart_reservations where status='active' and line.tierId = tierId
-    return 0;
+  private async getActiveHoldsCount(eventId: string, tierId: EntityId): Promise<number> {
+    const holds = await this.deps.cartReservation.listActiveByEvent(eventId, new Date());
+    let count = 0;
+    for (const hold of holds) {
+      for (const line of hold.lines) {
+        if (line.tierId === tierId) count += line.quantity;
+      }
+    }
+    return count;
   }
 
   /**

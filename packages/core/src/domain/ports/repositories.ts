@@ -379,6 +379,13 @@ export interface CartReservationRepository {
   convertToOrder(reservationId: EntityId, orderId: EntityId, tx?: TxContext | null): Promise<void>;
   /** Cleans up expired holds (called by a worker). */
   cleanupExpired(now: Date, tx?: TxContext | null): Promise<number>;
+  /**
+   * All holds for an event still holding inventory — `status: 'active'` AND
+   * not yet past `expiresAt`. Unpaginated: a live hold set is bounded by the
+   * ~10-minute TTL, unlike historical orders. Internal aggregation input for
+   * `InventoryService.getAvailableQuantity` — never a public route response.
+   */
+  listActiveByEvent(eventId: EntityId, now: Date): Promise<CartReservation[]>;
 }
 
 /** Order repository — the commerce aggregate. */

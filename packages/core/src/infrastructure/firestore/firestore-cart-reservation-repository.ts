@@ -94,6 +94,16 @@ export class FirestoreCartReservationRepository implements CartReservationReposi
     await batch.commit();
     return snap.size;
   }
+
+  async listActiveByEvent(eventId: EntityId, now: Date): Promise<CartReservation[]> {
+    // Composite index required: eventId ==, status ==, expiresAt >.
+    const snap = await this.collection
+      .where('eventId', '==', eventId)
+      .where('status', '==', 'active')
+      .where('expiresAt', '>', now.toISOString())
+      .get();
+    return snap.docs.map((doc) => toCartReservation(doc.data()));
+  }
 }
 
 function toDoc(reservation: CartReservation): DocumentData {
