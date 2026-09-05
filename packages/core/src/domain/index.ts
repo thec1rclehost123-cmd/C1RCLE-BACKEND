@@ -27,4 +27,4 @@ export type * from './ports/repositories.js';
 export type * from './ports/idempotency.js';
 export * from './ports/verification.js';
 export * from './ports/object-storage.js';
-export type * from './ports/payment-provider.js';
+export * from './ports/payment-provider.js';

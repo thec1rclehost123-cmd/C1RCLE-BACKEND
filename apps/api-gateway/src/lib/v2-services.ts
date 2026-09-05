@@ -30,7 +30,11 @@ import {
   type ActorContext,
 } from '@c1rcle/core/application';
 import { createCoreConfig } from '@c1rcle/core/config';
-import { EchoObjectStorage, FormatCheckVerificationProvider } from '@c1rcle/core/domain';
+import {
+  EchoObjectStorage,
+  FormatCheckVerificationProvider,
+  MemoryPaymentProvider,
+} from '@c1rcle/core/domain';
 import {
   MemoryOutboxStore,
   MemoryAuditRepository,
@@ -44,7 +48,7 @@ import {
   buildActorContext,
 } from '@c1rcle/core/infrastructure';
 
-import type { AdminAuditRepository } from '@c1rcle/core/domain';
+import type { AdminAuditRepository, PaymentProvider } from '@c1rcle/core/domain';
 
 import { getGatewayConfig } from '../config/index.js';
 
@@ -79,6 +83,18 @@ export interface PartnerV2Services {
   checkout: CheckoutService;
   /** Phase 4 PR1: unauthenticated guest-facing discovery reads. */
   public: PublicService;
+  /**
+   * Phase 4: the payment provider adapter itself — routes need this directly
+   * (not just through `checkout`) for the redirect-confirm route's signature
+   * verification (`verifyPayment`), which happens *before* `confirmPayment`
+   * is ever called. Typed as the port interface, not a concrete adapter —
+   * `STORAGE_DRIVER=memory` selects `MemoryPaymentProvider` (no network
+   * calls, used by `pnpm test`/CI); `firestore` selects the real
+   * `RazorpayPaymentProvider`. Tests that need to seed a "captured" payment
+   * narrow to `MemoryPaymentProvider` and call its `simulateCapture` escape
+   * hatch (not part of this interface — see that class's doc comment).
+   */
+  paymentProvider: PaymentProvider;
   /** T09 idempotency — durable on the firestore driver, in-memory on `memory`. */
   idempotency: IdempotencyService;
   /** Builds the service actor from the authenticated request state. */
@@ -182,11 +198,18 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   // Phase 4: Payment provider, pricing, inventory
   const gwConfig = getGatewayConfig();
 
-  const paymentProvider = new RazorpayPaymentProvider({
-    keyId: gwConfig.RAZORPAY_KEY_ID ?? 'test_key_id',
-    keySecret: gwConfig.RAZORPAY_KEY_SECRET ?? 'test_key_secret',
-    webhookSecret: gwConfig.RAZORPAY_WEBHOOK_SECRET ?? 'test_webhook_secret',
-  });
+  // Same-shape choice as every other port in this file (repositories, object
+  // storage): memory driver never makes a network call, firestore driver
+  // talks to the real provider. Without this branch, `pnpm test`/CI would
+  // hit `api.razorpay.com` for every checkout/payment test.
+  const paymentProvider: PaymentProvider =
+    gw.STORAGE_DRIVER === 'memory'
+      ? new MemoryPaymentProvider(gwConfig.RAZORPAY_WEBHOOK_SECRET ?? 'test_webhook_secret')
+      : new RazorpayPaymentProvider({
+          keyId: gwConfig.RAZORPAY_KEY_ID ?? 'test_key_id',
+          keySecret: gwConfig.RAZORPAY_KEY_SECRET ?? 'test_key_secret',
+          webhookSecret: gwConfig.RAZORPAY_WEBHOOK_SECRET ?? 'test_webhook_secret',
+        });
   const pricing = new PricingService({ eventCatalog: repositories.catalog });
   const inventory = new InventoryService({
     eventCatalog: repositories.catalog,
@@ -273,6 +296,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     adminAuthority,
     checkout: new CheckoutService(deps),
     public: new PublicService(deps),
+    paymentProvider,
     // Replay protection must outlive the process: a restart mid-retry with an
     // in-memory store turns a client's retry into a second business result.
 
