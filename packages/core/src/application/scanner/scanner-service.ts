@@ -275,6 +275,27 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
     return session;
   }
 
+  /**
+   * Scan-time session lookup. `ScanRequest`'s wire contract only ever gives
+   * the scanner a `deviceId` (`sessionToken` is deliberately never re-servable
+   * after session creation — see `ScannerSession.sessionToken`'s doc comment),
+   * so there is no bearer token here to hash and look up via
+   * `findByTokenHash` the way `validateSession` above does. This resolves the
+   * device's most recent still-valid session for the event instead. A real
+   * device-bearer-token auth layer (client presents the raw `sessionToken` on
+   * every scan) is still open follow-up per `PHASE_5_HTTP_WIRING_PLAN.md`;
+   * this device-lookup is the interim scheme it will replace.
+   */
+  async function validateSessionByDevice(
+    eventId: EntityId,
+    deviceId: string,
+  ): Promise<ScannerSession | null> {
+    const page = await scannerSessions.findByDevice(deviceId, { cursor: null, limit: 50 });
+    const valid = page.items.filter((s) => s.eventId === eventId && isSessionValid(s));
+    if (valid.length === 0) return null;
+    return valid.reduce((latest, s) => (s.createdAt > latest.createdAt ? s : latest));
+  }
+
   async function revokeSession(
     sessionId: EntityId,
     reason: string,
@@ -312,7 +333,7 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
     requireOrgAccess(actor, event.organizationId);
 
     // Verify session has scan permission
-    const session = await validateSession(input.deviceId);
+    const session = await validateSessionByDevice(input.eventId, input.deviceId);
     if (!session || !canSessionScan(session)) {
       throw new ForbiddenError('Session cannot scan tickets');
     }

@@ -104,6 +104,32 @@ async function seedEventCode(
   );
 }
 
+async function seedEvent(): Promise<void> {
+  if (await services.repos().events.findById(EVENT_ID)) return;
+  const now = new Date().toISOString();
+  await services.repos().events.save({
+    id: EVENT_ID,
+    organizationId: ORG_ID,
+    venueId: null,
+    slug: 'scanner-routes-test-event',
+    title: 'Scanner Routes Test Event',
+    summary: '',
+    description: '',
+    imageUrl: null,
+    startAt: now,
+    endAt: null,
+    status: 'published',
+    isPublic: true,
+    tags: [],
+    startingPricePaise: null,
+    isFree: false,
+    cancellationReason: null,
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
 async function seedEntitlement(id: string): Promise<Entitlement> {
   const now = new Date().toISOString();
   const entitlement: Entitlement = {
@@ -184,6 +210,61 @@ describe('GET /door/sessions/:sessionId', () => {
 });
 
 describe('POST /door/check-ins', () => {
+  it('consumes a ticket using only a deviceId — the real client never sees a sessionToken again after session creation', async () => {
+    await seedEvent();
+    const eventCode = await seedEventCode();
+    const session = await server.inject({
+      method: 'POST',
+      url: '/door/sessions',
+      headers: HEADERS,
+      payload: {
+        eventId: EVENT_ID,
+        code: eventCode.code,
+        deviceId: 'device_real_client',
+        deviceName: 'Gate iPad Real',
+        sessionType: 'staff',
+      },
+    });
+    expect(session.statusCode).toBe(201);
+    // The route never returns `sessionToken` again after creation
+    // (`scannerSessionReadDto` above), and `scanRequestSchema` has no
+    // sessionToken field either — a real client authenticates every scan by
+    // `deviceId` alone. Deliberately NOT threading `session.json().sessionToken`
+    // through here, to prove the device-only path actually works.
+    const entitlement = await seedEntitlement('ent_device_auth_1');
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/door/check-ins',
+      headers: HEADERS,
+      payload: {
+        eventId: EVENT_ID,
+        qrPayload: entitlement.id,
+        scannedBy: { uid: SEED_ACTOR.userId, name: 'Staff One', role: 'staff' },
+        deviceId: 'device_real_client',
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ status: 'consumed', checkInId: expect.any(String) });
+  });
+
+  it('denies a scan from a deviceId with no active session for the event', async () => {
+    await seedEvent();
+    const entitlement = await seedEntitlement('ent_no_session_1');
+    const response = await server.inject({
+      method: 'POST',
+      url: '/door/check-ins',
+      headers: HEADERS,
+      payload: {
+        eventId: EVENT_ID,
+        qrPayload: entitlement.id,
+        scannedBy: { uid: SEED_ACTOR.userId, name: 'Staff One', role: 'staff' },
+        deviceId: 'device_never_registered',
+      },
+    });
+    expect(response.statusCode).toBe(403);
+  });
+
   it('404s for an unknown event', async () => {
     const response = await server.inject({
       method: 'POST',
