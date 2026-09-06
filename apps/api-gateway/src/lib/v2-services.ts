@@ -20,6 +20,8 @@ import {
   CheckoutService,
   InventoryService,
   PricingService,
+  OrderService,
+  TicketService,
   createScannerService,
   createDoorService,
   createCoverWalletService,
@@ -95,6 +97,10 @@ export interface PartnerV2Services {
    * hatch (not part of this interface — see that class's doc comment).
    */
   paymentProvider: PaymentProvider;
+  /** Phase 4 PR3: guest-facing order reads (GET /orders, /orders/:id[/status]). */
+  orders: OrderService;
+  /** Phase 4 PR3: guest-facing ticket reads (GET /tickets/:id, /wallet/tickets). */
+  tickets: TicketService;
   /** T09 idempotency — durable on the firestore driver, in-memory on `memory`. */
   idempotency: IdempotencyService;
   /** Builds the service actor from the authenticated request state. */
@@ -297,6 +303,8 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     checkout: new CheckoutService(deps),
     public: new PublicService(deps),
     paymentProvider,
+    orders: new OrderService(deps),
+    tickets: new TicketService(deps),
     // Replay protection must outlive the process: a restart mid-retry with an
     // in-memory store turns a client's retry into a second business result.
 

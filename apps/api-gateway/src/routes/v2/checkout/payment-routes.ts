@@ -8,12 +8,11 @@ import {
 import { InvalidOperationError } from '@c1rcle/core/domain';
 import { z } from 'zod';
 
-import type { Order } from '@c1rcle/core/domain';
-
 import { getGatewayConfig } from '../../../config/index.js';
 import { isIdempotencyConflict, runIdempotent } from '../../../lib/v2-idempotency.js';
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
+import { orderToDto } from '../orders/order-dto.js';
 import { mapDomainError } from '../partner/events.js';
 
 import type { FastifyInstance } from 'fastify';
@@ -47,35 +46,6 @@ function requiredIdempotencyKey(v2Headers: Record<string, string> | undefined): 
   const key = v2Headers?.['idempotency-key'];
   if (!key) throw new Error('Idempotency-Key header missing after validation');
   return key;
-}
-
-/** Wire domain order model to the checkout-specific DTO (matches `checkoutOrderDtoSchema`). */
-function orderToCheckoutDto(order: Order) {
-  return {
-    id: order.id,
-    eventId: order.eventId,
-    organizationId: order.organizationId,
-    userId: order.userId,
-    status: order.status,
-    lines: order.lines,
-    currency: order.currency,
-    subtotalPaise: order.subtotalPaise,
-    discountPaise: order.discountPaise,
-    discountedSubtotalPaise: order.discountedSubtotalPaise,
-    platformFeePaise: order.platformFeePaise,
-    paymentFeePaise: order.paymentFeePaise,
-    gstPaise: order.gstPaise,
-    grandTotalPaise: order.grandTotalPaise,
-    appliedPromoCode: order.appliedPromoCode,
-    paymentIntentId: order.paymentIntentId,
-    paymentId: order.paymentId,
-    paidAt: order.paidAt,
-    reservationExpiresAt: order.reservationExpiresAt,
-    failureReason: order.failureReason,
-    version: order.version,
-    createdAt: order.createdAt,
-    updatedAt: order.updatedAt,
-  };
 }
 
 export default async function paymentRoutes(fastify: FastifyInstance) {
@@ -188,7 +158,7 @@ export default async function paymentRoutes(fastify: FastifyInstance) {
             _idempotencyKey: idempotencyKey ?? paymentId,
           });
 
-          const payload = { order: orderToCheckoutDto(order), entitlements };
+          const payload = { order: orderToDto(order), entitlements };
           const validated = validateV2Response(
             reply,
             request,

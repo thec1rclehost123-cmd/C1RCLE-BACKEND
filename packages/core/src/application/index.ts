@@ -55,6 +55,8 @@ export { createAuditConsumer, createProjectionConsumer } from './events/audit-co
 export { CheckoutService } from './checkout/checkout-service.js';
 export { InventoryService } from './inventory/inventory-service.js';
 export { PricingService } from './pricing/pricing-service.js';
+export { OrderService } from './orders/order-service.js';
+export { TicketService } from './tickets/ticket-service.js';
 
 // Phase 5: Scanner, Door, Cover Wallet
 export type {

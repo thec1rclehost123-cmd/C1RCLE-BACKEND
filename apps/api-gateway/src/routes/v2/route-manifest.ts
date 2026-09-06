@@ -14,6 +14,7 @@ import phase5DoorSaleRoutes from './door/door-sale-routes.js';
 import phase5ScannerRoutes from './door/scanner-routes.js';
 import { internalRoutes } from './internal/index.js';
 import onboardingRoutes from './onboarding.js';
+import orderRoutes from './orders/orders-routes.js';
 import partnerAnalyticsRoutes from './partner/analytics.js';
 import partnerEventCatalogRoutes from './partner/event-catalog.js';
 import partnerEventRoutes from './partner/events.js';
@@ -24,6 +25,8 @@ import partnerReferralLinkRoutes from './partner/referral-links.js';
 import partnerVenueRoutes from './partner/venues.js';
 import phase5Routes from './phase5-routes.js';
 import publicDiscoveryRoutes from './public/discovery.js';
+import ticketRoutes from './tickets/ticket-routes.js';
+import walletRoutes from './wallet/wallet-routes.js';
 
 import type { BetterAuthInstance } from '../../plugins/auth.js';
 import type { FastifyInstance } from 'fastify';
@@ -31,11 +34,12 @@ import type { FastifyInstance } from 'fastify';
 /**
  * ─── V2 route manifest ─────────────────────────────────────────────────────────
  * The single registration surface for all `/api/v2` routes. Phase 4's public
- * discovery slice (PR1, unauthenticated, under `/public`) and checkout/
- * payments/webhook slice (PR2 — `checkout/checkout-routes.ts`,
- * `checkout/payment-routes.ts`, `checkout/webhook-routes.ts`) are LIVE.
- * Orders/tickets/wallet (PR3) is still BLOCKED: it must NOT be registered
- * here yet. BLOCKED slices 404 by absence, never by a 501 stub (D-006).
+ * discovery slice (PR1, unauthenticated, under `/public`), checkout/
+ * payments/webhook slice (PR2), and orders/tickets/wallet reads (PR3) are
+ * all LIVE. Ticket transfer/claim/cancel-transfer stay unregistered — the
+ * committed `Entitlement` model has no transfer state to wire against yet
+ * (see `tickets/ticket-routes.ts`'s doc comment); they 404 by absence, never
+ * by a 501 stub (D-006), same as any other genuinely-blocked slice.
  */
 export async function registerV2Routes(app: FastifyInstance): Promise<void> {
   const gw = getGatewayConfig();
@@ -95,6 +99,10 @@ export async function registerV2Routes(app: FastifyInstance): Promise<void> {
       await checkoutRoutes(v2);
       await paymentRoutes(v2);
       await webhookRoutes(v2);
+      // Phase 4 PR3: guest order/ticket reads + wallet.
+      await orderRoutes(v2);
+      await ticketRoutes(v2);
+      await walletRoutes(v2);
       // Phase 5: Door / Scanner / Cover-wallet
       await phase5DoorSaleRoutes(v2);
       await phase5CoverWalletRoutes(v2);

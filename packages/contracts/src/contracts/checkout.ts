@@ -182,60 +182,27 @@ export const checkoutOrderDtoSchema = z.object({
 export type CheckoutOrderDto = z.infer<typeof checkoutOrderDtoSchema>;
 
 /* ─── Orders ───────────────────────────────────────────────────────────────── */
+/* `orderDtoSchema` is `checkoutOrderDtoSchema` under its canonical name — see
+ * that schema's doc comment (above) for why the two were briefly separate:
+ * this one never matched the committed `Order` model (wrong status enum,
+ * fields like `feesPaise`/`totalPaise`/`paymentStatus` that don't exist on
+ * `Order`) and was left unreconciled for the orders/tickets/wallet PR. */
 
-export const orderStatusSchema = z.enum([
-  'created',
-  'hold',
-  'paid',
-  'fulfilled',
-  'cancelled',
-  'refunded',
-  'partially_refunded',
-]);
+export const orderStatusSchema = checkoutOrderStatusSchema;
+export const orderDtoSchema = checkoutOrderDtoSchema;
+export type OrderDto = CheckoutOrderDto;
 
-export const orderLineDtoSchema = z.object({
-  tierId: opaqueIdSchema,
-  tierName: z.string(),
-  quantity: z.number().int().positive(),
-  unitPricePaise: z.number().int().nonnegative(),
-  lineTotalPaise: z.number().int().nonnegative(),
-});
+export const ordersListResponseSchema = paginatedSchema(orderDtoSchema);
+export type OrdersListResponse = z.infer<typeof ordersListResponseSchema>;
 
-export const orderDtoSchema = z.object({
+/** Slim projection for `GET /orders/:id/status` — polling shouldn't refetch the full order. */
+export const orderStatusResponseSchema = z.object({
   id: opaqueIdSchema,
-  eventId: opaqueIdSchema,
-  organizationId: opaqueIdSchema,
-  userId: opaqueIdSchema.nullable(),
-  lines: z.array(orderLineDtoSchema),
-  subtotalPaise: z.number().int().nonnegative(),
-  feesPaise: z.number().int().nonnegative(),
-  taxPaise: z.number().int().nonnegative(),
-  discountPaise: z.number().int().nonnegative(),
-  totalPaise: z.number().int().nonnegative(),
-  currency: z.string().length(3),
-  promoCodeId: opaqueIdSchema.nullable(),
-  promoDiscountPaise: z.number().int().nonnegative(),
   status: orderStatusSchema,
-  paymentId: opaqueIdSchema.nullable(),
-  paymentProvider: z.string().nullable(),
-  paymentStatus: z.enum(['pending', 'succeeded', 'failed', 'refunded']).nullable(),
   version: z.number().int().positive(),
-  createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
 });
-export type OrderDto = z.infer<typeof orderDtoSchema>;
-
-export const ordersListResponseSchema = paginatedSchema(
-  z.object({
-    id: opaqueIdSchema,
-    eventId: opaqueIdSchema,
-    eventTitle: z.string(),
-    totalPaise: z.number().int().nonnegative(),
-    status: orderStatusSchema,
-    createdAt: z.iso.datetime(),
-  }),
-);
-export type OrdersListResponse = z.infer<typeof ordersListResponseSchema>;
+export type OrderStatusResponse = z.infer<typeof orderStatusResponseSchema>;
 
 /* ─── Entitlements / Tickets ───────────────────────────────────────────────── */
 
@@ -269,6 +236,14 @@ export const paymentConfirmResponseSchema = z.object({
   entitlements: z.array(entitlementDtoSchema),
 });
 export type PaymentConfirmResponse = z.infer<typeof paymentConfirmResponseSchema>;
+
+/* ─── Wallet ───────────────────────────────────────────────────────────────── */
+/** `GET /wallet` — a light summary; the full lists live at .../tickets and .../orders. */
+export const walletSummaryDtoSchema = z.object({
+  activeTicketCount: z.number().int().nonnegative(),
+  upcomingOrderCount: z.number().int().nonnegative(),
+});
+export type WalletSummaryDto = z.infer<typeof walletSummaryDtoSchema>;
 
 /* ─── Payments ──────────────────────────────────────────────────────────────── */
 
