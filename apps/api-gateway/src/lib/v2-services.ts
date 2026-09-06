@@ -25,9 +25,11 @@ import {
   createScannerService,
   createDoorService,
   createCoverWalletService,
+  createDoorStatsService,
   type ScannerService,
   type DoorService,
   type CoverWalletService,
+  type DoorStatsService,
   type ServiceDeps,
   type ActorContext,
 } from '@c1rcle/core/application';
@@ -117,6 +119,8 @@ export interface PartnerV2Services {
   door: DoorService;
   /** Phase 5: Cover wallet service */
   coverWallet: CoverWalletService;
+  /** Phase 5 (Founder Task B2): GET /door/stats read model. */
+  doorStats: DoorStatsService;
 }
 
 // Each route module calls `createV2Services()` independently at import time
@@ -287,6 +291,13 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     adminAudit: adminAudits,
   });
 
+  const doorStats = createDoorStatsService({
+    events: repositories.events,
+    scanLedger: repositories.scanLedger,
+    doorSales: repositories.doorSales,
+    coverWallets: repositories.coverWallets,
+  });
+
   return {
     organizations: new OrganizationService(deps),
     venues: new VenueService(deps),
@@ -318,5 +329,6 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     scanner,
     door,
     coverWallet,
+    doorStats,
   };
 }
