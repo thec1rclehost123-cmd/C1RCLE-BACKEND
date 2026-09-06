@@ -187,7 +187,7 @@ describe('V2 phase5 cover-wallet slice', () => {
     await server.close();
   });
 
-  it('freeze/unfreeze stay honest 501s (no CoverWalletService method exists yet)', async () => {
+  it('freezes a wallet, blocks a debit while frozen, then unfreezes it', async () => {
     const server = await buildServer();
     const eventId = await createEvent(server, 'idem-cw-event-freeze');
     const walletId = await issueWallet(server, eventId, 'user_6');
@@ -195,16 +195,68 @@ describe('V2 phase5 cover-wallet slice', () => {
     const freezeResponse = await server.inject({
       method: 'POST',
       url: `/cover-wallets/${walletId}/freeze`,
-      headers: ORG_HEADERS,
+      headers: { ...ORG_HEADERS, 'idempotency-key': 'idem-freeze-1' },
     });
-    expect(freezeResponse.statusCode).toBe(501);
+    expect(freezeResponse.statusCode).toBe(200);
+    expect(freezeResponse.json()).toMatchObject({ id: walletId, status: 'frozen' });
+
+    const debitWhileFrozen = await server.inject({
+      method: 'POST',
+      url: `/cover-wallets/${walletId}/debit`,
+      headers: ORG_HEADERS,
+      payload: {
+        walletId,
+        amountPaise: 20_000,
+        idempotencyKey: 'idem-debit-frozen-1',
+        isOnline: true,
+      },
+    });
+    expect(debitWhileFrozen.statusCode).toBe(400);
+    expect(debitWhileFrozen.json()).toMatchObject({ code: 'validation', status: 400 });
 
     const unfreezeResponse = await server.inject({
       method: 'POST',
       url: `/cover-wallets/${walletId}/unfreeze`,
-      headers: ORG_HEADERS,
+      headers: { ...ORG_HEADERS, 'idempotency-key': 'idem-unfreeze-1' },
     });
-    expect(unfreezeResponse.statusCode).toBe(501);
+    expect(unfreezeResponse.statusCode).toBe(200);
+    expect(unfreezeResponse.json()).toMatchObject({ id: walletId, status: 'active' });
+
+    const debitAfterUnfreeze = await server.inject({
+      method: 'POST',
+      url: `/cover-wallets/${walletId}/debit`,
+      headers: ORG_HEADERS,
+      payload: {
+        walletId,
+        amountPaise: 20_000,
+        idempotencyKey: 'idem-debit-unfrozen-1',
+        isOnline: true,
+      },
+    });
+    expect(debitAfterUnfreeze.statusCode).toBe(200);
+    expect(debitAfterUnfreeze.json()).toMatchObject({ status: 'active', balancePaise: 480_000 });
+    await server.close();
+  });
+
+  it('rejects freezing an already-frozen wallet (409, illegal FSM transition)', async () => {
+    const server = await buildServer();
+    const eventId = await createEvent(server, 'idem-cw-event-double-freeze');
+    const walletId = await issueWallet(server, eventId, 'user_7');
+
+    const firstFreeze = await server.inject({
+      method: 'POST',
+      url: `/cover-wallets/${walletId}/freeze`,
+      headers: { ...ORG_HEADERS, 'idempotency-key': 'idem-double-freeze-1' },
+    });
+    expect(firstFreeze.statusCode).toBe(200);
+
+    const secondFreeze = await server.inject({
+      method: 'POST',
+      url: `/cover-wallets/${walletId}/freeze`,
+      headers: { ...ORG_HEADERS, 'idempotency-key': 'idem-double-freeze-2' },
+    });
+    expect(secondFreeze.statusCode).toBe(400);
+    expect(secondFreeze.json()).toMatchObject({ code: 'validation', status: 400 });
     await server.close();
   });
 });

@@ -290,57 +290,101 @@ export default async function phase5CoverWalletRoutes(fastify: FastifyInstance) 
 
   /**
    * POST /api/v2/cover-wallets/:walletId/freeze
-   * NOT IMPLEMENTED. `CoverWalletService` (packages/core/src/application/
-   * cover-wallet/cover-wallet-service.ts) exposes `terminateWallet` and
-   * `closeWallet` — both irreversible — but no `freeze`/`unfreeze` method.
-   * Faking freeze via `terminateWallet` would be wrong (termination is
-   * permanent and balance-depleting; a freeze must be reversible). This
-   * needs a new service method (and probably a `frozen` `CoverWalletStatus`)
-   * before it can be honestly wired — not a route-layer gap.
+   * Reversible — unlike `terminateWallet`/`closeWallet`, no balance change,
+   * and `unfreeze` below reverses it. `CoverWalletStatus` gained a `frozen`
+   * value (domain/models/cover-wallet.ts); `isWalletActive` naturally
+   * excludes it, so `charge`/`topUp`/`refund`/`adjust` already reject while
+   * frozen with no changes to those functions.
    */
   fastify.post(
     '/cover-wallets/:walletId/freeze',
     {
       preHandler: [
         fastify.rateLimit('STANDARD_COMMAND'),
-        fastify.validateV2({ params: walletIdParam }),
+        fastify.validateV2({ params: walletIdParam, headers: idempotencyHeaders }),
       ],
     },
     async (request, reply) => {
-      return reply.status(501).send(
-        buildV2ErrorResponse({
-          status: 501,
-          code: 'server',
-          message:
-            'Not implemented: CoverWalletService has no freeze method — needs a new service method before this route can be wired',
-          requestId: request.id,
-        }),
-      );
+      const { walletId } = request.params as z.infer<typeof walletIdParam>;
+      const actor = services.actor(request);
+      const v2Headers = request.v2Headers ?? {};
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: actor.userId,
+        commandName: 'cover_wallet.freeze',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { walletId }, body: {} },
+        run: async () => {
+          const wallet = await services.coverWallet.freezeWallet(walletId, actor);
+          const validated = validateV2Response(
+            reply,
+            request,
+            coverWalletResponseSchema,
+            coverWalletToDto(wallet),
+          );
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
+        },
+      }).catch((error: unknown) => {
+        if (isIdempotencyConflict(error)) {
+          return mapDomainError(reply, request, walletId, error, {
+            conflictId: v2Headers['idempotency-key'],
+          });
+        }
+        return mapDomainError(reply, request, walletId, error);
+      });
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
     },
   );
 
   /**
    * POST /api/v2/cover-wallets/:walletId/unfreeze
-   * NOT IMPLEMENTED — same gap as freeze above (no matching service method).
+   * Legal only from `frozen` — `CoverWalletService.unfreezeWallet` rejects
+   * anything else (already-active, terminated, closed) via the domain FSM
+   * guard, mapped to 400 same as every other `InvalidOperationError`.
    */
   fastify.post(
     '/cover-wallets/:walletId/unfreeze',
     {
       preHandler: [
         fastify.rateLimit('STANDARD_COMMAND'),
-        fastify.validateV2({ params: walletIdParam }),
+        fastify.validateV2({ params: walletIdParam, headers: idempotencyHeaders }),
       ],
     },
     async (request, reply) => {
-      return reply.status(501).send(
-        buildV2ErrorResponse({
-          status: 501,
-          code: 'server',
-          message:
-            'Not implemented: CoverWalletService has no unfreeze method — needs a new service method before this route can be wired',
-          requestId: request.id,
-        }),
-      );
+      const { walletId } = request.params as z.infer<typeof walletIdParam>;
+      const actor = services.actor(request);
+      const v2Headers = request.v2Headers ?? {};
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: actor.userId,
+        commandName: 'cover_wallet.unfreeze',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { walletId }, body: {} },
+        run: async () => {
+          const wallet = await services.coverWallet.unfreezeWallet(walletId, actor);
+          const validated = validateV2Response(
+            reply,
+            request,
+            coverWalletResponseSchema,
+            coverWalletToDto(wallet),
+          );
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
+        },
+      }).catch((error: unknown) => {
+        if (isIdempotencyConflict(error)) {
+          return mapDomainError(reply, request, walletId, error, {
+            conflictId: v2Headers['idempotency-key'],
+          });
+        }
+        return mapDomainError(reply, request, walletId, error);
+      });
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
     },
   );
 

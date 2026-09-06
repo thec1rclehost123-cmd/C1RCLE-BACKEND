@@ -86,6 +86,10 @@ export interface CoverWalletService {
   // Wallet status
   terminateWallet(walletId: EntityId, reason: string, actor: ActorContext): Promise<CoverWallet>;
   closeWallet(walletId: EntityId, actor: ActorContext): Promise<CoverWallet>;
+  /** Reversible, no balance change. Legal only from `active`. */
+  freezeWallet(walletId: EntityId, actor: ActorContext): Promise<CoverWallet>;
+  /** Legal only from `frozen`. */
+  unfreezeWallet(walletId: EntityId, actor: ActorContext): Promise<CoverWallet>;
 
   // Transaction history
   getTransactions(
@@ -581,6 +585,39 @@ function createCoverWalletServiceImpl(deps: CoverWalletServiceDeps): CoverWallet
     return terminated;
   }
 
+  async function freezeWalletFn(walletId: EntityId, actor: ActorContext): Promise<CoverWallet> {
+    const wallet = await coverWallets.findById(walletId);
+    if (!wallet) throw new NotFoundError('Wallet', walletId);
+    requireOrgAccess(actor, wallet.organizationId);
+
+    // Repository throws InvalidOperationError on an illegal transition (the
+    // FSM guard lives in the domain function, not duplicated here) — e.g.
+    // freezing an already-frozen or terminated wallet.
+    const frozen = await coverWallets.freeze(walletId);
+    if (!frozen) throw new NotFoundError('Wallet', walletId);
+
+    await adminAudit.write(
+      auditRecord(actor, 'cover_wallet.freeze', 'cover_wallet', walletId, wallet, frozen),
+    );
+
+    return frozen;
+  }
+
+  async function unfreezeWalletFn(walletId: EntityId, actor: ActorContext): Promise<CoverWallet> {
+    const wallet = await coverWallets.findById(walletId);
+    if (!wallet) throw new NotFoundError('Wallet', walletId);
+    requireOrgAccess(actor, wallet.organizationId);
+
+    const unfrozen = await coverWallets.unfreeze(walletId);
+    if (!unfrozen) throw new NotFoundError('Wallet', walletId);
+
+    await adminAudit.write(
+      auditRecord(actor, 'cover_wallet.unfreeze', 'cover_wallet', walletId, wallet, unfrozen),
+    );
+
+    return unfrozen;
+  }
+
   async function closeWallet(walletId: EntityId, actor: ActorContext): Promise<CoverWallet> {
     const wallet = await coverWallets.findById(walletId);
     if (!wallet) throw new NotFoundError('Wallet', walletId);
@@ -913,6 +950,8 @@ function createCoverWalletServiceImpl(deps: CoverWalletServiceDeps): CoverWallet
     adjustWallet,
     terminateWallet,
     closeWallet,
+    freezeWallet: freezeWalletFn,
+    unfreezeWallet: unfreezeWalletFn,
     getTransactions,
     getTransaction,
     runReconciliation,

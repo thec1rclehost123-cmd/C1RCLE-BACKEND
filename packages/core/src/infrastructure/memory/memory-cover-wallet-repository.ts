@@ -1,6 +1,10 @@
 import { VersionConflictError } from '../../domain/errors.js';
 import { createReconciliation } from '../../domain/models/cover-wallet-reconciliation.js';
-import { createCoverWallet } from '../../domain/models/cover-wallet.js';
+import {
+  createCoverWallet,
+  freezeWallet,
+  unfreezeWallet,
+} from '../../domain/models/cover-wallet.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type {
@@ -345,6 +349,22 @@ export class MemoryCoverWalletRepository implements CoverWalletRepository {
       version: wallet.version + 1,
       updatedAt: new Date().toISOString(),
     };
+    this.wallets.set(walletId, updated);
+    return updated;
+  }
+
+  async freeze(walletId: EntityId): Promise<CoverWallet | null> {
+    const wallet = this.wallets.get(walletId);
+    if (!wallet) return null;
+    const updated = freezeWallet(wallet); // throws on an illegal transition
+    this.wallets.set(walletId, updated);
+    return updated;
+  }
+
+  async unfreeze(walletId: EntityId): Promise<CoverWallet | null> {
+    const wallet = this.wallets.get(walletId);
+    if (!wallet) return null;
+    const updated = unfreezeWallet(wallet); // throws on an illegal transition
     this.wallets.set(walletId, updated);
     return updated;
   }

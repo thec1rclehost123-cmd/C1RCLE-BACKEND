@@ -1,3 +1,5 @@
+import { freezeWallet, unfreezeWallet } from '../../domain/models/cover-wallet.js';
+
 import { paginateQuery } from './pagination.js';
 
 import type { EntityId } from '../../domain/identity.js';
@@ -358,6 +360,30 @@ export class FirestoreCoverWalletRepository implements CoverWalletRepository {
     const snap = await ref.get();
     const data = snap.data();
     return data ? toWallet(data) : null;
+  }
+
+  async freeze(walletId: EntityId): Promise<CoverWallet | null> {
+    const ref = this.walletCollection.doc(walletId);
+    return this.db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      const data = snap.data();
+      if (!data) return null;
+      const updated = freezeWallet(toWallet(data)); // throws on an illegal transition
+      tx.set(ref, toWalletDoc(updated));
+      return updated;
+    });
+  }
+
+  async unfreeze(walletId: EntityId): Promise<CoverWallet | null> {
+    const ref = this.walletCollection.doc(walletId);
+    return this.db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      const data = snap.data();
+      if (!data) return null;
+      const updated = unfreezeWallet(toWallet(data)); // throws on an illegal transition
+      tx.set(ref, toWalletDoc(updated));
+      return updated;
+    });
   }
 
   async getBalance(walletId: EntityId): Promise<number | null> {

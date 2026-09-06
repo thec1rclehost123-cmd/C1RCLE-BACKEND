@@ -17,7 +17,14 @@ import type { EntityId, VersionedEntity } from '../identity.js';
  * - termination time = next day 05:00 local (tzOffset +05:30)
  */
 
-export type CoverWalletStatus = 'active' | 'terminated' | 'closed';
+/**
+ * `frozen` is reversible and non-terminal (unlike `terminated`/`closed`) —
+ * only reachable from `active`, and only `active` is reachable from it.
+ * `isWalletActive` naturally excludes it, so every mutation already gated
+ * on that check (`applyCredit`/`applyDebit`/`applyRefund`) rejects while
+ * frozen with no changes needed to those functions.
+ */
+export type CoverWalletStatus = 'active' | 'frozen' | 'terminated' | 'closed';
 
 export type CoverWalletTxnType =
   | 'credit' // top-up, referral bonus, promo
@@ -180,6 +187,26 @@ export function isWalletActive(wallet: CoverWallet): boolean {
 
 export function isWalletTerminated(wallet: CoverWallet): boolean {
   return wallet.status === 'terminated' || wallet.status === 'closed';
+}
+
+export function isWalletFrozen(wallet: CoverWallet): boolean {
+  return wallet.status === 'frozen';
+}
+
+export function freezeWallet(wallet: CoverWallet, now?: Date): CoverWallet {
+  if (!isWalletActive(wallet)) {
+    throw new InvalidOperationError(`Cannot freeze a wallet that is ${wallet.status}, not active`);
+  }
+  return { ...bumpVersion(wallet, now ?? new Date()), status: 'frozen' };
+}
+
+export function unfreezeWallet(wallet: CoverWallet, now?: Date): CoverWallet {
+  if (!isWalletFrozen(wallet)) {
+    throw new InvalidOperationError(
+      `Cannot unfreeze a wallet that is ${wallet.status}, not frozen`,
+    );
+  }
+  return { ...bumpVersion(wallet, now ?? new Date()), status: 'active' };
 }
 
 export function canWalletDebit(wallet: CoverWallet, amount: number): boolean {

@@ -95,3 +95,9 @@ export type {
   WalletOrgStats,
 } from './cover-wallet/cover-wallet-service.js';
 export { createCoverWalletService } from './cover-wallet/cover-wallet-service.js';
+export type {
+  DoorStatsService,
+  DoorStatsServiceDeps,
+  DoorStats,
+} from './door/door-stats-service.js';
+export { createDoorStatsService } from './door/door-stats-service.js';
