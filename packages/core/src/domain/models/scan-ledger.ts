@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+
+import { StateTransitionError } from '../errors.js';
 import { bumpVersion, newVersionedEntity } from '../identity.js';
 
 import type { EntityId, VersionedEntity } from '../identity.js';
@@ -27,15 +30,23 @@ export type ScanLedgerStatus =
   /** Scan record revoked (admin action) */
   | 'revoked'
   /** Scan expired before processing (offline sync timeout) */
-  | 'expired';
+  | 'expired'
+  /**
+   * A denied entry that door staff manually admitted anyway (`overriddenBy`
+   * + `overrideReason` record who and why). Its own terminal state, not a
+   * fake `denied -> consumed` — the record must keep saying it was denied
+   * first; `overridden` is what changed after that, not an erasure of it.
+   */
+  | 'overridden';
 
 const SCAN_LEDGER_TRANSITIONS: Readonly<Record<ScanLedgerStatus, readonly ScanLedgerStatus[]>> = {
   pending: ['consumed', 'denied', 'cancelled', 'expired'],
   consumed: ['revoked'],
-  denied: ['revoked'],
+  denied: ['revoked', 'overridden'],
   cancelled: ['revoked'],
   expired: ['revoked'],
   revoked: [],
+  overridden: [],
 };
 
 export type ScanDenyReason =
@@ -106,6 +117,10 @@ export interface ScanLedger extends VersionedEntity {
   syncedAt: string | null;
   /** Offline device ID (for audit) */
   offlineDeviceId: string | null;
+  /** Actor uid who overrode a denied entry. Null unless `status === 'overridden'`. */
+  overriddenBy: string | null;
+  /** Why staff overrode the denial. Null unless `status === 'overridden'`. */
+  overrideReason: string | null;
 }
 
 export function canTransitionScan(from: ScanLedgerStatus, to: ScanLedgerStatus): boolean {
@@ -150,10 +165,27 @@ export interface ScanLedgerCreateInput {
   now?: Date;
 }
 
+/**
+ * Hashed rather than the readable `SCAN-{eventId}-{entitlementId}-{timestamp}`
+ * this replaced: that scheme could exceed the platform's 64-char opaque-ID
+ * cap once a real (UUID) eventId and a real entitlement id were both
+ * concatenated in with a millisecond timestamp — same bug class as
+ * `entitlementId()` in `domain/models/entitlement.ts`, whose doc comment has
+ * the full story. Timestamp is still part of the hash input so repeated
+ * calls for the same event+entitlement (rare, but not impossible for a
+ * multi-scan couple ticket) don't collide.
+ */
+function scanLedgerId(eventId: string, entitlementId: string | null, at: number): string {
+  const digest = createHash('sha256')
+    .update(`${eventId}:${entitlementId ?? 'walkin'}:${at}`)
+    .digest('hex');
+  return `SCAN-${digest.slice(0, 32)}`;
+}
+
 export function createScanLedger(input: ScanLedgerCreateInput): ScanLedger {
   const now = input.now ?? new Date();
   return {
-    id: `SCAN-${input.eventId}-${input.entitlementId ?? 'walkin'}-${Date.now()}`,
+    id: scanLedgerId(input.eventId, input.entitlementId, Date.now()),
     eventId: input.eventId,
     organizationId: input.organizationId,
     venueId: input.venueId,
@@ -182,6 +214,8 @@ export function createScanLedger(input: ScanLedgerCreateInput): ScanLedger {
     isOffline: input.isOffline,
     offlineDeviceId: input.offlineDeviceId,
     syncedAt: null,
+    overriddenBy: null,
+    overrideReason: null,
     ...newVersionedEntity(now),
   };
 }
@@ -229,6 +263,38 @@ export function markScanCancelled(ledger: ScanLedger, now?: Date): ScanLedger {
   return transitionScanLedger(ledger, 'cancelled', null, null, now);
 }
 
+/**
+ * Manually admits a guest who was denied entry. Only legal from `denied`
+ * (the FSM guard below rejects overriding an already-`consumed` scan, same
+ * as any other illegal transition). Deliberately does NOT clear
+ * `denyReason`/`denyMessage` — unlike `transitionScanLedger`'s other
+ * callers, the point here is to keep both halves of the story on one
+ * record: why it was denied, and who let the guest in anyway and why.
+ * `admittedCount` is forced to at least 1 — a denied scan normally admits
+ * nobody, and an override means someone now has.
+ */
+export function overrideScan(
+  ledger: ScanLedger,
+  overriddenBy: string,
+  reason: string,
+  now?: Date,
+): ScanLedger {
+  if (!canTransitionScan(ledger.status, 'overridden')) {
+    throw new StateTransitionError(
+      ledger.status,
+      'overridden',
+      'a scan can only be overridden while it is denied',
+    );
+  }
+  return {
+    ...bumpVersion(ledger, now ?? new Date()),
+    status: 'overridden',
+    overriddenBy,
+    overrideReason: reason,
+    admittedCount: Math.max(ledger.admittedCount, 1),
+  };
+}
+
 export function isScanPending(ledger: ScanLedger): boolean {
   return ledger.status === 'pending';
 }
@@ -242,7 +308,7 @@ export function isScanDenied(ledger: ScanLedger): boolean {
 }
 
 export function isScanTerminal(ledger: ScanLedger): boolean {
-  return ['consumed', 'denied', 'revoked', 'expired'].includes(ledger.status);
+  return ['consumed', 'denied', 'revoked', 'expired', 'overridden'].includes(ledger.status);
 }
 
 export function isScanDeniedFor(ledger: ScanLedger, reason: ScanDenyReason): boolean {

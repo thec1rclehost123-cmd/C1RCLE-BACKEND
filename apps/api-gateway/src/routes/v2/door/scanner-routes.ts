@@ -8,6 +8,7 @@ import {
   magicQrResponseSchema,
   offlineSyncRequestSchema,
   offlineSyncResponseSchema,
+  overrideResponseSchema,
 } from '@c1rcle/contracts/client';
 import { InvalidOperationError } from '@c1rcle/core/domain';
 import { z } from 'zod';
@@ -27,12 +28,12 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
  * Registered by whoever wires `route-manifest.ts` — this file only exports
  * the plugin function, it does not register itself anywhere.
  *
- * Two of the ten routes below are honest 501 stubs, not real wiring — see the
- * comment on each. Both are cases where the underlying `ScannerService` (or
- * the `ScanLedgerStatus` FSM it enforces) has no support for the operation,
- * and inventing one would mean guessing at a scan-security-sensitive
- * mechanism nothing else in the codebase verifies. Everything else below is
- * fully wired to the real, already-built Phase 5 application services.
+ * One of the ten routes below (`GET /door/offline-manifest`) is still an
+ * honest 501 stub, not real wiring — see the comment on it. `POST
+ * /door/override` used to be the other one; it's now real (a `denied ->
+ * overridden` FSM transition, see `domain/models/scan-ledger.ts`).
+ * Everything else below is fully wired to the real, already-built Phase 5
+ * application services.
  */
 
 const services: PartnerV2Services = createV2Services();
@@ -381,14 +382,12 @@ export default async function phase5ScannerRoutes(fastify: FastifyInstance) {
   );
 
   // ── POST /door/override ─────────────────────────────────────────────────
-  // HONEST 501, not real wiring. `ScanLedgerStatus`'s FSM
-  // (packages/core/src/domain/models/scan-ledger.ts) only allows
-  // `denied -> revoked`; there is no `denied -> consumed` transition, and
-  // `ScannerService` has no override method. Building this safely means a
-  // domain-model decision (what does "override" actually persist — a new
-  // consumed scan referencing the denied one? a status the FSM doesn't have?)
-  // that a route-wiring pass shouldn't invent. Flagged in the report as a
-  // real gap, same as cover-wallet freeze/unfreeze (plan point 3).
+  // `ScanLedgerStatus` gained a real `denied -> overridden` transition
+  // (domain/models/scan-ledger.ts) — a terminal state distinct from
+  // `consumed`, recording who overrode the denial and why on the same
+  // record the denial itself is on. `ScannerService.overrideScan` enforces
+  // `ticket.override` (route-level) + org scope + the FSM guard (rejects
+  // overriding anything that isn't currently `denied`).
   fastify.post(
     '/door/override',
     {
@@ -398,12 +397,24 @@ export default async function phase5ScannerRoutes(fastify: FastifyInstance) {
         fastify.requirePermission('ticket.override'),
       ],
     },
-    async (_request, reply) => {
-      return reply.status(501).send({
-        error:
-          'Not yet implemented: ScanLedgerStatus has no denied->consumed transition and ' +
-          'ScannerService exposes no override method. See phase5-scanner wiring report.',
-      });
+    async (request, reply) => {
+      const body = request.body as z.infer<typeof overrideBody>;
+      const actor = services.actor(request);
+      const scan = await services.scanner
+        .overrideScan(body.checkInId, body.reason, actor)
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, body.checkInId, error, { hideForbidden: true }),
+        );
+      if (scan === undefined) return reply;
+      const payload = {
+        checkInId: scan.id,
+        status: 'overridden' as const,
+        overriddenBy: scan.overriddenBy,
+        overrideReason: scan.overrideReason,
+      };
+      const validated = validateV2Response(reply, request, overrideResponseSchema, payload);
+      if (validated === undefined) return reply;
+      return reply.send(validated);
     },
   );
 
@@ -424,9 +435,13 @@ export default async function phase5ScannerRoutes(fastify: FastifyInstance) {
     async (_request, reply) => {
       return reply.status(501).send({
         error:
-          'Not yet implemented: no ScannerService method generates a signed manifest, and no ' +
-          'verification of a manifest signature exists anywhere in the offline-sync path. See ' +
-          'phase5-scanner wiring report.',
+          'Not yet implemented: generating a signed manifest is straightforward, but ' +
+          'POST /door/offline-sync (a frozen, already-consumed wire contract) has no field to ' +
+          'carry a manifest signature back for verification, and no ScannerService method ' +
+          're-validates an offline decision against server state at sync time either. Shipping ' +
+          'the manifest alone — without a verifying side — would be a device trusting a ' +
+          'signature the server never checks on the way back in. Needs a contract change ' +
+          'decision, not a route-wiring one. See FOUNDER-TASKS-2026-08-29.md Task A2.',
       });
     },
   );
@@ -686,6 +701,18 @@ function mapDomainError(
         status: 400,
         message: known.message ?? 'Invalid operation',
         code: 'validation',
+        requestId: request.id,
+      }),
+    );
+    return undefined;
+  }
+  if (known?.code === 'state_transition') {
+    // e.g. POST /door/override on a scan that isn't currently `denied`.
+    reply.status(409).send(
+      buildV2ErrorResponse({
+        status: 409,
+        message: known.message ?? 'Illegal state transition',
+        code: 'conflict',
         requestId: request.id,
       }),
     );

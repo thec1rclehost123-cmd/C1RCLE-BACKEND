@@ -467,6 +467,8 @@ export interface ScanLedgerRepository {
   markConsumed(id: EntityId): Promise<ScanLedger | null>;
   markDenied(id: EntityId, reason: ScanDenyReason, message: string): Promise<ScanLedger | null>;
   markCancelled(id: EntityId): Promise<ScanLedger | null>;
+  /** Legal only from `denied` — see `domain/models/scan-ledger.ts`'s `overrideScan`. */
+  markOverridden(id: EntityId, overriddenBy: string, reason: string): Promise<ScanLedger | null>;
   countByEventAndStatus(eventId: EntityId, status: ScanLedgerStatus): Promise<number>;
   countConsumedByEntitlement(entitlementId: EntityId): Promise<number>;
   findOfflineScans(eventId: EntityId, before: Date): Promise<ScanLedger[]>;
@@ -571,6 +573,10 @@ export interface CoverWalletRepository {
   ): Promise<{ wallet: CoverWallet; txn: CoverWalletTxn }>;
   terminate(walletId: EntityId, reason: string): Promise<CoverWallet | null>;
   close(walletId: EntityId): Promise<CoverWallet | null>;
+  /** Legal only from `active`. Reversible — unlike `terminate`/`close`, no balance change. */
+  freeze(walletId: EntityId): Promise<CoverWallet | null>;
+  /** Legal only from `frozen`. */
+  unfreeze(walletId: EntityId): Promise<CoverWallet | null>;
   getBalance(walletId: EntityId): Promise<number | null>;
   isActive(walletId: EntityId): Promise<boolean>;
   countRecentDebits(deviceId: string, since: Date): Promise<number>;

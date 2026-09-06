@@ -63,6 +63,8 @@ export interface ScannerService {
   // GET /tickets/:id/qr
   getSession(sessionId: EntityId, actor: ActorContext): Promise<ScannerSession>;
   getScan(checkInId: EntityId, actor: ActorContext): Promise<ScanLedger>;
+  /** `POST /door/override` — manually admits a denied entry. Requires `ticket.override`. */
+  overrideScan(checkInId: EntityId, reason: string, actor: ActorContext): Promise<ScanLedger>;
   resolveTicket(input: ResolveTicketInput, actor: ActorContext): Promise<TicketResolution>;
   resolveMagicTicket(
     input: ResolveMagicTicketInput,
@@ -654,6 +656,37 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
     return scan;
   }
 
+  /**
+   * Manually admits a guest whose scan was denied. `getScan` does the
+   * existence + org-access check (same guard every other read/write here
+   * uses); the FSM guard against overriding a non-`denied` scan lives in the
+   * domain (`overrideScan` in `scan-ledger.ts`), enforced by the repository
+   * adapter. `ticket.override` itself is enforced at the route's
+   * `requirePermission` preHandler, not re-checked here — this service
+   * layer only re-verifies the org scope, matching every sibling method.
+   */
+  async function overrideScan(
+    checkInId: EntityId,
+    reason: string,
+    actor: ActorContext,
+  ): Promise<ScanLedger> {
+    const before = await getScan(checkInId, actor);
+    const updated = await scanLedger.markOverridden(checkInId, actor.userId, reason);
+    if (!updated) throw new NotFoundError('Scan', checkInId);
+    await adminAudit.write({
+      id: `audit-override-${checkInId}-${Date.now()}`,
+      adminId: actor.userId,
+      actorId: actor.userId,
+      organizationId: actor.organizationId,
+      action: 'door.scan_override',
+      targetType: 'scan_ledger',
+      targetId: checkInId,
+      before: { status: before.status, denyReason: before.denyReason },
+      after: { status: updated.status, overriddenBy: updated.overriddenBy, reason },
+    });
+    return updated;
+  }
+
   function entitlementSummary(e: {
     id: EntityId;
     tierName: string;
@@ -805,6 +838,7 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
     scanMagicTicket,
     getSession,
     getScan,
+    overrideScan,
     resolveTicket,
     resolveMagicTicket,
     generateMagicTicketQr,

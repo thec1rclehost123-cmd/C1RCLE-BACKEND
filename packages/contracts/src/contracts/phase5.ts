@@ -83,6 +83,50 @@ export const scanResponseSchema = z.object({
 });
 export type ScanResponse = z.infer<typeof scanResponseSchema>;
 
+// Override (POST /door/override)
+export const overrideRequestSchema = z
+  .object({ checkInId: opaqueIdSchema, reason: z.string().min(1) })
+  .strict();
+export type OverrideRequest = z.infer<typeof overrideRequestSchema>;
+
+export const overrideResponseSchema = z.object({
+  checkInId: opaqueIdSchema,
+  status: z.literal('overridden'),
+  overriddenBy: opaqueIdSchema,
+  overrideReason: z.string(),
+});
+export type OverrideResponse = z.infer<typeof overrideResponseSchema>;
+
+// Door Stats (GET /door/stats)
+export const doorStatsQuerySchema = z.object({ eventId: opaqueIdSchema }).strict();
+export type DoorStatsQuery = z.infer<typeof doorStatsQuerySchema>;
+
+export const doorStatsDtoSchema = z.object({
+  eventId: opaqueIdSchema,
+  scans: z.object({
+    total: z.number().int().nonnegative(),
+    consumed: z.number().int().nonnegative(),
+    denied: z.number().int().nonnegative(),
+    pending: z.number().int().nonnegative(),
+    revoked: z.number().int().nonnegative(),
+    overridden: z.number().int().nonnegative(),
+    expired: z.number().int().nonnegative(),
+    cancelled: z.number().int().nonnegative(),
+  }),
+  doorSales: z.object({
+    count: z.number().int().nonnegative(),
+    grossPaise: z.number().int().nonnegative(),
+  }),
+  coverWallet: z.object({
+    activeWallets: z.number().int().nonnegative(),
+    totalBalancePaise: z.number().int().nonnegative(),
+    totalCreditsPaise: z.number().int().nonnegative(),
+    totalDebitsPaise: z.number().int().nonnegative(),
+  }),
+  generatedAt: z.iso.datetime(),
+});
+export type DoorStatsDto = z.infer<typeof doorStatsDtoSchema>;
+
 // Magic Ticket QR
 export const magicQrRequestSchema = z
   .object({
@@ -231,7 +275,7 @@ export const coverWalletResponseSchema = z.object({
   eventId: opaqueIdSchema,
   userId: opaqueIdSchema,
   balancePaise: z.number().int().nonnegative(),
-  status: z.enum(['active', 'terminated', 'closed']),
+  status: z.enum(['active', 'frozen', 'terminated', 'closed']),
   openingBalancePaise: z.number().int().nonnegative(),
   totalCreditsPaise: z.number().int().nonnegative(),
   totalDebitsPaise: z.number().int().nonnegative(),

@@ -1,4 +1,4 @@
-import { createScanLedger } from '../../domain/models/scan-ledger.js';
+import { createScanLedger, overrideScan } from '../../domain/models/scan-ledger.js';
 
 import { paginateQuery } from './pagination.js';
 
@@ -110,6 +110,24 @@ export class FirestoreScanLedgerRepository implements ScanLedgerRepository {
     return this.updateStatus(id, 'cancelled');
   }
 
+  async markOverridden(
+    id: EntityId,
+    overriddenBy: string,
+    reason: string,
+  ): Promise<ScanLedger | null> {
+    const ref = this.collection.doc(id);
+    return this.db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      const data = snap.data();
+      if (!data) return null;
+      // Throws on an illegal transition (e.g. already consumed) — the FSM
+      // guard lives in the domain function, not duplicated here.
+      const updated = overrideScan(toScanLedger(data), overriddenBy, reason);
+      tx.set(ref, toDoc(updated));
+      return updated;
+    });
+  }
+
   async countByEventAndStatus(eventId: EntityId, status: ScanLedgerStatus): Promise<number> {
     const snap = await this.collection
       .where('eventId', '==', eventId)
@@ -169,6 +187,8 @@ function toDoc(scan: ScanLedger): DocumentData {
     isOffline: scan.isOffline,
     syncedAt: scan.syncedAt,
     offlineDeviceId: scan.offlineDeviceId,
+    overriddenBy: scan.overriddenBy,
+    overrideReason: scan.overrideReason,
     version: scan.version,
     createdAt: scan.createdAt,
     updatedAt: scan.updatedAt,
@@ -206,6 +226,8 @@ function toScanLedger(data: DocumentData): ScanLedger {
     isOffline: data.isOffline as boolean,
     syncedAt: data.syncedAt as string | null,
     offlineDeviceId: data.offlineDeviceId as string | null,
+    overriddenBy: (data.overriddenBy as string | null) ?? null,
+    overrideReason: (data.overrideReason as string | null) ?? null,
     version: data.version as number,
     createdAt: data.createdAt as string,
     updatedAt: data.updatedAt as string,

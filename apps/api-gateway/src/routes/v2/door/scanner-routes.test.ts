@@ -246,15 +246,103 @@ describe('POST /door/lookup', () => {
   });
 });
 
-describe('POST /door/override (honest stub)', () => {
-  it('returns 501 — no denied->consumed FSM transition or service method exists', async () => {
+async function seedDeniedScan(): Promise<string> {
+  const scan = await services.repos().scanLedger.create({
+    eventId: EVENT_ID,
+    organizationId: ORG_ID,
+    venueId: null,
+    entitlementId: 'ent_1',
+    doorSaleId: null,
+    entryType: null,
+    tierName: 'General',
+    tierId: 'tier_1',
+    operatorUid: SEED_ACTOR.userId,
+    operatorName: 'Staff One',
+    operatorRole: 'staff',
+    gate: null,
+    deviceId: 'device_1',
+    deviceName: 'Gate iPad 1',
+    deviceBound: true,
+    guestName: 'Test Guest',
+    guestEmail: null,
+    guestPhone: null,
+    scannedAt: new Date().toISOString(),
+    admittedCount: 0,
+    scanCountUsed: 0,
+    scanCountAllowed: 1,
+    isOffline: false,
+    offlineDeviceId: null,
+    status: 'denied',
+    denyReason: 'already_used',
+    denyMessage: 'Ticket already scanned',
+  });
+  return scan.id;
+}
+
+describe('POST /door/override', () => {
+  it('admits a denied scan and records who/why (2xx)', async () => {
+    const checkInId = await seedDeniedScan();
     const response = await server.inject({
       method: 'POST',
       url: '/door/override',
       headers: HEADERS,
-      payload: { checkInId: 'scan_1', reason: 'manager override at the door' },
+      payload: { checkInId, reason: 'manager override at the door' },
     });
-    expect(response.statusCode).toBe(501);
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      checkInId,
+      status: 'overridden',
+      overriddenBy: SEED_ACTOR.userId,
+      overrideReason: 'manager override at the door',
+    });
+  });
+
+  it('rejects overriding a scan that is not denied (409, illegal FSM transition)', async () => {
+    const consumed = await services.repos().scanLedger.create({
+      eventId: EVENT_ID,
+      organizationId: ORG_ID,
+      venueId: null,
+      entitlementId: 'ent_1',
+      doorSaleId: null,
+      entryType: null,
+      tierName: 'General',
+      tierId: 'tier_1',
+      operatorUid: SEED_ACTOR.userId,
+      operatorName: 'Staff One',
+      operatorRole: 'staff',
+      gate: null,
+      deviceId: 'device_1',
+      deviceName: 'Gate iPad 1',
+      deviceBound: true,
+      guestName: 'Test Guest',
+      guestEmail: null,
+      guestPhone: null,
+      scannedAt: new Date().toISOString(),
+      admittedCount: 1,
+      scanCountUsed: 1,
+      scanCountAllowed: 1,
+      isOffline: false,
+      offlineDeviceId: null,
+      status: 'consumed',
+    });
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/door/override',
+      headers: HEADERS,
+      payload: { checkInId: consumed.id, reason: 'should be rejected' },
+    });
+    expect(response.statusCode).toBe(409);
+  });
+
+  it('404s for an unknown check-in id', async () => {
+    const response = await server.inject({
+      method: 'POST',
+      url: '/door/override',
+      headers: HEADERS,
+      payload: { checkInId: 'no-such-scan', reason: 'manager override at the door' },
+    });
+    expect(response.statusCode).toBe(404);
   });
 });
 

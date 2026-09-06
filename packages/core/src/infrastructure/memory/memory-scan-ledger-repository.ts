@@ -1,5 +1,5 @@
 import { VersionConflictError } from '../../domain/errors.js';
-import { createScanLedger } from '../../domain/models/scan-ledger.js';
+import { createScanLedger, overrideScan } from '../../domain/models/scan-ledger.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type {
@@ -120,6 +120,20 @@ export class MemoryScanLedgerRepository implements ScanLedgerRepository {
 
   async markCancelled(id: EntityId): Promise<ScanLedger | null> {
     return this.updateStatus(id, 'cancelled');
+  }
+
+  async markOverridden(
+    id: EntityId,
+    overriddenBy: string,
+    reason: string,
+  ): Promise<ScanLedger | null> {
+    const scan = this.scans.get(id);
+    if (!scan) return null;
+    // Throws on an illegal transition (e.g. already consumed) — the FSM
+    // guard lives in the domain function, not duplicated here.
+    const updated = overrideScan(scan, overriddenBy, reason);
+    this.scans.set(id, updated);
+    return updated;
   }
 
   async countByEventAndStatus(eventId: EntityId, status: ScanLedgerStatus): Promise<number> {
