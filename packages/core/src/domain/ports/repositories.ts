@@ -25,6 +25,7 @@ import type {
   CoverWalletTxnType,
   CoverWalletTxnStatus,
 } from '../models/cover-wallet.js';
+import type { Dispute, DisputeStatus } from '../models/dispute.js';
 import type {
   DoorSale,
   DoorSaleCreateInput,
@@ -689,4 +690,23 @@ export interface BankAccountRepository {
   delete(id: EntityId): Promise<void>;
 }
 
-export type { LedgerEntry, LedgerEntryType, Payout, PayoutStatus, BankAccount };
+/** Partner challenges against a ledger entry or payout amount. */
+export interface DisputeRepository {
+  create(dispute: Dispute): Promise<Dispute>;
+  findById(id: EntityId): Promise<Dispute | null>;
+  save(dispute: Dispute): Promise<Dispute>;
+  listByOrganization(
+    organizationId: EntityId,
+    query: PaginationQuery & { status?: DisputeStatus },
+  ): Promise<Page<Dispute>>;
+}
+
+export type {
+  LedgerEntry,
+  LedgerEntryType,
+  Payout,
+  PayoutStatus,
+  BankAccount,
+  Dispute,
+  DisputeStatus,
+};

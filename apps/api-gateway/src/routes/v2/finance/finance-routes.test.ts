@@ -473,3 +473,128 @@ describe('bank account read + lifecycle', () => {
     expect(del.statusCode).toBe(400);
   });
 });
+
+describe('disputes', () => {
+  it('raises, reviews, and resolves a dispute', async () => {
+    const server = await buildServer();
+    const org = await seedOrganization(server);
+
+    const raised = await server.inject({
+      method: 'POST',
+      url: `/organizations/${org}/disputes`,
+      headers: write(org),
+      payload: { orderId: 'order_1', reason: 'Payout amount mismatch', amountPaise: 5_000 },
+    });
+    expect(raised.statusCode).toBe(201);
+    const dispute = raised.json();
+    expect(dispute.status).toBe('open');
+    expect(dispute.resolutionNote).toBeNull();
+
+    const reviewed = await server.inject({
+      method: 'POST',
+      url: `/organizations/${org}/disputes/${dispute.id}/review`,
+      headers: { 'x-organization-id': org },
+      payload: {},
+    });
+    expect(reviewed.statusCode).toBe(200);
+    expect(reviewed.json().status).toBe('under_review');
+
+    const resolved = await server.inject({
+      method: 'POST',
+      url: `/organizations/${org}/disputes/${dispute.id}/resolve`,
+      headers: { 'x-organization-id': org },
+      payload: { resolutionNote: 'Refund issued to the venue' },
+    });
+    expect(resolved.statusCode).toBe(200);
+    expect(resolved.json().status).toBe('resolved');
+    expect(resolved.json().resolutionNote).toBe('Refund issued to the venue');
+  });
+
+  it('gets a dispute by id and lists disputes for the org', async () => {
+    const server = await buildServer();
+    const org = await seedOrganization(server);
+    const raised = await server.inject({
+      method: 'POST',
+      url: `/organizations/${org}/disputes`,
+      headers: write(org),
+      payload: { orderId: 'order_2', reason: 'Wrong split', amountPaise: 1_000 },
+    });
+    const disputeId = raised.json().id as string;
+
+    const got = await server.inject({
+      method: 'GET',
+      url: `/organizations/${org}/disputes/${disputeId}`,
+      headers: { 'x-organization-id': org },
+    });
+    expect(got.statusCode).toBe(200);
+    expect(got.json().id).toBe(disputeId);
+
+    const list = await server.inject({
+      method: 'GET',
+      url: `/organizations/${org}/disputes`,
+      headers: { 'x-organization-id': org },
+    });
+    expect(list.statusCode).toBe(200);
+    expect(list.json().items).toHaveLength(1);
+  });
+
+  it('rejects a non-positive dispute amount', async () => {
+    const server = await buildServer();
+    const org = await seedOrganization(server);
+    const res = await server.inject({
+      method: 'POST',
+      url: `/organizations/${org}/disputes`,
+      headers: write(org),
+      payload: { orderId: 'order_3', reason: 'bad amount', amountPaise: 0 },
+    });
+    expect(res.statusCode).toBe(422);
+  });
+
+  it('rejects a cross-tenant dispute read as not-found (IDOR-safe)', async () => {
+    const server = await buildServer();
+    const org = await seedOrganization(server);
+    const other = await seedOrganization(server);
+    const raised = await server.inject({
+      method: 'POST',
+      url: `/organizations/${org}/disputes`,
+      headers: write(org),
+      payload: { orderId: 'order_4', reason: 'cross tenant', amountPaise: 1_000 },
+    });
+    const disputeId = raised.json().id as string;
+    // Header matches the :organizationId path segment (`other`, satisfying the
+    // wire-contract equality gate) but the dispute itself belongs to `org` —
+    // exercises the service-level requireOrgAccess check, same pattern as
+    // getPayout's cross-tenant 404.
+    const res = await server.inject({
+      method: 'GET',
+      url: `/organizations/${other}/disputes/${disputeId}`,
+      headers: { 'x-organization-id': other },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('cannot resolve an already-resolved dispute', async () => {
+    const server = await buildServer();
+    const org = await seedOrganization(server);
+    const raised = await server.inject({
+      method: 'POST',
+      url: `/organizations/${org}/disputes`,
+      headers: write(org),
+      payload: { orderId: 'order_5', reason: 'double resolve', amountPaise: 1_000 },
+    });
+    const disputeId = raised.json().id as string;
+    await server.inject({
+      method: 'POST',
+      url: `/organizations/${org}/disputes/${disputeId}/resolve`,
+      headers: { 'x-organization-id': org },
+      payload: { resolutionNote: 'first' },
+    });
+    const res = await server.inject({
+      method: 'POST',
+      url: `/organizations/${org}/disputes/${disputeId}/resolve`,
+      headers: { 'x-organization-id': org },
+      payload: { resolutionNote: 'second' },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+});

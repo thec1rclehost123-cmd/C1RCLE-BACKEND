@@ -85,3 +85,38 @@ export type BankAccountResponse = z.infer<typeof bankAccountResponseSchema>;
 export const bankAccountListResponseSchema = z.object({
   items: z.array(bankAccountResponseSchema),
 });
+
+// Dispute
+export const raiseDisputeRequestSchema = z
+  .object({
+    orderId: opaqueIdSchema,
+    ledgerEntryId: opaqueIdSchema.optional(),
+    reason: z.string().min(1).max(2000),
+    amountPaise: z.number().int().positive(),
+  })
+  .strict();
+export type RaiseDisputeRequest = z.infer<typeof raiseDisputeRequestSchema>;
+
+export const resolveDisputeRequestSchema = z
+  .object({
+    resolutionNote: z.string().min(1).max(2000),
+  })
+  .strict();
+export type ResolveDisputeRequest = z.infer<typeof resolveDisputeRequestSchema>;
+
+export const disputeResponseSchema = z.object({
+  id: opaqueIdSchema,
+  organizationId: opaqueIdSchema,
+  orderId: opaqueIdSchema,
+  ledgerEntryId: opaqueIdSchema.nullable(),
+  raisedBy: opaqueIdSchema,
+  reason: z.string(),
+  amountPaise: z.number().int().positive(),
+  status: z.enum(['open', 'under_review', 'resolved']),
+  resolutionNote: z.string().nullable(),
+  resolvedAt: z.iso.datetime().nullable(),
+  createdAt: z.iso.datetime(),
+});
+export type DisputeResponse = z.infer<typeof disputeResponseSchema>;
+
+export const disputeListResponseSchema = paginatedSchema(disputeResponseSchema);

@@ -23,6 +23,7 @@ export * from './models/cover-wallet-reconciliation.js';
 export * from './models/ledger.js';
 export * from './models/payout.js';
 export * from './models/bank-account.js';
+export * from './models/dispute.js';
 export * from './events.js';
 export * from './ports/outbox.js';
 export type * from './ports/audit.js';

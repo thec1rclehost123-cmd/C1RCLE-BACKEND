@@ -282,6 +282,9 @@ export type {
   PayoutResponse,
   BankAccountRequest,
   BankAccountResponse,
+  RaiseDisputeRequest,
+  ResolveDisputeRequest,
+  DisputeResponse,
 } from './contracts/phase6.js';
 
 export {
@@ -294,4 +297,8 @@ export {
   bankAccountRequestSchema,
   bankAccountResponseSchema,
   bankAccountListResponseSchema,
+  raiseDisputeRequestSchema,
+  resolveDisputeRequestSchema,
+  disputeResponseSchema,
+  disputeListResponseSchema,
 } from './contracts/phase6.js';

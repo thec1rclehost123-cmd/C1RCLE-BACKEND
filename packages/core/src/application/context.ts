@@ -46,6 +46,7 @@ import type {
   LedgerRepository,
   PayoutRepository,
   BankAccountRepository,
+  DisputeRepository,
 } from '../domain/ports/repositories.js';
 import type { VerificationProvider } from '../domain/ports/verification.js';
 import type { Logger } from '../telemetry/logger.js';
@@ -122,6 +123,7 @@ export interface ServiceDeps {
     ledger: LedgerRepository;
     payouts: PayoutRepository;
     bankAccounts: BankAccountRepository;
+    disputes: DisputeRepository;
   };
 }
 

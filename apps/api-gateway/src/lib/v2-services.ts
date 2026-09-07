@@ -29,6 +29,7 @@ import {
   createFinanceService,
   createPayoutService,
   createBankAccountService,
+  createDisputeService,
   type ScannerService,
   type DoorService,
   type CoverWalletService,
@@ -36,6 +37,7 @@ import {
   type FinanceService,
   type PayoutService,
   type BankAccountService,
+  type DisputeService,
   type ServiceDeps,
   type ActorContext,
 } from '@c1rcle/core/application';
@@ -133,6 +135,8 @@ export interface PartnerV2Services {
   payout: PayoutService;
   /** Phase 6: bank account management. */
   bankAccount: BankAccountService;
+  /** Phase 6: dispute lifecycle. */
+  dispute: DisputeService;
 }
 
 // Each route module calls `createV2Services()` independently at import time
@@ -328,6 +332,11 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     config: coreConfig,
   });
 
+  const dispute = createDisputeService({
+    disputes: repositories.disputes,
+    config: coreConfig,
+  });
+
   return {
     organizations: new OrganizationService(deps),
     venues: new VenueService(deps),
@@ -364,5 +373,6 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     finance,
     payout,
     bankAccount,
+    dispute,
   };
 }

@@ -120,3 +120,9 @@ export type {
   AddBankAccountInput,
 } from './finance/bank-account-service.js';
 export { createBankAccountService } from './finance/bank-account-service.js';
+export type {
+  DisputeService,
+  DisputeServiceDeps,
+  RaiseDisputeInput,
+} from './finance/dispute-service.js';
+export { createDisputeService } from './finance/dispute-service.js';

@@ -1,6 +1,6 @@
 # Phase 6 — Finance / Ledger / Payouts
 
-**Status:** in progress (started 2026-09-07) — services + models + routes committed, disputes/leaderboard/checkout-integration pending · **Depends on:** Phase 4 (orders must exist to settle)
+**Status:** in progress (started 2026-09-07) — ledger/payouts/bank-accounts/disputes done + tested; leaderboard + checkout-integration pending · **Depends on:** Phase 4 (orders must exist to settle)
 
 v1 has **two coexisting systems** — pick one, do not port both.
 
@@ -106,3 +106,32 @@ gateway tests total, up from 197).
 - Frontend wiring (regenerating `packages/contracts` into `C1RCLE-FRONTEND`
   and replacing the `dataStatus: 'fixture'` finance screens) — out of scope
   for this session, backend-only.
+
+### 2026-09-08 — Security fixes + Dispute domain landed
+
+**Security review fixes** (post-Phase-6-commit automated review, both applied
+and pushed): `infrastructure/encryption.ts` upgraded AES-256-CBC → AES-256-GCM
+(CBC had no integrity check — a tampered ciphertext decrypted silently or
+threw a padding-oracle-usable error instead of failing loudly); then a second
+finding added GCM additional-authenticated-data (AAD) context binding —
+`encryptField`/`decryptField` now take a required `context` argument
+(`bank-account-service` passes `organizationId`), so a ciphertext blob can no
+longer be moved to a different record and still decrypt.
+
+**Built: Dispute domain**, same pattern as Ledger/Payout/BankAccount —
+`domain/models/dispute.ts` (minimal FSM `open -> under_review -> resolved`,
+no richer status set found in the v1 reference), `DisputeRepository` port +
+memory/firestore adapters (`v2_disputes` collection), `dispute-service.ts`
+(`raiseDispute`/`beginReview`/`resolve`/`getDispute`/`listDisputes`, all
+`requireOrgAccess`-gated), routes appended to `finance-routes.ts` (`POST
+/organizations/:organizationId/disputes`, `GET .../disputes`, `GET
+.../disputes/:disputeId`, `POST .../disputes/:disputeId/review`, `POST
+.../disputes/:disputeId/resolve`), contracts in `phase6.ts`. 7 new domain
+tests + 6 new route tests, all green.
+
+**NOT done, still deferred:** Leaderboard (sequenced after the checkout
+webhook per the note above — needs the increment-in-same-transaction hook),
+checkout-webhook integration (promoter-attribution design gap unchanged —
+still needs a decision before `Order.attribution.promoterId` (a `userId`)
+can flow into `recordTicketSale`'s organization-keyed ledger), frontend
+wiring.

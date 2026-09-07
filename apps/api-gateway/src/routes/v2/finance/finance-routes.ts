@@ -10,11 +10,15 @@ import {
   bankAccountRequestSchema,
   bankAccountResponseSchema,
   bankAccountListResponseSchema,
+  raiseDisputeRequestSchema,
+  resolveDisputeRequestSchema,
+  disputeResponseSchema,
+  disputeListResponseSchema,
 } from '@c1rcle/contracts/client';
 import { maskAccountNumber } from '@c1rcle/core/domain';
 import { z } from 'zod';
 
-import type { BankAccount, LedgerEntry, Payout } from '@c1rcle/core/domain';
+import type { BankAccount, Dispute, LedgerEntry, Payout } from '@c1rcle/core/domain';
 
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
@@ -39,6 +43,10 @@ const payoutIdParam = z.object({ organizationId: opaqueIdSchema, payoutId: opaqu
 const bankAccountIdParam = z.object({
   organizationId: opaqueIdSchema,
   bankAccountId: opaqueIdSchema,
+});
+const disputeIdParam = z.object({
+  organizationId: opaqueIdSchema,
+  disputeId: opaqueIdSchema,
 });
 
 export default async function financeRoutes(fastify: FastifyInstance) {
@@ -317,6 +325,163 @@ export default async function financeRoutes(fastify: FastifyInstance) {
       return reply.status(204).send();
     },
   );
+
+  // POST /organizations/:organizationId/disputes
+  fastify.post(
+    '/organizations/:organizationId/disputes',
+    {
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({ params: organizationIdParam, body: raiseDisputeRequestSchema }),
+        fastify.requirePermission('organization.update'),
+      ],
+    },
+    async (request, reply) => {
+      const { organizationId } = request.params as z.infer<typeof organizationIdParam>;
+      const body = request.body as z.infer<typeof raiseDisputeRequestSchema>;
+      const actor = services.actor(request);
+      const dispute = await services.dispute
+        .raiseDispute(
+          {
+            organizationId,
+            orderId: body.orderId,
+            ledgerEntryId: body.ledgerEntryId,
+            reason: body.reason,
+            amount: body.amountPaise,
+          },
+          actor,
+        )
+        .catch((error: unknown) => mapDomainError(reply, request, organizationId, error));
+      if (dispute === undefined) return reply;
+      const validated = validateV2Response(
+        reply,
+        request,
+        disputeResponseSchema,
+        disputeToDto(dispute),
+      );
+      if (validated === undefined) return reply;
+      return reply.status(201).send(validated);
+    },
+  );
+
+  // GET /organizations/:organizationId/disputes
+  fastify.get(
+    '/organizations/:organizationId/disputes',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({ params: organizationIdParam, querystring: paginationQuerySchema }),
+        fastify.requirePermission('organization.read'),
+      ],
+    },
+    async (request, reply) => {
+      const { organizationId } = request.params as z.infer<typeof organizationIdParam>;
+      const query = request.query as z.infer<typeof paginationQuerySchema>;
+      const actor = services.actor(request);
+      const page = await services.dispute
+        .listDisputes(organizationId, actor, { cursor: query.cursor ?? null, limit: query.limit })
+        .catch((error: unknown) => mapDomainError(reply, request, organizationId, error));
+      if (page === undefined) return reply;
+      const validated = validateV2Response(reply, request, disputeListResponseSchema, {
+        items: page.items.map(disputeToDto),
+        pageInfo: {
+          page: 0,
+          pageSize: query.limit,
+          total: page.total,
+          hasNextPage: page.nextCursor !== null,
+        },
+      });
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  // GET /organizations/:organizationId/disputes/:disputeId
+  fastify.get(
+    '/organizations/:organizationId/disputes/:disputeId',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({ params: disputeIdParam }),
+        fastify.requirePermission('organization.read'),
+      ],
+    },
+    async (request, reply) => {
+      const { organizationId, disputeId } = request.params as z.infer<typeof disputeIdParam>;
+      const actor = services.actor(request);
+      const dispute = await services.dispute
+        .getDispute(disputeId, actor)
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, organizationId, error, { hideForbidden: true }),
+        );
+      if (dispute === undefined) return reply;
+      const validated = validateV2Response(
+        reply,
+        request,
+        disputeResponseSchema,
+        disputeToDto(dispute),
+      );
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  // POST /organizations/:organizationId/disputes/:disputeId/review
+  fastify.post(
+    '/organizations/:organizationId/disputes/:disputeId/review',
+    {
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({ params: disputeIdParam }),
+        fastify.requirePermission('organization.update'),
+      ],
+    },
+    async (request, reply) => {
+      const { organizationId, disputeId } = request.params as z.infer<typeof disputeIdParam>;
+      const actor = services.actor(request);
+      const dispute = await services.dispute
+        .beginReview(disputeId, actor)
+        .catch((error: unknown) => mapDomainError(reply, request, organizationId, error));
+      if (dispute === undefined) return reply;
+      const validated = validateV2Response(
+        reply,
+        request,
+        disputeResponseSchema,
+        disputeToDto(dispute),
+      );
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  // POST /organizations/:organizationId/disputes/:disputeId/resolve
+  fastify.post(
+    '/organizations/:organizationId/disputes/:disputeId/resolve',
+    {
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({ params: disputeIdParam, body: resolveDisputeRequestSchema }),
+        fastify.requirePermission('organization.update'),
+      ],
+    },
+    async (request, reply) => {
+      const { organizationId, disputeId } = request.params as z.infer<typeof disputeIdParam>;
+      const body = request.body as z.infer<typeof resolveDisputeRequestSchema>;
+      const actor = services.actor(request);
+      const dispute = await services.dispute
+        .resolve(disputeId, body.resolutionNote, actor)
+        .catch((error: unknown) => mapDomainError(reply, request, organizationId, error));
+      if (dispute === undefined) return reply;
+      const validated = validateV2Response(
+        reply,
+        request,
+        disputeResponseSchema,
+        disputeToDto(dispute),
+      );
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
 }
 
 function ledgerEntryToDto(entry: LedgerEntry) {
@@ -354,6 +519,22 @@ function bankAccountToDto(account: BankAccount) {
     isDefault: account.isDefault,
     verified: account.verified,
     createdAt: account.createdAt,
+  };
+}
+
+function disputeToDto(dispute: Dispute) {
+  return {
+    id: dispute.id,
+    organizationId: dispute.organizationId,
+    orderId: dispute.orderId,
+    ledgerEntryId: dispute.ledgerEntryId,
+    raisedBy: dispute.raisedBy,
+    reason: dispute.reason,
+    amountPaise: dispute.amount,
+    status: dispute.status,
+    resolutionNote: dispute.resolutionNote,
+    resolvedAt: dispute.resolvedAt,
+    createdAt: dispute.createdAt,
   };
 }
 
