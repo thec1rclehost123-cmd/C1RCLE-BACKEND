@@ -25,7 +25,7 @@
     "@commitlint/cli": "^20.1.0",
     "@commitlint/config-conventional": "^20.1.0",
     "@eslint/js": "^9.30.0",
-    "@vitest/coverage-v8": "^4.1.0",
+    "@vitest/coverage-v8": "^5.0.0",
     "eslint": "^9.30.0",
     "eslint-config-prettier": "^10.1.0",
     "eslint-import-resolver-node": "^0.3.9",
