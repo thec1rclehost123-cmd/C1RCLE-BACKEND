@@ -58,6 +58,7 @@ export function createBankAccountService(deps: BankAccountServiceDeps): BankAcco
       input.accountNumber,
       config.bankEncryptionSecret,
       config.bankEncryptionSalt,
+      input.organizationId,
     );
 
     const account = createBankAccount({
@@ -116,6 +117,7 @@ export function createBankAccountService(deps: BankAccountServiceDeps): BankAcco
       account.encryptedAccountNumber,
       config.bankEncryptionSecret,
       config.bankEncryptionSalt,
+      account.organizationId,
     );
   }
 
