@@ -26,10 +26,16 @@ import {
   createDoorService,
   createCoverWalletService,
   createDoorStatsService,
+  createFinanceService,
+  createPayoutService,
+  createBankAccountService,
   type ScannerService,
   type DoorService,
   type CoverWalletService,
   type DoorStatsService,
+  type FinanceService,
+  type PayoutService,
+  type BankAccountService,
   type ServiceDeps,
   type ActorContext,
 } from '@c1rcle/core/application';
@@ -121,6 +127,12 @@ export interface PartnerV2Services {
   coverWallet: CoverWalletService;
   /** Phase 5 (Founder Task B2): GET /door/stats read model. */
   doorStats: DoorStatsService;
+  /** Phase 6: ledger + balances. */
+  finance: FinanceService;
+  /** Phase 6: payout requests + lifecycle. */
+  payout: PayoutService;
+  /** Phase 6: bank account management. */
+  bankAccount: BankAccountService;
 }
 
 // Each route module calls `createV2Services()` independently at import time
@@ -298,6 +310,24 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     coverWallets: repositories.coverWallets,
   });
 
+  // Phase 6 services
+  const finance = createFinanceService({
+    ledger: repositories.ledger,
+    config: coreConfig,
+  });
+
+  const payout = createPayoutService({
+    payouts: repositories.payouts,
+    bankAccounts: repositories.bankAccounts,
+    ledger: repositories.ledger,
+    config: coreConfig,
+  });
+
+  const bankAccount = createBankAccountService({
+    bankAccounts: repositories.bankAccounts,
+    config: coreConfig,
+  });
+
   return {
     organizations: new OrganizationService(deps),
     venues: new VenueService(deps),
@@ -330,5 +360,9 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     door,
     coverWallet,
     doorStats,
+    // Phase 6
+    finance,
+    payout,
+    bankAccount,
   };
 }

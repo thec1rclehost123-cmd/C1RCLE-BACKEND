@@ -321,6 +321,28 @@ export {
   phase5ErrorCodeSchema,
 } from './contracts/phase5.js';
 
+// Phase 6: Finance / Ledger / Payouts
+export type {
+  LedgerEntryDto,
+  BalanceSummaryResponse,
+  PayoutRequest,
+  PayoutResponse,
+  BankAccountRequest,
+  BankAccountResponse,
+} from './contracts/phase6.js';
+
+export {
+  ledgerEntryDtoSchema,
+  ledgerEntryListResponseSchema,
+  balanceSummaryResponseSchema,
+  payoutRequestSchema,
+  payoutResponseSchema,
+  payoutListResponseSchema,
+  bankAccountRequestSchema,
+  bankAccountResponseSchema,
+  bankAccountListResponseSchema,
+} from './contracts/phase6.js';
+
 // Public / discovery (Phase 4 PR1)
 export type { HostPublicDto, DiscoveryFeedDto } from './contracts/public.js';
 export { hostPublicDtoSchema, discoveryFeedDtoSchema } from './contracts/public.js';

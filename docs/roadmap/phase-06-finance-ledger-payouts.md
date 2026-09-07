@@ -1,6 +1,6 @@
 # Phase 6 — Finance / Ledger / Payouts
 
-**Status:** not started · **Depends on:** Phase 4 (orders must exist to settle)
+**Status:** in progress (started 2026-09-07) — services + models + routes committed, disputes/leaderboard/checkout-integration pending · **Depends on:** Phase 4 (orders must exist to settle)
 
 v1 has **two coexisting systems** — pick one, do not port both.
 
@@ -58,4 +58,51 @@ which split formula wins.
 
 ## Session Log
 
-(none yet)
+### 2026-09-07 — Ledger + Balances + Payouts + Bank Accounts landed
+
+**Built** (System A, per this doc's recommendation): `domain/models/{ledger,payout,bank-account}.ts`
+(`computeSettlementSplit` — proven v1 formula, sums exactly to `grossAmount` by
+construction; `Payout` FSM `requested→processing→paid|failed`, ₹100 minimum;
+`BankAccount` with one-default-at-a-time invariant), `LedgerRepository`/
+`PayoutRepository`/`BankAccountRepository` ports + memory + firestore adapters,
+`finance-service.ts` (`recordTicketSale` idempotent per `orderId`,
+`getBalances` always recomputed from the ledger — no cache), `payout-service.ts`,
+`bank-account-service.ts` (AES-256-CBC envelope in `infrastructure/encryption.ts`,
+mirrors `thec1rcle`'s scheme; routes only ever see `maskedAccountNumber`).
+Routes: `apps/api-gateway/src/routes/v2/finance/finance-routes.ts` — balance,
+ledger list, payout request/list/get, bank-account add/list/set-default/delete,
+all `:organizationId`-scoped, reusing `organization.read`/`organization.update`
+RBAC permissions (no dedicated finance permission in the matrix yet). Contracts:
+`packages/contracts/src/contracts/phase6.ts`. 20 new domain tests + 6 new route
+tests, `pnpm check`-equivalent (lint/typecheck/test/boundaries) all green (203
+gateway tests total, up from 197).
+
+**NOT done, explicitly deferred:**
+- **Checkout webhook integration** (`checkout/webhook-routes.ts`'s
+  `payment.captured` handler calling `financeService.recordTicketSale`) —
+  investigated but NOT wired. Blocker: this doc's `recordTicketSale` signature
+  (ported from v1) takes `hostOrganizationId`/`venueOrganizationId`/
+  `promoterOrganizationId` as three organization ids, but V2's actual data
+  model doesn't carry three organizations per order — `Order.organizationId`
+  is the host, `Event.venueId → Venue.organizationId` is the venue (resolvable
+  via a repo lookup), but **promoter attribution is a `userId`
+  (`Order.attribution.promoterId`), not an organization** — V2 promoters are
+  users connected to a host/venue via `PromoterConnection`, not standalone
+  orgs like v1. Wiring the webhook without resolving this would either invent
+  a fake promoter-organization id or silently drop promoter commission
+  ledger entries — both wrong in a way that pays someone incorrectly. Needs a
+  design decision (does a promoter ledger entry key by `userId` instead of
+  `organizationId`? does `LedgerEntry.organizationId` need to become a
+  discriminated `{type: 'organization'|'user', id}`?) before wiring — flagging
+  for the next session rather than guessing.
+- **Dispute** and **Leaderboard** domains (from the original phase scope) —
+  not started this session; scoped out to ship the load-bearing ledger/payout/
+  bank-account core correctly and fully tested rather than five shallow
+  slices. Follow the same pattern (`domain/models/dispute.ts` +
+  `leaderboard.ts`, ports, service, memory+firestore adapters, routes,
+  contracts) — leaderboard also needs the increment-in-same-transaction hook
+  into `recordTicketSale`, so it's naturally sequenced after the webhook
+  integration above, not before.
+- Frontend wiring (regenerating `packages/contracts` into `C1RCLE-FRONTEND`
+  and replacing the `dataStatus: 'fixture'` finance screens) — out of scope
+  for this session, backend-only.

@@ -43,6 +43,9 @@ import type {
   CoverWalletRepository,
   CoverWalletTxnRepository,
   CoverWalletReconciliationRepository,
+  LedgerRepository,
+  PayoutRepository,
+  BankAccountRepository,
 } from '../domain/ports/repositories.js';
 import type { VerificationProvider } from '../domain/ports/verification.js';
 import type { Logger } from '../telemetry/logger.js';
@@ -115,6 +118,10 @@ export interface ServiceDeps {
     coverWallets: CoverWalletRepository;
     coverWalletTxns: CoverWalletTxnRepository;
     coverWalletReconciliations: CoverWalletReconciliationRepository;
+    // Phase 6
+    ledger: LedgerRepository;
+    payouts: PayoutRepository;
+    bankAccounts: BankAccountRepository;
   };
 }
 

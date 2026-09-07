@@ -101,3 +101,22 @@ export type {
   DoorStats,
 } from './door/door-stats-service.js';
 export { createDoorStatsService } from './door/door-stats-service.js';
+export type {
+  FinanceService,
+  FinanceServiceDeps,
+  RecordTicketSaleInput,
+  BalanceSummary,
+} from './finance/finance-service.js';
+export { createFinanceService } from './finance/finance-service.js';
+export type {
+  PayoutService,
+  PayoutServiceDeps,
+  RequestPayoutInput,
+} from './finance/payout-service.js';
+export { createPayoutService } from './finance/payout-service.js';
+export type {
+  BankAccountService,
+  BankAccountServiceDeps,
+  AddBankAccountInput,
+} from './finance/bank-account-service.js';
+export { createBankAccountService } from './finance/bank-account-service.js';

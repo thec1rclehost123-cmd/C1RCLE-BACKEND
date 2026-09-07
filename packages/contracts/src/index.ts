@@ -274,3 +274,24 @@ export {
   coverWalletReconciliationResponseSchema,
   phase5ErrorCodeSchema,
 } from './contracts/phase5.js';
+
+export type {
+  LedgerEntryDto,
+  BalanceSummaryResponse,
+  PayoutRequest,
+  PayoutResponse,
+  BankAccountRequest,
+  BankAccountResponse,
+} from './contracts/phase6.js';
+
+export {
+  ledgerEntryDtoSchema,
+  ledgerEntryListResponseSchema,
+  balanceSummaryResponseSchema,
+  payoutRequestSchema,
+  payoutResponseSchema,
+  payoutListResponseSchema,
+  bankAccountRequestSchema,
+  bankAccountResponseSchema,
+  bankAccountListResponseSchema,
+} from './contracts/phase6.js';

@@ -40,6 +40,9 @@ import {
   FirestoreCoverWalletRepository,
   FirestoreCoverWalletTxnRepository,
   FirestoreCoverWalletReconciliationRepository,
+  FirestoreLedgerRepository,
+  FirestorePayoutRepository,
+  FirestoreBankAccountRepository,
 } from './firestore/index.js';
 import {
   MemoryOrganizationRepository,
@@ -68,6 +71,9 @@ import {
   MemoryCoverWalletRepository,
   MemoryCoverWalletTxnRepository,
   MemoryCoverWalletReconciliationRepository,
+  MemoryLedgerRepository,
+  MemoryPayoutRepository,
+  MemoryBankAccountRepository,
 } from './memory/index.js';
 import { MemoryIdempotencyStore } from './memory/memory-idempotency-store.js';
 
@@ -121,6 +127,10 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
       coverWallets: new MemoryCoverWalletRepository(),
       coverWalletTxns: new MemoryCoverWalletTxnRepository(),
       coverWalletReconciliations: new MemoryCoverWalletReconciliationRepository(),
+      // Phase 6
+      ledger: new MemoryLedgerRepository(),
+      payouts: new MemoryPayoutRepository(),
+      bankAccounts: new MemoryBankAccountRepository(),
     };
   }
 
@@ -163,6 +173,10 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
     coverWallets: new FirestoreCoverWalletRepository(db),
     coverWalletTxns: new FirestoreCoverWalletTxnRepository(db),
     coverWalletReconciliations: new FirestoreCoverWalletReconciliationRepository(db),
+    // Phase 6
+    ledger: new FirestoreLedgerRepository(db),
+    payouts: new FirestorePayoutRepository(db),
+    bankAccounts: new FirestoreBankAccountRepository(db),
   };
 }
 

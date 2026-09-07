@@ -10,6 +10,7 @@
 
 import type { EntityId } from '../identity.js';
 import type { PlatformAdmin, ProposalStatus, ProposedAction } from '../models/admin-authority.js';
+import type { BankAccount } from '../models/bank-account.js';
 import type { CartReservation } from '../models/cart-reservation.js';
 import type {
   CoverWalletReconciliation,
@@ -45,6 +46,7 @@ import type {
   ScannerSessionCreateInput,
 } from '../models/event-code.js';
 import type { Event } from '../models/event.js';
+import type { LedgerEntry, LedgerEntryType } from '../models/ledger.js';
 import type { OnboardingRequest, OnboardingStatus } from '../models/onboarding.js';
 import type { Order } from '../models/order.js';
 import type {
@@ -53,6 +55,7 @@ import type {
   OrganizationMember,
 } from '../models/organization.js';
 import type { Partnership } from '../models/partnership.js';
+import type { Payout, PayoutStatus } from '../models/payout.js';
 import type { PromoterConnection } from '../models/promoter-connection.js';
 import type { ReferralLink } from '../models/referral-link.js';
 import type {
@@ -650,3 +653,40 @@ export interface CoverWalletReconciliationRepository {
     totalDiscrepancyAmount: number;
   }>;
 }
+
+// ─── Phase 6: Ledger, Payout, Bank Account ────────────────────────────────────
+
+/** Append-only settlement ledger — the sole source of truth for balances. */
+export interface LedgerRepository {
+  /** Idempotent: returns the existing entries if `orderId` was already recorded for this entryType set. */
+  createBatch(entries: LedgerEntry[]): Promise<LedgerEntry[]>;
+  findByOrder(orderId: EntityId): Promise<LedgerEntry[]>;
+  findByIdempotencyKey(idempotencyKey: string): Promise<LedgerEntry | null>;
+  listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<LedgerEntry>>;
+  /** Full recompute from every entry — used when the aggregate cache is missing/stale. */
+  sumByOrganizationAndType(
+    organizationId: EntityId,
+  ): Promise<Record<LedgerEntryType, { pending: number; settled: number; paidOut: number }>>;
+}
+
+/** Payout requests — draw-downs against the ledger-computed available balance. */
+export interface PayoutRepository {
+  create(payout: Payout): Promise<Payout>;
+  findById(id: EntityId): Promise<Payout | null>;
+  save(payout: Payout): Promise<Payout>;
+  listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Payout>>;
+  sumPaidByOrganization(organizationId: EntityId): Promise<number>;
+  sumRequestedOrProcessingByOrganization(organizationId: EntityId): Promise<number>;
+}
+
+/** Partner payout destinations. Full account number never leaves the adapter unmasked. */
+export interface BankAccountRepository {
+  create(account: BankAccount): Promise<BankAccount>;
+  findById(id: EntityId): Promise<BankAccount | null>;
+  listByOrganization(organizationId: EntityId): Promise<BankAccount[]>;
+  findDefaultByOrganization(organizationId: EntityId): Promise<BankAccount | null>;
+  save(account: BankAccount): Promise<BankAccount>;
+  delete(id: EntityId): Promise<void>;
+}
+
+export type { LedgerEntry, LedgerEntryType, Payout, PayoutStatus, BankAccount };
