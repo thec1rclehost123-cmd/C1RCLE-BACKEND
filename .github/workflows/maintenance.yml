@@ -37,9 +37,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+      # smoke.mjs uses only Node built-ins (fetch, fs) — no node_modules needed.
+      # Use the shared setup action (install: 'false') so pnpm is on PATH and
+      # the toolchain version is consistent with the rest of CI.
+      - uses: ./.github/actions/setup
         with:
-          node-version-file: .nvmrc
+          install: 'false'
+          turbo-cache: 'false'
 
       # The same assertions CI runs post-deploy — no dependencies required.
       - name: Smoke test production
