@@ -86,8 +86,11 @@ jobs:
   # `continue-on-error` is deliberately absent; `if: always()` on the steps is
   # what makes a single run report every failure at once instead of stopping at
   # the first, so one CI round trip tells you everything that is wrong.
+  # Skip if no code changes (docs-only PRs).
   static:
     name: Static analysis
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -147,8 +150,11 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ── Tests + coverage ratchet ───────────────────────────────────────────────
+  # Skip if no code changes (docs-only PRs).
   test:
     name: Build, test & coverage
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -254,6 +260,15 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Cache Trivy vulnerability database to avoid re-downloading on every run.
+      - name: Cache Trivy database
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/trivy
+          key: trivy-db-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            trivy-db-${{ runner.os }}-
+
       - name: Scan image for vulnerabilities
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -262,6 +277,7 @@ jobs:
           output: trivy-image.sarif
           severity: HIGH,CRITICAL
           ignore-unfixed: true
+          cache-dir: ~/.cache/trivy
 
       - name: Upload image scan results
         if: always()
@@ -280,6 +296,7 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: '1'
+          cache-dir: ~/.cache/trivy
 
       # Boot the image exactly the way Render does — NODE_ENV=production, so the
       # production-only config guards are the ones under test — and prove it

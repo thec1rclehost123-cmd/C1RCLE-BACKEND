@@ -13,3 +13,9 @@ onlyBuiltDependencies:
   - esbuild
   - protobufjs
   - unrs-resolver
+
+# Force tar >=7.5.21 across the entire workspace to remediate CVE-2026-73566.
+# The primary fix is the pnpm version bump (11.26.0 bundles a patched tar)
+# and the Dockerfile apt-get/sed patch; this is the npm-layer backstop.
+overrides:
+  tar: '>=7.5.21'

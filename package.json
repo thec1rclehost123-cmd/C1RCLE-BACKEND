@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "C1RCLE V2 Backend - Fastify API Gateway + modular core serving the C1RCLE-FRONTEND monorepo.",
-  "packageManager": "pnpm@11.20.0",
+  "packageManager": "pnpm@11.26.0",
   "engines": {
     "node": "^22.13.0 || >=24.0.0"
   },
@@ -42,10 +42,5 @@
     "typescript": "^5.9.0",
     "typescript-eslint": "^8.40.0",
     "vitest": "^4.1.0"
-  },
-  "pnpm": {
-    "overrides": {
-      "tar": ">=7.5.21"
-    }
   }
 }
