@@ -27,3 +27,4 @@ export * from './memory-ledger-repository.js';
 export * from './memory-payout-repository.js';
 export * from './memory-bank-account-repository.js';
 export * from './memory-dispute-repository.js';
+export * from './memory-leaderboard-repository.js';

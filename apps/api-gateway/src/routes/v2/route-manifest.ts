@@ -13,6 +13,7 @@ import phase5CoverWalletRoutes from './door/cover-wallet-routes.js';
 import phase5DoorSaleRoutes from './door/door-sale-routes.js';
 import phase5ScannerRoutes from './door/scanner-routes.js';
 import financeRoutes from './finance/finance-routes.js';
+import leaderboardRoutes from './finance/leaderboard-routes.js';
 import { internalRoutes } from './internal/index.js';
 import onboardingRoutes from './onboarding.js';
 import orderRoutes from './orders/orders-routes.js';
@@ -111,6 +112,7 @@ export async function registerV2Routes(app: FastifyInstance): Promise<void> {
       await phase5Routes(v2);
       // Phase 6: Finance / Ledger / Payouts
       await financeRoutes(v2);
+      await leaderboardRoutes(v2);
     },
     { prefix: '/api/v2' },
   );

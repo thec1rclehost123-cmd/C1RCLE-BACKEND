@@ -285,6 +285,9 @@ export type {
   RaiseDisputeRequest,
   ResolveDisputeRequest,
   DisputeResponse,
+  LeaderboardPeriodType,
+  LeaderboardQuery,
+  LeaderboardStatResponse,
 } from './contracts/phase6.js';
 
 export {
@@ -301,4 +304,8 @@ export {
   resolveDisputeRequestSchema,
   disputeResponseSchema,
   disputeListResponseSchema,
+  leaderboardPeriodTypeSchema,
+  leaderboardQuerySchema,
+  leaderboardStatResponseSchema,
+  leaderboardTopResponseSchema,
 } from './contracts/phase6.js';

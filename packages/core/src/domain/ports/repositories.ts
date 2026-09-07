@@ -47,6 +47,11 @@ import type {
   ScannerSessionCreateInput,
 } from '../models/event-code.js';
 import type { Event } from '../models/event.js';
+import type {
+  LeaderboardBucket,
+  LeaderboardPeriodType,
+  LeaderboardStat,
+} from '../models/leaderboard.js';
 import type { LedgerEntry, LedgerEntryType } from '../models/ledger.js';
 import type { OnboardingRequest, OnboardingStatus } from '../models/onboarding.js';
 import type { Order } from '../models/order.js';
@@ -707,6 +712,29 @@ export interface DisputeRepository {
   ): Promise<Page<Dispute>>;
 }
 
+/**
+ * Promoter leaderboard read-model — a fixed set of buckets incremented on
+ * every commission-earning ticket sale, never a versioned aggregate (no
+ * `save`/optimistic-lock: concurrent increments to the same bucket are
+ * commutative, so the adapter applies them additively instead).
+ */
+export interface LeaderboardRepository {
+  /** Applies one commission amount to every bucket in `buckets`, additively. */
+  incrementMany(
+    promoterId: EntityId,
+    buckets: LeaderboardBucket[],
+    amountPaise: number,
+    now: string,
+  ): Promise<void>;
+  getForPromoter(promoterId: EntityId, bucket: LeaderboardBucket): Promise<LeaderboardStat | null>;
+  top(
+    periodType: LeaderboardPeriodType,
+    periodValue: string,
+    city: string,
+    limit: number,
+  ): Promise<LeaderboardStat[]>;
+}
+
 export type {
   LedgerEntry,
   LedgerEntryType,
@@ -715,4 +743,7 @@ export type {
   BankAccount,
   Dispute,
   DisputeStatus,
+  LeaderboardStat,
+  LeaderboardBucket,
+  LeaderboardPeriodType,
 };

@@ -4,6 +4,7 @@ import { platformFeePercentFor } from '../../domain/models/onboarding.js';
 import { commissionTierFor } from '../../domain/models/partnership.js';
 import { SYSTEM_ACTOR } from '../context.js';
 import { createFinanceService } from '../finance/finance-service.js';
+import { createLeaderboardService } from '../finance/leaderboard-service.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type { CartReservation } from '../../domain/models/cart-reservation.js';
@@ -12,6 +13,7 @@ import type { Order } from '../../domain/models/order.js';
 import type { PricingBreakdown } from '../../domain/models/pricing.js';
 import type { ActorContext, ServiceDeps } from '../context.js';
 import type { FinanceService } from '../finance/finance-service.js';
+import type { LeaderboardService } from '../finance/leaderboard-service.js';
 
 /** Referral attribution captured at quote time, carried through to the hold. */
 export interface CheckoutAttribution {
@@ -28,10 +30,15 @@ export interface CheckoutAttribution {
  */
 export class CheckoutService {
   private readonly financeService: FinanceService;
+  private readonly leaderboardService: LeaderboardService;
 
   constructor(private readonly deps: ServiceDeps) {
     this.financeService = createFinanceService({
       ledger: deps.repositories.ledger,
+      config: deps.config,
+    });
+    this.leaderboardService = createLeaderboardService({
+      leaderboard: deps.repositories.leaderboard,
       config: deps.config,
     });
   }
@@ -389,7 +396,7 @@ export class CheckoutService {
       promoterCommissionRate = commissionTierFor(ticketsSold).rate / 100;
     }
 
-    await this.financeService.recordTicketSale(
+    const entries = await this.financeService.recordTicketSale(
       {
         organizationId: hostOrganizationId,
         orderId: order.id,
@@ -404,6 +411,25 @@ export class CheckoutService {
       },
       SYSTEM_ACTOR,
     );
+
+    // Leaderboard: increments in the same call as the ledger write it is
+    // derived from (v1's "Option 3" time & location matrix), keyed by the
+    // ACTUAL commission amount the ledger recorded — never recomputed here,
+    // so the two can never drift from each other.
+    if (promoterOrganizationId) {
+      const commissionEntry = entries.find((e) => e.entryType === 'promoter_commission');
+      if (commissionEntry && commissionEntry.amount > 0) {
+        const city = event?.venueId
+          ? (await this.deps.repositories.venues.getById(event.venueId))?.public.address.city
+          : null;
+        await this.leaderboardService.recordCommission(
+          promoterOrganizationId,
+          commissionEntry.amount,
+          city,
+          new Date(),
+        );
+      }
+    }
   }
 
   /**

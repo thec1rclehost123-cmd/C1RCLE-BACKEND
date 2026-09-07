@@ -30,6 +30,7 @@ import {
   createPayoutService,
   createBankAccountService,
   createDisputeService,
+  createLeaderboardService,
   type ScannerService,
   type DoorService,
   type CoverWalletService,
@@ -38,6 +39,7 @@ import {
   type PayoutService,
   type BankAccountService,
   type DisputeService,
+  type LeaderboardService,
   type ServiceDeps,
   type ActorContext,
 } from '@c1rcle/core/application';
@@ -137,6 +139,8 @@ export interface PartnerV2Services {
   bankAccount: BankAccountService;
   /** Phase 6: dispute lifecycle. */
   dispute: DisputeService;
+  /** Phase 6: promoter leaderboard. */
+  leaderboard: LeaderboardService;
 }
 
 // Each route module calls `createV2Services()` independently at import time
@@ -337,6 +341,11 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     config: coreConfig,
   });
 
+  const leaderboard = createLeaderboardService({
+    leaderboard: repositories.leaderboard,
+    config: coreConfig,
+  });
+
   return {
     organizations: new OrganizationService(deps),
     venues: new VenueService(deps),
@@ -374,5 +383,6 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     payout,
     bankAccount,
     dispute,
+    leaderboard,
   };
 }

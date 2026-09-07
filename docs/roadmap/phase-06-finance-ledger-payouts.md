@@ -1,6 +1,6 @@
 # Phase 6 — Finance / Ledger / Payouts
 
-**Status:** in progress (started 2026-09-07) — ledger/payouts/bank-accounts/disputes/checkout-integration done + tested; only leaderboard pending · **Depends on:** Phase 4 (orders must exist to settle)
+**Status:** done (2026-09-08) — ledger, balances, payouts, bank accounts, disputes, checkout-webhook integration, and promoter leaderboard all built and tested · **Depends on:** Phase 4 (orders must exist to settle)
 
 v1 has **two coexisting systems** — pick one, do not port both.
 
@@ -185,3 +185,38 @@ here would misallocate real money, so this settles the entire non-platform-
 fee gross to the host until a real rate field is added (naturally, to
 `Partnership` — it already resolves the venue-org pairing) and wired through
 `recordSettlement`. Tracked here, not silently guessed.
+
+### 2026-09-08 — Promoter leaderboard landed, Phase 6 complete
+
+**Built**, same pattern as every prior Phase 6 slice: `domain/models/leaderboard.ts`
+(pure functions — `periodBucketsFor` ports v1's ISO-week date math exactly,
+6 buckets per commission event: `{all_time, month, week} x {global, city}`;
+`normalizeCity` never returns empty, so a promoter with no resolvable city
+still lands in real `'unknown'`-city buckets rather than being silently
+dropped), `LeaderboardRepository` port + memory/firestore adapters
+(`v2_leaderboard_stats`, additive increments — no versioned aggregate, since
+concurrent increments to the same bucket are commutative; the Firestore
+adapter uses `FieldValue.increment` inside one transaction across all 6
+buckets, matching v1's "Option 3" write exactly), `leaderboard-service.ts`
+(`recordCommission` — system-only, called from `CheckoutService.recordSettlement`
+right after `recordTicketSale`, keyed by the ACTUAL ledger-recorded commission
+amount rather than recomputed, so the two can never drift; `getTop` — public,
+no actor; `getMine` — `requireOrgAccess`-gated, a promoter viewing its own
+standing). Routes: `GET /leaderboard` (public, `PUBLIC_READ`, matches v1's
+public-facing ranking) and `GET /organizations/:organizationId/leaderboard/me`
+(org-scoped, returns a real zero rather than 404 when nothing earned yet).
+Contracts in `phase6.ts`. 6 new domain tests (including an ISO-week
+year-boundary edge case) + 5 new route tests, all green.
+
+**Correction from the roadmap's original scoping note:** "ranked by xp" does
+not match anything found in the v1 reference — v1's `finance-service.ts`
+ranks by `totalCommissionEarned`. That is what got ported; an XP/gamification
+layer, if wanted, would sit on top of this as a separate concern.
+
+**Phase 6 is now fully done**: ledger, balances, payouts, bank accounts,
+disputes, the checkout-webhook integration, and the promoter leaderboard are
+all built, wired, and tested. Remaining known gaps are tracked, not hidden:
+`venueShareRate` (above) and frontend wiring (regenerating
+`packages/contracts` into `C1RCLE-FRONTEND` and replacing the
+`dataStatus: 'fixture'` finance screens) — both explicitly out of scope for
+this backend-only phase.

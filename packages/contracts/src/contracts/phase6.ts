@@ -120,3 +120,31 @@ export const disputeResponseSchema = z.object({
 export type DisputeResponse = z.infer<typeof disputeResponseSchema>;
 
 export const disputeListResponseSchema = paginatedSchema(disputeResponseSchema);
+
+// Leaderboard
+export const leaderboardPeriodTypeSchema = z.enum(['all_time', 'month', 'week']);
+export type LeaderboardPeriodType = z.infer<typeof leaderboardPeriodTypeSchema>;
+
+export const leaderboardQuerySchema = z.object({
+  periodType: leaderboardPeriodTypeSchema.default('all_time'),
+  /** Omit for the current period ('all' for all_time, else the server's current month/week). */
+  periodValue: z.string().max(20).optional(),
+  /** Omit or 'global' for the cross-city ranking. */
+  city: z.string().max(80).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+export type LeaderboardQuery = z.infer<typeof leaderboardQuerySchema>;
+
+export const leaderboardStatResponseSchema = z.object({
+  promoterId: opaqueIdSchema,
+  periodType: leaderboardPeriodTypeSchema,
+  periodValue: z.string(),
+  city: z.string(),
+  totalCommissionEarnedPaise: z.number().int().nonnegative(),
+  updatedAt: z.iso.datetime(),
+});
+export type LeaderboardStatResponse = z.infer<typeof leaderboardStatResponseSchema>;
+
+export const leaderboardTopResponseSchema = z.object({
+  items: z.array(leaderboardStatResponseSchema),
+});
