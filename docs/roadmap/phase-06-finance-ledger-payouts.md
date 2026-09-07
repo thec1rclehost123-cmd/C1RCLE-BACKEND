@@ -1,6 +1,6 @@
 # Phase 6 — Finance / Ledger / Payouts
 
-**Status:** in progress (started 2026-09-07) — ledger/payouts/bank-accounts/disputes done + tested; leaderboard + checkout-integration pending · **Depends on:** Phase 4 (orders must exist to settle)
+**Status:** in progress (started 2026-09-07) — ledger/payouts/bank-accounts/disputes/checkout-integration done + tested; only leaderboard pending · **Depends on:** Phase 4 (orders must exist to settle)
 
 v1 has **two coexisting systems** — pick one, do not port both.
 
@@ -129,9 +129,59 @@ memory/firestore adapters (`v2_disputes` collection), `dispute-service.ts`
 .../disputes/:disputeId/resolve`), contracts in `phase6.ts`. 7 new domain
 tests + 6 new route tests, all green.
 
-**NOT done, still deferred:** Leaderboard (sequenced after the checkout
-webhook per the note above — needs the increment-in-same-transaction hook),
-checkout-webhook integration (promoter-attribution design gap unchanged —
-still needs a decision before `Order.attribution.promoterId` (a `userId`)
-can flow into `recordTicketSale`'s organization-keyed ledger), frontend
-wiring.
+**NOT done, still deferred:** Leaderboard (needs the increment-in-same-
+transaction hook into `recordTicketSale`, now available — no longer blocked,
+just not built), frontend wiring.
+
+### 2026-09-08 — Checkout-webhook integration landed (promoter-attribution gap corrected)
+
+**The prior session's blocker was a misdiagnosis, corrected before building
+anything on top of it.** It read `Order.attribution.promoterId` as a bare
+`userId`, incompatible with `recordTicketSale`'s organization-keyed
+`promoterOrganizationId` parameter. Tracing the actual write path
+(`promoter-connection-service.ts`'s `promoterId = actor.organizationId`,
+`referral-link-service.ts`'s `command.promoterId` sourced from the host's own
+choice of promoter org, `checkout-service.ts`'s `attribution.promoterId =
+link.promoterId`) shows `promoterId` is consistently an **organizationId**
+throughout — the promoter's own Organization (`capability: 'promoter'`),
+never a userId. `recordTicketSale`'s existing signature was already correct;
+no domain/schema change was needed, only the actual wiring.
+
+**Built:**
+- `application/context.ts`: `isSystemActor`/`SYSTEM_ACTOR` — a centralized,
+  non-forgeable system-actor bypass for `requireOrgAccess` (a webhook or
+  other server-triggered write has no request-scoped tenant to compare
+  against; `userId` prefix `system:` is never reachable from a session-
+  derived `ActorContext`, so no request can forge it).
+- `OnboardingRepository.findByProvisionedOrganizationId` (+ memory/firestore
+  adapters) — resolves an org's plan tier from the approved onboarding
+  request that provisioned it, feeding `platformFeePercentFor` (already
+  ported from v1 in `onboarding.ts`, not reimplemented).
+- `CheckoutService.recordSettlement` (`checkout-service.ts`), called once
+  from `confirmPayment`'s single happy-path return (the only writer,
+  idempotent by construction — `recordTicketSale` dedups by `orderId`; both
+  the webhook and redirect-confirm paths converge on the same
+  `orders.save` race, so only the actual winner ever reaches this line):
+  resolves `hostOrganizationId` (`order.organizationId`), `venueOrganizationId`
+  (via the host↔venue `Partnership` for the event's venue, falling back to
+  the host itself for a host-run event with no partnership), `platformFeeRate`
+  (host's onboarding plan, defaulting to `basic`/15% — the highest rate —
+  if no approved request is on file, so a missing record never under-
+  charges), and `promoterCommissionRate` (the v1-proven performance tier,
+  `commissionTierFor`/`PROMOTER_COMMISSION_TIERS` in `partnership.ts`, keyed
+  by the promoter's total attributed conversions). Constructs its own
+  `FinanceService` instance from `deps.repositories.ledger` + `deps.config`
+  and calls `recordTicketSale` with `SYSTEM_ACTOR` — never the buyer's own
+  session actor, which is not a member of the orgs being credited.
+- New route test: `webhook-routes.test.ts` — asserts the 4-leg ledger split
+  lands after a `payment.captured` webhook, correct basic-tier platform fee,
+  and that a retried webhook delivery does not double the ledger.
+
+**Known, honest limitation — not a bug, a real gap:** `venueShareRate`
+settles to **0** unconditionally. No persisted venue-revenue-share
+configuration exists anywhere in the domain — `Partnership` carries no
+negotiated rate field, and no other model does either. Inventing a number
+here would misallocate real money, so this settles the entire non-platform-
+fee gross to the host until a real rate field is added (naturally, to
+`Partnership` — it already resolves the venue-org pairing) and wired through
+`recordSettlement`. Tracked here, not silently guessed.

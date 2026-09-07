@@ -304,6 +304,12 @@ export interface OnboardingRepository {
     status: OnboardingStatus | null,
     query: PaginationQuery,
   ): Promise<Page<OnboardingRequest>>;
+  /**
+   * The approved request that provisioned this organization — the only
+   * record of its plan tier (Phase 6: `platformFeePercentFor`). At most one
+   * approved request can carry a given `provisionedOrganizationId`.
+   */
+  findByProvisionedOrganizationId(organizationId: EntityId): Promise<OnboardingRequest | null>;
   save(request: OnboardingRequest, tx?: TxContext | null): Promise<void>;
 }
 

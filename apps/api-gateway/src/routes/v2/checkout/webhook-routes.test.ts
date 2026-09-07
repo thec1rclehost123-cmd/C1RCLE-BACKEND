@@ -267,4 +267,58 @@ describe('POST /webhooks/payments/razorpay', () => {
     expect(recheck.json().order.version).toBe(1);
     await server.close();
   });
+
+  it('records the settlement ledger split exactly once (Phase 6 checkout-webhook integration)', async () => {
+    const server = await buildServer();
+    const { holdId, grandTotalPaise } = await seedHold(server);
+    const paymentIntentId = await createPaymentIntent(server, holdId);
+    const paymentId = 'pay_ledger_1';
+    memoryProvider().simulateCapture(paymentId, grandTotalPaise);
+    const body = webhookPayload({ id: paymentId, order_id: paymentIntentId, holdId });
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/webhooks/payments/razorpay',
+      headers: { 'content-type': 'application/json', 'x-razorpay-signature': sign(body) },
+      payload: body,
+    });
+    expect(response.statusCode).toBe(200);
+
+    const orderId = `ORD-${paymentId}`;
+    const entries = await createV2Services().repos().ledger.findByOrder(orderId);
+    // No venue partnership (venue created directly under the host org via
+    // seedHold, so the host<->venue Partnership lookup finds nothing and
+    // settlement falls back to host-only), no promoter attribution -> the 4
+    // unconditional legs finance-service always writes: ticket_revenue
+    // (settled), platform_fee, venue_share (0 — no configured rate yet),
+    // host_payout.
+    expect(entries.map((e) => e.entryType).sort()).toEqual(
+      ['host_payout', 'platform_fee', 'ticket_revenue', 'venue_share'].sort(),
+    );
+    const revenue = entries.find((e) => e.entryType === 'ticket_revenue');
+    expect(revenue?.amount).toBe(grandTotalPaise);
+    expect(revenue?.status).toBe('settled');
+    // basic-tier platform fee (15%) is the documented fallback when no
+    // approved onboarding request is on file for the host org.
+    const platformFee = entries.find((e) => e.entryType === 'platform_fee');
+    expect(platformFee?.amount).toBe(Math.round(grandTotalPaise * 0.15));
+    const venueShare = entries.find((e) => e.entryType === 'venue_share');
+    expect(venueShare?.amount).toBe(0);
+
+    // A second delivery of the same event (Razorpay retry semantics) must
+    // not double the ledger — confirmPayment's own orderId idempotency
+    // means recordSettlement is only ever reached on the winning call, and
+    // recordTicketSale itself dedups by orderId as a second guard.
+    const retry = await server.inject({
+      method: 'POST',
+      url: '/webhooks/payments/razorpay',
+      headers: { 'content-type': 'application/json', 'x-razorpay-signature': sign(body) },
+      payload: body,
+    });
+    expect(retry.statusCode).toBe(200);
+    const entriesAfterRetry = await createV2Services().repos().ledger.findByOrder(orderId);
+    expect(entriesAfterRetry).toHaveLength(entries.length);
+
+    await server.close();
+  });
 });

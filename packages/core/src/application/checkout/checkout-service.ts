@@ -1,5 +1,9 @@
 import { InvalidOperationError, VersionConflictError } from '../../domain/errors.js';
 import { issueEntitlements } from '../../domain/models/entitlement.js';
+import { platformFeePercentFor } from '../../domain/models/onboarding.js';
+import { commissionTierFor } from '../../domain/models/partnership.js';
+import { SYSTEM_ACTOR } from '../context.js';
+import { createFinanceService } from '../finance/finance-service.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type { CartReservation } from '../../domain/models/cart-reservation.js';
@@ -7,6 +11,7 @@ import type { Entitlement } from '../../domain/models/entitlement.js';
 import type { Order } from '../../domain/models/order.js';
 import type { PricingBreakdown } from '../../domain/models/pricing.js';
 import type { ActorContext, ServiceDeps } from '../context.js';
+import type { FinanceService } from '../finance/finance-service.js';
 
 /** Referral attribution captured at quote time, carried through to the hold. */
 export interface CheckoutAttribution {
@@ -22,7 +27,14 @@ export interface CheckoutAttribution {
  * All mutations are idempotent and use the transactional outbox for fulfillment events.
  */
 export class CheckoutService {
-  constructor(private readonly deps: ServiceDeps) {}
+  private readonly financeService: FinanceService;
+
+  constructor(private readonly deps: ServiceDeps) {
+    this.financeService = createFinanceService({
+      ledger: deps.repositories.ledger,
+      config: deps.config,
+    });
+  }
 
   /**
    * Step 1: Quote — calculates pricing for a set of lines + promo.
@@ -313,7 +325,85 @@ export class CheckoutService {
     }
 
     const entitlements = await this.deps.repositories.entitlements.getByOrderId(orderId);
+
+    // Settlement: the only writer into the partner ledger for a ticket sale
+    // (roadmap: "the only writer, called from checkout confirmation"). Both
+    // the webhook and redirect-confirm paths converge here, but only the
+    // path that actually wins the `orders.save` race above reaches this
+    // line — `recordTicketSale` is itself idempotent per orderId, so even a
+    // retry that somehow reached here twice would be a no-op.
+    await this.recordSettlement(order);
+
     return { order, entitlements };
+  }
+
+  /**
+   * Resolves the three settlement organizations + rates for an order and
+   * writes the ledger split. Uses `SYSTEM_ACTOR`, not the caller's actor —
+   * the buyer confirming their own payment is not a member of the host,
+   * venue, or promoter organizations being credited, so their session actor
+   * is never the right actor for this write; `requireOrgAccess` treats a
+   * system actor as pre-authorized (see `context.ts`).
+   */
+  private async recordSettlement(order: Order): Promise<void> {
+    const hostOrganizationId = order.organizationId;
+
+    // Venue org: resolved via the host<->venue Partnership for the event's
+    // venue. A host-run event with no venue partnership settles entirely to
+    // the host — there is no separate venue party to pay.
+    let venueOrganizationId = hostOrganizationId;
+    const event = await this.deps.repositories.events.getById(order.eventId);
+    if (event?.venueId) {
+      const partnership = await this.deps.repositories.partnerships.findByPair(
+        hostOrganizationId,
+        event.venueId,
+      );
+      if (partnership) venueOrganizationId = partnership.venueOrganizationId;
+    }
+
+    // Platform fee rate: the host's onboarding plan tier (Phase 2), the only
+    // place a plan is recorded. Falls back to the `basic` (highest) rate if
+    // no approved onboarding request is on file — a missing record must
+    // never under-charge the platform fee.
+    const onboarding =
+      await this.deps.repositories.onboarding.findByProvisionedOrganizationId(hostOrganizationId);
+    const platformFeeRate = platformFeePercentFor(onboarding?.plan ?? 'basic') / 100;
+
+    // Venue revenue-share rate: no persisted source exists yet anywhere in
+    // the domain (Partnership carries no negotiated rate field). Rather than
+    // fabricating a number that would misallocate real money, this settles
+    // 0 to the venue until a rate is actually configurable — tracked in
+    // docs/roadmap/phase-06-finance-ledger-payouts.md.
+    const venueShareRate = 0;
+
+    // Promoter commission rate: the v1-proven performance tier, keyed by the
+    // promoter's total attributed conversions across all their links.
+    const promoterOrganizationId = order.attribution?.promoterId ?? null;
+    let promoterCommissionRate: number | null = null;
+    if (promoterOrganizationId) {
+      const links = await this.deps.repositories.referralLinks.listByPromoter(
+        promoterOrganizationId,
+        { limit: 1000, cursor: null },
+      );
+      const ticketsSold = links.items.reduce((sum, link) => sum + link.conversions, 0);
+      promoterCommissionRate = commissionTierFor(ticketsSold).rate / 100;
+    }
+
+    await this.financeService.recordTicketSale(
+      {
+        organizationId: hostOrganizationId,
+        orderId: order.id,
+        eventId: order.eventId,
+        grossAmount: order.grandTotalPaise,
+        hostOrganizationId,
+        venueOrganizationId,
+        promoterOrganizationId,
+        platformFeeRate,
+        venueShareRate,
+        promoterCommissionRate,
+      },
+      SYSTEM_ACTOR,
+    );
   }
 
   /**

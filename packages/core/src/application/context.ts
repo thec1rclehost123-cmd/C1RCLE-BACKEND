@@ -128,10 +128,38 @@ export interface ServiceDeps {
 }
 
 /**
+ * A well-known, non-forgeable actor for server-triggered work with no human
+ * session behind it (e.g. the Razorpay webhook route, authenticated by HMAC
+ * signature rather than a session). `userId` prefix is the marker
+ * `isSystemActor` checks — never constructible from request input, since
+ * every session-derived `ActorContext` comes from `buildActorContext`, not a
+ * client-supplied userId.
+ */
+export function isSystemActor(actor: ActorContext): boolean {
+  return actor.userId.startsWith('system:');
+}
+
+/**
+ * Canonical system actor for internal writes with no request-scoped actor to
+ * reuse (settlement ledger recording: the buyer confirming their own payment
+ * is not an org member of the host/venue/promoter orgs being credited, so
+ * their own session actor is never the right actor for this write).
+ */
+export const SYSTEM_ACTOR: ActorContext = {
+  userId: 'system:internal',
+  organizationId: '',
+  role: 'member',
+  capabilities: [],
+};
+
+/**
  * Guards that the actor's org matches the org being mutated. Throws
- * `ForbiddenError` rather than leaking existence of the resource.
+ * `ForbiddenError` rather than leaking existence of the resource. A system
+ * actor (see `isSystemActor`) bypasses the check — it is never derived from a
+ * request, so there is no tenant to compare against.
  */
 export function requireOrgAccess(actor: ActorContext, organizationId: EntityId): void {
+  if (isSystemActor(actor)) return;
   if (actor.organizationId !== organizationId) {
     throw new ForbiddenError('Cross-tenant access denied');
   }
