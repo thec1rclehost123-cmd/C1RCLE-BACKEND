@@ -18,3 +18,5 @@ coverage/
 # with their own node_modules) — was untracked-but-unignored, one `git add -A`
 # away from staging both worktrees' entire source trees into this repo.
 .claude/
+# Added by code-review-graph
+.code-review-graph/
