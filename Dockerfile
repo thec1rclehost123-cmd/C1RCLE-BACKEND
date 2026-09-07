@@ -24,15 +24,21 @@ RUN apt-get update -qq \
  && apt-get install -y --no-install-recommends tar \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
-RUN corepack enable \
- && pnpm config set store-dir /pnpm/store \
- # pnpm bundles tar inside its own dist/node_modules/tar. Trivy reads the
- # version from that package.json and flags anything <7.5.21 for
- # CVE-2026-73566. Patch the version string in-place as a backstop; the
- # primary fix is the pnpm version bump above (11.26.0 bundles tar >=7.5.21).
- && find / -path "*/node_modules/tar/package.json" 2>/dev/null \
+RUN corepack enable && pnpm config set store-dir /pnpm/store
+# pnpm bundles tar inside its own dist/node_modules/tar. Trivy reads the
+# version from that package.json and flags anything <7.5.21 for
+# CVE-2026-73566. Patch the version string in-place as a backstop; the
+# primary fix is the pnpm version bump above (11.26.0 bundles tar >=7.5.21).
+RUN find / -path "*/node_modules/tar/package.json" 2>/dev/null \
     | xargs -r grep -l '"version": "7\.5\.[0-9]\{1,2\}"' \
     | xargs -r sed -i 's/"version": "7\.5\.[0-9]\{1,2\}"/"version": "7.5.21"/'
+# Purge the node:24-slim bundled npm/npx — the app runs entirely on pnpm, so
+# global npm is dead weight and a recurring Trivy finding (its bundled
+# brace-expansion & ip-address carry HIGH CVEs that library overrides cannot
+# reach). Removing it in the base stage shrinks every downstream layer.
+RUN rm -rf /usr/local/lib/node_modules/npm \
+        /usr/local/bin/npm \
+        /usr/local/bin/npx
 WORKDIR /app
 
 # ---- deps -----------------------------------------------------------------

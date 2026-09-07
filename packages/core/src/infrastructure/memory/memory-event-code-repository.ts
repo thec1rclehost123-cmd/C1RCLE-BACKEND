@@ -213,7 +213,6 @@ export class MemoryScannerSessionRepository implements ScannerSessionRepository 
   }
 
   async cleanupExpired(): Promise<number> {
-    const now = new Date().toISOString();
     let count = 0;
     for (const [id, session] of this.sessions) {
       if (!session.revokedAt && new Date(session.expiresAt) <= new Date()) {

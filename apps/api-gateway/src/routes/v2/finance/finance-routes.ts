@@ -372,16 +372,14 @@ function mapDomainError(
 ): undefined {
   const known = error as { code?: string; message?: string };
   if (known?.code === 'not_found' || (error instanceof Error && error.message === 'not_found')) {
-    reply
-      .status(404)
-      .send(
-        buildV2ErrorResponse({
-          status: 404,
-          message: 'Not found',
-          code: 'not_found',
-          requestId: request.id,
-        }),
-      );
+    reply.status(404).send(
+      buildV2ErrorResponse({
+        status: 404,
+        message: 'Not found',
+        code: 'not_found',
+        requestId: request.id,
+      }),
+    );
     return undefined;
   }
   if (known?.code === 'unauthorized') {
@@ -431,15 +429,13 @@ function mapDomainError(
     return undefined;
   }
   request.log.error({ resourceId, err: error }, 'unmapped_domain_error');
-  reply
-    .status(500)
-    .send(
-      buildV2ErrorResponse({
-        status: 500,
-        message: 'Internal server error',
-        code: 'server',
-        requestId: request.id,
-      }),
-    );
+  reply.status(500).send(
+    buildV2ErrorResponse({
+      status: 500,
+      message: 'Internal server error',
+      code: 'server',
+      requestId: request.id,
+    }),
+  );
   return undefined;
 }
