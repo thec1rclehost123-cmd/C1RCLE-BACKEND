@@ -11,9 +11,9 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, staging]
   push:
-    branches: [main]
+    branches: [main, staging]
   merge_group:
   workflow_dispatch:
     inputs:
@@ -230,6 +230,34 @@ jobs:
         with:
           path: .coverage-baseline
           key: coverage-baseline-${{ github.event.repository.default_branch }}-${{ github.sha }}
+
+  # ── End-to-end scenario suite (main only) ─────────────────────────────────
+  # The two `/api/v2` business journeys (host lifecycle; guest purchase → door
+  # → check-in → finance settlement) run over the FULL wired `buildApp()` on
+  # the memory driver. This is the trunk-merge safety net. It lives in
+  # `apps/api-gateway/scenarios/` — OUTSIDE `src/` so the unit `test` task never
+  # runs it by accident — and is gated to pushes on `main` only: the branch that
+  # deploys to production, where a regression here becomes an incident. Running
+  # it on every PR/staging commit would roughly double CI wall time for little
+  # added signal; staging reuses the fast unit gates until a merge approaches.
+  # `ci-ok` treats this as `skipped` (a pass) on non-main runs.
+  scenario:
+    name: Scenario suite (main only)
+    needs: changes
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+
+      # No build step needed: `@c1rcle/core` and `@c1rcle/contracts` publish
+      # their exports maps straight to `./src/*.ts`, which the vitest transform
+      # compiles on the fly — exactly how the existing unit `test` task works.
+      - name: Run the scenario suite
+        run: pnpm test:scenarios
 
   # ── The image that actually ships ──────────────────────────────────────────
   docker:
@@ -472,7 +500,7 @@ jobs:
   ci-ok:
     name: CI OK
     if: always()
-    needs: [static, test, docker, contract-parity, actionlint, commit-lint]
+    needs: [static, test, scenario, docker, contract-parity, actionlint, commit-lint]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
