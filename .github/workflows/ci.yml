@@ -310,6 +310,7 @@ jobs:
             -e STORAGE_DRIVER=memory \
             -e BETTER_AUTH_SECRET="$(openssl rand -hex 32)" \
             -e BETTER_AUTH_URL="https://smoke.invalid" \
+            -e EMAIL_OTP_SECRET="$(openssl rand -hex 32)" \
             "c1rcle-backend:${GITHUB_SHA}"
           for i in $(seq 1 45); do
             if curl -fsS http://localhost:8080/api/v2/internal/health > /tmp/health.json; then
