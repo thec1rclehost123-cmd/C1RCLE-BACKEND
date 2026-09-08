@@ -83,7 +83,7 @@ export default async function otpRoutes(fastify: FastifyInstance) {
         .verify(body.email, body.code)
         .then(() => true as const)
         .catch((error: unknown) => {
-          mapDomainError(reply, request, error);
+          mapVerifyError(reply, request, error);
           return undefined;
         });
       if (result === undefined) return reply;
@@ -96,13 +96,23 @@ export default async function otpRoutes(fastify: FastifyInstance) {
   );
 }
 
-function mapDomainError(reply: FastifyReply, request: FastifyRequest, error: unknown): undefined {
-  const known = error as { code?: string; message?: string };
+/**
+ * Deliberately collapses every failure reason (no OTP ever sent to this
+ * address / wrong code / expired / locked out) into one generic message and
+ * status. The domain layer's four distinct `InvalidOperationError` messages
+ * exist for logging/debugging, not for the wire: surfacing "no verification
+ * in progress for this address" as a status distinct from "wrong code"
+ * would let an attacker probe arbitrary emails for whether a signup is
+ * pending — the same enumeration concern `/otp/send`'s generic ack already
+ * guards against, just from the other endpoint.
+ */
+function mapVerifyError(reply: FastifyReply, request: FastifyRequest, error: unknown): undefined {
+  const known = error as { code?: string };
   if (known?.code === 'invalid_operation') {
     reply.status(400).send(
       buildV2ErrorResponse({
         status: 400,
-        message: known.message ?? 'Invalid request',
+        message: 'Invalid or expired code.',
         code: 'validation',
         requestId: request.id,
       }),

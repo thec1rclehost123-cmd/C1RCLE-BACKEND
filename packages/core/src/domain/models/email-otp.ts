@@ -1,4 +1,4 @@
-import { createHash, randomInt } from 'node:crypto';
+import { createHmac, randomInt, timingSafeEqual } from 'node:crypto';
 
 import { InvalidOperationError } from '../errors.js';
 
@@ -6,10 +6,17 @@ import { InvalidOperationError } from '../errors.js';
  * ─── Email OTP (auth signup/verification) ───────────────────────────────────
  *
  * Ported from v1's proven `guest-otp.ts` rules: 6-digit numeric code, hashed
- * at rest (SHA-256, never plaintext), 10-minute expiry, 60-second resend
- * cooldown per recipient, 5-attempt lockout. One improvement over v1: the
- * code is generated with `crypto.randomInt` (CSPRNG) rather than
- * `Math.random()` — v1's generator was not cryptographically secure.
+ * at rest, 10-minute expiry, 60-second resend cooldown per recipient,
+ * 5-attempt lockout. Two deliberate improvements over v1:
+ *  - the code is generated with `crypto.randomInt` (CSPRNG) rather than
+ *    `Math.random()` — v1's generator was not cryptographically secure;
+ *  - the code is hashed with HMAC-SHA256 keyed by a server secret
+ *    (`config.emailOtpSecret`), not bare `SHA-256(code)` — a 6-digit code
+ *    has only 10^6 possibilities, so an unsalted/unkeyed hash is brute-forced
+ *    offline in milliseconds if the row ever leaks; the HMAC key is what an
+ *    attacker with DB read access does not also have. Comparison is
+ *    constant-time (`timingSafeEqual`) so a leaked response-time difference
+ *    can't be used to narrow the search either.
  *
  * One doc per recipient, fully replaced on each send (no optimistic-lock
  * version — matches v1's `docRef.set` semantics; the cooldown check is what
@@ -38,14 +45,25 @@ export function generateEmailOtpCode(): string {
   return randomInt(0, 1_000_000).toString().padStart(6, '0');
 }
 
-export function hashEmailOtpCode(code: string): string {
-  return createHash('sha256').update(code).digest('hex');
+export function hashEmailOtpCode(code: string, secret: string): string {
+  return createHmac('sha256', secret).update(code).digest('hex');
 }
 
-export function createEmailOtp(recipient: string, code: string, now: Date): EmailOtp {
+function hashesMatch(a: string, b: string): boolean {
+  const bufA = Buffer.from(a, 'hex');
+  const bufB = Buffer.from(b, 'hex');
+  return bufA.length === bufB.length && timingSafeEqual(bufA, bufB);
+}
+
+export function createEmailOtp(
+  recipient: string,
+  code: string,
+  secret: string,
+  now: Date,
+): EmailOtp {
   return {
     recipient: normalizeEmailRecipient(recipient),
-    codeHash: hashEmailOtpCode(code),
+    codeHash: hashEmailOtpCode(code, secret),
     expiresAt: new Date(now.getTime() + EMAIL_OTP_EXPIRY_MINUTES * 60_000).toISOString(),
     lastSentAt: now.toISOString(),
     attempts: 0,
@@ -80,14 +98,14 @@ export function recordFailedEmailOtpAttempt(otp: EmailOtp): EmailOtp {
  * these to a flat 400, never leaking which specific reason to an attacker
  * beyond what v1 already exposed (v1's own messages were this specific).
  */
-export function verifyEmailOtpCode(otp: EmailOtp, code: string, now: Date): void {
+export function verifyEmailOtpCode(otp: EmailOtp, code: string, secret: string, now: Date): void {
   if (isEmailOtpExpired(otp, now)) {
     throw new InvalidOperationError('Authorization code expired.');
   }
   if (isEmailOtpLocked(otp)) {
     throw new InvalidOperationError('Too many attempts. Request a new code.');
   }
-  if (hashEmailOtpCode(code) !== otp.codeHash) {
+  if (!hashesMatch(hashEmailOtpCode(code, secret), otp.codeHash)) {
     throw new InvalidOperationError('Invalid authorization code.');
   }
 }

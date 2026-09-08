@@ -212,6 +212,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     redis: { url: gw.REDIS_URL },
     firestore: { projectId: gw.FIRESTORE_PROJECT_ID },
     storage: gw.FIREBASE_STORAGE_BUCKET ? { kycBucket: gw.FIREBASE_STORAGE_BUCKET } : undefined,
+    emailOtpSecret: gw.EMAIL_OTP_SECRET,
   });
 
   const repositories: ServiceDeps['repositories'] = buildRepositories(gw);

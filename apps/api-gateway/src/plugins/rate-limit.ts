@@ -49,12 +49,40 @@ export interface RateLimitOptions {
   enabled?: boolean;
 }
 
+/**
+ * Every route class here is reachable by an unauthenticated caller (OTP
+ * send/verify, login, signup, public reads) — so the compound key is
+ * attacker-controlled: a botnet rotating source IPs can mint effectively
+ * unlimited distinct keys, each a permanent `Map` entry, since nothing
+ * previously pruned a key once created. That is a memory-exhaustion DoS
+ * available to anyone who can send HTTP requests, not just an authenticated
+ * abuser. `MAX_TRACKED_KEYS` bounds the map's size; insertion order in a
+ * `Map` iterates oldest-first, so evicting `hits.keys().next().value` evicts
+ * the least-recently-touched key — an approximate LRU without a second
+ * data structure, adequate for a sliding-window counter that is inherently
+ * approximate already.
+ */
+const MAX_TRACKED_KEYS = 50_000;
+
 export default fp<RateLimitOptions>(
   async (fastify: FastifyInstance, options: RateLimitOptions) => {
     const now = options.now ?? (() => Date.now());
     const enabled = options.enabled ?? true;
-    /** key → hit timestamps inside the current window. */
+    /** key → hit timestamps inside the current window. Insertion order = LRU order. */
     const hits = new Map<string, number[]>();
+
+    function touch(key: string, value: number[]): void {
+      // Re-inserting (delete then set) moves the key to the "most recently
+      // used" end of the Map's iteration order — otherwise a key hit once
+      // long ago but never revisited would still occupy an early slot and
+      // never get evicted ahead of one that just churned through its window.
+      hits.delete(key);
+      if (hits.size >= MAX_TRACKED_KEYS) {
+        const oldestKey = hits.keys().next().value;
+        if (oldestKey !== undefined) hits.delete(oldestKey);
+      }
+      hits.set(key, value);
+    }
 
     fastify.decorate('rateLimit', (limitClass: RateLimitClass) => {
       const budget = RATE_LIMIT_CLASSES[limitClass];
@@ -74,7 +102,7 @@ export default fp<RateLimitOptions>(
             1,
             Math.ceil((oldest + budget.windowMs - current) / 1000),
           );
-          hits.set(key, recent);
+          touch(key, recent);
           void reply
             .status(429)
             .header('retry-after', String(retryAfterSeconds))
@@ -90,7 +118,7 @@ export default fp<RateLimitOptions>(
         }
 
         recent.push(current);
-        hits.set(key, recent);
+        touch(key, recent);
       };
     });
 

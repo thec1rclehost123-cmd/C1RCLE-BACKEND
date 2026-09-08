@@ -44,7 +44,7 @@ export function createEmailOtpService(deps: EmailOtpServiceDeps): EmailOtpServic
     assertCanResend(existing, now);
 
     const code = generateEmailOtpCode();
-    const otp = createEmailOtp(normalized, code, now);
+    const otp = createEmailOtp(normalized, code, config.emailOtpSecret, now);
     await emailOtp.save(otp);
     await emailSender.sendOtpEmail(normalized, code);
   }
@@ -58,7 +58,7 @@ export function createEmailOtpService(deps: EmailOtpServiceDeps): EmailOtpServic
     }
 
     try {
-      verifyEmailOtpCode(otp, code, now);
+      verifyEmailOtpCode(otp, code, config.emailOtpSecret, now);
     } catch (error) {
       // A wrong code (not expiry/lockout, which need no attempt bump) still
       // counts against the lockout — persist the incremented attempt before

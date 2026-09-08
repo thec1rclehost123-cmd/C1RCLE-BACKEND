@@ -39,6 +39,8 @@ const envSchema = z.object({
   RAZORPAY_WEBHOOK_SECRET: z.string().min(1).optional(),
   /** Email OTP delivery (signup verification). Unset -> dev-mode logging only. */
   RESEND_API_KEY: z.string().min(1).optional(),
+  /** HMAC key for hashing email-OTP codes at rest (see CoreConfig's doc comment). */
+  EMAIL_OTP_SECRET: z.string().min(1).optional(),
 });
 
 /** Fail closed: STORAGE_DRIVER=firestore requires real credentials, never a silent memory fallback. */
@@ -70,6 +72,16 @@ const validatedEnvSchema = envSchema.superRefine((value, ctx) => {
         message:
           'Must be an https:// URL in production — session cookies issued against ' +
           'an http:// origin are not marked Secure.',
+      });
+    }
+    if (!value.EMAIL_OTP_SECRET) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['EMAIL_OTP_SECRET'],
+        message:
+          'Required in production — without it, email-OTP codes are hashed with the ' +
+          "published default secret, letting anyone who reads this repo's source brute-force " +
+          'a leaked OTP hash offline in milliseconds (10^6 possible 6-digit codes).',
       });
     }
   }

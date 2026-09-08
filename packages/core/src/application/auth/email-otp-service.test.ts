@@ -37,7 +37,7 @@ function build() {
   const service = createEmailOtpService({
     emailOtp,
     emailSender,
-    config: { clock } as never,
+    config: { clock, emailOtpSecret: 'test-email-otp-secret' } as never,
   });
   return { service, clock, emailOtp, emailSender };
 }

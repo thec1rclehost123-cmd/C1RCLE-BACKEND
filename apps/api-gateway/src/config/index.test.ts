@@ -12,6 +12,7 @@ const BASE = {
   STORAGE_DRIVER: 'memory',
   BETTER_AUTH_SECRET: 'a'.repeat(32),
   BETTER_AUTH_URL: 'https://circle-v2-backend.onrender.com',
+  EMAIL_OTP_SECRET: 'b'.repeat(32),
 } satisfies NodeJS.ProcessEnv;
 
 async function loadConfig() {
@@ -53,6 +54,12 @@ describe('getGatewayConfig', () => {
     expect(() => getGatewayConfig({ ...BASE, BETTER_AUTH_URL: 'http://example.com' })).toThrow(
       /BETTER_AUTH_URL/,
     );
+  });
+
+  it('rejects a missing email-OTP secret in production', async () => {
+    const { getGatewayConfig } = await loadConfig();
+    const { EMAIL_OTP_SECRET: _omit, ...withoutSecret } = BASE;
+    expect(() => getGatewayConfig(withoutSecret)).toThrow(/EMAIL_OTP_SECRET/);
   });
 
   it('allows the development defaults outside production', async () => {

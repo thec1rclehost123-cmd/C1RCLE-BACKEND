@@ -64,6 +64,36 @@ describe('POST /auth/otp/verify', () => {
       payload: { email: 'nobody@example.com', code: '123456' },
     });
     expect(res.statusCode).toBe(400);
+    // Same generic message for "never sent" as for "wrong code" below — the
+    // route must not let an attacker distinguish the two (that would be an
+    // oracle for whether a signup is pending for an arbitrary address).
+    expect(res.json().message).toBe('Invalid or expired code.');
+  });
+
+  it('gives the identical error for a wrong code as for no-send-in-progress (no oracle)', async () => {
+    const server = await buildServer();
+    await server.inject({
+      method: 'POST',
+      url: '/otp/send',
+      payload: { email: 'wrongcode@example.com' },
+    });
+    // '000000' is astronomically unlikely to be the real code, but never
+    // assert against randomness — try both fixed candidates.
+    const first = await server.inject({
+      method: 'POST',
+      url: '/otp/verify',
+      payload: { email: 'wrongcode@example.com', code: '000000' },
+    });
+    const res =
+      first.statusCode === 400
+        ? first
+        : await server.inject({
+            method: 'POST',
+            url: '/otp/verify',
+            payload: { email: 'wrongcode@example.com', code: '111111' },
+          });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().message).toBe('Invalid or expired code.');
   });
 
   it('rejects a malformed code shape', async () => {
