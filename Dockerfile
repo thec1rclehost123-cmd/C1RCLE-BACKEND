@@ -62,12 +62,23 @@ RUN pnpm --filter @c1rcle/contracts build
 # ---- runtime ---------------------------------------------------------
 FROM base AS runtime
 ENV NODE_ENV=production
-ENV PORT=8080
 ENV HOST=0.0.0.0
+# Fastify listens internally on 8081; nginx is the only thing bound to the
+# publicly-exposed 8080 (see nginx/nginx.conf, docker-entrypoint.sh).
+
+RUN apt-get update -qq \
+ && apt-get install -y --no-install-recommends nginx bash \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/* /etc/nginx/sites-enabled/default
 
 RUN groupadd --system --gid 1001 nodejs \
  && useradd  --system --uid 1001 --gid nodejs --home-dir /app app
 COPY --from=build --chown=app:nodejs /app /app
+COPY --chown=app:nodejs nginx/nginx.conf /app/nginx/nginx.conf
+COPY --chown=app:nodejs docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh \
+ && mkdir -p /tmp/nginx \
+ && chown -R app:nodejs /tmp/nginx /var/log/nginx
 USER app
 
 WORKDIR /app/apps/api-gateway
@@ -76,13 +87,11 @@ EXPOSE 8080
 # Container-level liveness, independent of the platform's own probe. Render uses
 # its `healthCheckPath` setting (see render.yaml); this makes the same guarantee
 # hold anywhere else the image runs — docker compose, k8s, a CI smoke boot.
+# Hits nginx's public port, so a healthy check also proves the sidecar is up.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT??8080)+'/api/v2/internal/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:8080/api/v2/internal/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-# Cloud Run / k8s health probe: GET /api/v2/internal/health
-# tsx (a devDependency of api-gateway) strips types across the whole workspace
-# graph — including @c1rcle/core/src — at load time.
-CMD ["node", "--import", "tsx", "src/server.ts"]
+CMD ["/app/docker-entrypoint.sh"]
 
 # ============================================================================
 #  NOTE — moving to a compiled runtime later (smaller image, faster cold start)
