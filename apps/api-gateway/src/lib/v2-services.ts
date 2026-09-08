@@ -49,6 +49,7 @@ import { createCoreConfig } from '@c1rcle/core/config';
 import {
   EchoObjectStorage,
   FormatCheckVerificationProvider,
+  CompositeVerificationProvider,
   MemoryPaymentProvider,
 } from '@c1rcle/core/domain';
 import {
@@ -60,16 +61,22 @@ import {
   buildRepositories,
   firestoreClient,
   storageClient,
+  authClient,
   buildIdempotencyStore,
   buildActorContext,
 } from '@c1rcle/core/infrastructure';
 
-import type { AdminAuditRepository, PaymentProvider } from '@c1rcle/core/domain';
+import type {
+  AdminAuditRepository,
+  PaymentProvider,
+  VerificationProvider,
+} from '@c1rcle/core/domain';
 
 import { getGatewayConfig } from '../config/index.js';
 
 import { ResendEmailSender } from './notifications/resend-email-sender.js';
 import { RazorpayPaymentProvider } from './payments/razorpay-adapter.js';
+import { FirebasePhoneVerificationProvider } from './verification/firebase-phone-verifier.js';
 
 import type { GatewayConfig } from '../config/index.js';
 import type { FastifyRequest } from 'fastify';
@@ -253,6 +260,19 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     order: repositories.orders,
   });
 
+  // Phone verification: real GCP Identity Platform check when firestore
+  // credentials exist (see `firebase-phone-verifier.ts`); on the memory
+  // driver (tests, local dev with no GCP project) every documentType,
+  // 'phone' included, falls through to the same format-check default as
+  // KYC documents — there is nothing to verify an ID token against.
+  const verificationProvider: VerificationProvider =
+    gw.STORAGE_DRIVER === 'memory'
+      ? new FormatCheckVerificationProvider()
+      : new CompositeVerificationProvider(
+          { phone: new FirebasePhoneVerificationProvider(authClient(gw)) },
+          new FormatCheckVerificationProvider(),
+        );
+
   const deps: ServiceDeps = {
     config: coreConfig,
     logger:
@@ -266,7 +286,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     adminAudit: adminAudits,
     // Swap here — and only here — when a real KYC provider is contracted.
 
-    verification: new FormatCheckVerificationProvider(),
+    verification: verificationProvider,
     objectStorage:
       gw.STORAGE_DRIVER === 'memory'
         ? new EchoObjectStorage()

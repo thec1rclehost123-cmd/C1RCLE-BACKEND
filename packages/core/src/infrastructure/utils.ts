@@ -12,7 +12,7 @@
 
 import { UnauthorizedError } from '../domain/errors.js';
 
-import { getFirestoreClient, getStorageClient } from './firestore/client.js';
+import { getAuthClient, getFirestoreClient, getStorageClient } from './firestore/client.js';
 import {
   FirestoreOrganizationRepository,
   FirestoreVenueRepository,
@@ -227,6 +227,11 @@ export function storageClient(gw: StorageDriverConfig) {
   return getStorageClient(firestoreCredentials(gw));
 }
 
+/** The Firebase Auth handle from the same app — for phone-verification ID tokens. */
+export function authClient(gw: StorageDriverConfig) {
+  return getAuthClient(firestoreCredentials(gw));
+}
+
 function firestoreCredentials(gw: StorageDriverConfig) {
   if (!gw.FIREBASE_CLIENT_EMAIL || !gw.FIREBASE_PRIVATE_KEY) {
     throw new Error(
@@ -240,4 +245,4 @@ function firestoreCredentials(gw: StorageDriverConfig) {
   };
 }
 
-export { getFirestoreClient, getStorageClient } from './firestore/client.js';
+export { getFirestoreClient, getStorageClient, getAuthClient } from './firestore/client.js';

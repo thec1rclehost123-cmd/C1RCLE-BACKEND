@@ -9,6 +9,7 @@
  * (`thec1rcle`) reads/writes — see architecture rule 8 (V1‖V2 parallel).
  */
 import { cert, getApps, initializeApp, type App } from 'firebase-admin/app';
+import { getAuth, type Auth } from 'firebase-admin/auth';
 import { getFirestore, type Firestore } from 'firebase-admin/firestore';
 import { getStorage, type Storage } from 'firebase-admin/storage';
 
@@ -16,7 +17,7 @@ import { getStorage, type Storage } from 'firebase-admin/storage';
 // plugin, which needs the type for `betterAuth-firestore`) never need their
 // own `firebase-admin` import — this directory stays the one place that
 // knows the storage engine exists (scripts/check-boundaries.mjs Rule 3).
-export type { Firestore, Storage };
+export type { Firestore, Storage, Auth };
 
 export interface FirestoreCredentials {
   projectId: string;
@@ -58,4 +59,15 @@ export function getFirestoreClient(credentials: FirestoreCredentials): Firestore
  */
 export function getStorageClient(credentials: FirestoreCredentials): Storage {
   return getStorage(getApp(credentials));
+}
+
+/**
+ * The Firebase Auth handle for the same app — used only to verify a client
+ * ID token from the GCP Identity Platform phone-verification flow
+ * (`FirebasePhoneVerificationProvider`). Same Rule 3 exemption, same shared
+ * app instance as `getFirestoreClient`/`getStorageClient` — no second
+ * `firebase-admin` app is initialized for this.
+ */
+export function getAuthClient(credentials: FirestoreCredentials): Auth {
+  return getAuth(getApp(credentials));
 }

@@ -127,6 +127,13 @@ export const verifyDocumentSchema = z
     documentType: z.string().min(1).max(40),
     documentNumber: z.string().min(1).max(64),
     holderName: z.string().max(200).optional(),
+    /**
+     * A provider-issued proof rather than a value to format-validate —
+     * `documentType: 'phone'`'s GCP Identity Platform ID token from the
+     * client's `signInWithPhoneNumber` flow. Unused for every other
+     * documentType.
+     */
+    proofToken: z.string().min(1).max(4096).optional(),
   })
   .strict();
 export type VerifyDocumentRequest = z.infer<typeof verifyDocumentSchema>;
