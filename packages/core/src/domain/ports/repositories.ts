@@ -32,6 +32,7 @@ import type {
   DoorSaleCategory,
   DoorSaleStatus,
 } from '../models/door-sale.js';
+import type { EmailOtp } from '../models/email-otp.js';
 import type { Entitlement } from '../models/entitlement.js';
 import type {
   TicketTier,
@@ -735,6 +736,17 @@ export interface LeaderboardRepository {
   ): Promise<LeaderboardStat[]>;
 }
 
+/**
+ * One doc per recipient, fully replaced on each send — no optimistic-lock
+ * version (matches v1's `docRef.set` semantics; the cooldown check in
+ * `assertCanResend` is what prevents a resend race, not a version field).
+ */
+export interface EmailOtpRepository {
+  get(recipient: EntityId): Promise<EmailOtp | null>;
+  save(otp: EmailOtp): Promise<void>;
+  delete(recipient: EntityId): Promise<void>;
+}
+
 export type {
   LedgerEntry,
   LedgerEntryType,
@@ -746,4 +758,5 @@ export type {
   LeaderboardStat,
   LeaderboardBucket,
   LeaderboardPeriodType,
+  EmailOtp,
 };

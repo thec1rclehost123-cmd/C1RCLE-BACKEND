@@ -6,6 +6,7 @@ import authContextPlugin, { buildBetterAuth } from '../../plugins/auth.js';
 
 import adminRoutes from './admin/onboarding-review.js';
 import authRoutes from './auth/index.js';
+import otpRoutes from './auth/otp-routes.js';
 import checkoutRoutes from './checkout/checkout-routes.js';
 import paymentRoutes from './checkout/payment-routes.js';
 import webhookRoutes from './checkout/webhook-routes.js';
@@ -82,6 +83,7 @@ export async function registerV2Routes(app: FastifyInstance): Promise<void> {
     async (v2) => {
       await internalRoutes(v2);
       await v2.register(async (a) => authRoutes(a, { auth }), { prefix: '/auth' });
+      await v2.register(otpRoutes, { prefix: '/auth' });
       // Phase 4 PR1: unauthenticated guest-facing discovery reads — never
       // nested under the org-scoped/authenticated route group above.
       await v2.register(publicDiscoveryRoutes, { prefix: '/public' });

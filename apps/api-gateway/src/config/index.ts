@@ -37,6 +37,8 @@ const envSchema = z.object({
   RAZORPAY_KEY_ID: z.string().min(1).optional(),
   RAZORPAY_KEY_SECRET: z.string().min(1).optional(),
   RAZORPAY_WEBHOOK_SECRET: z.string().min(1).optional(),
+  /** Email OTP delivery (signup verification). Unset -> dev-mode logging only. */
+  RESEND_API_KEY: z.string().min(1).optional(),
 });
 
 /** Fail closed: STORAGE_DRIVER=firestore requires real credentials, never a silent memory fallback. */

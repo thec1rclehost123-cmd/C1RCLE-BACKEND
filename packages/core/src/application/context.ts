@@ -48,6 +48,7 @@ import type {
   BankAccountRepository,
   DisputeRepository,
   LeaderboardRepository,
+  EmailOtpRepository,
 } from '../domain/ports/repositories.js';
 import type { VerificationProvider } from '../domain/ports/verification.js';
 import type { Logger } from '../telemetry/logger.js';
@@ -126,6 +127,7 @@ export interface ServiceDeps {
     bankAccounts: BankAccountRepository;
     disputes: DisputeRepository;
     leaderboard: LeaderboardRepository;
+    emailOtp: EmailOtpRepository;
   };
 }
 

@@ -128,3 +128,5 @@ export type {
 export { createDisputeService } from './finance/dispute-service.js';
 export type { LeaderboardService, LeaderboardServiceDeps } from './finance/leaderboard-service.js';
 export { createLeaderboardService } from './finance/leaderboard-service.js';
+export type { EmailOtpService, EmailOtpServiceDeps } from './auth/email-otp-service.js';
+export { createEmailOtpService } from './auth/email-otp-service.js';

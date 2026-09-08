@@ -25,4 +25,5 @@ export * from './firestore-payout-repository.js';
 export * from './firestore-bank-account-repository.js';
 export * from './firestore-dispute-repository.js';
 export * from './firestore-leaderboard-repository.js';
+export * from './firestore-email-otp-repository.js';
 export * from './firebase-object-storage.js';

@@ -49,3 +49,26 @@ export const authBridgeResponseSchema = z.object({
   expiresAt: z.number().int().positive(),
 });
 export type AuthBridgeResponse = z.infer<typeof authBridgeResponseSchema>;
+
+/* ─── Email OTP (signup verification) ─────────────────────────────────────── */
+
+export const otpSendRequestSchema = z
+  .object({
+    email: z.email(),
+  })
+  .strict();
+export type OtpSendRequest = z.infer<typeof otpSendRequestSchema>;
+
+export const otpVerifyRequestSchema = z
+  .object({
+    email: z.email(),
+    code: z.string().regex(/^\d{6}$/, 'Code must be 6 digits'),
+  })
+  .strict();
+export type OtpVerifyRequest = z.infer<typeof otpVerifyRequestSchema>;
+
+/** Deliberately generic — never confirms whether the address is registered. */
+export const otpAckResponseSchema = z.object({
+  message: z.string(),
+});
+export type OtpAckResponse = z.infer<typeof otpAckResponseSchema>;

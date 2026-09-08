@@ -37,6 +37,9 @@ export type {
   SignupRequest,
   LoginRequest,
   AuthBridgeResponse,
+  OtpSendRequest,
+  OtpVerifyRequest,
+  OtpAckResponse,
 } from './contracts/auth.js';
 
 export {
@@ -46,6 +49,9 @@ export {
   signupRequestSchema,
   loginRequestSchema,
   authBridgeResponseSchema,
+  otpSendRequestSchema,
+  otpVerifyRequestSchema,
+  otpAckResponseSchema,
 } from './contracts/auth.js';
 
 // Organization, Venue, Member

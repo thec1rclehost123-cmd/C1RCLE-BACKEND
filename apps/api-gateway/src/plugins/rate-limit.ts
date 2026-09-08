@@ -16,7 +16,13 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
  * without changing the classes or the key shape.
  */
 
-export type RateLimitClass = 'PUBLIC_READ' | 'AUTH_READ' | 'STANDARD_COMMAND' | 'SENSITIVE_COMMAND';
+export type RateLimitClass =
+  | 'PUBLIC_READ'
+  | 'AUTH_READ'
+  | 'STANDARD_COMMAND'
+  | 'SENSITIVE_COMMAND'
+  | 'OTP_SEND'
+  | 'OTP_VERIFY';
 
 interface Budget {
   readonly limit: number;
@@ -29,6 +35,12 @@ export const RATE_LIMIT_CLASSES: Readonly<Record<RateLimitClass, Budget>> = {
   STANDARD_COMMAND: { limit: 60, windowMs: 60_000 },
   // Login/refresh: tight, because this is the credential-stuffing surface.
   SENSITIVE_COMMAND: { limit: 10, windowMs: 60_000 },
+  // v1-proven thresholds (guest-otp.ts) — send is the enumeration/spam
+  // surface (also blunts email-bombing), verify is the brute-force surface
+  // (the domain's own 5-attempt lockout is the primary defense there; this
+  // is the HTTP-layer backstop).
+  OTP_SEND: { limit: 5, windowMs: 60_000 },
+  OTP_VERIFY: { limit: 10, windowMs: 60_000 },
 };
 
 export interface RateLimitOptions {

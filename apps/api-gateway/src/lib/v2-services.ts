@@ -31,6 +31,7 @@ import {
   createBankAccountService,
   createDisputeService,
   createLeaderboardService,
+  createEmailOtpService,
   type ScannerService,
   type DoorService,
   type CoverWalletService,
@@ -40,6 +41,7 @@ import {
   type BankAccountService,
   type DisputeService,
   type LeaderboardService,
+  type EmailOtpService,
   type ServiceDeps,
   type ActorContext,
 } from '@c1rcle/core/application';
@@ -66,6 +68,7 @@ import type { AdminAuditRepository, PaymentProvider } from '@c1rcle/core/domain'
 
 import { getGatewayConfig } from '../config/index.js';
 
+import { ResendEmailSender } from './notifications/resend-email-sender.js';
 import { RazorpayPaymentProvider } from './payments/razorpay-adapter.js';
 
 import type { GatewayConfig } from '../config/index.js';
@@ -141,6 +144,8 @@ export interface PartnerV2Services {
   dispute: DisputeService;
   /** Phase 6: promoter leaderboard. */
   leaderboard: LeaderboardService;
+  /** Email OTP (signup verification). */
+  emailOtp: EmailOtpService;
 }
 
 // Each route module calls `createV2Services()` independently at import time
@@ -346,6 +351,12 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     config: coreConfig,
   });
 
+  const emailOtp = createEmailOtpService({
+    emailOtp: repositories.emailOtp,
+    emailSender: new ResendEmailSender(gwConfig.RESEND_API_KEY, gwConfig.NODE_ENV, deps.logger),
+    config: coreConfig,
+  });
+
   return {
     organizations: new OrganizationService(deps),
     venues: new VenueService(deps),
@@ -384,5 +395,6 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     bankAccount,
     dispute,
     leaderboard,
+    emailOtp,
   };
 }
