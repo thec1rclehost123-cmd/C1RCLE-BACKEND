@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { computeSettlementSplit, createLedgerEntry } from '../../domain/models/ledger.js';
 import { requireOrgAccess } from '../context.js';
 
@@ -55,7 +57,16 @@ function entryId(
   entryType: LedgerEntryType,
   organizationId: EntityId,
 ): EntityId {
-  return `led-${orderId}-${entryType}-${organizationId}`;
+  const readable = `led-${orderId}-${entryType}-${organizationId}`;
+  if (readable.length <= 64) return readable;
+  // The composite key can exceed the frozen wire contract's 64-char opaque-id
+  // limit (e.g. a long Razorpay order id plus a 36-char UUID org id). Fall back
+  // to a fixed-width digest so the id stays deterministic — keeping idempotent
+  // replay safe (the repo dedups on idempotencyKey, and `findByOrder` replays by
+  // order, not reconstructed id) — and collision-resistant without ever blowing
+  // the length cap.
+  const digest = createHash('sha256').update(readable).digest('hex').slice(0, 24);
+  return `led-${digest}`;
 }
 
 function idempotencyKey(

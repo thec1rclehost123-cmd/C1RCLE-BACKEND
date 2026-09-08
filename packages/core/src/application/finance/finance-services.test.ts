@@ -169,6 +169,36 @@ describe('createFinanceService', () => {
     expect(await repo.findByOrder('order_1')).toHaveLength(first.length);
   });
 
+  it('keeps ledger entry ids within the 64-char opaque-id cap for long order/org ids', async () => {
+    const repo = new MemoryLedgerRepository();
+    const service = createFinanceService({ ledger: repo, config });
+    // Razorpay-style long order id + UUID orgs — reproduces the scenario-suite
+    // bug where `led-{orderId}-{entryType}-{orgId}` exceeded 64 chars and the
+    // frozen wire contract's opaqueIdSchema (max 64) rejected the ledger DTO.
+    const input = {
+      orderId: 'ORD-pay_2xUeF1PdGqJ7Qj3Z9k8LmW5yvAaCcNnO',
+      eventId: 'evt_1',
+      grossAmount: 100_000,
+      organizationId: 'd0ef124c-a769-4baa-98c7-ed462a81f746',
+      hostOrganizationId: 'd0ef124c-a769-4baa-98c7-ed462a81f746',
+      venueOrganizationId: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
+      promoterOrganizationId: null,
+      platformFeeRate: 0.15,
+      venueShareRate: 0.1,
+      promoterCommissionRate: null,
+    };
+    const entries = await service.recordTicketSale(input, actor(input.organizationId));
+    expect(entries.length).toBeGreaterThan(0);
+    for (const entry of entries) {
+      expect(entry.id.length).toBeLessThanOrEqual(64);
+      expect(entry.id).toMatch(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
+      expect(entry.id).not.toContain(':');
+    }
+    // Replay must produce the same deterministic ids (idempotency preserved).
+    const replay = await service.recordTicketSale(input, actor(input.organizationId));
+    expect(replay.map((e) => e.id).sort()).toEqual(entries.map((e) => e.id).sort());
+  });
+
   it('getBalances buckets pending/settled/paid_out per the ledger', async () => {
     const repo = new MemoryLedgerRepository();
     await seedLedger(repo, ORG);
