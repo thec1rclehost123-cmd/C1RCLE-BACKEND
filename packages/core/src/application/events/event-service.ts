@@ -114,7 +114,13 @@ export class EventService {
   async publish(actor: ActorContext, eventId: EntityId): Promise<Event> {
     const event = await this.fetchOwned(actor, eventId);
     const now = this.deps.config.clock.now();
-    const scheduled = event.status === 'review' ? transitionEvent(event, 'scheduled', now) : event;
+    // The `scheduled` step is transient: only the final `published` state is
+    // persisted, so the version bump happens once. Walking two live bumps
+    // (review→scheduled→published) and saving only the last would write
+    // version N+2 against a store at version N — rejected by the repository
+    // compare-and-set on every driver.
+    const scheduled =
+      event.status === 'review' ? { ...event, status: 'scheduled' as const } : event;
     const updated = transitionEvent(scheduled, 'published', now);
     await this.repo.save(updated);
     await emit(this.deps, actor, updated.id, 'event.published', {
