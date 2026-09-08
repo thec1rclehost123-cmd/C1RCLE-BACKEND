@@ -6,6 +6,11 @@ export default defineConfig({
     env: {
       REDIS_URL: 'PLACEHOLDER',
       FIRESTORE_PROJECT_ID: 'test-project',
+      // Phase 4 PR2: the webhook route reads this directly (never the
+      // provider's own fallback — see webhook-routes.ts's doc comment) and
+      // fails closed (503) without it. Fixed so webhook signature tests can
+      // compute a valid HMAC the same way `MemoryPaymentProvider` does.
+      RAZORPAY_WEBHOOK_SECRET: 'test_webhook_secret',
     },
     // Each route test builds a full Fastify app (validate + rbac + rate-limit +
     // cache plugins + routes). `pnpm check` runs this suite via `turbo run test`
@@ -16,5 +21,4 @@ export default defineConfig({
     testTimeout: 20000,
     hookTimeout: 30000,
   },
-  coverage: { provider: 'v8' },
 });

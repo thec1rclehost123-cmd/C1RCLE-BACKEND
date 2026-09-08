@@ -38,6 +38,8 @@ export async function internalRoutes(
         return {
           version: options.config.APP_VERSION,
           buildSha: options.config.BUILD_SHA,
+          // Kept for the CI deploy gate which polls Render's native commit metadata.
+          commit: options.config.RENDER_GIT_COMMIT ?? options.config.BUILD_SHA,
           startedAt: runtimeState.startedAt,
         };
       });

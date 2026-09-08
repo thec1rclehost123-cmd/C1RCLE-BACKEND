@@ -1,0 +1,160 @@
+# ─── Maintenance ──────────────────────────────────────────────────────────────
+# Scheduled work that has nothing to do with a commit: is production still up,
+# is the lockfile still honest, are stale pull requests piling up.
+#
+# The V1 daily health check ended in `echo "::error::"` with a TODO comment for
+# a notification channel. A cron job whose only failure signal is a red square
+# nobody watches is not a health check — this one opens and closes a real
+# GitHub issue.
+name: Maintenance
+
+on:
+  schedule:
+    # 02:00 IST daily.
+    - cron: '30 20 * * *'
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: Base URL to health-check
+        type: string
+        default: https://circle-v2-backend.onrender.com
+
+permissions:
+  contents: read
+
+jobs:
+  production-health:
+    name: Production health
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+    env:
+      TARGET_URL: ${{ inputs.target_url || 'https://circle-v2-backend.onrender.com' }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      # smoke.mjs uses only Node built-ins (fetch, fs) — no node_modules needed.
+      # Use the shared setup action (install: 'false') so pnpm is on PATH and
+      # the toolchain version is consistent with the rest of CI.
+      - uses: ./.github/actions/setup
+        with:
+          install: 'false'
+          turbo-cache: 'false'
+
+      # The same assertions CI runs post-deploy — no dependencies required.
+      - name: Smoke test production
+        id: smoke
+        run: node scripts/ci/smoke.mjs --url "$TARGET_URL" --retries 4
+
+      - name: Open or update the outage issue
+        if: failure()
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          TARGET_URL: ${{ env.TARGET_URL }}
+        with:
+          script: |
+            const title = 'Scheduled health check failing';
+            const body = [
+              `The daily health check against ${process.env.TARGET_URL} failed.`,
+              '',
+              `- Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              `- Checked at: ${new Date().toISOString()}`,
+              '',
+              "See the run's job summary for the failing assertions.",
+            ].join('\n');
+            const { data: open } = await github.rest.issues.listForRepo({
+              ...context.repo,
+              state: 'open',
+              labels: 'production-incident',
+            });
+            const existing = open.find((issue) => issue.title === title);
+            if (existing) {
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: existing.number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                ...context.repo,
+                title,
+                body,
+                labels: ['production-incident', 'automated'],
+              });
+            }
+
+      # Close the loop: a recovered service should not leave a red issue open.
+      - name: Close the outage issue on recovery
+        if: success()
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const title = 'Scheduled health check failing';
+            const { data: open } = await github.rest.issues.listForRepo({
+              ...context.repo,
+              state: 'open',
+              labels: 'production-incident',
+            });
+            for (const issue of open.filter((i) => i.title === title)) {
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: issue.number,
+                body: `Health check recovered at ${new Date().toISOString()}. Closing.`,
+              });
+              await github.rest.issues.update({
+                ...context.repo,
+                issue_number: issue.number,
+                state: 'closed',
+              });
+            }
+
+  lockfile-integrity:
+    name: Lockfile integrity
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      # `--frozen-lockfile` fails if any package.json and pnpm-lock.yaml have
+      # drifted apart — the failure mode that silently bricks every other job.
+      - uses: ./.github/actions/setup
+        with:
+          turbo-cache: 'false'
+      - name: Confirm the lockfile is reproducible
+        run: |
+          if [ -n "$(git status --porcelain pnpm-lock.yaml)" ]; then
+            echo "::error::pnpm install modified pnpm-lock.yaml. Commit the updated lockfile."
+            git --no-pager diff -- pnpm-lock.yaml
+            exit 1
+          fi
+          echo "Lockfile is in sync."
+
+  stale:
+    name: Stale issues & pull requests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/stale@1e223db275d687790206a7acac4d1a11bd6fe629 # v10
+        with:
+          days-before-stale: 30
+          days-before-close: 14
+          stale-issue-label: stale
+          stale-pr-label: stale
+          # Production incidents and security work never go stale.
+          exempt-issue-labels: production-incident,security,pinned
+          exempt-pr-labels: security,pinned
+          stale-issue-message: >-
+            No activity for 30 days. It will close in 14 days unless something
+            happens here. Comment or remove the `stale` label to keep it open.
+          stale-pr-message: >-
+            No activity for 30 days. It will close in 14 days unless something
+            happens here. Comment or remove the `stale` label to keep it open.

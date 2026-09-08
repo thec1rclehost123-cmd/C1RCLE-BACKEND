@@ -1,4 +1,5 @@
 import { z } from 'zod';
+
 import { opaqueIdSchema, paginatedSchema, idempotencyKeySchema } from './shared.js';
 
 /**
@@ -6,13 +7,15 @@ import { opaqueIdSchema, paginatedSchema, idempotencyKeySchema } from './shared.
  */
 
 // Scanner Session
-export const scannerSessionCreateBodySchema = z.object({
-  eventId: opaqueIdSchema,
-  code: z.string().min(1),
-  deviceId: z.string().min(1),
-  deviceName: z.string().min(1),
-  sessionType: z.enum(['staff', 'device']),
-}).strict();
+export const scannerSessionCreateBodySchema = z
+  .object({
+    eventId: opaqueIdSchema,
+    code: z.string().min(1),
+    deviceId: z.string().min(1),
+    deviceName: z.string().min(1),
+    sessionType: z.enum(['staff', 'device']),
+  })
+  .strict();
 export type ScannerSessionCreateBody = z.infer<typeof scannerSessionCreateBodySchema>;
 
 export const scannerSessionDtoSchema = z.object({
@@ -33,52 +36,104 @@ export const scannerSessionDtoSchema = z.object({
 export type ScannerSessionDto = z.infer<typeof scannerSessionDtoSchema>;
 
 // Scan Request/Response
-export const scanRequestSchema = z.object({
-  eventId: opaqueIdSchema,
-  qrPayload: z.string().min(1),
-  scannedBy: z.object({
-    uid: opaqueIdSchema,
-    name: z.string(),
-    role: z.string(),
-  }),
-  gate: z.string().optional(),
-  deviceId: z.string().optional(),
-  isOffline: z.boolean().optional(),
-}).strict();
+export const scanRequestSchema = z
+  .object({
+    eventId: opaqueIdSchema,
+    qrPayload: z.string().min(1),
+    scannedBy: z.object({
+      uid: opaqueIdSchema,
+      name: z.string(),
+      role: z.string(),
+    }),
+    gate: z.string().optional(),
+    deviceId: z.string().optional(),
+    isOffline: z.boolean().optional(),
+  })
+  .strict();
 export type ScanRequest = z.infer<typeof scanRequestSchema>;
 
 export const scanResponseSchema = z.object({
   status: z.enum(['consumed', 'denied']),
   checkInId: opaqueIdSchema.optional(),
-  denyReason: z.enum([
-    'invalid_signature',
-    'already_used',
-    'expired',
-    'wrong_event',
-    'device_invalid',
-    'void_ticket',
-    'capacity_exceeded',
-    'wrong_gate',
-    'offline_expired',
-    'override_required',
-    'promoter_not_authorized',
-  ]).optional(),
+  denyReason: z
+    .enum([
+      'invalid_signature',
+      'already_used',
+      'expired',
+      'wrong_event',
+      'device_invalid',
+      'void_ticket',
+      'capacity_exceeded',
+      'wrong_gate',
+      'offline_expired',
+      'override_required',
+      'promoter_not_authorized',
+    ])
+    .optional(),
   denyMessage: z.string().optional(),
-  entitlement: z.object({
-    id: opaqueIdSchema,
-    tierName: z.string(),
-    holderName: z.string(),
-    scansUsed: z.number().int(),
-    scansAllowed: z.number().int(),
-  }).optional(),
+  entitlement: z
+    .object({
+      id: opaqueIdSchema,
+      tierName: z.string(),
+      holderName: z.string(),
+      scansUsed: z.number().int(),
+      scansAllowed: z.number().int(),
+    })
+    .optional(),
 });
 export type ScanResponse = z.infer<typeof scanResponseSchema>;
 
+// Override (POST /door/override)
+export const overrideRequestSchema = z
+  .object({ checkInId: opaqueIdSchema, reason: z.string().min(1) })
+  .strict();
+export type OverrideRequest = z.infer<typeof overrideRequestSchema>;
+
+export const overrideResponseSchema = z.object({
+  checkInId: opaqueIdSchema,
+  status: z.literal('overridden'),
+  overriddenBy: opaqueIdSchema,
+  overrideReason: z.string(),
+});
+export type OverrideResponse = z.infer<typeof overrideResponseSchema>;
+
+// Door Stats (GET /door/stats)
+export const doorStatsQuerySchema = z.object({ eventId: opaqueIdSchema }).strict();
+export type DoorStatsQuery = z.infer<typeof doorStatsQuerySchema>;
+
+export const doorStatsDtoSchema = z.object({
+  eventId: opaqueIdSchema,
+  scans: z.object({
+    total: z.number().int().nonnegative(),
+    consumed: z.number().int().nonnegative(),
+    denied: z.number().int().nonnegative(),
+    pending: z.number().int().nonnegative(),
+    revoked: z.number().int().nonnegative(),
+    overridden: z.number().int().nonnegative(),
+    expired: z.number().int().nonnegative(),
+    cancelled: z.number().int().nonnegative(),
+  }),
+  doorSales: z.object({
+    count: z.number().int().nonnegative(),
+    grossPaise: z.number().int().nonnegative(),
+  }),
+  coverWallet: z.object({
+    activeWallets: z.number().int().nonnegative(),
+    totalBalancePaise: z.number().int().nonnegative(),
+    totalCreditsPaise: z.number().int().nonnegative(),
+    totalDebitsPaise: z.number().int().nonnegative(),
+  }),
+  generatedAt: z.iso.datetime(),
+});
+export type DoorStatsDto = z.infer<typeof doorStatsDtoSchema>;
+
 // Magic Ticket QR
-export const magicQrRequestSchema = z.object({
-  entitlementId: opaqueIdSchema,
-  tierPricePaise: z.number().int().nonnegative(),
-}).strict();
+export const magicQrRequestSchema = z
+  .object({
+    entitlementId: opaqueIdSchema,
+    tierPricePaise: z.number().int().nonnegative(),
+  })
+  .strict();
 export type MagicQrRequest = z.infer<typeof magicQrRequestSchema>;
 
 export const magicQrResponseSchema = z.object({
@@ -89,64 +144,78 @@ export const magicQrResponseSchema = z.object({
 export type MagicQrResponse = z.infer<typeof magicQrResponseSchema>;
 
 // Offline Support
-export const offlineManifestRequestSchema = z.object({
-  eventId: opaqueIdSchema,
-  scannerSessionId: opaqueIdSchema,
-  expiresAt: z.iso.datetime(),
-}).strict();
+export const offlineManifestRequestSchema = z
+  .object({
+    eventId: opaqueIdSchema,
+    scannerSessionId: opaqueIdSchema,
+    expiresAt: z.iso.datetime(),
+  })
+  .strict();
 export type OfflineManifestRequest = z.infer<typeof offlineManifestRequestSchema>;
 
 export const offlineManifestResponseSchema = z.object({
-  manifest: z.array(z.object({
-    entitlementId: opaqueIdSchema,
-    validFrom: z.iso.datetime(),
-    validTo: z.iso.datetime(),
-    signature: z.string(),
-  })),
+  manifest: z.array(
+    z.object({
+      entitlementId: opaqueIdSchema,
+      validFrom: z.iso.datetime(),
+      validTo: z.iso.datetime(),
+      signature: z.string(),
+    }),
+  ),
   signedAt: z.iso.datetime(),
   expiresAt: z.iso.datetime(),
 });
 export type OfflineManifestResponse = z.infer<typeof offlineManifestResponseSchema>;
 
-export const offlineSyncRequestSchema = z.object({
-  scannerSessionId: opaqueIdSchema,
-  scans: z.array(z.object({
-    payload: z.string(),
-    scannedAt: z.iso.datetime(),
-    deviceId: z.string(),
-  })),
-}).strict();
+export const offlineSyncRequestSchema = z
+  .object({
+    scannerSessionId: opaqueIdSchema,
+    scans: z.array(
+      z.object({
+        payload: z.string(),
+        scannedAt: z.iso.datetime(),
+        deviceId: z.string(),
+      }),
+    ),
+  })
+  .strict();
 export type OfflineSyncRequest = z.infer<typeof offlineSyncRequestSchema>;
 
 export const offlineSyncResponseSchema = z.object({
   synced: z.number().int(),
-  conflicts: z.array(z.object({
-    payload: z.string(),
-    reason: z.string(),
-  })),
+  conflicts: z.array(
+    z.object({
+      payload: z.string(),
+      reason: z.string(),
+    }),
+  ),
 });
 export type OfflineSyncResponse = z.infer<typeof offlineSyncResponseSchema>;
 
 // Door Schemas
-export const doorWalkInRequestSchema = z.object({
-  eventId: opaqueIdSchema,
-  guestName: z.string().min(1),
-  guestPhone: z.string().optional().nullable(),
-  guestAge: z.number().int().min(0).max(120).optional().nullable(),
-  gender: z.string().optional().nullable(),
-  contact: z.string().optional().nullable(),
-  totalGuests: z.number().int().min(1).max(100).default(1),
-  gate: z.string().optional().nullable(),
-  paymentMode: z.enum(['cash', 'card', 'upi', 'other']).default('cash'),
-  tierId: opaqueIdSchema,
-  quantity: z.number().int().min(1).max(100).default(1),
-  idempotencyKey: idempotencyKeySchema,
-}).strict();
+export const doorWalkInRequestSchema = z
+  .object({
+    eventId: opaqueIdSchema,
+    guestName: z.string().min(1),
+    guestPhone: z.string().optional().nullable(),
+    guestAge: z.number().int().min(0).max(120).optional().nullable(),
+    gender: z.string().optional().nullable(),
+    contact: z.string().optional().nullable(),
+    totalGuests: z.number().int().min(1).max(100).default(1),
+    gate: z.string().optional().nullable(),
+    paymentMode: z.enum(['cash', 'card', 'upi', 'other']).default('cash'),
+    tierId: opaqueIdSchema,
+    quantity: z.number().int().min(1).max(100).default(1),
+    idempotencyKey: idempotencyKeySchema,
+  })
+  .strict();
 export type DoorWalkInRequest = z.infer<typeof doorWalkInRequestSchema>;
 
-export const doorDineInRequestSchema = doorWalkInRequestSchema.extend({
-  tableNumber: z.string().optional().nullable(),
-}).strict();
+export const doorDineInRequestSchema = doorWalkInRequestSchema
+  .extend({
+    tableNumber: z.string().optional().nullable(),
+  })
+  .strict();
 export type DoorDineInRequest = z.infer<typeof doorDineInRequestSchema>;
 
 export const doorSaleResponseSchema = z.object({
@@ -166,33 +235,39 @@ export const doorSalesListResponseSchema = paginatedSchema(doorSaleResponseSchem
 export type DoorSalesListResponse = z.infer<typeof doorSalesListResponseSchema>;
 
 // Cover Wallet Schemas
-export const coverWalletIssueRequestSchema = z.object({
-  eventId: opaqueIdSchema,
-  userId: opaqueIdSchema,
-  openingBalancePaise: z.number().int().nonnegative(),
-  metadata: z.record(z.string(), z.unknown()).optional(),
-}).strict();
+export const coverWalletIssueRequestSchema = z
+  .object({
+    eventId: opaqueIdSchema,
+    userId: opaqueIdSchema,
+    openingBalancePaise: z.number().int().nonnegative(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .strict();
 export type CoverWalletIssueRequest = z.infer<typeof coverWalletIssueRequestSchema>;
 
-export const coverWalletDebitRequestSchema = z.object({
-  walletId: opaqueIdSchema,
-  amountPaise: z.number().int().positive(),
-  referenceId: opaqueIdSchema.optional(),
-  referenceType: z.string().optional(),
-  description: z.string().optional(),
-  idempotencyKey: idempotencyKeySchema,
-  deviceId: z.string().optional(),
-}).strict();
+export const coverWalletDebitRequestSchema = z
+  .object({
+    walletId: opaqueIdSchema,
+    amountPaise: z.number().int().positive(),
+    referenceId: opaqueIdSchema.optional(),
+    referenceType: z.string().optional(),
+    description: z.string().optional(),
+    idempotencyKey: idempotencyKeySchema,
+    deviceId: z.string().optional(),
+  })
+  .strict();
 export type CoverWalletDebitRequest = z.infer<typeof coverWalletDebitRequestSchema>;
 
-export const coverWalletCreditRequestSchema = z.object({
-  walletId: opaqueIdSchema,
-  amountPaise: z.number().int().positive(),
-  referenceId: opaqueIdSchema.optional(),
-  referenceType: z.string().optional(),
-  description: z.string().optional(),
-  idempotencyKey: idempotencyKeySchema,
-}).strict();
+export const coverWalletCreditRequestSchema = z
+  .object({
+    walletId: opaqueIdSchema,
+    amountPaise: z.number().int().positive(),
+    referenceId: opaqueIdSchema.optional(),
+    referenceType: z.string().optional(),
+    description: z.string().optional(),
+    idempotencyKey: idempotencyKeySchema,
+  })
+  .strict();
 export type CoverWalletCreditRequest = z.infer<typeof coverWalletCreditRequestSchema>;
 
 export const coverWalletResponseSchema = z.object({
@@ -200,7 +275,7 @@ export const coverWalletResponseSchema = z.object({
   eventId: opaqueIdSchema,
   userId: opaqueIdSchema,
   balancePaise: z.number().int().nonnegative(),
-  status: z.enum(['active', 'terminated', 'closed']),
+  status: z.enum(['active', 'frozen', 'terminated', 'closed']),
   openingBalancePaise: z.number().int().nonnegative(),
   totalCreditsPaise: z.number().int().nonnegative(),
   totalDebitsPaise: z.number().int().nonnegative(),
@@ -209,13 +284,17 @@ export const coverWalletResponseSchema = z.object({
 });
 export type CoverWalletResponse = z.infer<typeof coverWalletResponseSchema>;
 
-export const coverWalletReconciliationRequestSchema = z.object({
-  eventId: opaqueIdSchema,
-  reconciliationDate: z.iso.date(),
-  walletId: opaqueIdSchema.optional(),
-  userId: opaqueIdSchema.optional(),
-}).strict();
-export type CoverWalletReconciliationRequest = z.infer<typeof coverWalletReconciliationRequestSchema>;
+export const coverWalletReconciliationRequestSchema = z
+  .object({
+    eventId: opaqueIdSchema,
+    reconciliationDate: z.iso.date(),
+    walletId: opaqueIdSchema.optional(),
+    userId: opaqueIdSchema.optional(),
+  })
+  .strict();
+export type CoverWalletReconciliationRequest = z.infer<
+  typeof coverWalletReconciliationRequestSchema
+>;
 
 export const coverWalletReconciliationResponseSchema = z.object({
   id: opaqueIdSchema,
@@ -225,24 +304,28 @@ export const coverWalletReconciliationResponseSchema = z.object({
   actualBalancePaise: z.number().int(),
   discrepancyPaise: z.number().int(),
   status: z.enum(['pending', 'completed', 'discrepancy', 'resolved']),
-  discrepancies: z.array(z.object({
-    type: z.enum([
-      'balance_mismatch',
-      'missing_credit',
-      'missing_debit',
-      'extra_transaction',
-      'duplicate_transaction',
-      'offline_sync_gap',
-    ]),
-    walletId: opaqueIdSchema,
-    expectedAmountPaise: z.number().int(),
-    actualAmountPaise: z.number().int(),
-    transactionId: opaqueIdSchema.nullable(),
-    description: z.string(),
-  })),
+  discrepancies: z.array(
+    z.object({
+      type: z.enum([
+        'balance_mismatch',
+        'missing_credit',
+        'missing_debit',
+        'extra_transaction',
+        'duplicate_transaction',
+        'offline_sync_gap',
+      ]),
+      walletId: opaqueIdSchema,
+      expectedAmountPaise: z.number().int(),
+      actualAmountPaise: z.number().int(),
+      transactionId: opaqueIdSchema.nullable(),
+      description: z.string(),
+    }),
+  ),
   createdAt: z.iso.datetime(),
 });
-export type CoverWalletReconciliationResponse = z.infer<typeof coverWalletReconciliationResponseSchema>;
+export type CoverWalletReconciliationResponse = z.infer<
+  typeof coverWalletReconciliationResponseSchema
+>;
 
 // Phase 5 Error Codes
 export const phase5ErrorCodeSchema = z.enum([

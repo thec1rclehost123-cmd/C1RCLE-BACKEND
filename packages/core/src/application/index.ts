@@ -34,6 +34,7 @@ export { ReferralLinkService } from './promoters/referral-link-service.js';
 export type { CreateReferralLinkCommand } from './promoters/referral-link-service.js';
 export { PartnershipService } from './partnerships/partnership-service.js';
 export type { RequestPartnershipCommand } from './partnerships/partnership-service.js';
+export { PublicService } from './public/public-service.js';
 export { AdminAuthorityService } from './admin/admin-authority-service.js';
 export type { ProposeCommand, AuditInput } from './admin/admin-authority-service.js';
 export { OnboardingService } from './onboarding/onboarding-service.js';
@@ -54,6 +55,8 @@ export { createAuditConsumer, createProjectionConsumer } from './events/audit-co
 export { CheckoutService } from './checkout/checkout-service.js';
 export { InventoryService } from './inventory/inventory-service.js';
 export { PricingService } from './pricing/pricing-service.js';
+export { OrderService } from './orders/order-service.js';
+export { TicketService } from './tickets/ticket-service.js';
 
 // Phase 5: Scanner, Door, Cover Wallet
 export type {
@@ -92,3 +95,38 @@ export type {
   WalletOrgStats,
 } from './cover-wallet/cover-wallet-service.js';
 export { createCoverWalletService } from './cover-wallet/cover-wallet-service.js';
+export type {
+  DoorStatsService,
+  DoorStatsServiceDeps,
+  DoorStats,
+} from './door/door-stats-service.js';
+export { createDoorStatsService } from './door/door-stats-service.js';
+export type {
+  FinanceService,
+  FinanceServiceDeps,
+  RecordTicketSaleInput,
+  BalanceSummary,
+} from './finance/finance-service.js';
+export { createFinanceService } from './finance/finance-service.js';
+export type {
+  PayoutService,
+  PayoutServiceDeps,
+  RequestPayoutInput,
+} from './finance/payout-service.js';
+export { createPayoutService } from './finance/payout-service.js';
+export type {
+  BankAccountService,
+  BankAccountServiceDeps,
+  AddBankAccountInput,
+} from './finance/bank-account-service.js';
+export { createBankAccountService } from './finance/bank-account-service.js';
+export type {
+  DisputeService,
+  DisputeServiceDeps,
+  RaiseDisputeInput,
+} from './finance/dispute-service.js';
+export { createDisputeService } from './finance/dispute-service.js';
+export type { LeaderboardService, LeaderboardServiceDeps } from './finance/leaderboard-service.js';
+export { createLeaderboardService } from './finance/leaderboard-service.js';
+export type { EmailOtpService, EmailOtpServiceDeps } from './auth/email-otp-service.js';
+export { createEmailOtpService } from './auth/email-otp-service.js';

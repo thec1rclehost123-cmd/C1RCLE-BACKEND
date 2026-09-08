@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { opaqueIdSchema, paginatedSchema } from './shared.js';
+
+import { opaqueIdSchema } from './shared.js';
 
 /**
  * ─── Partnerships / Promoters / Referrals / Analytics ─────────────────────────

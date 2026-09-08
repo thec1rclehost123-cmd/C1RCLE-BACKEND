@@ -1,0 +1,28 @@
+# Normalize every text file to LF in the repository and in the working tree.
+# Without this, `core.autocrlf=true` on Windows checkouts produces CRLF files
+# that Prettier (endOfLine: "lf") flags, turning `format:check` into a
+# 161-file diff bomb that only reproduces on Windows.
+* text=auto eol=lf
+
+# Shell scripts and lockfiles must always be LF.
+*.sh      text eol=lf
+*.mjs     text eol=lf
+*.ts      text eol=lf
+*.tsx     text eol=lf
+*.json    text eol=lf
+*.yaml    text eol=lf
+*.yml     text eol=lf
+Dockerfile text eol=lf
+
+# Generated / vendored — keep out of diffs and language stats.
+pnpm-lock.yaml linguist-generated=true -diff
+
+# Binary assets: never touch line endings.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.woff  binary
+*.woff2 binary

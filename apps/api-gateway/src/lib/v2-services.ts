@@ -3,6 +3,7 @@ import {
   OrganizationService,
   VenueService,
   PartnershipService,
+  PublicService,
   ReferralLinkService,
   PromoterConnectionService,
   VenueCalendarService,
@@ -19,15 +20,38 @@ import {
   CheckoutService,
   InventoryService,
   PricingService,
+  OrderService,
+  TicketService,
   createScannerService,
   createDoorService,
   createCoverWalletService,
+  createDoorStatsService,
+  createFinanceService,
+  createPayoutService,
+  createBankAccountService,
+  createDisputeService,
+  createLeaderboardService,
+  createEmailOtpService,
   type ScannerService,
   type DoorService,
-  type CoverWalletService, type ServiceDeps, type ActorContext 
+  type CoverWalletService,
+  type DoorStatsService,
+  type FinanceService,
+  type PayoutService,
+  type BankAccountService,
+  type DisputeService,
+  type LeaderboardService,
+  type EmailOtpService,
+  type ServiceDeps,
+  type ActorContext,
 } from '@c1rcle/core/application';
 import { createCoreConfig } from '@c1rcle/core/config';
-import { EchoObjectStorage, FormatCheckVerificationProvider } from '@c1rcle/core/domain';
+import {
+  EchoObjectStorage,
+  FormatCheckVerificationProvider,
+  CompositeVerificationProvider,
+  MemoryPaymentProvider,
+} from '@c1rcle/core/domain';
 import {
   MemoryOutboxStore,
   MemoryAuditRepository,
@@ -37,15 +61,22 @@ import {
   buildRepositories,
   firestoreClient,
   storageClient,
+  authClient,
   buildIdempotencyStore,
   buildActorContext,
 } from '@c1rcle/core/infrastructure';
 
-import type { AdminAuditRepository } from '@c1rcle/core/domain';
+import type {
+  AdminAuditRepository,
+  PaymentProvider,
+  VerificationProvider,
+} from '@c1rcle/core/domain';
 
 import { getGatewayConfig } from '../config/index.js';
 
+import { ResendEmailSender } from './notifications/resend-email-sender.js';
 import { RazorpayPaymentProvider } from './payments/razorpay-adapter.js';
+import { FirebasePhoneVerificationProvider } from './verification/firebase-phone-verifier.js';
 
 import type { GatewayConfig } from '../config/index.js';
 import type { FastifyRequest } from 'fastify';
@@ -74,6 +105,24 @@ export interface PartnerV2Services {
   /** Phase 2: platform-admin resolution, tiering and dual control. */
   adminAuthority: AdminAuthorityService;
   checkout: CheckoutService;
+  /** Phase 4 PR1: unauthenticated guest-facing discovery reads. */
+  public: PublicService;
+  /**
+   * Phase 4: the payment provider adapter itself — routes need this directly
+   * (not just through `checkout`) for the redirect-confirm route's signature
+   * verification (`verifyPayment`), which happens *before* `confirmPayment`
+   * is ever called. Typed as the port interface, not a concrete adapter —
+   * `STORAGE_DRIVER=memory` selects `MemoryPaymentProvider` (no network
+   * calls, used by `pnpm test`/CI); `firestore` selects the real
+   * `RazorpayPaymentProvider`. Tests that need to seed a "captured" payment
+   * narrow to `MemoryPaymentProvider` and call its `simulateCapture` escape
+   * hatch (not part of this interface — see that class's doc comment).
+   */
+  paymentProvider: PaymentProvider;
+  /** Phase 4 PR3: guest-facing order reads (GET /orders, /orders/:id[/status]). */
+  orders: OrderService;
+  /** Phase 4 PR3: guest-facing ticket reads (GET /tickets/:id, /wallet/tickets). */
+  tickets: TicketService;
   /** T09 idempotency — durable on the firestore driver, in-memory on `memory`. */
   idempotency: IdempotencyService;
   /** Builds the service actor from the authenticated request state. */
@@ -90,6 +139,20 @@ export interface PartnerV2Services {
   door: DoorService;
   /** Phase 5: Cover wallet service */
   coverWallet: CoverWalletService;
+  /** Phase 5 (Founder Task B2): GET /door/stats read model. */
+  doorStats: DoorStatsService;
+  /** Phase 6: ledger + balances. */
+  finance: FinanceService;
+  /** Phase 6: payout requests + lifecycle. */
+  payout: PayoutService;
+  /** Phase 6: bank account management. */
+  bankAccount: BankAccountService;
+  /** Phase 6: dispute lifecycle. */
+  dispute: DisputeService;
+  /** Phase 6: promoter leaderboard. */
+  leaderboard: LeaderboardService;
+  /** Email OTP (signup verification). */
+  emailOtp: EmailOtpService;
 }
 
 // Each route module calls `createV2Services()` independently at import time
@@ -135,7 +198,8 @@ export function actorFromRequest(gw: GatewayConfig, request: FastifyRequest): Ac
     // invitation itself).
     const membership = request.authContext?.activeMembership;
     const orgHeader = request.headers['x-organization-id'];
-    const organizationId = membership?.organizationId ?? (Array.isArray(orgHeader) ? orgHeader[0] : orgHeader);
+    const organizationId =
+      membership?.organizationId ?? (Array.isArray(orgHeader) ? orgHeader[0] : orgHeader);
     const userHeader = request.headers['x-user-id'];
     const userId = request.user?.uid ?? (Array.isArray(userHeader) ? userHeader[0] : userHeader);
     return {
@@ -155,9 +219,9 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     redis: { url: gw.REDIS_URL },
     firestore: { projectId: gw.FIRESTORE_PROJECT_ID },
     storage: gw.FIREBASE_STORAGE_BUCKET ? { kycBucket: gw.FIREBASE_STORAGE_BUCKET } : undefined,
+    emailOtpSecret: gw.EMAIL_OTP_SECRET,
   });
 
-   
   const repositories: ServiceDeps['repositories'] = buildRepositories(gw);
 
   // T13 event infrastructure: memory outbox store + in-process bus + audit.
@@ -172,23 +236,42 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   const adminAudits: AdminAuditRepository =
     gw.STORAGE_DRIVER === 'memory'
       ? new MemoryAdminAuditRepository()
-      :  
-        new FirestoreAdminAuditRepository(firestoreClient(gw));
+      : new FirestoreAdminAuditRepository(firestoreClient(gw));
 
   // Phase 4: Payment provider, pricing, inventory
   const gwConfig = getGatewayConfig();
-   
-  const paymentProvider = new RazorpayPaymentProvider({
-    keyId: gwConfig.RAZORPAY_KEY_ID ?? 'test_key_id',
-    keySecret: gwConfig.RAZORPAY_KEY_SECRET ?? 'test_key_secret',
-    webhookSecret: gwConfig.RAZORPAY_WEBHOOK_SECRET ?? 'test_webhook_secret',
-  });
+
+  // Same-shape choice as every other port in this file (repositories, object
+  // storage): memory driver never makes a network call, firestore driver
+  // talks to the real provider. Without this branch, `pnpm test`/CI would
+  // hit `api.razorpay.com` for every checkout/payment test.
+  const paymentProvider: PaymentProvider =
+    gw.STORAGE_DRIVER === 'memory'
+      ? new MemoryPaymentProvider(gwConfig.RAZORPAY_WEBHOOK_SECRET ?? 'test_webhook_secret')
+      : new RazorpayPaymentProvider({
+          keyId: gwConfig.RAZORPAY_KEY_ID ?? 'test_key_id',
+          keySecret: gwConfig.RAZORPAY_KEY_SECRET ?? 'test_key_secret',
+          webhookSecret: gwConfig.RAZORPAY_WEBHOOK_SECRET ?? 'test_webhook_secret',
+        });
   const pricing = new PricingService({ eventCatalog: repositories.catalog });
   const inventory = new InventoryService({
     eventCatalog: repositories.catalog,
     cartReservation: repositories.cartReservations,
     order: repositories.orders,
   });
+
+  // Phone verification: real GCP Identity Platform check when firestore
+  // credentials exist (see `firebase-phone-verifier.ts`); on the memory
+  // driver (tests, local dev with no GCP project) every documentType,
+  // 'phone' included, falls through to the same format-check default as
+  // KYC documents — there is nothing to verify an ID token against.
+  const verificationProvider: VerificationProvider =
+    gw.STORAGE_DRIVER === 'memory'
+      ? new FormatCheckVerificationProvider()
+      : new CompositeVerificationProvider(
+          { phone: new FirebasePhoneVerificationProvider(authClient(gw)) },
+          new FormatCheckVerificationProvider(),
+        );
 
   const deps: ServiceDeps = {
     config: coreConfig,
@@ -203,7 +286,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     adminAudit: adminAudits,
     // Swap here — and only here — when a real KYC provider is contracted.
 
-    verification: new FormatCheckVerificationProvider(),
+    verification: verificationProvider,
     objectStorage:
       gw.STORAGE_DRIVER === 'memory'
         ? new EchoObjectStorage()
@@ -254,6 +337,47 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     adminAudit: adminAudits,
   });
 
+  const doorStats = createDoorStatsService({
+    events: repositories.events,
+    scanLedger: repositories.scanLedger,
+    doorSales: repositories.doorSales,
+    coverWallets: repositories.coverWallets,
+  });
+
+  // Phase 6 services
+  const finance = createFinanceService({
+    ledger: repositories.ledger,
+    config: coreConfig,
+  });
+
+  const payout = createPayoutService({
+    payouts: repositories.payouts,
+    bankAccounts: repositories.bankAccounts,
+    ledger: repositories.ledger,
+    config: coreConfig,
+  });
+
+  const bankAccount = createBankAccountService({
+    bankAccounts: repositories.bankAccounts,
+    config: coreConfig,
+  });
+
+  const dispute = createDisputeService({
+    disputes: repositories.disputes,
+    config: coreConfig,
+  });
+
+  const leaderboard = createLeaderboardService({
+    leaderboard: repositories.leaderboard,
+    config: coreConfig,
+  });
+
+  const emailOtp = createEmailOtpService({
+    emailOtp: repositories.emailOtp,
+    emailSender: new ResendEmailSender(gwConfig.RESEND_API_KEY, gwConfig.NODE_ENV, deps.logger),
+    config: coreConfig,
+  });
+
   return {
     organizations: new OrganizationService(deps),
     venues: new VenueService(deps),
@@ -268,9 +392,13 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     onboarding: new OnboardingService(deps, adminAuthority),
     adminAuthority,
     checkout: new CheckoutService(deps),
+    public: new PublicService(deps),
+    paymentProvider,
+    orders: new OrderService(deps),
+    tickets: new TicketService(deps),
     // Replay protection must outlive the process: a restart mid-retry with an
     // in-memory store turns a client's retry into a second business result.
-     
+
     idempotency: new IdempotencyService(buildIdempotencyStore(), logger),
     actor: (request: FastifyRequest) => actorFromRequest(gw, request),
     repos: () => repositories,
@@ -281,5 +409,13 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     scanner,
     door,
     coverWallet,
+    doorStats,
+    // Phase 6
+    finance,
+    payout,
+    bankAccount,
+    dispute,
+    leaderboard,
+    emailOtp,
   };
 }

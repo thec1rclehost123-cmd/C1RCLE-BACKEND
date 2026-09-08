@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { InvalidOperationError } from '../errors.js';
 import { transitionStatus } from '../fsm.js';
 import { bumpVersion, newVersionedEntity } from '../identity.js';
@@ -18,11 +20,19 @@ import type { Order } from './order.js';
  *     entitlements. This is not cosmetic: two entitlements would let the pair
  *     split and enter separately at different doors, which is precisely what
  *     a couple ticket is priced not to allow.
- *  2. **Deterministic ids: `ENT-{orderId}-{tierId}-{index}`.** Fulfilment runs
- *     from a payment confirmation, and confirmations arrive twice (webhook and
- *     browser redirect race — see `order.ts`). A random id would mint a second
- *     set of tickets on the second confirmation. A deterministic one collides
- *     with itself, so the retry is a no-op at the storage layer.
+ *  2. **Deterministic ids: `ENT-{sha256(orderId:tierId:index)[0:32]}`.**
+ *     Fulfilment runs from a payment confirmation, and confirmations arrive
+ *     twice (webhook and browser redirect race — see `order.ts`). A random id
+ *     would mint a second set of tickets on the second confirmation. A
+ *     deterministic one collides with itself, so the retry is a no-op at the
+ *     storage layer. Hashed rather than the readable
+ *     `ENT-{orderId}-{tierId}-{index}` this replaced: that scheme overflowed
+ *     the platform's 64-char opaque-ID cap once a real payment id (`ORD-` +
+ *     provider payment id) and a UUID tier id were both concatenated in —
+ *     found via `pnpm test` returning a 500 on the *third* fulfilled order in
+ *     one process, not the first, because it depends on accumulated id
+ *     length, not a fixed input. Opaque by construction now, not just in
+ *     name; still fully deterministic (same 3 inputs, same output).
  *
  * The QR payload is deliberately NOT stored here. What the guest scans must be
  * short-lived and authorized at read time (Phase 4 handoff doc rule); a
@@ -45,7 +55,7 @@ const ENTITLEMENT_TRANSITIONS: Readonly<Record<EntitlementStatus, readonly Entit
 };
 
 export interface Entitlement extends VersionedEntity {
-  /** `ENT-{orderId}-{tierId}-{index}` — deterministic, see above. */
+  /** `entitlementId(orderId, tierId, index)` — deterministic, see above. */
   id: EntityId;
   orderId: EntityId;
   eventId: EntityId;
@@ -67,9 +77,16 @@ export interface Entitlement extends VersionedEntity {
   scannedAt: string[];
 }
 
-/** Builds the deterministic id. Exported so fulfilment can check before writing. */
+/**
+ * Builds the deterministic id. Exported so fulfilment can check before
+ * writing. Hashed (not a readable concatenation) so the result always fits
+ * the platform's 64-char opaque-ID cap regardless of how long `orderId`/
+ * `tierId` are — see the module doc comment for why this replaced a plain
+ * `ENT-{orderId}-{tierId}-{index}` scheme.
+ */
 export function entitlementId(orderId: EntityId, tierId: EntityId, index: number): EntityId {
-  return `ENT-${orderId}-${tierId}-${index}`;
+  const digest = createHash('sha256').update(`${orderId}:${tierId}:${index}`).digest('hex');
+  return `ENT-${digest.slice(0, 32)}`;
 }
 
 export interface IssueEntitlementsInput {

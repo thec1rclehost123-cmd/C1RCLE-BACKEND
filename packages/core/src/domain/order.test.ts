@@ -172,7 +172,20 @@ describe('entitlement issuance', () => {
       entitlementId('ord_1', 'tier_1', 0),
       entitlementId('ord_1', 'tier_1', 1),
     ]);
-    expect(issued[0]?.id).toBe('ENT-ord_1-tier_1-0');
+    // Opaque now (a hash, not a readable concatenation — see entitlement.ts's
+    // doc comment: the old ENT-{orderId}-{tierId}-{index} format could exceed
+    // the 64-char opaque-ID cap once real payment/tier ids were plugged in).
+    expect(issued[0]?.id).toMatch(/^ENT-[0-9a-f]{32}$/);
+  });
+
+  it('id stays within the 64-char opaque-ID cap even with realistic long inputs', () => {
+    // Regression: ORD-{razorpay paymentId} + a UUID tierId overflowed 64
+    // chars under the old ENT-{orderId}-{tierId}-{index} scheme — surfaced
+    // by pnpm test failing on the third fulfilled order in one process, not
+    // the first, since it depends on accumulated id length.
+    const longOrderId = `ORD-pay_${'x'.repeat(20)}`;
+    const uuidTierId = '91798535-4e20-4871-8307-e0ba6966af07';
+    expect(entitlementId(longOrderId, uuidTierId, 9).length).toBeLessThanOrEqual(64);
   });
 
   it('is idempotent: a re-run produces identical ids', () => {

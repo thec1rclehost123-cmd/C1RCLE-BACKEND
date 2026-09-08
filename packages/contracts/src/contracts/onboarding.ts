@@ -127,6 +127,13 @@ export const verifyDocumentSchema = z
     documentType: z.string().min(1).max(40),
     documentNumber: z.string().min(1).max(64),
     holderName: z.string().max(200).optional(),
+    /**
+     * A provider-issued proof rather than a value to format-validate —
+     * `documentType: 'phone'`'s GCP Identity Platform ID token from the
+     * client's `signInWithPhoneNumber` flow. Unused for every other
+     * documentType.
+     */
+    proofToken: z.string().min(1).max(4096).optional(),
   })
   .strict();
 export type VerifyDocumentRequest = z.infer<typeof verifyDocumentSchema>;
@@ -175,13 +182,7 @@ export const approveOnboardingResultSchema = z.object({
   request: z.object({
     id: opaqueIdSchema,
     userId: opaqueIdSchema,
-    status: z.enum([
-      'draft',
-      'submitted',
-      'changes_requested',
-      'approved',
-      'rejected',
-    ]),
+    status: z.enum(['draft', 'submitted', 'changes_requested', 'approved', 'rejected']),
     requestedType: z.enum(['venue', 'host', 'promoter']),
     plan: z.enum(['basic', 'silver', 'diamond']),
     profile: z.object({
@@ -198,11 +199,13 @@ export const approveOnboardingResultSchema = z.object({
       registrationNumber: z.string().max(120).optional(),
       entityType: z.string().max(120).optional(),
     }),
-    documents: z.array(z.object({
-      label: z.string().min(1).max(60),
-      storagePath: z.string().min(1).max(500),
-      uploadedAt: z.iso.datetime(),
-    })),
+    documents: z.array(
+      z.object({
+        label: z.string().min(1).max(60),
+        storagePath: z.string().min(1).max(500),
+        uploadedAt: z.iso.datetime(),
+      }),
+    ),
     missingDocuments: z.array(z.string()),
     submittedAt: z.iso.datetime().nullable(),
     reviewedBy: opaqueIdSchema.nullable(),

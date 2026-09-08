@@ -79,6 +79,17 @@ export class FirestoreOnboardingRepository implements OnboardingRepository {
     return paginateQuery(base, query, toRequest);
   }
 
+  async findByProvisionedOrganizationId(
+    organizationId: EntityId,
+  ): Promise<OnboardingRequest | null> {
+    const snap = await this.collection
+      .where('provisionedOrganizationId', '==', organizationId)
+      .limit(1)
+      .get();
+    const doc = snap.docs[0];
+    return doc ? toRequest(doc.data()) : null;
+  }
+
   async save(request: OnboardingRequest, _tx?: TxContext | null): Promise<void> {
     await compareAndSet(this.db, this.collection, request, (entity) => ({ ...entity }));
   }

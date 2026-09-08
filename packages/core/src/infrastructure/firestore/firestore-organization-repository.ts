@@ -33,6 +33,12 @@ export class FirestoreOrganizationRepository implements OrganizationRepository {
     return data ? toOrganization(data) : null;
   }
 
+  async getBySlug(slug: string): Promise<Organization | null> {
+    const snap = await this.collection.where('slug', '==', slug).limit(1).get();
+    const doc = snap.docs[0];
+    return doc ? toOrganization(doc.data()) : null;
+  }
+
   async listForMember(userId: EntityId, query: PaginationQuery): Promise<Page<Organization>> {
     const base = this.collection.where('memberIds', 'array-contains', userId);
     return paginateQuery(base, query, toOrganization);

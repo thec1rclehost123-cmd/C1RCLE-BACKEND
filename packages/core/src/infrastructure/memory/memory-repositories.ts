@@ -56,14 +56,30 @@ function casSet<T extends { id: EntityId; version: number }>(
   map.set(entity.id, entity);
 }
 
-/** Serializes a paginated slice of an in-memory array. */
-function serializeSlice<T>(all: T[], query: PaginationQuery): Page<T> {
+/**
+ * Serializes a paginated slice of an in-memory array, cursored on an explicit
+ * key. Needed because not every paged entity carries an `id`:
+ * `OrganizationMember` is keyed by `userId` alone, and the previous
+ * `(items[last] as any).id` silently produced an `undefined` cursor for it, so
+ * member pagination never advanced past the first page.
+ */
+function serializeSliceBy<T>(
+  all: T[],
+  query: PaginationQuery,
+  getCursor: (item: T) => EntityId,
+): Page<T> {
   const { cursor, limit } = query;
-  const start = cursor ? all.findIndex((item: any) => item.id === cursor) + 1 : 0;
+  const start = cursor ? all.findIndex((item) => getCursor(item) === cursor) + 1 : 0;
   const end = Math.min(start + limit, all.length);
   const items = all.slice(start, end);
-  const nextCursor = end < all.length && items.length > 0 ? (items[items.length - 1] as any).id : null;
+  const last = items[items.length - 1];
+  const nextCursor = end < all.length && last ? getCursor(last) : null;
   return { items, total: all.length, nextCursor };
+}
+
+/** Serializes a paginated slice of an in-memory array cursored on `id`. */
+function serializeSlice<T extends { id: EntityId }>(all: T[], query: PaginationQuery): Page<T> {
+  return serializeSliceBy(all, query, (item) => item.id);
 }
 
 export class MemoryEventRepository implements EventRepository {
@@ -75,6 +91,13 @@ export class MemoryEventRepository implements EventRepository {
 
   async findById(eventId: EntityId): Promise<Event | null> {
     return this.getById(eventId);
+  }
+
+  async getBySlug(slug: string): Promise<Event | null> {
+    for (const event of this.events.values()) {
+      if (event.slug === slug) return event;
+    }
+    return null;
   }
 
   async listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Event>> {
@@ -109,6 +132,13 @@ export class MemoryOrganizationRepository implements OrganizationRepository {
     return this.organizations.get(organizationId) ?? null;
   }
 
+  async getBySlug(slug: string): Promise<Organization | null> {
+    for (const org of this.organizations.values()) {
+      if (org.slug === slug) return org;
+    }
+    return null;
+  }
+
   async listForMember(userId: EntityId, query: PaginationQuery): Promise<Page<Organization>> {
     const all = [...this.organizations.values()].filter((org) =>
       org.members?.some((m) => m.userId === userId),
@@ -116,14 +146,17 @@ export class MemoryOrganizationRepository implements OrganizationRepository {
     return serializeSlice(all, query);
   }
 
-  async listMembers(organizationId: EntityId, query: PaginationQuery): Promise<Page<OrganizationMember>> {
+  async listMembers(
+    organizationId: EntityId,
+    query: PaginationQuery,
+  ): Promise<Page<OrganizationMember>> {
     const all: OrganizationMember[] = [];
     for (const [key, member] of this.members) {
       if (key.startsWith(`${organizationId}|`)) {
         all.push(member);
       }
     }
-    return serializeSlice(all, query);
+    return serializeSliceBy(all, query, (member) => member.userId);
   }
 
   async getMember(organizationId: EntityId, userId: EntityId): Promise<OrganizationMember | null> {
@@ -155,6 +188,13 @@ export class MemoryVenueRepository implements VenueRepository {
   async getBySlug(slug: string, organizationId: EntityId): Promise<Venue | null> {
     for (const venue of this.venues.values()) {
       if (venue.public.slug === slug && venue.organizationId === organizationId) return venue;
+    }
+    return null;
+  }
+
+  async getBySlugGlobal(slug: string): Promise<Venue | null> {
+    for (const venue of this.venues.values()) {
+      if (venue.public.slug === slug) return venue;
     }
     return null;
   }
@@ -221,13 +261,15 @@ export class MemoryEventCatalogRepository implements EventCatalogRepository {
 
   async findWalkInTier(eventId: EntityId): Promise<TicketTier | null> {
     return (
-      [...this.tiers.values()].find((t) => t.eventId === eventId && t.entryType === 'walkin') ?? null
+      [...this.tiers.values()].find((t) => t.eventId === eventId && t.entryType === 'walkin') ??
+      null
     );
   }
 
   async findDineInTier(eventId: EntityId): Promise<TicketTier | null> {
     return (
-      [...this.tiers.values()].find((t) => t.eventId === eventId && t.entryType === 'dinein') ?? null
+      [...this.tiers.values()].find((t) => t.eventId === eventId && t.entryType === 'dinein') ??
+      null
     );
   }
 
@@ -242,7 +284,8 @@ export class MemoryEventCatalogRepository implements EventCatalogRepository {
   async getPromoByCode(code: string, eventId: EntityId | null): Promise<PromoCode | null> {
     const normalized = code.toUpperCase().trim();
     for (const promo of this.promos.values()) {
-      if (promo.code === normalized && (eventId === null || promo.eventId === eventId)) return promo;
+      if (promo.code === normalized && (eventId === null || promo.eventId === eventId))
+        return promo;
     }
     return null;
   }
@@ -343,6 +386,13 @@ export class MemoryCartReservationRepository implements CartReservationRepositor
     }
     return count;
   }
+
+  async listActiveByEvent(eventId: EntityId, now: Date): Promise<CartReservation[]> {
+    return [...this.reservations.values()].filter(
+      (r) =>
+        r.eventId === eventId && r.status === 'active' && Date.parse(r.expiresAt) > now.getTime(),
+    );
+  }
 }
 
 export class MemoryOrderRepository implements OrderRepository {
@@ -427,8 +477,9 @@ export class MemoryEntitlementRepository implements EntitlementRepository {
   }
 
   async countValidByTier(tierId: EntityId): Promise<number> {
-    return [...this.entitlements.values()].filter((e) => e.tierId === tierId && e.status === 'valid')
-      .length;
+    return [...this.entitlements.values()].filter(
+      (e) => e.tierId === tierId && e.status === 'valid',
+    ).length;
   }
 }
 
@@ -447,9 +498,7 @@ export class MemoryPromoRedemptionRepository implements PromoRedemptionRepositor
     this.redemptions.set(redemption.id, redemption);
   }
 
-  async getByOrderId(
-    orderId: EntityId,
-  ): Promise<{ promoId: EntityId; redeemedAt: string } | null> {
+  async getByOrderId(orderId: EntityId): Promise<{ promoId: EntityId; redeemedAt: string } | null> {
     for (const r of this.redemptions.values()) {
       if (r.orderId === orderId) return { promoId: r.promoId, redeemedAt: r.redeemedAt };
     }

@@ -1,18 +1,28 @@
-import { compareAndSet } from './compare-and-set.js';
+import { freezeWallet, unfreezeWallet } from '../../domain/models/cover-wallet.js';
+
 import { paginateQuery } from './pagination.js';
 
 import type { EntityId } from '../../domain/identity.js';
-import type { CoverWallet, CoverWalletTxn, CoverWalletStatus, CoverWalletTxnType, CoverWalletTxnStatus } from '../../domain/models/cover-wallet.js';
-import type { CoverWalletReconciliation } from '../../domain/models/cover-wallet-reconciliation.js';
+import type {
+  CoverWalletReconciliation,
+  CoverWalletReconciliationDiscrepancy,
+  ReconciliationStatus,
+} from '../../domain/models/cover-wallet-reconciliation.js';
+import type {
+  CoverWallet,
+  CoverWalletTxn,
+  CoverWalletStatus,
+  CoverWalletTxnType,
+  CoverWalletTxnStatus,
+} from '../../domain/models/cover-wallet.js';
 import type {
   CoverWalletRepository,
   CoverWalletTxnRepository,
   CoverWalletReconciliationRepository,
   Page,
   PaginationQuery,
-  TxContext,
 } from '../../domain/ports/repositories.js';
-import type { DocumentData, Firestore, Query, FieldValue } from 'firebase-admin/firestore';
+import type { DocumentData, Firestore } from 'firebase-admin/firestore';
 
 const WALLET_COLLECTION = 'v2_cover_wallets';
 const TXN_COLLECTION = 'v2_cover_wallet_txns';
@@ -31,21 +41,30 @@ export class FirestoreCoverWalletRepository implements CoverWalletRepository {
 
   async create(wallet: CoverWallet): Promise<CoverWallet> {
     await this.walletCollection.doc(wallet.id).set(toWalletDoc(wallet));
-    await this.db.collection('v2_cover_wallet_by_event_user').doc(`${wallet.eventId}|${wallet.userId}`).set({ walletId: wallet.id });
+    await this.db
+      .collection('v2_cover_wallet_by_event_user')
+      .doc(`${wallet.eventId}|${wallet.userId}`)
+      .set({ walletId: wallet.id });
     return wallet;
   }
 
   async findById(id: EntityId): Promise<CoverWallet | null> {
     const snap = await this.walletCollection.doc(id).get();
-    return snap.exists ? toWallet(snap.data()!) : null;
+    const data = snap.data();
+    return data ? toWallet(data) : null;
   }
 
   async findByEventAndUser(eventId: EntityId, userId: EntityId): Promise<CoverWallet | null> {
-    const idDoc = await this.db.collection('v2_cover_wallet_by_event_user').doc(`${eventId}|${userId}`).get();
-    if (!idDoc.exists) return null;
-    const walletId = idDoc.data()!.walletId;
+    const idDoc = await this.db
+      .collection('v2_cover_wallet_by_event_user')
+      .doc(`${eventId}|${userId}`)
+      .get();
+    const idData = idDoc.data();
+    if (!idData) return null;
+    const walletId = idData.walletId as EntityId;
     const snap = await this.walletCollection.doc(walletId).get();
-    return snap.exists ? toWallet(snap.data()!) : null;
+    const data = snap.data();
+    return data ? toWallet(data) : null;
   }
 
   async findByEvent(eventId: EntityId, input: PaginationQuery): Promise<Page<CoverWallet>> {
@@ -53,13 +72,21 @@ export class FirestoreCoverWalletRepository implements CoverWalletRepository {
     return paginateQuery(base, input, toWallet);
   }
 
-  async findByOrganization(organizationId: EntityId, input: PaginationQuery): Promise<Page<CoverWallet>> {
-    const base = this.walletCollection.where('organizationId', '==', organizationId).orderBy('createdAt', 'desc');
+  async findByOrganization(
+    organizationId: EntityId,
+    input: PaginationQuery,
+  ): Promise<Page<CoverWallet>> {
+    const base = this.walletCollection
+      .where('organizationId', '==', organizationId)
+      .orderBy('createdAt', 'desc');
     return paginateQuery(base, input, toWallet);
   }
 
   async findActiveByEvent(eventId: EntityId): Promise<CoverWallet[]> {
-    const snap = await this.walletCollection.where('eventId', '==', eventId).where('status', '==', 'active').get();
+    const snap = await this.walletCollection
+      .where('eventId', '==', eventId)
+      .where('status', '==', 'active')
+      .get();
     return snap.docs.map((doc) => toWallet(doc.data()));
   }
 
@@ -76,8 +103,9 @@ export class FirestoreCoverWalletRepository implements CoverWalletRepository {
     return this.db.runTransaction(async (transaction) => {
       const walletRef = this.walletCollection.doc(input.walletId);
       const walletSnap = await transaction.get(walletRef);
-      if (!walletSnap.exists) throw new Error('Wallet not found');
-      const wallet = toWallet(walletSnap.data()!);
+      const walletData = walletSnap.data();
+      if (!walletData) throw new Error('Wallet not found');
+      const wallet = toWallet(walletData);
 
       const newBalance = wallet.balance + input.amount;
       const updatedWallet: CoverWallet = {
@@ -117,7 +145,9 @@ export class FirestoreCoverWalletRepository implements CoverWalletRepository {
 
       transaction.set(this.walletCollection.doc(input.walletId), toWalletDoc(updatedWallet));
       transaction.set(this.db.collection(TXN_COLLECTION).doc(txn.id), toTxnDoc(txn));
-      transaction.set(this.db.collection('v2_cover_wallet_idempotency').doc(input.idempotencyKey), { txnId: txn.id });
+      transaction.set(this.db.collection(IDEMPOTENCY_COLLECTION).doc(input.idempotencyKey), {
+        txnId: txn.id,
+      });
 
       return { wallet: updatedWallet, txn };
     });
@@ -137,8 +167,9 @@ export class FirestoreCoverWalletRepository implements CoverWalletRepository {
     return this.db.runTransaction(async (transaction) => {
       const walletRef = this.walletCollection.doc(input.walletId);
       const walletSnap = await transaction.get(walletRef);
-      if (!walletSnap.exists) throw new Error('Wallet not found');
-      const wallet = toWallet(walletSnap.data()!);
+      const walletData = walletSnap.data();
+      if (!walletData) throw new Error('Wallet not found');
+      const wallet = toWallet(walletData);
 
       if (wallet.balance < input.amount) throw new Error('Insufficient balance');
 
@@ -183,18 +214,28 @@ export class FirestoreCoverWalletRepository implements CoverWalletRepository {
 
       transaction.set(this.walletCollection.doc(input.walletId), toWalletDoc(updatedWallet));
       transaction.set(this.db.collection(TXN_COLLECTION).doc(txn.id), toTxnDoc(txn));
-      transaction.set(this.db.collection('v2_cover_wallet_idempotency').doc(input.idempotencyKey), { txnId: txn.id });
+      transaction.set(this.db.collection(IDEMPOTENCY_COLLECTION).doc(input.idempotencyKey), {
+        txnId: txn.id,
+      });
 
       return { wallet: updatedWallet, txn };
     });
   }
 
-  async refund(walletId: EntityId, amount: number, referenceId: EntityId, idempotencyKey: string, operatorUid: EntityId, description: string): Promise<{ wallet: CoverWallet; txn: CoverWalletTxn }> {
+  async refund(
+    walletId: EntityId,
+    amount: number,
+    referenceId: EntityId,
+    idempotencyKey: string,
+    operatorUid: EntityId,
+    description: string,
+  ): Promise<{ wallet: CoverWallet; txn: CoverWalletTxn }> {
     return this.db.runTransaction(async (transaction) => {
       const walletRef = this.walletCollection.doc(walletId);
       const walletSnap = await transaction.get(walletRef);
-      if (!walletSnap.exists) throw new Error('Wallet not found');
-      const wallet = toWallet(walletSnap.data()!);
+      const walletData = walletSnap.data();
+      if (!walletData) throw new Error('Wallet not found');
+      const wallet = toWallet(walletData);
 
       const updatedWallet: CoverWallet = {
         ...wallet,
@@ -232,20 +273,30 @@ export class FirestoreCoverWalletRepository implements CoverWalletRepository {
 
       transaction.set(this.walletCollection.doc(walletId), toWalletDoc(updatedWallet));
       transaction.set(this.db.collection(TXN_COLLECTION).doc(txn.id), toTxnDoc(txn));
-      transaction.set(this.db.collection('v2_cover_wallet_idempotency').doc(idempotencyKey), { txnId: txn.id });
+      transaction.set(this.db.collection(IDEMPOTENCY_COLLECTION).doc(idempotencyKey), {
+        txnId: txn.id,
+      });
 
       return { wallet: updatedWallet, txn };
     });
   }
 
-  async adjust(walletId: EntityId, amount: number, idempotencyKey: string, operatorUid: EntityId, description: string): Promise<{ wallet: CoverWallet; txn: CoverWalletTxn }> {
+  async adjust(
+    walletId: EntityId,
+    amount: number,
+    idempotencyKey: string,
+    operatorUid: EntityId,
+    description: string,
+  ): Promise<{ wallet: CoverWallet; txn: CoverWalletTxn }> {
     return this.db.runTransaction(async (transaction) => {
       const walletRef = this.walletCollection.doc(walletId);
       const walletSnap = await transaction.get(walletRef);
-      if (!walletSnap.exists) throw new Error('Wallet not found');
-      const wallet = toWallet(walletSnap.data()!);
+      const walletData = walletSnap.data();
+      if (!walletData) throw new Error('Wallet not found');
+      const wallet = toWallet(walletData);
 
-      if (wallet.balance + amount < 0) throw new Error('Adjustment would result in negative balance');
+      if (wallet.balance + amount < 0)
+        throw new Error('Adjustment would result in negative balance');
 
       const updatedWallet: CoverWallet = {
         ...wallet,
@@ -282,7 +333,9 @@ export class FirestoreCoverWalletRepository implements CoverWalletRepository {
 
       transaction.set(this.walletCollection.doc(walletId), toWalletDoc(updatedWallet));
       transaction.set(this.db.collection(TXN_COLLECTION).doc(txn.id), toTxnDoc(txn));
-      transaction.set(this.db.collection('v2_cover_wallet_idempotency').doc(idempotencyKey), { txnId: txn.id });
+      transaction.set(this.db.collection(IDEMPOTENCY_COLLECTION).doc(idempotencyKey), {
+        txnId: txn.id,
+      });
 
       return { wallet: updatedWallet, txn };
     });
@@ -290,30 +343,64 @@ export class FirestoreCoverWalletRepository implements CoverWalletRepository {
 
   async terminate(walletId: EntityId, reason: string): Promise<CoverWallet | null> {
     const ref = this.walletCollection.doc(walletId);
-    await ref.update({ status: 'terminated', terminatedAt: new Date().toISOString(), terminationReason: reason, updatedAt: new Date().toISOString() });
+    await ref.update({
+      status: 'terminated',
+      terminatedAt: new Date().toISOString(),
+      terminationReason: reason,
+      updatedAt: new Date().toISOString(),
+    });
     const snap = await ref.get();
-    return snap.exists ? toWallet(snap.data()!) : null;
+    const data = snap.data();
+    return data ? toWallet(data) : null;
   }
 
   async close(walletId: EntityId): Promise<CoverWallet | null> {
     const ref = this.walletCollection.doc(walletId);
     await ref.update({ status: 'closed', updatedAt: new Date().toISOString() });
     const snap = await ref.get();
-    return snap.exists ? toWallet(snap.data()!) : null;
+    const data = snap.data();
+    return data ? toWallet(data) : null;
+  }
+
+  async freeze(walletId: EntityId): Promise<CoverWallet | null> {
+    const ref = this.walletCollection.doc(walletId);
+    return this.db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      const data = snap.data();
+      if (!data) return null;
+      const updated = freezeWallet(toWallet(data)); // throws on an illegal transition
+      tx.set(ref, toWalletDoc(updated));
+      return updated;
+    });
+  }
+
+  async unfreeze(walletId: EntityId): Promise<CoverWallet | null> {
+    const ref = this.walletCollection.doc(walletId);
+    return this.db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      const data = snap.data();
+      if (!data) return null;
+      const updated = unfreezeWallet(toWallet(data)); // throws on an illegal transition
+      tx.set(ref, toWalletDoc(updated));
+      return updated;
+    });
   }
 
   async getBalance(walletId: EntityId): Promise<number | null> {
     const snap = await this.walletCollection.doc(walletId).get();
-    return snap.exists ? toWallet(snap.data()!).balance : null;
+    const data = snap.data();
+    return data ? toWallet(data).balance : null;
   }
 
   async isActive(walletId: EntityId): Promise<boolean> {
     const snap = await this.walletCollection.doc(walletId).get();
-    return snap.exists ? toWallet(snap.data()!).status === 'active' : false;
+    const data = snap.data();
+    return data ? toWallet(data).status === 'active' : false;
   }
 
   async countRecentDebits(deviceId: string, since: Date): Promise<number> {
-    const snap = await this.db.collection(TXN_COLLECTION)
+    const snap = await this.db
+      .collection(TXN_COLLECTION)
       .where('deviceId', '==', deviceId)
       .where('type', '==', 'debit')
       .where('createdAt', '>=', since.toISOString())
@@ -342,12 +429,14 @@ export class FirestoreCoverWalletRepository implements CoverWalletRepository {
     return {
       totalWallets: wallets.length,
       activeWallets: wallets.filter((w) => w.status === 'active').length,
-      terminatedWallets: wallets.filter((w) => w.status === 'terminated' || w.status === 'closed').length,
+      terminatedWallets: wallets.filter((w) => w.status === 'terminated' || w.status === 'closed')
+        .length,
       totalBalance: wallets.reduce((sum, w) => sum + w.balance, 0),
       totalCredits: wallets.reduce((sum, w) => sum + w.totalCredits, 0),
       totalDebits: wallets.reduce((sum, w) => sum + w.totalDebits, 0),
       totalRefunds: wallets.reduce((sum, w) => sum + w.totalRefunds, 0),
-      avgBalance: wallets.length > 0 ? wallets.reduce((sum, w) => sum + w.balance, 0) / wallets.length : 0,
+      avgBalance:
+        wallets.length > 0 ? wallets.reduce((sum, w) => sum + w.balance, 0) / wallets.length : 0,
       byStatus,
     };
   }
@@ -362,51 +451,76 @@ export class FirestoreCoverWalletTxnRepository implements CoverWalletTxnReposito
 
   async create(txn: CoverWalletTxn): Promise<CoverWalletTxn> {
     await this.collection.doc(txn.id).set(toTxnDoc(txn));
-    await this.db.collection('v2_cover_wallet_idempotency').doc(txn.idempotencyKey).set({ txnId: txn.id });
+    await this.db.collection(IDEMPOTENCY_COLLECTION).doc(txn.idempotencyKey).set({ txnId: txn.id });
     return txn;
   }
 
   async findById(id: EntityId): Promise<CoverWalletTxn | null> {
     const snap = await this.collection.doc(id).get();
-    return snap.exists ? toTxn(snap.data()!) : null;
+    const data = snap.data();
+    return data ? toTxn(data) : null;
   }
 
   async findByIdempotencyKey(idempotencyKey: string): Promise<CoverWalletTxn | null> {
-    const idDoc = await this.db.collection('v2_cover_wallet_idempotency').doc(idempotencyKey).get();
-    if (!idDoc.exists) return null;
-    const txnId = idDoc.data()!.txnId;
+    const idDoc = await this.db.collection(IDEMPOTENCY_COLLECTION).doc(idempotencyKey).get();
+    const idData = idDoc.data();
+    if (!idData) return null;
+    const txnId = idData.txnId as EntityId;
     const snap = await this.collection.doc(txnId).get();
-    return snap.exists ? toTxn(snap.data()!) : null;
+    const data = snap.data();
+    return data ? toTxn(data) : null;
   }
 
-  async findByWallet(walletId: EntityId, input: PaginationQuery): Promise<any> {
-    const base = this.db.collection(TXN_COLLECTION).where('walletId', '==', walletId).orderBy('createdAt', 'desc');
+  async findByWallet(walletId: EntityId, input: PaginationQuery): Promise<Page<CoverWalletTxn>> {
+    const base = this.db
+      .collection(TXN_COLLECTION)
+      .where('walletId', '==', walletId)
+      .orderBy('createdAt', 'desc');
     return paginateQuery(base, input, toTxn);
   }
 
-  async findByEvent(eventId: EntityId, input: PaginationQuery): Promise<any> {
-    const base = this.db.collection(TXN_COLLECTION).where('eventId', '==', eventId).orderBy('createdAt', 'desc');
+  async findByEvent(eventId: EntityId, input: PaginationQuery): Promise<Page<CoverWalletTxn>> {
+    const base = this.db
+      .collection(TXN_COLLECTION)
+      .where('eventId', '==', eventId)
+      .orderBy('createdAt', 'desc');
     return paginateQuery(base, input, toTxn);
   }
 
-  async findByType(type: string, input: PaginationQuery): Promise<any> {
-    const base = this.db.collection(TXN_COLLECTION).where('type', '==', type).orderBy('createdAt', 'desc');
+  async findByType(
+    type: CoverWalletTxnType,
+    input: PaginationQuery,
+  ): Promise<Page<CoverWalletTxn>> {
+    const base = this.db
+      .collection(TXN_COLLECTION)
+      .where('type', '==', type)
+      .orderBy('createdAt', 'desc');
     return paginateQuery(base, input, toTxn);
   }
 
-  async findByReference(referenceId: EntityId, referenceType: string): Promise<any[]> {
-    const snap = await this.db.collection(TXN_COLLECTION).where('referenceId', '==', referenceId).where('referenceType', '==', referenceType).get();
+  async findByReference(referenceId: EntityId, referenceType: string): Promise<CoverWalletTxn[]> {
+    const snap = await this.db
+      .collection(TXN_COLLECTION)
+      .where('referenceId', '==', referenceId)
+      .where('referenceType', '==', referenceType)
+      .get();
     return snap.docs.map((doc) => toTxn(doc.data()));
   }
 
-  async updateStatus(id: EntityId, status: string, failureReason?: string, processedAt?: Date): Promise<any | null> {
+  async updateStatus(
+    id: EntityId,
+    status: CoverWalletTxnStatus,
+    failureReason?: string,
+    processedAt?: Date,
+  ): Promise<CoverWalletTxn | null> {
     const ref = this.collection.doc(id);
     const updates: Record<string, unknown> = { status, updatedAt: new Date().toISOString() };
     if (failureReason) updates.failureReason = failureReason;
     if (processedAt) updates.processedAt = processedAt.toISOString();
     await ref.update(updates);
     const snap = await ref.get();
-    return snap.exists ? toTxn(snap.data()!) : null;
+    const data = snap.data();
+    return data ? toTxn(data) : null;
   }
 
   async getEventStats(eventId: EntityId): Promise<{
@@ -421,10 +535,18 @@ export class FirestoreCoverWalletTxnRepository implements CoverWalletTxnReposito
     const txns = snap.docs.map((doc) => toTxn(doc.data()));
     const committed = txns.filter((t) => t.status === 'committed');
     return {
-      totalCredits: committed.filter((t) => t.type === 'credit').reduce((sum, t) => sum + t.amount, 0),
-      totalDebits: committed.filter((t) => t.type === 'debit').reduce((sum, t) => sum + Math.abs(t.amount), 0),
-      totalRefunds: committed.filter((t) => t.type === 'refund').reduce((sum, t) => sum + t.amount, 0),
-      totalAdjustments: committed.filter((t) => t.type === 'adjustment').reduce((sum, t) => sum + t.amount, 0),
+      totalCredits: committed
+        .filter((t) => t.type === 'credit')
+        .reduce((sum, t) => sum + t.amount, 0),
+      totalDebits: committed
+        .filter((t) => t.type === 'debit')
+        .reduce((sum, t) => sum + Math.abs(t.amount), 0),
+      totalRefunds: committed
+        .filter((t) => t.type === 'refund')
+        .reduce((sum, t) => sum + t.amount, 0),
+      totalAdjustments: committed
+        .filter((t) => t.type === 'adjustment')
+        .reduce((sum, t) => sum + t.amount, 0),
       netFlow: committed.reduce((sum, t) => sum + t.amount, 0),
       txnCount: txns.length,
     };
@@ -448,44 +570,67 @@ export class FirestoreCoverWalletReconciliationRepository implements CoverWallet
     return this.db.collection('v2_cover_wallet_reconciliations');
   }
 
-  async create(recon: any): Promise<any> {
+  async create(recon: CoverWalletReconciliation): Promise<CoverWalletReconciliation> {
     await this.collection.doc(recon.id).set(toDoc(recon));
     return recon;
   }
 
-  async findById(id: string): Promise<any | null> {
+  async findById(id: string): Promise<CoverWalletReconciliation | null> {
     const snap = await this.collection.doc(id).get();
-    return snap.exists ? toRecon(snap.data()!) : null;
+    const data = snap.data();
+    return data ? toRecon(data) : null;
   }
 
-  async findByEventAndDate(eventId: string, date: string): Promise<any | null> {
-    const snap = await this.collection.where('eventId', '==', eventId).where('reconciliationDate', '==', date).limit(1).get();
+  async findByEventAndDate(
+    eventId: string,
+    date: string,
+  ): Promise<CoverWalletReconciliation | null> {
+    const snap = await this.collection
+      .where('eventId', '==', eventId)
+      .where('reconciliationDate', '==', date)
+      .limit(1)
+      .get();
     if (snap.empty) return null;
     const doc = snap.docs[0];
     return doc ? toRecon(doc.data()) : null;
   }
 
-  async findByEvent(eventId: string, input: any): Promise<any> {
+  async findByEvent(
+    eventId: string,
+    input: PaginationQuery,
+  ): Promise<Page<CoverWalletReconciliation>> {
     const base = this.collection.where('eventId', '==', eventId).orderBy('createdAt', 'desc');
     return paginateQuery(base, input, toRecon);
   }
 
-  async findByOrganization(organizationId: string, input: any): Promise<any> {
-    const base = this.collection.where('organizationId', '==', organizationId).orderBy('createdAt', 'desc');
+  async findByOrganization(
+    organizationId: string,
+    input: PaginationQuery,
+  ): Promise<Page<CoverWalletReconciliation>> {
+    const base = this.collection
+      .where('organizationId', '==', organizationId)
+      .orderBy('createdAt', 'desc');
     return paginateQuery(base, input, toRecon);
   }
 
-  async findPending(organizationId: string): Promise<any[]> {
-    const snap = await this.collection.where('organizationId', '==', organizationId).where('status', '==', 'pending').get();
+  async findPending(organizationId: string): Promise<CoverWalletReconciliation[]> {
+    const snap = await this.collection
+      .where('organizationId', '==', organizationId)
+      .where('status', '==', 'pending')
+      .get();
     return snap.docs.map((doc) => toRecon(doc.data()));
   }
 
-  async findWithDiscrepancies(organizationId: string): Promise<any[]> {
+  async findWithDiscrepancies(organizationId: string): Promise<CoverWalletReconciliation[]> {
     const snap = await this.collection.where('organizationId', '==', organizationId).get();
     return snap.docs.map((doc) => toRecon(doc.data())).filter((r) => r.discrepancies.length > 0);
   }
 
-  async resolve(id: string, resolvedBy: string, notes: string): Promise<any | null> {
+  async resolve(
+    id: string,
+    resolvedBy: string,
+    notes: string,
+  ): Promise<CoverWalletReconciliation | null> {
     const ref = this.collection.doc(id);
     await ref.update({
       status: 'resolved',
@@ -495,10 +640,15 @@ export class FirestoreCoverWalletReconciliationRepository implements CoverWallet
       updatedAt: new Date().toISOString(),
     });
     const snap = await ref.get();
-    return snap.exists ? toRecon(snap.data()!) : null;
+    const data = snap.data();
+    return data ? toRecon(data) : null;
   }
 
-  async getOrganizationStats(organizationId: string, from: Date, to: Date): Promise<{
+  async getOrganizationStats(
+    organizationId: string,
+    from: Date,
+    to: Date,
+  ): Promise<{
     totalReconciliations: number;
     completedCount: number;
     discrepancyCount: number;
@@ -625,7 +775,7 @@ function toTxn(data: DocumentData): CoverWalletTxn {
   };
 }
 
-function toDoc(recon: any): DocumentData {
+function toDoc(recon: CoverWalletReconciliation): DocumentData {
   return {
     id: recon.id,
     eventId: recon.eventId,
@@ -652,7 +802,7 @@ function toDoc(recon: any): DocumentData {
   };
 }
 
-function toRecon(data: DocumentData): any {
+function toRecon(data: DocumentData): CoverWalletReconciliation {
   return {
     id: data.id as string,
     eventId: data.eventId as string,
@@ -661,7 +811,7 @@ function toRecon(data: DocumentData): any {
     reconciliationDate: data.reconciliationDate as string,
     walletId: data.walletId as string | null,
     userId: data.userId as string | null,
-    status: data.status as 'pending' | 'completed' | 'discrepancy' | 'resolved',
+    status: data.status as ReconciliationStatus,
     expectedBalance: data.expectedBalance as number,
     actualBalance: data.actualBalance as number,
     discrepancy: data.discrepancy as number,
@@ -669,7 +819,7 @@ function toRecon(data: DocumentData): any {
     periodDebits: data.periodDebits as number,
     periodRefunds: data.periodRefunds as number,
     periodTxnCount: data.periodTxnCount as number,
-    discrepancies: (data.discrepancies as any[]) ?? [],
+    discrepancies: (data.discrepancies as CoverWalletReconciliationDiscrepancy[]) ?? [],
     resolvedBy: data.resolvedBy as string | null,
     resolvedAt: data.resolvedAt as string | null,
     resolutionNotes: data.resolutionNotes as string | null,

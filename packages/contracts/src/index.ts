@@ -8,14 +8,14 @@
 export * from './client.js';
 
 // Error envelope utilities (from shared)
-export { 
-  buildErrorResponse, 
-  buildSuccessResponse, 
-  buildValidationDetails, 
-  errorCodeForStatus, 
-  buildV2ErrorResponse, 
-  zodToFieldErrors, 
-  STATUS_CODE_TO_ERROR_CODE 
+export {
+  buildErrorResponse,
+  buildSuccessResponse,
+  buildValidationDetails,
+  errorCodeForStatus,
+  buildV2ErrorResponse,
+  zodToFieldErrors,
+  STATUS_CODE_TO_ERROR_CODE,
 } from './contracts/shared.js';
 export type { ApiErrorCode, FieldErrors, RequestId } from './contracts/shared.js';
 export type {
@@ -166,14 +166,23 @@ export {
 
 // Checkout / Orders / Payments / Entitlements
 export type {
+  PricingLineDto,
+  PricingBreakdownDto,
   CheckoutQuoteRequest,
   CheckoutQuoteResponse,
   CheckoutHoldRequest,
   CheckoutHoldResponse,
+  PaymentAttemptRequest,
+  PaymentAttemptResponse,
+  PaymentConfirmRequest,
+  PaymentConfirmResponse,
+  CheckoutOrderDto,
   OrderDto,
   OrdersListResponse,
+  OrderStatusResponse,
   EntitlementDto,
   EntitlementsListResponse,
+  WalletSummaryDto,
   PaymentOrderRequest,
   PaymentOrderResponse,
   PaymentVerificationRequest,
@@ -183,14 +192,24 @@ export type {
 } from './contracts/checkout.js';
 
 export {
+  pricingLineDtoSchema,
+  pricingBreakdownDtoSchema,
   checkoutQuoteRequestSchema,
   checkoutQuoteResponseSchema,
+  cartReservationStatusSchema,
   checkoutHoldRequestSchema,
   checkoutHoldResponseSchema,
+  paymentAttemptRequestSchema,
+  paymentAttemptResponseSchema,
+  paymentConfirmRequestSchema,
+  paymentConfirmResponseSchema,
+  checkoutOrderDtoSchema,
   orderDtoSchema,
   ordersListResponseSchema,
+  orderStatusResponseSchema,
   entitlementDtoSchema,
   entitlementsListResponseSchema,
+  walletSummaryDtoSchema,
   paymentOrderRequestSchema,
   paymentOrderResponseSchema,
   paymentVerificationRequestSchema,
@@ -205,6 +224,10 @@ export type {
   ScannerSessionDto,
   ScanRequest,
   ScanResponse,
+  OverrideRequest,
+  OverrideResponse,
+  DoorStatsQuery,
+  DoorStatsDto,
   MagicQrRequest,
   MagicQrResponse,
   OfflineManifestRequest,
@@ -229,6 +252,10 @@ export {
   scannerSessionDtoSchema,
   scanRequestSchema,
   scanResponseSchema,
+  overrideRequestSchema,
+  overrideResponseSchema,
+  doorStatsQuerySchema,
+  doorStatsDtoSchema,
   magicQrRequestSchema,
   magicQrResponseSchema,
   offlineManifestRequestSchema,
@@ -247,3 +274,38 @@ export {
   coverWalletReconciliationResponseSchema,
   phase5ErrorCodeSchema,
 } from './contracts/phase5.js';
+
+export type {
+  LedgerEntryDto,
+  BalanceSummaryResponse,
+  PayoutRequest,
+  PayoutResponse,
+  BankAccountRequest,
+  BankAccountResponse,
+  RaiseDisputeRequest,
+  ResolveDisputeRequest,
+  DisputeResponse,
+  LeaderboardPeriodType,
+  LeaderboardQuery,
+  LeaderboardStatResponse,
+} from './contracts/phase6.js';
+
+export {
+  ledgerEntryDtoSchema,
+  ledgerEntryListResponseSchema,
+  balanceSummaryResponseSchema,
+  payoutRequestSchema,
+  payoutResponseSchema,
+  payoutListResponseSchema,
+  bankAccountRequestSchema,
+  bankAccountResponseSchema,
+  bankAccountListResponseSchema,
+  raiseDisputeRequestSchema,
+  resolveDisputeRequestSchema,
+  disputeResponseSchema,
+  disputeListResponseSchema,
+  leaderboardPeriodTypeSchema,
+  leaderboardQuerySchema,
+  leaderboardStatResponseSchema,
+  leaderboardTopResponseSchema,
+} from './contracts/phase6.js';

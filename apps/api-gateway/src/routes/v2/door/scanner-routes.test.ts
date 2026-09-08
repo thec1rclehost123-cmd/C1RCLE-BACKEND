@@ -54,8 +54,12 @@ let server: FastifyInstance;
 
 beforeEach(async () => {
   const repos = services.repos();
-  (repos.eventCodes as unknown as { codes: Map<string, unknown>; byCode: Map<string, string> }).codes.clear();
-  (repos.eventCodes as unknown as { codes: Map<string, unknown>; byCode: Map<string, string> }).byCode.clear();
+  (
+    repos.eventCodes as unknown as { codes: Map<string, unknown>; byCode: Map<string, string> }
+  ).codes.clear();
+  (
+    repos.eventCodes as unknown as { codes: Map<string, unknown>; byCode: Map<string, string> }
+  ).byCode.clear();
   (
     repos.scannerSessions as unknown as {
       sessions: Map<string, unknown>;
@@ -81,7 +85,9 @@ beforeEach(async () => {
   });
 });
 
-async function seedEventCode(overrides: Partial<Parameters<typeof services.scanner.createEventCode>[0]> = {}) {
+async function seedEventCode(
+  overrides: Partial<Parameters<typeof services.scanner.createEventCode>[0]> = {},
+) {
   return services.scanner.createEventCode(
     {
       eventId: EVENT_ID,
@@ -96,6 +102,32 @@ async function seedEventCode(overrides: Partial<Parameters<typeof services.scann
     },
     SEED_ACTOR,
   );
+}
+
+async function seedEvent(): Promise<void> {
+  if (await services.repos().events.findById(EVENT_ID)) return;
+  const now = new Date().toISOString();
+  await services.repos().events.save({
+    id: EVENT_ID,
+    organizationId: ORG_ID,
+    venueId: null,
+    slug: 'scanner-routes-test-event',
+    title: 'Scanner Routes Test Event',
+    summary: '',
+    description: '',
+    imageUrl: null,
+    startAt: now,
+    endAt: null,
+    status: 'published',
+    isPublic: true,
+    tags: [],
+    startingPricePaise: null,
+    isFree: false,
+    cancellationReason: null,
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+  });
 }
 
 async function seedEntitlement(id: string): Promise<Entitlement> {
@@ -178,6 +210,61 @@ describe('GET /door/sessions/:sessionId', () => {
 });
 
 describe('POST /door/check-ins', () => {
+  it('consumes a ticket using only a deviceId — the real client never sees a sessionToken again after session creation', async () => {
+    await seedEvent();
+    const eventCode = await seedEventCode();
+    const session = await server.inject({
+      method: 'POST',
+      url: '/door/sessions',
+      headers: HEADERS,
+      payload: {
+        eventId: EVENT_ID,
+        code: eventCode.code,
+        deviceId: 'device_real_client',
+        deviceName: 'Gate iPad Real',
+        sessionType: 'staff',
+      },
+    });
+    expect(session.statusCode).toBe(201);
+    // The route never returns `sessionToken` again after creation
+    // (`scannerSessionReadDto` above), and `scanRequestSchema` has no
+    // sessionToken field either — a real client authenticates every scan by
+    // `deviceId` alone. Deliberately NOT threading `session.json().sessionToken`
+    // through here, to prove the device-only path actually works.
+    const entitlement = await seedEntitlement('ent_device_auth_1');
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/door/check-ins',
+      headers: HEADERS,
+      payload: {
+        eventId: EVENT_ID,
+        qrPayload: entitlement.id,
+        scannedBy: { uid: SEED_ACTOR.userId, name: 'Staff One', role: 'staff' },
+        deviceId: 'device_real_client',
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ status: 'consumed', checkInId: expect.any(String) });
+  });
+
+  it('denies a scan from a deviceId with no active session for the event', async () => {
+    await seedEvent();
+    const entitlement = await seedEntitlement('ent_no_session_1');
+    const response = await server.inject({
+      method: 'POST',
+      url: '/door/check-ins',
+      headers: HEADERS,
+      payload: {
+        eventId: EVENT_ID,
+        qrPayload: entitlement.id,
+        scannedBy: { uid: SEED_ACTOR.userId, name: 'Staff One', role: 'staff' },
+        deviceId: 'device_never_registered',
+      },
+    });
+    expect(response.statusCode).toBe(403);
+  });
+
   it('404s for an unknown event', async () => {
     const response = await server.inject({
       method: 'POST',
@@ -240,15 +327,103 @@ describe('POST /door/lookup', () => {
   });
 });
 
-describe('POST /door/override (honest stub)', () => {
-  it('returns 501 — no denied->consumed FSM transition or service method exists', async () => {
+async function seedDeniedScan(): Promise<string> {
+  const scan = await services.repos().scanLedger.create({
+    eventId: EVENT_ID,
+    organizationId: ORG_ID,
+    venueId: null,
+    entitlementId: 'ent_1',
+    doorSaleId: null,
+    entryType: null,
+    tierName: 'General',
+    tierId: 'tier_1',
+    operatorUid: SEED_ACTOR.userId,
+    operatorName: 'Staff One',
+    operatorRole: 'staff',
+    gate: null,
+    deviceId: 'device_1',
+    deviceName: 'Gate iPad 1',
+    deviceBound: true,
+    guestName: 'Test Guest',
+    guestEmail: null,
+    guestPhone: null,
+    scannedAt: new Date().toISOString(),
+    admittedCount: 0,
+    scanCountUsed: 0,
+    scanCountAllowed: 1,
+    isOffline: false,
+    offlineDeviceId: null,
+    status: 'denied',
+    denyReason: 'already_used',
+    denyMessage: 'Ticket already scanned',
+  });
+  return scan.id;
+}
+
+describe('POST /door/override', () => {
+  it('admits a denied scan and records who/why (2xx)', async () => {
+    const checkInId = await seedDeniedScan();
     const response = await server.inject({
       method: 'POST',
       url: '/door/override',
       headers: HEADERS,
-      payload: { checkInId: 'scan_1', reason: 'manager override at the door' },
+      payload: { checkInId, reason: 'manager override at the door' },
     });
-    expect(response.statusCode).toBe(501);
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      checkInId,
+      status: 'overridden',
+      overriddenBy: SEED_ACTOR.userId,
+      overrideReason: 'manager override at the door',
+    });
+  });
+
+  it('rejects overriding a scan that is not denied (409, illegal FSM transition)', async () => {
+    const consumed = await services.repos().scanLedger.create({
+      eventId: EVENT_ID,
+      organizationId: ORG_ID,
+      venueId: null,
+      entitlementId: 'ent_1',
+      doorSaleId: null,
+      entryType: null,
+      tierName: 'General',
+      tierId: 'tier_1',
+      operatorUid: SEED_ACTOR.userId,
+      operatorName: 'Staff One',
+      operatorRole: 'staff',
+      gate: null,
+      deviceId: 'device_1',
+      deviceName: 'Gate iPad 1',
+      deviceBound: true,
+      guestName: 'Test Guest',
+      guestEmail: null,
+      guestPhone: null,
+      scannedAt: new Date().toISOString(),
+      admittedCount: 1,
+      scanCountUsed: 1,
+      scanCountAllowed: 1,
+      isOffline: false,
+      offlineDeviceId: null,
+      status: 'consumed',
+    });
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/door/override',
+      headers: HEADERS,
+      payload: { checkInId: consumed.id, reason: 'should be rejected' },
+    });
+    expect(response.statusCode).toBe(409);
+  });
+
+  it('404s for an unknown check-in id', async () => {
+    const response = await server.inject({
+      method: 'POST',
+      url: '/door/override',
+      headers: HEADERS,
+      payload: { checkInId: 'no-such-scan', reason: 'manager override at the door' },
+    });
+    expect(response.statusCode).toBe(404);
   });
 });
 
@@ -271,7 +446,13 @@ describe('POST /door/offline-sync', () => {
       headers: HEADERS,
       payload: {
         scannerSessionId: 'no-such-session',
-        scans: [{ payload: 'ENT-does-not-matter', scannedAt: new Date().toISOString(), deviceId: 'device_1' }],
+        scans: [
+          {
+            payload: 'ENT-does-not-matter',
+            scannedAt: new Date().toISOString(),
+            deviceId: 'device_1',
+          },
+        ],
       },
     });
     expect(response.statusCode).toBe(404);

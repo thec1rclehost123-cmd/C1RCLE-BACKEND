@@ -1,5 +1,11 @@
 # Phase 5 HTTP wiring plan (2026-08-21)
 
+> **Partially superseded (2026-09-07).** Points 3 (freeze/unfreeze = 501),
+> Builder B's stats stub, and the override/offline-manifest 501s have been
+> implemented in commits `0342d80`, `53727c8`, `2ec1e61`. Only 2 honest 501s
+> remain: `/door/stats/ws` (needs `@fastify/websocket`) and scanner
+> manifest-signing. Kept as the original wiring plan reference.
+
 Supersedes `docs/phase-05-implementation-plan.md` (untracked draft — written as
 if 5A/5B didn't exist yet; they do, see below). Domain models, repository
 ports, memory + Firestore adapters, application services, and Phase 5

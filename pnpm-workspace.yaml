@@ -13,3 +13,18 @@ onlyBuiltDependencies:
   - esbuild
   - protobufjs
   - unrs-resolver
+
+# Dependency overrides MUST live here (pnpm-workspace.yaml), not in a
+# package.json "pnpm" field — pnpm >= 10 no longer reads the latter and emits a
+# warning instead of applying it.
+overrides:
+  # tar: remediate CVE-2026-73566 (tar < 7.5.21). Primary fix is the pnpm
+  # version bump + Dockerfile apt/sed patch; this is the npm-layer backstop.
+  tar: '>=7.5.21'
+  # fast-uri ^3 (ajv/@fastify/ajv-compiler) and ^4 (fast-json-stringify) — pin to
+  # patched releases that satisfy each dependent's declared range.
+  #   fast-uri -> 3.1.6 / 4.1.4   fixes CVE-2026-75899/75931/75975/76172 (SSRF, host confusion)
+  #   nanoid   -> 3.3.18          fixes CVE-2026-67213 (DoS via infinite loop)
+  'fast-uri@^3.0.0': '3.1.6'
+  'fast-uri@^4.0.0': '4.1.4'
+  'nanoid@^3.0.0': '3.3.18'

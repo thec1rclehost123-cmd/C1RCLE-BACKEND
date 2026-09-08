@@ -37,15 +37,13 @@ async function actorFor(opts: {
   app.get('/probe', (request, reply) => reply.send({ actor: request.actor ?? null }));
   const res = await app.inject({ method: 'GET', url: '/probe', headers: opts.headers });
   await app.close();
-  return res.json().actor as
-    | null
-    | {
-        userId: string;
-        organizationId: string;
-        role: string;
-        capabilities: string[];
-        platformRole: string;
-      };
+  return res.json().actor as null | {
+    userId: string;
+    organizationId: string;
+    role: string;
+    capabilities: string[];
+    platformRole: string;
+  };
 }
 
 describe('auth context hook — actor resolution', () => {

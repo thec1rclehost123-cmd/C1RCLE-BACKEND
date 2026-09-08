@@ -1,14 +1,19 @@
 import { VersionConflictError } from '../../domain/errors.js';
-import { createEventCode } from '../../domain/models/event-code.js';
+import { createEventCode, createScannerSession } from '../../domain/models/event-code.js';
 
 import type { EntityId } from '../../domain/identity.js';
-import type { EventCode, EventCodeStatus, EventCodeCreateInput, ScannerSession, ScannerSessionCreateInput } from '../../domain/models/event-code.js';
+import type {
+  EventCode,
+  EventCodeStatus,
+  EventCodeCreateInput,
+  ScannerSession,
+  ScannerSessionCreateInput,
+} from '../../domain/models/event-code.js';
 import type {
   EventCodeRepository,
   ScannerSessionRepository,
   Page,
   PaginationQuery,
-  TxContext,
 } from '../../domain/ports/repositories.js';
 
 /**
@@ -25,12 +30,13 @@ function casSet<T extends { id: EntityId; version: number }>(
   map.set(entity.id, entity);
 }
 
-function serializeSlice<T>(all: T[], query: any): any {
+function serializeSlice<T extends { id: EntityId }>(all: T[], query: PaginationQuery): Page<T> {
   const { cursor, limit } = query;
-  const start = cursor ? all.findIndex((item: any) => item.id === cursor) + 1 : 0;
+  const start = cursor ? all.findIndex((item) => item.id === cursor) + 1 : 0;
   const end = Math.min(start + limit, all.length);
   const items = all.slice(start, end);
-  const nextCursor = end < all.length && items.length > 0 ? (items[items.length - 1] as any).id : null;
+  const nextCursor =
+    end < all.length && items.length > 0 ? (items[items.length - 1]?.id ?? null) : null;
   return { items, total: all.length, nextCursor };
 }
 
@@ -55,12 +61,15 @@ export class MemoryEventCodeRepository implements EventCodeRepository {
     return this.codes.get(id) ?? null;
   }
 
-  async findByEvent(eventId: EntityId, input: PaginationQuery): Promise<any> {
+  async findByEvent(eventId: EntityId, input: PaginationQuery): Promise<Page<EventCode>> {
     const all = [...this.codes.values()].filter((c) => c.eventId === eventId);
     return serializeSlice(all, input);
   }
 
-  async findByOrganization(organizationId: EntityId, input: PaginationQuery): Promise<any> {
+  async findByOrganization(
+    organizationId: EntityId,
+    input: PaginationQuery,
+  ): Promise<Page<EventCode>> {
     const all = [...this.codes.values()].filter((c) => c.organizationId === organizationId);
     return serializeSlice(all, input);
   }
@@ -69,10 +78,21 @@ export class MemoryEventCodeRepository implements EventCodeRepository {
     return [...this.codes.values()].filter((c) => c.eventId === eventId && c.status === 'active');
   }
 
-  async updateStatus(id: EntityId, status: EventCodeStatus, revokedReason?: string): Promise<EventCode | null> {
+  async updateStatus(
+    id: EntityId,
+    status: EventCodeStatus,
+    revokedReason?: string,
+  ): Promise<EventCode | null> {
     const code = this.codes.get(id);
     if (!code) return null;
-    const updated = { ...code, status, revokedReason: revokedReason ?? code.revokedReason, revokedAt: status === 'revoked' ? new Date().toISOString() : code.revokedAt, version: code.version + 1, updatedAt: new Date().toISOString() };
+    const updated = {
+      ...code,
+      status,
+      revokedReason: revokedReason ?? code.revokedReason,
+      revokedAt: status === 'revoked' ? new Date().toISOString() : code.revokedAt,
+      version: code.version + 1,
+      updatedAt: new Date().toISOString(),
+    };
     this.codes.set(id, updated);
     return updated;
   }
@@ -123,13 +143,16 @@ export class MemoryEventCodeRepository implements EventCodeRepository {
   }
 }
 
-import { createScannerSession } from '../../domain/models/event-code.js';
-
 export class MemoryScannerSessionRepository implements ScannerSessionRepository {
-  sessions = new Map<EntityId, any>();
+  sessions = new Map<EntityId, ScannerSession>();
   byTokenHash = new Map<string, EntityId>();
 
-  async create(input: ScannerSessionCreateInput): Promise<{ session: any; sessionToken: string; sessionExpiresAt: string; sessionId: string }> {
+  async create(input: ScannerSessionCreateInput): Promise<{
+    session: ScannerSession;
+    sessionToken: string;
+    sessionExpiresAt: string;
+    sessionId: string;
+  }> {
     const result = createScannerSession(input);
     this.sessions.set(result.session.id, result.session);
     const crypto = await import('crypto');
@@ -138,27 +161,29 @@ export class MemoryScannerSessionRepository implements ScannerSessionRepository 
     return result;
   }
 
-  async findById(id: EntityId): Promise<any | null> {
+  async findById(id: EntityId): Promise<ScannerSession | null> {
     return this.sessions.get(id) ?? null;
   }
 
-  async findByTokenHash(tokenHash: string): Promise<any | null> {
+  async findByTokenHash(tokenHash: string): Promise<ScannerSession | null> {
     const id = this.byTokenHash.get(tokenHash);
     if (!id) return null;
     return this.sessions.get(id) ?? null;
   }
 
-  async findByCode(codeId: EntityId, input: any): Promise<any> {
+  async findByCode(codeId: EntityId, input: PaginationQuery): Promise<Page<ScannerSession>> {
     const all = [...this.sessions.values()].filter((s) => s.codeId === codeId);
     return serializeSlice(all, input);
   }
 
-  async findActiveByCode(codeId: EntityId): Promise<any[]> {
+  async findActiveByCode(codeId: EntityId): Promise<ScannerSession[]> {
     const now = new Date();
-    return [...this.sessions.values()].filter((s) => s.codeId === codeId && !s.revokedAt && new Date(s.expiresAt) > now);
+    return [...this.sessions.values()].filter(
+      (s) => s.codeId === codeId && !s.revokedAt && new Date(s.expiresAt) > now,
+    );
   }
 
-  async findByDevice(deviceId: string, input: any): Promise<any> {
+  async findByDevice(deviceId: string, input: PaginationQuery): Promise<Page<ScannerSession>> {
     const all = [...this.sessions.values()].filter((s) => s.deviceId === deviceId);
     return serializeSlice(all, input);
   }
@@ -173,16 +198,21 @@ export class MemoryScannerSessionRepository implements ScannerSessionRepository 
     }
   }
 
-  async revoke(id: EntityId, reason: string): Promise<any | null> {
+  async revoke(id: EntityId, reason: string): Promise<ScannerSession | null> {
     const session = this.sessions.get(id);
     if (!session) return null;
-    const updated = { ...session, revokedAt: new Date().toISOString(), revokedReason: reason, version: session.version + 1, updatedAt: new Date().toISOString() };
+    const updated = {
+      ...session,
+      revokedAt: new Date().toISOString(),
+      revokedReason: reason,
+      version: session.version + 1,
+      updatedAt: new Date().toISOString(),
+    };
     this.sessions.set(id, updated);
     return updated;
   }
 
   async cleanupExpired(): Promise<number> {
-    const now = new Date().toISOString();
     let count = 0;
     for (const [id, session] of this.sessions) {
       if (!session.revokedAt && new Date(session.expiresAt) <= new Date()) {

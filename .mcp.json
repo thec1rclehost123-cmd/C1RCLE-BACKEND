@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "code-review-graph": {
+      "command": "C:\\Users\\SHRIYASH SAWANT\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
+      "args": ["-m", "code_review_graph", "serve"],
+      "cwd": "C:\\Users\\SHRIYASH SAWANT\\OneDrive\\Desktop\\Circle1\\C1RCLE-BACKEND",
+      "type": "stdio"
+    }
+  }
+}

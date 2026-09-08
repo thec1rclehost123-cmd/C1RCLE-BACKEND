@@ -1,57 +1,25 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 
-import { VersionConflictError } from '../domain/errors.js';
-import type { EntityId } from '../domain/identity.js';
-import type {
-  ScanLedgerRepository,
-  EventCodeRepository,
-  ScannerSessionRepository,
-  DoorSaleRepository,
-  CoverWalletRepository,
-  CoverWalletTxnRepository,
-  CoverWalletReconciliationRepository,
-  Page,
-  PaginationQuery,
-  TxContext,
-} from '../domain/ports/repositories.js';
-import type { ScanLedger, ScanLedgerStatus, ScanDenyReason } from '../domain/models/scan-ledger.js';
-import type {
-  EventCode,
-  EventCodeStatus,
-  EventCodeCreateInput,
-  ScannerSession,
-} from '../domain/models/event-code.js';
-import type {
-  DoorSale,
-  DoorSaleCreateInput,
-  DoorSaleCategory,
-  DoorSaleStatus,
-} from '../domain/models/door-sale.js';
-import type {
-  CoverWallet,
-  CoverWalletTxn,
-  CoverWalletCreateInput,
-  CoverWalletCreditInput,
-  CoverWalletDebitInput,
-} from '../domain/models/cover-wallet.js';
-import type { CoverWalletReconciliation } from '../domain/models/cover-wallet-reconciliation.js';
-import { MemoryScanLedgerRepository } from './memory/memory-scan-ledger-repository.js';
-import {
-  MemoryEventCodeRepository,
-  MemoryScannerSessionRepository,
-} from './memory/memory-event-code-repository.js';
-import { MemoryDoorSaleRepository } from './memory/memory-door-sale-repository.js';
+import { createReconciliation } from '../domain/models/cover-wallet-reconciliation.js';
+import { createCoverWallet } from '../domain/models/cover-wallet.js';
+import { createEventCode } from '../domain/models/event-code.js';
+
 import {
   MemoryCoverWalletRepository,
   MemoryCoverWalletTxnRepository,
   MemoryCoverWalletReconciliationRepository,
   sharedTxns,
 } from './memory/memory-cover-wallet-repository.js';
-import { createScanLedger } from '../domain/models/scan-ledger.js';
-import { createEventCode } from '../domain/models/event-code.js';
-import { createDoorSale } from '../domain/models/door-sale.js';
-import { createCoverWallet } from '../domain/models/cover-wallet.js';
-import { createReconciliation } from '../domain/models/cover-wallet-reconciliation.js';
+import { MemoryDoorSaleRepository } from './memory/memory-door-sale-repository.js';
+import {
+  MemoryEventCodeRepository,
+  MemoryScannerSessionRepository,
+} from './memory/memory-event-code-repository.js';
+import { MemoryScanLedgerRepository } from './memory/memory-scan-ledger-repository.js';
+
+import type { EntityId } from '../domain/identity.js';
+import type { EventCodeCreateInput } from '../domain/models/event-code.js';
+import type { ScanLedgerCreateInput } from '../domain/models/scan-ledger.js';
 
 let memoryRepos: {
   scanLedger: MemoryScanLedgerRepository;
@@ -83,17 +51,17 @@ beforeEach(() => {
  * Run against both memory and Firestore adapters to ensure identical behavior.
  */
 
-function createTestScanLedger(): any {
-  return createScanLedger({
-    eventId: 'evt_test' as EntityId,
-    organizationId: 'org_test' as EntityId,
-    venueId: 'venue_test' as EntityId,
-    entitlementId: 'ent_test' as EntityId,
+function createTestScanLedgerInput(): ScanLedgerCreateInput {
+  return {
+    eventId: 'evt_test',
+    organizationId: 'org_test',
+    venueId: 'venue_test',
+    entitlementId: 'ent_test',
     doorSaleId: null,
     entryType: 'general',
     tierName: 'VIP',
-    tierId: 'tier_vip' as EntityId,
-    operatorUid: 'usr_operator' as EntityId,
+    tierId: 'tier_vip',
+    operatorUid: 'usr_operator',
     operatorName: 'John Operator',
     operatorRole: 'door_staff',
     gate: 'Gate A',
@@ -109,17 +77,17 @@ function createTestScanLedger(): any {
     scanCountAllowed: 1,
     isOffline: false,
     offlineDeviceId: null,
-  });
+  };
 }
 
 function createTestEventCodeInput(): EventCodeCreateInput {
   return {
-    eventId: 'evt_test' as EntityId,
-    organizationId: 'org_test' as EntityId,
-    venueId: 'venue_test' as EntityId,
+    eventId: 'evt_test',
+    organizationId: 'org_test',
+    venueId: 'venue_test',
     type: 'full',
     gate: 'Gate A',
-    createdBy: 'usr_admin' as EntityId,
+    createdBy: 'usr_admin',
     createdByName: 'Admin User',
     maxDevices: 5,
     allowReuse: false,
@@ -127,7 +95,7 @@ function createTestEventCodeInput(): EventCodeCreateInput {
   };
 }
 
-function createTestEventCode(): any {
+function createTestEventCode() {
   return createEventCode(createTestEventCodeInput());
 }
 
@@ -153,10 +121,6 @@ function createTestDoorSaleInput(): any {
   };
 }
 
-function createTestDoorSale(): any {
-  return createDoorSale(createTestDoorSaleInput());
-}
-
 function createTestCoverWalletInput(): any {
   return {
     userId: 'usr_guest' as EntityId,
@@ -167,7 +131,7 @@ function createTestCoverWalletInput(): any {
   };
 }
 
-function createTestCoverWallet(): any {
+function createTestCoverWallet() {
   return createCoverWallet(createTestCoverWalletInput());
 }
 
@@ -193,10 +157,6 @@ function createTestReconciliationInput(): any {
   };
 }
 
-function createTestReconciliation(): any {
-  return createReconciliation(createTestReconciliationInput());
-}
-
 function runRepositoryContractTests(
   repoName: string,
   getRepos: () => {
@@ -218,20 +178,56 @@ function runRepositoryContractTests(
 
     describe('ScanLedgerRepository', () => {
       it('creates and finds a scan ledger', async () => {
-        const scan = createTestScanLedger();
-        await repos.scanLedger.create(scan);
-        const found = await repos.scanLedger.findById(scan.id);
-        expect(found).toEqual(scan);
+        const created = await repos.scanLedger.create(createTestScanLedgerInput());
+        const found = await repos.scanLedger.findById(created.id);
+        expect(found).toEqual(created);
+      });
+
+      it('mints an id and a starting version on create', async () => {
+        const created = await repos.scanLedger.create(createTestScanLedgerInput());
+        expect(created.id).toBeTruthy();
+        expect(created.version).toBe(1);
+        expect(created.status).toBe('pending');
+      });
+
+      it('records a denied scan with an id, and does not collide on a second deny', async () => {
+        // Regression: the deny paths in scanner-service passed a half-built
+        // object with no id or version. `casSet` then keyed it under
+        // `undefined`, so the FIRST deny stored fine and the SECOND threw
+        // `VersionConflictError` — a scanner that died on the second rejected
+        // ticket of the night. It also put `checkInId: undefined` on the wire.
+        const denied = await repos.scanLedger.create({
+          ...createTestScanLedgerInput(),
+          entitlementId: 'ent_deny_1',
+          status: 'denied',
+          denyReason: 'already_used',
+          denyMessage: 'Ticket already scanned',
+        });
+        expect(denied.id).toBeTruthy();
+        expect(denied.version).toBe(1);
+        expect(denied.status).toBe('denied');
+        expect(denied.denyReason).toBe('already_used');
+
+        const second = await repos.scanLedger.create({
+          ...createTestScanLedgerInput(),
+          entitlementId: 'ent_deny_2',
+          status: 'denied',
+          denyReason: 'expired',
+          denyMessage: 'Ticket expired',
+        });
+        expect(second.id).toBeTruthy();
+        expect(second.id).not.toBe(denied.id);
+        expect(await repos.scanLedger.findById(denied.id)).not.toBeNull();
+        expect(await repos.scanLedger.findById(second.id)).not.toBeNull();
       });
 
       it('finds by event and entitlement for duplicate detection', async () => {
-        const scan = createTestScanLedger();
-        await repos.scanLedger.create(scan);
+        const created = await repos.scanLedger.create(createTestScanLedgerInput());
         const found = await repos.scanLedger.findByEventAndEntitlement(
-          scan.eventId,
-          scan.entitlementId!,
+          created.eventId,
+          created.entitlementId,
         );
-        expect(found).toEqual(scan);
+        expect(found).toEqual(created);
       });
 
       it('returns null for non-existent scan', async () => {
@@ -240,10 +236,9 @@ function runRepositoryContractTests(
       });
 
       it('updates status with deny reason', async () => {
-        const scan = createTestScanLedger();
-        await repos.scanLedger.create(scan);
+        const created = await repos.scanLedger.create(createTestScanLedgerInput());
         const updated = await repos.scanLedger.markDenied(
-          scan.id,
+          created.id,
           'already_used',
           'Ticket already scanned',
         );
@@ -253,17 +248,17 @@ function runRepositoryContractTests(
       });
 
       it('marks consumed', async () => {
-        const scan = createTestScanLedger();
-        await repos.scanLedger.create(scan);
-        const updated = await repos.scanLedger.markConsumed(scan.id);
+        const created = await repos.scanLedger.create(createTestScanLedgerInput());
+        const updated = await repos.scanLedger.markConsumed(created.id);
         expect(updated?.status).toBe('consumed');
       });
 
       it('paginates by event', async () => {
         for (let i = 0; i < 5; i++) {
-          const scan = createTestScanLedger();
-          scan.id = `scan_${i}`;
-          await repos.scanLedger.create(scan);
+          await repos.scanLedger.create({
+            ...createTestScanLedgerInput(),
+            entitlementId: `ent_page_${i}`,
+          });
         }
         const page = await repos.scanLedger.findByEvent('evt_test', { limit: 3, cursor: null });
         expect(page.items.length).toBe(3);
@@ -454,7 +449,7 @@ function runRepositoryContractTests(
     describe('CoverWalletRepository', () => {
       it('creates wallet and enforces one per user per event', async () => {
         const input = createTestCoverWalletInput();
-        const wallet = await repos.coverWallets.create(input);
+        await repos.coverWallets.create(input);
 
         // Second create for same user/event should fail
         const duplicateInput = createTestCoverWalletInput();
@@ -641,7 +636,7 @@ function runRepositoryContractTests(
 
       it('finds pending reconciliations', async () => {
         const input = createTestReconciliationInput();
-        const recon = createReconciliation(input);
+        createReconciliation(input);
         await repos.coverWalletReconciliations.create(input);
 
         const pending = await repos.coverWalletReconciliations.findPending('org_test');
@@ -650,15 +645,6 @@ function runRepositoryContractTests(
     });
 
     describe('Optimistic locking', () => {
-      it('rejects stale version on scan ledger', async () => {
-        const scan = createTestScanLedger();
-        await repos.scanLedger.create(scan);
-
-        // Simulate concurrent modification by incrementing version
-        const stale = { ...scan, version: scan.version + 5 };
-        await expect(repos.scanLedger.create(stale)).rejects.toThrow('Version conflict');
-      });
-
       it('rejects stale version on cover wallet', async () => {
         const wallet = createTestCoverWallet();
         await repos.coverWallets.create(wallet);

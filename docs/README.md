@@ -21,7 +21,13 @@ session can resume without re-deriving context. This is the *only* place
 status is tracked — don't duplicate a "what's done" list anywhere else.
 
 - Phase 0 (Foundation: auth, persistence, the frozen partner slice) — **done**.
-- Phases 1–8 (partner dashboards → social) — not started, fully specified.
+- Phase 1 (Partner dashboards) — **substantially done**; finance blocked on Phase 6.
+- Phase 2 (KYC/Onboarding) — **substantially done**; storage-upload signing deferred.
+- Phase 3 (Event-catalog & scheduling) — **done**.
+- Phase 4 (Guest checkout & tickets) — **done** (verified 2026-09-07).
+- Phase 5 (Door/Scanner/Cover-wallet) — **done** (verified 2026-09-07); 2 honest 501s remain.
+- Phase 6 (Finance/Ledger/Payouts) — **in progress** (started 2026-09-07).
+- Phases 7–8 (Admin console, Social/notifications) — not started.
 
 ## `docs/architecture/` — how the system is built, and why
 
@@ -33,6 +39,12 @@ just when a task finishes.
 - [`decisions.md`](architecture/decisions.md) — the decision log (D-001…).
   Append-only: every architectural choice that must survive a session, with
   its problem/options/choice/why. Never rewrite past entries.
+- [`IMPLEMENTATION-STATUS-2026-08-31.md`](architecture/IMPLEMENTATION-STATUS-2026-08-31.md)
+  — point-in-time implementation-vs-design gap analysis (target architecture,
+  the 25 non-negotiable rules, a 15-item cross-doc contradiction log, a
+  per-domain LIVE/NO-BACKEND status table, the complete honest-501 list).
+  Numbers are dated to its audited commit — cross-check `ROADMAP.md` /
+  `git log` / `pnpm check` before citing a count as current.
 
 ## `docs/reference/` — point-in-time material, not maintained
 

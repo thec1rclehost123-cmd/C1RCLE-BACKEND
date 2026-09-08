@@ -12,7 +12,7 @@
 
 import { UnauthorizedError } from '../domain/errors.js';
 
-import { getFirestoreClient, getStorageClient } from './firestore/client.js';
+import { getAuthClient, getFirestoreClient, getStorageClient } from './firestore/client.js';
 import {
   FirestoreOrganizationRepository,
   FirestoreVenueRepository,
@@ -40,6 +40,12 @@ import {
   FirestoreCoverWalletRepository,
   FirestoreCoverWalletTxnRepository,
   FirestoreCoverWalletReconciliationRepository,
+  FirestoreLedgerRepository,
+  FirestorePayoutRepository,
+  FirestoreBankAccountRepository,
+  FirestoreDisputeRepository,
+  FirestoreLeaderboardRepository,
+  FirestoreEmailOtpRepository,
 } from './firestore/index.js';
 import {
   MemoryOrganizationRepository,
@@ -68,6 +74,12 @@ import {
   MemoryCoverWalletRepository,
   MemoryCoverWalletTxnRepository,
   MemoryCoverWalletReconciliationRepository,
+  MemoryLedgerRepository,
+  MemoryPayoutRepository,
+  MemoryBankAccountRepository,
+  MemoryDisputeRepository,
+  MemoryLeaderboardRepository,
+  MemoryEmailOtpRepository,
 } from './memory/index.js';
 import { MemoryIdempotencyStore } from './memory/memory-idempotency-store.js';
 
@@ -121,6 +133,13 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
       coverWallets: new MemoryCoverWalletRepository(),
       coverWalletTxns: new MemoryCoverWalletTxnRepository(),
       coverWalletReconciliations: new MemoryCoverWalletReconciliationRepository(),
+      // Phase 6
+      ledger: new MemoryLedgerRepository(),
+      payouts: new MemoryPayoutRepository(),
+      bankAccounts: new MemoryBankAccountRepository(),
+      disputes: new MemoryDisputeRepository(),
+      leaderboard: new MemoryLeaderboardRepository(),
+      emailOtp: new MemoryEmailOtpRepository(),
     };
   }
 
@@ -163,6 +182,13 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
     coverWallets: new FirestoreCoverWalletRepository(db),
     coverWalletTxns: new FirestoreCoverWalletTxnRepository(db),
     coverWalletReconciliations: new FirestoreCoverWalletReconciliationRepository(db),
+    // Phase 6
+    ledger: new FirestoreLedgerRepository(db),
+    payouts: new FirestorePayoutRepository(db),
+    bankAccounts: new FirestoreBankAccountRepository(db),
+    disputes: new FirestoreDisputeRepository(db),
+    leaderboard: new FirestoreLeaderboardRepository(db),
+    emailOtp: new FirestoreEmailOtpRepository(db),
   };
 }
 
@@ -201,6 +227,11 @@ export function storageClient(gw: StorageDriverConfig) {
   return getStorageClient(firestoreCredentials(gw));
 }
 
+/** The Firebase Auth handle from the same app — for phone-verification ID tokens. */
+export function authClient(gw: StorageDriverConfig) {
+  return getAuthClient(firestoreCredentials(gw));
+}
+
 function firestoreCredentials(gw: StorageDriverConfig) {
   if (!gw.FIREBASE_CLIENT_EMAIL || !gw.FIREBASE_PRIVATE_KEY) {
     throw new Error(
@@ -214,4 +245,4 @@ function firestoreCredentials(gw: StorageDriverConfig) {
   };
 }
 
-export { getFirestoreClient, getStorageClient } from './firestore/client.js';
+export { getFirestoreClient, getStorageClient, getAuthClient } from './firestore/client.js';

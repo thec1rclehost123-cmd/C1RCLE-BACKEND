@@ -14,6 +14,7 @@ function productionEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.Proces
     FIREBASE_CLIENT_EMAIL: 'firebase@example.test',
     FIREBASE_PRIVATE_KEY: 'private-key',
     BETTER_AUTH_SECRET: 'a'.repeat(64),
+    EMAIL_OTP_SECRET: 'b'.repeat(64),
     PUBLIC_API_URL: 'https://api.example.test',
     BETTER_AUTH_URL: 'https://api.example.test',
     ALLOWED_ORIGINS: 'https://app.example.test',
@@ -30,6 +31,12 @@ describe('gateway configuration', () => {
     );
 
     expect(config.BUILD_SHA).toBe('a'.repeat(40));
+  });
+
+  it('requires an email OTP secret in production', () => {
+    expect(() => getGatewayConfig(productionEnvironment({ EMAIL_OTP_SECRET: undefined }))).toThrow(
+      /EMAIL_OTP_SECRET/,
+    );
   });
 
   it('keeps an explicit BUILD_SHA ahead of Render metadata', () => {

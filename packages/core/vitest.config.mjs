@@ -9,5 +9,4 @@ export default defineConfig({
       FIRESTORE_PROJECT_ID: 'test-project',
     },
   },
-  coverage: { provider: 'v8' },
 });

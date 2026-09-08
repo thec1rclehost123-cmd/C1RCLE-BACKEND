@@ -47,6 +47,16 @@ export interface CoreConfig {
   storage: StorageConfig;
   features: FeatureFlagConfig;
   magicTicketSecret: string;
+  /** Phase 6: AES key-derivation secret/salt for bank-account-number at-rest encryption. */
+  bankEncryptionSecret: string;
+  bankEncryptionSalt: string;
+  /**
+   * HMAC key for hashing email-OTP codes at rest. A 6-digit code has only
+   * 10^6 possibilities — a bare unsalted hash (SHA-256(code)) is brute-forced
+   * offline in milliseconds if the row ever leaks, so the hash must be keyed
+   * by a server secret an attacker with DB read access does not also have.
+   */
+  emailOtpSecret: string;
 }
 
 export interface CoreConfigInput {
@@ -57,6 +67,9 @@ export interface CoreConfigInput {
   storage?: Partial<StorageConfig>;
   features?: FeatureFlagConfig;
   magicTicketSecret?: string;
+  bankEncryptionSecret?: string;
+  bankEncryptionSalt?: string;
+  emailOtpSecret?: string;
 }
 
 export class CoreConfigError extends Error {
@@ -97,7 +110,12 @@ export function createCoreConfig(input: CoreConfigInput): CoreConfig {
       kycBucket: input.storage?.kycBucket ?? `${input.firestore.projectId}.firebasestorage.app`,
     },
     features: input.features ?? {},
-    magicTicketSecret: input.magicTicketSecret ?? 'default-magic-ticket-secret-change-in-production',
+    magicTicketSecret:
+      input.magicTicketSecret ?? 'default-magic-ticket-secret-change-in-production',
+    bankEncryptionSecret:
+      input.bankEncryptionSecret ?? 'default-bank-encryption-secret-change-in-production',
+    bankEncryptionSalt: input.bankEncryptionSalt ?? 'default-bank-encryption-salt',
+    emailOtpSecret: input.emailOtpSecret ?? 'default-email-otp-secret-change-in-production',
   };
 }
 

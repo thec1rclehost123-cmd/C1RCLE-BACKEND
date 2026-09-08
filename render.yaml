@@ -1,0 +1,80 @@
+# ─── Render Blueprint ─────────────────────────────────────────────────────────
+# Declarative description of the production service, so the deploy configuration
+# lives in git next to the code instead of only in the dashboard.
+#
+# ADOPTING THIS IS OPT-IN. The live service at circle-v2-backend.onrender.com
+# was created through the dashboard; committing this file changes nothing on its
+# own. To adopt it: Render dashboard -> Blueprints -> New Blueprint Instance ->
+# point at this repository. Until then, treat this file as the documented
+# source of truth and keep the dashboard in step with it.
+#
+# Every secret is `sync: false`, which means Render keeps the dashboard value and
+# never reads one from this file. No credential belongs in this repository.
+
+services:
+  - type: web
+    name: circle-v2-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: starter
+    region: singapore
+    branch: main
+    # Render builds and deploys on every push to `branch`. CI verifies the
+    # result afterwards (see .github/workflows/ci.yml, verify-deploy).
+    autoDeploy: true
+
+    # The gateway's liveness probe. It is the only unauthenticated endpoint
+    # guaranteed to answer before any dependency is wired.
+    healthCheckPath: /api/v2/internal/health
+
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: '8080'
+      - key: HOST
+        value: 0.0.0.0
+      - key: LOG_LEVEL
+        value: info
+
+      # Persistence. `firestore` makes FIREBASE_CLIENT_EMAIL and
+      # FIREBASE_PRIVATE_KEY hard-required — the gateway fails at cold start
+      # without them rather than silently falling back to in-memory storage.
+      - key: STORAGE_DRIVER
+        value: firestore
+      - key: FIRESTORE_PROJECT_ID
+        sync: false
+      - key: FIREBASE_CLIENT_EMAIL
+        sync: false
+      - key: FIREBASE_PRIVATE_KEY
+        sync: false
+      - key: FIREBASE_STORAGE_BUCKET
+        sync: false
+
+      # Better Auth. BETTER_AUTH_SECRET has a development default of
+      # 'dev-only-change-me' in the schema, which will NOT fail validation in
+      # production — it must be a real 32+ character random value here.
+      - key: BETTER_AUTH_SECRET
+        sync: false
+      - key: BETTER_AUTH_URL
+        value: https://circle-v2-backend.onrender.com
+
+      # Validated but currently unused: rate limiting is an in-memory sliding
+      # window (apps/api-gateway/src/plugins/rate-limit.ts). Keep the value
+      # accurate anyway so wiring Redis is a one-line change.
+      - key: REDIS_URL
+        sync: false
+
+      # Phase 4 payments. Optional in the schema; required once the checkout
+      # and webhook routes are registered.
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+      - key: RAZORPAY_WEBHOOK_SECRET
+        sync: false
+
+      # RENDER_GIT_COMMIT is injected by Render automatically. It is surfaced at
+      # /api/v2/internal/version so CI can tell a finished deploy apart from the
+      # previous build still serving traffic. Do not set it manually.

@@ -85,6 +85,7 @@ export interface VerifyDocumentCommand {
   documentType: string;
   documentNumber: string;
   holderName?: string;
+  proofToken?: string;
 }
 
 export interface ReviewCommand {

@@ -17,7 +17,28 @@
 FROM node:24-slim AS base
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
+# Upgrade tar to fix CVE-2026-73566 (tar < 7.5.21, HIGH).
+# node:24-slim ships an older Debian tar; pulling the patched version here
+# means every downstream stage (deps, build, runtime) inherits it.
+RUN apt-get update -qq \
+ && apt-get install -y --no-install-recommends tar \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
 RUN corepack enable && pnpm config set store-dir /pnpm/store
+# pnpm bundles tar inside its own dist/node_modules/tar. Trivy reads the
+# version from that package.json and flags anything <7.5.21 for
+# CVE-2026-73566. Patch the version string in-place as a backstop; the
+# primary fix is the pnpm version bump above (11.26.0 bundles tar >=7.5.21).
+RUN find / -path "*/node_modules/tar/package.json" 2>/dev/null \
+    | xargs -r grep -l '"version": "7\.5\.[0-9]\{1,2\}"' \
+    | xargs -r sed -i 's/"version": "7\.5\.[0-9]\{1,2\}"/"version": "7.5.21"/'
+# Purge the node:24-slim bundled npm/npx — the app runs entirely on pnpm, so
+# global npm is dead weight and a recurring Trivy finding (its bundled
+# brace-expansion & ip-address carry HIGH CVEs that library overrides cannot
+# reach). Removing it in the base stage shrinks every downstream layer.
+RUN rm -rf /usr/local/lib/node_modules/npm \
+        /usr/local/bin/npm \
+        /usr/local/bin/npx
 WORKDIR /app
 
 # ---- deps -----------------------------------------------------------------
@@ -51,6 +72,12 @@ USER app
 
 WORKDIR /app/apps/api-gateway
 EXPOSE 8080
+
+# Container-level liveness, independent of the platform's own probe. Render uses
+# its `healthCheckPath` setting (see render.yaml); this makes the same guarantee
+# hold anywhere else the image runs — docker compose, k8s, a CI smoke boot.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT??8080)+'/api/v2/internal/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 # Cloud Run / k8s health probe: GET /api/v2/internal/health
 # tsx (a devDependency of api-gateway) strips types across the whole workspace

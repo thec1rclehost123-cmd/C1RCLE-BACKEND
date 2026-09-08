@@ -79,6 +79,16 @@ export class MemoryOnboardingRepository implements OnboardingRepository {
     return slice(all, query);
   }
 
+  async findByProvisionedOrganizationId(
+    organizationId: EntityId,
+  ): Promise<OnboardingRequest | null> {
+    return (
+      [...this.requests.values()].find(
+        (request) => request.provisionedOrganizationId === organizationId,
+      ) ?? null
+    );
+  }
+
   async save(request: OnboardingRequest, _tx?: TxContext | null): Promise<void> {
     casSet(this.requests, request);
   }

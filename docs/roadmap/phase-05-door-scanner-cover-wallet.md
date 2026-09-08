@@ -1,6 +1,6 @@
 # Phase 5 — Door / Scanner / Cover-wallet
 
-**Status:** substantially done (2026-08-21) — 6 honest-501s + domain-model unit tests remain · **Depends on:** Phase 4 (entitlements must exist)
+**Status:** done (verified 2026-09-07) — 2 honest, by-design 501s remain (stats/ws needs `@fastify/websocket`; scanner manifest-signing has no signing service). Domain-model unit test files landed in `3f48069`. · **Depends on:** Phase 4 (entitlements must exist)
 
 ## v1 proven logic to port (`thec1rcle`)
 
@@ -106,6 +106,18 @@ creating actor's id, not the real org (worked around at the route layer);
 `scanTicket`/`scanMagicTicket` read the client's `deviceId` field as a
 session-token lookup key, not a hardware id.
 
+### 2026-09-07 — Phase 5 completion: override, stats, freeze/unfreeze, domain tests
+
+Committed `0342d80` (door override), `53727c8` (door stats read model),
+`2ec1e61` (cover-wallet freeze/unfreeze), `3f48069` (5 domain-model unit test
+files: `scan-ledger.test.ts`, `event-code.test.ts`, `door-sale.test.ts`,
+`cover-wallet.test.ts`, `cover-wallet-reconciliation.test.ts`).
+
+Phase 5 now has 2 honest 501s by design:
+1. `GET /door/stats/ws` — needs `@fastify/websocket` registered on the app
+2. Scanner QR manifest-signing (`scanner-routes.ts:422`) — no signing service
+   exists; correctly documented at the call site
+
 ### 2026-09-01 — doc reconciliation
 
 - The "core 231/232, 1 known failure = `compare-and-set.test.ts`" claim is
@@ -115,9 +127,7 @@ session-token lookup key, not a hardware id.
 - Removed the duplicated line-number-prefixed paste of an older version of this
   file (the whole "Execution Plan (Agent-driven)" + "Security Checklist" block
   with `NN:` prefixes and a second `**Status:** not started` line).
-- **Still to do for Phase 5:** the 6 honest 501s (Founder Tasks A2 + B1 + B2),
-  and **5 domain-model unit test files** — `scan-ledger.ts`, `event-code.ts`,
-  `door-sale.ts`, `cover-wallet.ts`, `cover-wallet-reconciliation.ts` (FSM
-  guards, `processEntryScan` idempotency, magic-QR ±65s drift, wallet
-  debit/credit atomicity + velocity + nightlife termination). Repos are covered
-  by `infrastructure/contract-suite.test.ts`; the domain FSM/HMAC logic is not.
+- **Still to do for Phase 5 (as of 2026-09-01):** the 6 honest 501s (Founder
+  Tasks A2 + B1 + B2), and **5 domain-model unit test files**. **All completed
+  as of 2026-09-07** — see session log entry above. Only 2 honest 501s remain
+  (stats/ws, scanner manifest-signing).

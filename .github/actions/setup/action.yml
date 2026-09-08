@@ -1,0 +1,48 @@
+name: Setup pnpm workspace
+description: >-
+  Node + pnpm + warm caches + a frozen install. Replaces the copy-pasted
+  checkout/setup-node/cache/install block that appeared ~14 times in the V1
+  repository, so the toolchain is defined in exactly one place.
+
+inputs:
+  install:
+    description: Run `pnpm install --frozen-lockfile`.
+    required: false
+    default: 'true'
+  turbo-cache:
+    description: Restore and save the local turbo cache.
+    required: false
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    # Version comes from `packageManager` in package.json (pnpm@11.20.0) — one
+    # source of truth, so a pnpm bump never needs a workflow edit.
+    - name: Install pnpm
+      uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      with:
+        run_install: false
+
+    # Node version comes from .nvmrc (24), which matches the Dockerfile's
+    # node:24-slim. V1 drifted three ways: .nvmrc 20, workflows 24, image 20.
+    - name: Install Node
+      uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+      with:
+        node-version-file: .nvmrc
+        cache: pnpm
+
+    - name: Restore turbo cache
+      if: inputs.turbo-cache == 'true'
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: .turbo
+        key: turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
+        restore-keys: |
+          turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
+          turbo-${{ runner.os }}-
+
+    - name: Install dependencies
+      if: inputs.install == 'true'
+      shell: bash
+      run: pnpm install --frozen-lockfile

@@ -14,12 +14,19 @@
  */
 
 export interface VerificationRequest {
-  /** Document kind: `aadhaar`, `pan`, `gstin`, … */
+  /** Document kind: `aadhaar`, `pan`, `gstin`, `phone`, … */
   documentType: string;
   /** The identifier being checked. Never logged in full. */
   documentNumber: string;
   /** Name as printed on the document, when the provider can match on it. */
   holderName?: string;
+  /**
+   * A provider-issued proof to check rather than a value to format-validate
+   * — e.g. `documentType: 'phone'`'s GCP Identity Platform ID token from the
+   * client's `signInWithPhoneNumber` flow. Ignored by providers that only
+   * do a structural check (`FormatCheckVerificationProvider`).
+   */
+  proofToken?: string;
 }
 
 export interface VerificationResult {
@@ -72,3 +79,25 @@ const FORMATS: Record<string, RegExp> = {
   pan: /^[A-Z]{5}[0-9]{4}[A-Z]$/,
   gstin: /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/,
 };
+
+/**
+ * Dispatches by `documentType` to one of several single-purpose providers,
+ * so `OnboardingService`'s `ServiceDeps.verification` slot can stay a single
+ * `VerificationProvider` (one call site, one rate-limit/audit path — see
+ * `verifyDocument`) even though phone verification (GCP Identity Platform,
+ * an ID-token check) and document verification (structural format check)
+ * are answered by entirely different mechanisms.
+ */
+export class CompositeVerificationProvider implements VerificationProvider {
+  readonly name = 'composite';
+
+  constructor(
+    private readonly byDocumentType: Record<string, VerificationProvider>,
+    private readonly fallback: VerificationProvider,
+  ) {}
+
+  async verify(request: VerificationRequest): Promise<VerificationResult> {
+    const provider = this.byDocumentType[request.documentType] ?? this.fallback;
+    return provider.verify(request);
+  }
+}

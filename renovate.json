@@ -1,0 +1,97 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":prType(chore)",
+    ":label(dependencies)",
+    ":automergeType(pr)"
+  ],
+  "timezone": "Asia/Kolkata",
+  "schedule": ["on monday at 06:00"],
+  "prHourlyLimit": 0,
+  "prConcurrentLimit": 10,
+  "rangeStrategy": "bump",
+  "rebaseWhen": "conflicted",
+  "labels": ["dependencies"],
+  "packageRules": [
+    {
+      "description": "Auto-merge patch/minor once CI OK + Security OK pass",
+      "matchUpdateTypes": ["patch", "minor"],
+      "automerge": true,
+      "automergeType": "pr",
+      "platformAutomerge": true,
+      "requiredStatusChecks": ["CI OK", "Security OK"]
+    },
+    {
+      "description": "Never auto-merge major updates — require deliberate review",
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    },
+    {
+      "description": "Group production dependency patch/minor updates",
+      "matchDepTypes": ["dependencies"],
+      "matchUpdateTypes": ["patch", "minor"],
+      "groupName": "production-minor-patch",
+      "labels": ["dependencies"]
+    },
+    {
+      "description": "Group dev dependency patch/minor updates",
+      "matchDepTypes": ["devDependencies"],
+      "matchUpdateTypes": ["patch", "minor"],
+      "groupName": "development-minor-patch",
+      "labels": ["dependencies"]
+    },
+    {
+      "description": "Group TypeScript/ESLint/Prettier toolchain updates",
+      "matchPackageNames": [
+        "typescript",
+        "typescript-eslint",
+        "@typescript-eslint/*",
+        "eslint",
+        "@eslint/*",
+        "eslint-*",
+        "prettier"
+      ],
+      "groupName": "typescript-toolchain",
+      "labels": ["dependencies"]
+    },
+    {
+      "description": "Group Vitest updates",
+      "matchPackageNames": ["vitest", "@vitest/*"],
+      "groupName": "vitest",
+      "labels": ["dependencies"]
+    },
+    {
+      "description": "pnpm bump needs Dockerfile corepack + lockfile regen — do not auto-merge",
+      "matchPackageNames": ["pnpm"],
+      "groupName": "pnpm",
+      "labels": ["dependencies"],
+      "automerge": false
+    },
+    {
+      "description": "Ignore @types/node major (requires Dockerfile + .nvmrc + engines update — handle deliberately)",
+      "matchPackageNames": ["@types/node"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "description": "GitHub Actions SHA pin updates — group and auto-merge",
+      "matchManagers": ["github-actions"],
+      "schedule": ["on monday at 06:00"],
+      "labels": ["dependencies", "ci"],
+      "groupName": "github-actions",
+      "automerge": true,
+      "requiredStatusChecks": ["CI OK", "Security OK"]
+    },
+    {
+      "description": "Docker base image updates — auto-merge patch tags",
+      "matchManagers": ["dockerfile"],
+      "schedule": ["on monday at 06:00"],
+      "labels": ["dependencies", "docker"],
+      "automerge": true,
+      "requiredStatusChecks": ["CI OK", "Security OK"]
+    }
+  ],
+  "ignorePaths": ["**/node_modules/**", "**/.git/**", "docs/**", "task.md"]
+}

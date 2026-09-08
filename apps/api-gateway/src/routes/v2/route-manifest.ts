@@ -6,11 +6,18 @@ import authContextPlugin, { buildBetterAuth } from '../../plugins/auth.js';
 
 import adminRoutes from './admin/onboarding-review.js';
 import authRoutes from './auth/index.js';
+import otpRoutes from './auth/otp-routes.js';
+import checkoutRoutes from './checkout/checkout-routes.js';
+import paymentRoutes from './checkout/payment-routes.js';
+import webhookRoutes from './checkout/webhook-routes.js';
 import phase5CoverWalletRoutes from './door/cover-wallet-routes.js';
 import phase5DoorSaleRoutes from './door/door-sale-routes.js';
 import phase5ScannerRoutes from './door/scanner-routes.js';
+import financeRoutes from './finance/finance-routes.js';
+import leaderboardRoutes from './finance/leaderboard-routes.js';
 import { internalRoutes } from './internal/index.js';
 import onboardingRoutes from './onboarding.js';
+import orderRoutes from './orders/orders-routes.js';
 import partnerAnalyticsRoutes from './partner/analytics.js';
 import partnerEventCatalogRoutes from './partner/event-catalog.js';
 import partnerEventRoutes from './partner/events.js';
@@ -20,6 +27,9 @@ import promoterConnectionRoutes from './partner/promoter-connections.js';
 import partnerReferralLinkRoutes from './partner/referral-links.js';
 import partnerVenueRoutes from './partner/venues.js';
 import phase5Routes from './phase5-routes.js';
+import publicDiscoveryRoutes from './public/discovery.js';
+import ticketRoutes from './tickets/ticket-routes.js';
+import walletRoutes from './wallet/wallet-routes.js';
 
 import type { GatewayRuntimeState } from '../../lib/runtime-state.js';
 import type { BetterAuthInstance } from '../../plugins/auth.js';
@@ -36,9 +46,13 @@ export interface RegisterV2RoutesOptions {
 
 /**
  * ─── V2 route manifest ─────────────────────────────────────────────────────────
- * The single registration surface for all `/api/v2` routes. BLOCKED feature
- * slices (orders/checkout/payments/refunds/payouts/door/webhooks) must NOT be
- * registered here — they 404 by absence, never by a 501 stub.
+ * The single registration surface for all `/api/v2` routes. Phase 4's public
+ * discovery slice (PR1, unauthenticated, under `/public`), checkout/
+ * payments/webhook slice (PR2), and orders/tickets/wallet reads (PR3) are
+ * all LIVE. Ticket transfer/claim/cancel-transfer stay unregistered — the
+ * committed `Entitlement` model has no transfer state to wire against yet
+ * (see `tickets/ticket-routes.ts`'s doc comment); they 404 by absence, never
+ * by a 501 stub (D-006), same as any other genuinely-blocked slice.
  */
 export async function registerV2Routes(
   app: FastifyInstance,
@@ -86,6 +100,10 @@ export async function registerV2Routes(
         readinessChecks: options.readinessChecks,
       });
       await v2.register(async (a) => authRoutes(a, { auth }), { prefix: '/auth' });
+      await v2.register(otpRoutes, { prefix: '/auth' });
+      // Phase 4 PR1: unauthenticated guest-facing discovery reads — never
+      // nested under the org-scoped/authenticated route group above.
+      await v2.register(publicDiscoveryRoutes, { prefix: '/public' });
       await partnerOrganizationRoutes(v2);
       await partnerVenueRoutes(v2);
       await partnerEventRoutes(v2);
@@ -98,11 +116,22 @@ export async function registerV2Routes(
       // platform admin acts across all of them.
       await onboardingRoutes(v2);
       await adminRoutes(v2);
+      // Phase 4 PR2: guest checkout + payments + Razorpay webhook.
+      await checkoutRoutes(v2);
+      await paymentRoutes(v2);
+      await webhookRoutes(v2);
+      // Phase 4 PR3: guest order/ticket reads + wallet.
+      await orderRoutes(v2);
+      await ticketRoutes(v2);
+      await walletRoutes(v2);
       // Phase 5: Door / Scanner / Cover-wallet
       await phase5DoorSaleRoutes(v2);
       await phase5CoverWalletRoutes(v2);
       await phase5ScannerRoutes(v2);
       await phase5Routes(v2);
+      // Phase 6: Finance / Ledger / Payouts
+      await financeRoutes(v2);
+      await leaderboardRoutes(v2);
     },
     { prefix: '/api/v2' },
   );

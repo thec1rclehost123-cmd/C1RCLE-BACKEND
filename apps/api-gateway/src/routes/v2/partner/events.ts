@@ -436,6 +436,11 @@ export function mapDomainError(
     'partnership_not_found',
     'onboarding_request_not_found',
     'proposal_not_found',
+    // The generic `NotFoundError` (domain/errors.ts) carries this exact code —
+    // previously missing here, so an order/ticket "not found" fell through
+    // every branch below into the unmapped-error 500 (docs/architecture/
+    // IMPLEMENTATION-STATUS-2026-08-31.md §2 named this gotcha already).
+    'not_found',
   ]);
   if (known?.code && notFoundCodes.has(known.code)) {
     reply.status(404).send(

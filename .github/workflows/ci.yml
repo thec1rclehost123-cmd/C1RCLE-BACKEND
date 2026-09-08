@@ -1,0 +1,614 @@
+# ─── CI ───────────────────────────────────────────────────────────────────────
+# One pipeline, fanned out. Every gate runs in parallel off a shared setup, then
+# a single `ci-ok` job aggregates them — that is the ONE status check to require
+# in branch protection, so adding a gate never means editing branch settings.
+#
+# Deployment is not triggered here. Render auto-deploys on push to main, out of
+# band. This workflow verifies the deploy afterwards: it waits until the live
+# build reports the SHA under test, smoke-tests it, and rolls back + files an
+# issue if the smoke tests fail.
+name: CI
+
+on:
+  pull_request:
+    branches: [main, staging]
+  push:
+    branches: [main, staging]
+  merge_group:
+  workflow_dispatch:
+    inputs:
+      skip_docker:
+        description: Skip the Docker build and image scan
+        type: boolean
+        default: false
+
+# Cancel superseded PR runs; never cancel a main run, because its tail end
+# verifies a production deploy that is already in flight.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  PRODUCTION_URL: https://circle-v2-backend.onrender.com
+
+jobs:
+  # ── What changed? ──────────────────────────────────────────────────────────
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+      docker: ${{ steps.filter.outputs.docker }}
+      workflows: ${{ steps.filter.outputs.workflows }}
+      contracts: ${{ steps.filter.outputs.contracts }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - id: filter
+        uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3
+        with:
+          # On push events paths-filter diffs against the previous commit; on
+          # pull requests against the merge base. Both are what we want.
+          filters: |
+            code:
+              - 'apps/**'
+              - 'packages/**'
+              - 'scripts/**'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - 'turbo.json'
+              - 'tsconfig.base.json'
+              - 'eslint.config.mjs'
+              - 'prettier.config.mjs'
+              - 'vitest.config.mjs'
+            docker:
+              - 'Dockerfile'
+              - '.dockerignore'
+              - 'apps/**'
+              - 'packages/**'
+              - 'pnpm-lock.yaml'
+            contracts:
+              - 'packages/contracts/**'
+            workflows:
+              - '.github/**'
+
+  # ── Static analysis: one runner, not four ──────────────────────────────────
+  # Format, lint and typecheck run locally on every commit and push (husky +
+  # lint-staged, see .husky/). They are repeated here because `--no-verify`
+  # exists and because a hook only ever saw the files that developer staged —
+  # but they share ONE runner and ONE install instead of burning four.
+  # `continue-on-error` is deliberately absent; `if: always()` on the steps is
+  # what makes a single run report every failure at once instead of stopping at
+  # the first, so one CI round trip tells you everything that is wrong.
+  # Skip if no code changes (docs-only PRs).
+  static:
+    name: Static analysis
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+
+      - name: Format
+        id: format
+        run: pnpm format:check
+
+      # ESLint runs with `projectService: true` (type-aware) across the whole
+      # workspace — the slowest step here. Budget for that before trimming the
+      # job timeout.
+      - name: Lint
+        id: lint
+        if: always()
+        run: pnpm lint
+
+      - name: Typecheck
+        id: typecheck
+        if: always()
+        run: pnpm typecheck
+
+      - name: Architecture boundaries
+        id: boundaries
+        if: always()
+        run: node scripts/check-boundaries.mjs
+
+      # A focused `it.only` silently disables every other test in its file, so a
+      # green suite can be hiding almost all of itself.
+      - name: No focused tests committed
+        id: focused
+        if: always()
+        run: |
+          set -uo pipefail
+          hits=$(grep -rnE '(describe|it|test)\.only\(' --include='*.test.ts' apps packages || true)
+          if [ -n "$hits" ]; then
+            echo "::error::Focused tests would silently skip the rest of their file:"
+            echo "$hits"
+            exit 1
+          fi
+          echo "No focused tests."
+
+      - name: Summarize
+        if: always()
+        run: |
+          {
+            echo "| Check | Result |"
+            echo "| --- | :--- |"
+            echo "| Format | ${{ steps.format.outcome }} |"
+            echo "| Lint | ${{ steps.lint.outcome }} |"
+            echo "| Typecheck | ${{ steps.typecheck.outcome }} |"
+            echo "| Boundaries | ${{ steps.boundaries.outcome }} |"
+            echo "| Focused tests | ${{ steps.focused.outcome }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── Tests + coverage ratchet ───────────────────────────────────────────────
+  # Skip if no code changes (docs-only PRs).
+  test:
+    name: Build, test & coverage
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write # sticky coverage comment
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+
+      # This is also the project's build gate. The Docker image only compiles
+      # @c1rcle/contracts and runs the rest through the tsx loader, so a `tsc`
+      # break in @c1rcle/core or api-gateway reaches production unless something
+      # compiles the full graph — and this is the one job that does. It runs
+      # here rather than on its own runner because the coverage pass needs the
+      # build anyway (turbo's `test` depends on `build`; the root coverage run
+      # does not).
+      - name: Build (full tsc across the workspace)
+        run: pnpm build
+
+      - name: Run tests with coverage
+        run: pnpm test:coverage
+
+      # The baseline is whatever main last recorded. The first run has none and
+      # simply establishes it — this gate is never red for lack of calibration.
+      - name: Restore coverage baseline
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .coverage-baseline
+          key: coverage-baseline-${{ github.event.repository.default_branch }}
+
+      - name: Coverage ratchet
+        env:
+          # Optional absolute floor layered on top of the ratchet. Leave these
+          # repository variables unset to run ratchet-only.
+          COVERAGE_MIN_LINES: ${{ vars.COVERAGE_MIN_LINES }}
+          COVERAGE_MIN_STATEMENTS: ${{ vars.COVERAGE_MIN_STATEMENTS }}
+          COVERAGE_MIN_FUNCTIONS: ${{ vars.COVERAGE_MIN_FUNCTIONS }}
+          COVERAGE_MIN_BRANCHES: ${{ vars.COVERAGE_MIN_BRANCHES }}
+        run: |
+          node scripts/ci/coverage-ratchet.mjs \
+            --summary coverage/coverage-summary.json \
+            --baseline .coverage-baseline/coverage-summary.json \
+            --seed coverage-baseline.json \
+            --tolerance 0.5
+
+      - name: Comment coverage on the pull request
+        if: github.event_name == 'pull_request'
+        uses: davelosert/vitest-coverage-report-action@c4bbc33a89b7ace0e63d35f1f7d4bcee31155a73 # v2
+        with:
+          json-summary-path: coverage/coverage-summary.json
+          json-final-path: coverage/coverage-final.json
+          name: C1RCLE Backend
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: coverage
+          path: coverage/
+          retention-days: 14
+
+      # Only main moves the ratchet.
+      - name: Record new baseline
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p .coverage-baseline
+          cp coverage/coverage-summary.json .coverage-baseline/coverage-summary.json
+      - name: Save coverage baseline
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .coverage-baseline
+          key: coverage-baseline-${{ github.event.repository.default_branch }}-${{ github.sha }}
+
+  # ── End-to-end scenario suite (main only) ─────────────────────────────────
+  # The two `/api/v2` business journeys (host lifecycle; guest purchase → door
+  # → check-in → finance settlement) run over the FULL wired `buildApp()` on
+  # the memory driver. This is the trunk-merge safety net. It lives in
+  # `apps/api-gateway/scenarios/` — OUTSIDE `src/` so the unit `test` task never
+  # runs it by accident — and is gated to pushes on `main` only: the branch that
+  # deploys to production, where a regression here becomes an incident. Running
+  # it on every PR/staging commit would roughly double CI wall time for little
+  # added signal; staging reuses the fast unit gates until a merge approaches.
+  # `ci-ok` treats this as `skipped` (a pass) on non-main runs.
+  scenario:
+    name: Scenario suite (main only)
+    needs: changes
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+
+      # No build step needed: `@c1rcle/core` and `@c1rcle/contracts` publish
+      # their exports maps straight to `./src/*.ts`, which the vitest transform
+      # compiles on the fly — exactly how the existing unit `test` task works.
+      - name: Run the scenario suite
+        run: pnpm test:scenarios
+
+  # ── The image that actually ships ──────────────────────────────────────────
+  docker:
+    name: Docker build & scan
+    needs: changes
+    if: needs.changes.outputs.docker == 'true' && !inputs.skip_docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      security-events: write # Trivy SARIF -> Security tab
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      # Render builds this same Dockerfile on every push. Building it here first
+      # means a broken image fails a pull request instead of a production deploy.
+      - name: Build image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: c1rcle-backend:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Cache Trivy vulnerability database to avoid re-downloading on every run.
+      - name: Cache Trivy database
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/trivy
+          key: trivy-db-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            trivy-db-${{ runner.os }}-
+
+      - name: Scan image for vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: c1rcle-backend:${{ github.sha }}
+          format: sarif
+          output: trivy-image.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          cache-dir: ~/.cache/trivy
+
+      - name: Upload image scan results
+        if: always()
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+
+      # A second pass, this one blocking. The SARIF upload is a report; the
+      # exit code is the gate. A scanner that cannot fail the build is not one.
+      - name: Fail on HIGH/CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: c1rcle-backend:${{ github.sha }}
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          cache-dir: ~/.cache/trivy
+
+      # Boot the image exactly the way Render does — NODE_ENV=production, so the
+      # production-only config guards are the ones under test — and prove it
+      # serves traffic. Catches the class of bug where the build is fine but the
+      # container cannot start.
+      - name: Smoke-boot the container
+        run: |
+          set -euo pipefail
+          docker run -d --name c1rcle-smoke -p 8080:8080 \
+            -e NODE_ENV=production \
+            -e STORAGE_DRIVER=memory \
+            -e BETTER_AUTH_SECRET="$(openssl rand -hex 32)" \
+            -e BETTER_AUTH_URL="https://smoke.invalid" \
+            -e EMAIL_OTP_SECRET="$(openssl rand -hex 32)" \
+            "c1rcle-backend:${GITHUB_SHA}"
+          for i in $(seq 1 45); do
+            if curl -fsS http://localhost:8080/api/v2/internal/health > /tmp/health.json; then
+              echo "Container healthy after ${i}s:"
+              cat /tmp/health.json
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::Container never became healthy. Logs follow."
+          docker logs c1rcle-smoke
+          exit 1
+
+      - name: Stop container
+        if: always()
+        run: docker rm -f c1rcle-smoke || true
+
+      # The config layer is supposed to fail CLOSED. Assert that rather than
+      # trusting it: a misconfigured production deploy must refuse to boot, not
+      # come up quietly with a publicly-known signing secret or with the
+      # in-memory store standing in for Firestore.
+      - name: Assert the gateway refuses to boot when misconfigured
+        run: |
+          set -uo pipefail
+          fail=0
+
+          assert_refuses() {
+            name="$1"
+            shift
+            docker rm -f "$name" > /dev/null 2>&1 || true
+            docker run -d --name "$name" "$@" "c1rcle-backend:${GITHUB_SHA}" > /dev/null
+            sleep 8
+            running=$(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null || echo unknown)
+            if [ "$running" = "true" ]; then
+              echo "::error::Expected the gateway to refuse to boot ($name), but it is running."
+              docker logs "$name" 2>&1 | tail -20
+              fail=1
+            else
+              echo "  OK  $name refused to boot:"
+              docker logs "$name" 2>&1 | tail -3
+            fi
+            docker rm -f "$name" > /dev/null 2>&1 || true
+          }
+
+          # The development signing secret must never survive into production.
+          assert_refuses c1rcle-cfg-secret \
+            -e NODE_ENV=production \
+            -e STORAGE_DRIVER=memory \
+            -e BETTER_AUTH_SECRET=dev-only-change-me \
+            -e BETTER_AUTH_URL=https://smoke.invalid
+
+          # STORAGE_DRIVER=firestore without credentials must not silently
+          # degrade to the in-memory store.
+          assert_refuses c1rcle-cfg-firestore \
+            -e NODE_ENV=production \
+            -e STORAGE_DRIVER=firestore \
+            -e BETTER_AUTH_SECRET="$(openssl rand -hex 32)" \
+            -e BETTER_AUTH_URL=https://smoke.invalid
+
+          exit $fail
+
+  # ── Cross-repo contract parity ─────────────────────────────────────────────
+  # Needs a C1RCLE-FRONTEND checkout plus built dists on both sides, so it is
+  # opt-in: set the CONTRACT_PARITY_ENABLED repository variable to 'true'.
+  # Deliberately NOT `continue-on-error` — when it runs, it is a real gate.
+  contract-parity:
+    name: Contract parity (frontend)
+    needs: changes
+    if: vars.CONTRACT_PARITY_ENABLED == 'true' && needs.changes.outputs.contracts == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          path: backend
+          persist-credentials: false
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: ${{ vars.FRONTEND_REPO || 'thec1rclehost123-cmd/C1RCLE-FRONTEND' }}
+          ref: ${{ vars.FRONTEND_REF || 'main' }}
+          token: ${{ secrets.FRONTEND_REPO_TOKEN || github.token }}
+          path: frontend
+          persist-credentials: false
+
+      - uses: ./backend/.github/actions/setup
+        with:
+          install: 'false'
+          turbo-cache: 'false'
+
+      - name: Build backend contracts
+        working-directory: backend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @c1rcle/contracts build
+
+      - name: Build frontend contracts
+        working-directory: frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @c1rcle/contracts build
+          pnpm --filter @c1rcle/api-client build
+
+      # Exit 0 = agree, 1 = drift, 2 = cannot check (missing dists). All three
+      # are meaningful; only 0 passes.
+      - name: Compare contracts
+        working-directory: backend
+        run: node scripts/contract-parity.mjs --frontend "$GITHUB_WORKSPACE/frontend"
+
+  # ── The workflows lint themselves ──────────────────────────────────────────
+  actionlint:
+    name: Actionlint
+    needs: changes
+    if: needs.changes.outputs.workflows == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      # actionlint shells out to shellcheck for every inline script block.
+      - name: Lint workflow files
+        uses: docker://rhysd/actionlint:1.7.7
+        with:
+          args: -color
+
+  # ── Commit message hygiene ─────────────────────────────────────────────────
+  # `.husky/commit-msg` already runs commitlint locally on every commit. This
+  # job exists for the two cases a hook cannot cover: a commit made with
+  # `--no-verify` or through the GitHub web UI, and the pull-request TITLE —
+  # which is what a squash merge actually writes to main, regardless of what the
+  # individual commits said.
+  commit-lint:
+    name: Commit messages
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          turbo-cache: 'false'
+
+      - name: Lint the commits in this pull request
+        run: |
+          pnpm exec commitlint \
+            --from "origin/${{ github.base_ref }}" \
+            --to "${{ github.event.pull_request.head.sha }}" \
+            --verbose
+
+      - name: Lint the pull-request title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: printf '%s\n' "$PR_TITLE" | pnpm exec commitlint --verbose
+
+  # ── The single required status check ───────────────────────────────────────
+  ci-ok:
+    name: CI OK
+    if: always()
+    needs: [static, test, scenario, docker, contract-parity, actionlint, commit-lint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # `skipped` is a pass (path filters, opt-in gates). `failure` and
+      # `cancelled` are not. Guarding on `success` alone would wrongly block
+      # every docs-only pull request.
+      - name: Assert every gate passed or was skipped
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key)\t\(.value.result)"'
+          bad=$(echo "$NEEDS" | jq -r 'to_entries[]
+            | select(.value.result != "success" and .value.result != "skipped")
+            | .key')
+          if [ -n "$bad" ]; then
+            echo "::error::These gates did not pass: $(echo "$bad" | tr '\n' ' ')"
+            exit 1
+          fi
+          echo "All gates green."
+
+  # ── Post-deploy verification (main only) ───────────────────────────────────
+  # Render auto-deploys on push. This waits for THAT deploy to go live, proves
+  # it works, and rolls it back if it does not.
+  verify-deploy:
+    name: Verify production deploy
+    needs: ci-ok
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: production
+      url: https://circle-v2-backend.onrender.com
+    permissions:
+      contents: read
+      issues: write # file an incident if smoke fails
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Detect Render API credentials
+        id: render
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+        run: |
+          if [ -n "$RENDER_API_KEY" ] && [ -n "$RENDER_SERVICE_ID" ]; then
+            echo "rollback=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "rollback=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::RENDER_API_KEY / RENDER_SERVICE_ID are not set — automatic rollback is disabled."
+          fi
+
+      - name: Wait for Render to serve this commit
+        run: |
+          node scripts/ci/wait-for-deploy.mjs \
+            --url "$PRODUCTION_URL" \
+            --sha "$GITHUB_SHA" \
+            --timeout 900 \
+            --interval 15
+
+      - name: Smoke test production
+        id: smoke
+        run: node scripts/ci/smoke.mjs --url "$PRODUCTION_URL"
+
+      - name: Roll back the failed deploy
+        if: failure() && steps.smoke.outcome == 'failure' && steps.render.outputs.rollback == 'true'
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+        run: node scripts/ci/render-rollback.mjs
+
+      - name: File a production incident
+        if: failure()
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          ROLLBACK_ATTEMPTED: ${{ steps.render.outputs.rollback }}
+        with:
+          script: |
+            const title = `Production smoke tests failed for ${context.sha.slice(0, 7)}`;
+            const body = [
+              'Post-deploy verification failed on `main`.',
+              '',
+              `- Commit: ${context.sha}`,
+              `- Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              '- Target: https://circle-v2-backend.onrender.com',
+              `- Automatic rollback attempted: ${process.env.ROLLBACK_ATTEMPTED}`,
+              '',
+              "Check the run's job summary for which smoke assertions failed.",
+            ].join('\n');
+            const existing = await github.rest.issues.listForRepo({
+              ...context.repo,
+              state: 'open',
+              labels: 'production-incident',
+            });
+            const open = existing.data.find((issue) => issue.title === title);
+            if (open) {
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: open.number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                ...context.repo,
+                title,
+                body,
+                labels: ['production-incident', 'automated'],
+              });
+            }

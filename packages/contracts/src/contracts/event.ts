@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { opaqueIdSchema, paginatedSchema, idempotencyKeySchema } from './shared.js';
+
+import { opaqueIdSchema } from './shared.js';
 
 /**
  * ─── Event + Catalog Contracts ────────────────────────────────────────────────

@@ -36,6 +36,7 @@ describe('V2 services wiring (B09) — EventPublished → audit trail end-to-end
       FIREBASE_CLIENT_EMAIL: 'firebase@example.test',
       FIREBASE_PRIVATE_KEY: 'private-key',
       BETTER_AUTH_SECRET: 'a'.repeat(64),
+      EMAIL_OTP_SECRET: 'b'.repeat(64),
       PUBLIC_API_URL: 'https://api.example.test',
       BETTER_AUTH_URL: 'https://api.example.test',
       ALLOWED_ORIGINS: 'https://app.example.test',

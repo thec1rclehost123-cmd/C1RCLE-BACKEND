@@ -107,10 +107,15 @@ const envSchema = z.object({
   /** B10: Better Auth. */
   BETTER_AUTH_SECRET: z.string().min(1).default('dev-only-change-me'),
   BETTER_AUTH_URL: z.url().default(DEVELOPMENT_BETTER_AUTH_URL),
+  /** Render's immutable commit metadata, consumed as BUILD_SHA when no override is supplied. */
+  RENDER_GIT_COMMIT: z.string().min(1).optional(),
   /** Phase 4: Razorpay credentials. */
   RAZORPAY_KEY_ID: z.string().min(1).optional(),
   RAZORPAY_KEY_SECRET: z.string().min(1).optional(),
   RAZORPAY_WEBHOOK_SECRET: z.string().min(1).optional(),
+  /** Email OTP delivery and at-rest OTP HMAC key. */
+  RESEND_API_KEY: z.string().min(1).optional(),
+  EMAIL_OTP_SECRET: z.string().min(1).optional(),
 });
 
 /** Fail closed: STORAGE_DRIVER=firestore requires real credentials, never a silent memory fallback. */
@@ -182,6 +187,13 @@ const validatedEnvSchema = envSchema.superRefine((value, ctx) => {
       code: 'custom',
       path: ['BETTER_AUTH_SECRET'],
       message: 'Production requires a non-development secret of at least 32 characters',
+    });
+  }
+  if (!value.EMAIL_OTP_SECRET) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['EMAIL_OTP_SECRET'],
+      message: 'Production requires EMAIL_OTP_SECRET',
     });
   }
   for (const [field, rawOrigins] of [

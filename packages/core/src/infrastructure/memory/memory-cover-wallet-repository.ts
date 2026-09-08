@@ -1,17 +1,31 @@
 import { VersionConflictError } from '../../domain/errors.js';
-import { createCoverWallet } from '../../domain/models/cover-wallet.js';
 import { createReconciliation } from '../../domain/models/cover-wallet-reconciliation.js';
+import {
+  createCoverWallet,
+  freezeWallet,
+  unfreezeWallet,
+} from '../../domain/models/cover-wallet.js';
 
 import type { EntityId } from '../../domain/identity.js';
-import type { CoverWallet, CoverWalletTxn, CoverWalletStatus, CoverWalletTxnType, CoverWalletTxnStatus, CoverWalletCreateInput } from '../../domain/models/cover-wallet.js';
-import type { CoverWalletReconciliationCreateInput, ReconciliationStatus, CoverWalletReconciliation } from '../../domain/models/cover-wallet-reconciliation.js';
+import type {
+  CoverWalletReconciliationCreateInput,
+  ReconciliationStatus,
+  CoverWalletReconciliation,
+} from '../../domain/models/cover-wallet-reconciliation.js';
+import type {
+  CoverWallet,
+  CoverWalletTxn,
+  CoverWalletStatus,
+  CoverWalletTxnType,
+  CoverWalletTxnStatus,
+  CoverWalletCreateInput,
+} from '../../domain/models/cover-wallet.js';
 import type {
   CoverWalletRepository,
   CoverWalletTxnRepository,
   CoverWalletReconciliationRepository,
   Page,
   PaginationQuery,
-  TxContext,
 } from '../../domain/ports/repositories.js';
 
 function casSet<T extends { id: EntityId; version: number }>(
@@ -30,12 +44,13 @@ function generateTxnId(walletId: EntityId): EntityId {
   return `txn-${walletId}-${Date.now()}-${++txnCounter}`;
 }
 
-function serializeSlice<T>(all: T[], query: any): any {
+function serializeSlice<T extends { id: EntityId }>(all: T[], query: PaginationQuery): Page<T> {
   const { cursor, limit } = query;
-  const start = cursor ? all.findIndex((item: any) => item.id === cursor) + 1 : 0;
+  const start = cursor ? all.findIndex((item) => item.id === cursor) + 1 : 0;
   const end = Math.min(start + limit, all.length);
   const items = all.slice(start, end);
-  const nextCursor = end < all.length && items.length > 0 ? (items[items.length - 1] as any).id : null;
+  const last = items[items.length - 1];
+  const nextCursor = end < all.length && last ? last.id : null;
   return { items, total: all.length, nextCursor };
 }
 
@@ -43,7 +58,7 @@ function serializeSlice<T>(all: T[], query: any): any {
 export const sharedTxns = new Map<EntityId, CoverWalletTxn>();
 
 export class MemoryCoverWalletRepository implements CoverWalletRepository {
-  wallets = new Map<EntityId, any>();
+  wallets = new Map<EntityId, CoverWallet>();
   byEventAndUser = new Map<string, EntityId>(); // key: `${eventId}|${userId}`
 
   async create(input: CoverWalletCreateInput | CoverWallet): Promise<CoverWallet> {
@@ -52,7 +67,7 @@ export class MemoryCoverWalletRepository implements CoverWalletRepository {
     const walletVersion = (input as CoverWallet).version;
     const eventId = input.eventId;
     const userId = input.userId;
-    
+
     // Check for existing wallet for same event and user
     const existingId = this.byEventAndUser.get(`${eventId}|${userId}`);
     if (existingId) {
@@ -61,7 +76,9 @@ export class MemoryCoverWalletRepository implements CoverWalletRepository {
         // If input has explicit version (optimistic locking test), check version conflict
         if (walletId && walletVersion) {
           if (existing.version !== walletVersion - 1) {
-            throw new Error(`Version conflict: expected ${walletVersion - 1}, current ${existing.version}`);
+            throw new Error(
+              `Version conflict: expected ${walletVersion - 1}, current ${existing.version}`,
+            );
           }
         } else {
           // Normal create: wallet already exists
@@ -69,7 +86,7 @@ export class MemoryCoverWalletRepository implements CoverWalletRepository {
         }
       }
     }
-    
+
     // Create or use wallet
     let wallet: CoverWallet;
     if (walletId && walletVersion) {
@@ -77,9 +94,9 @@ export class MemoryCoverWalletRepository implements CoverWalletRepository {
       wallet = input as CoverWallet;
     } else {
       // Create new wallet from input
-      wallet = createCoverWallet(input as CoverWalletCreateInput);
+      wallet = createCoverWallet(input);
     }
-    
+
     this.wallets.set(wallet.id, wallet);
     this.byEventAndUser.set(`${eventId}|${userId}`, wallet.id);
     return wallet;
@@ -95,12 +112,15 @@ export class MemoryCoverWalletRepository implements CoverWalletRepository {
     return this.wallets.get(id) ?? null;
   }
 
-  async findByEvent(eventId: EntityId, input: any): Promise<any> {
+  async findByEvent(eventId: EntityId, input: PaginationQuery): Promise<Page<CoverWallet>> {
     const all = [...this.wallets.values()].filter((w) => w.eventId === eventId);
     return serializeSlice(all, input);
   }
 
-  async findByOrganization(organizationId: EntityId, input: any): Promise<any> {
+  async findByOrganization(
+    organizationId: EntityId,
+    input: PaginationQuery,
+  ): Promise<Page<CoverWallet>> {
     const all = [...this.wallets.values()].filter((w) => w.organizationId === organizationId);
     return serializeSlice(all, input);
   }
@@ -159,7 +179,7 @@ export class MemoryCoverWalletRepository implements CoverWalletRepository {
     return { wallet: updatedWallet, txn };
   }
 
-async debit(input: {
+  async debit(input: {
     walletId: EntityId;
     amount: number;
     referenceId: EntityId | null;
@@ -173,7 +193,7 @@ async debit(input: {
     const wallet = this.wallets.get(input.walletId);
     if (!wallet) throw new Error('Wallet not found');
     if (wallet.balance < input.amount) throw new Error('Insufficient balance');
-    
+
     // Velocity limit: max 3 debits/min/device
     if (input.deviceId) {
       const since = new Date(Date.now() - 120 * 1000); // 2 minutes for test stability
@@ -182,7 +202,7 @@ async debit(input: {
         throw new Error('Velocity limit exceeded');
       }
     }
-    
+
     const newBalance = wallet.balance - input.amount;
     const updatedWallet = {
       ...wallet,
@@ -225,7 +245,14 @@ async debit(input: {
     return { wallet: updatedWallet, txn };
   }
 
-  async refund(walletId: EntityId, amount: number, referenceId: EntityId, idempotencyKey: string, operatorUid: EntityId, description: string): Promise<{ wallet: CoverWallet; txn: CoverWalletTxn }> {
+  async refund(
+    walletId: EntityId,
+    amount: number,
+    referenceId: EntityId,
+    idempotencyKey: string,
+    operatorUid: EntityId,
+    description: string,
+  ): Promise<{ wallet: CoverWallet; txn: CoverWalletTxn }> {
     const wallet = this.wallets.get(walletId);
     if (!wallet) throw new Error('Wallet not found');
     const updatedWallet = {
@@ -265,7 +292,13 @@ async debit(input: {
     return { wallet: updatedWallet, txn };
   }
 
-  async adjust(walletId: EntityId, amount: number, idempotencyKey: string, operatorUid: EntityId, description: string): Promise<{ wallet: CoverWallet; txn: CoverWalletTxn }> {
+  async adjust(
+    walletId: EntityId,
+    amount: number,
+    idempotencyKey: string,
+    operatorUid: EntityId,
+    description: string,
+  ): Promise<{ wallet: CoverWallet; txn: CoverWalletTxn }> {
     const wallet = this.wallets.get(walletId);
     if (!wallet) throw new Error('Wallet not found');
     if (wallet.balance + amount < 0) throw new Error('Adjustment would result in negative balance');
@@ -308,7 +341,30 @@ async debit(input: {
   async terminate(walletId: EntityId, reason: string): Promise<CoverWallet | null> {
     const wallet = this.wallets.get(walletId);
     if (!wallet) return null;
-    const updated = { ...wallet, status: 'terminated' as CoverWalletStatus, terminatedAt: new Date().toISOString(), terminationReason: reason, version: wallet.version + 1, updatedAt: new Date().toISOString() };
+    const updated = {
+      ...wallet,
+      status: 'terminated' as CoverWalletStatus,
+      terminatedAt: new Date().toISOString(),
+      terminationReason: reason,
+      version: wallet.version + 1,
+      updatedAt: new Date().toISOString(),
+    };
+    this.wallets.set(walletId, updated);
+    return updated;
+  }
+
+  async freeze(walletId: EntityId): Promise<CoverWallet | null> {
+    const wallet = this.wallets.get(walletId);
+    if (!wallet) return null;
+    const updated = freezeWallet(wallet); // throws on an illegal transition
+    this.wallets.set(walletId, updated);
+    return updated;
+  }
+
+  async unfreeze(walletId: EntityId): Promise<CoverWallet | null> {
+    const wallet = this.wallets.get(walletId);
+    if (!wallet) return null;
+    const updated = unfreezeWallet(wallet); // throws on an illegal transition
     this.wallets.set(walletId, updated);
     return updated;
   }
@@ -316,7 +372,12 @@ async debit(input: {
   async close(walletId: EntityId): Promise<CoverWallet | null> {
     const wallet = this.wallets.get(walletId);
     if (!wallet) return null;
-    const updated = { ...wallet, status: 'closed' as CoverWalletStatus, version: wallet.version + 1, updatedAt: new Date().toISOString() };
+    const updated = {
+      ...wallet,
+      status: 'closed' as CoverWalletStatus,
+      version: wallet.version + 1,
+      updatedAt: new Date().toISOString(),
+    };
     this.wallets.set(walletId, updated);
     return updated;
   }
@@ -357,7 +418,8 @@ async debit(input: {
     return {
       totalWallets: all.length,
       activeWallets: all.filter((w) => w.status === 'active').length,
-      terminatedWallets: all.filter((w) => w.status === 'terminated' || w.status === 'closed').length,
+      terminatedWallets: all.filter((w) => w.status === 'terminated' || w.status === 'closed')
+        .length,
       totalBalance: all.reduce((sum, w) => sum + w.balance, 0),
       totalCredits: all.reduce((sum, w) => sum + w.totalCredits, 0),
       totalDebits: all.reduce((sum, w) => sum + w.totalDebits, 0),
@@ -397,19 +459,36 @@ export class MemoryCoverWalletTxnRepository implements CoverWalletTxnRepository 
     return serializeSlice(all, input);
   }
 
-  async findByType(type: CoverWalletTxnType, input: PaginationQuery): Promise<Page<CoverWalletTxn>> {
+  async findByType(
+    type: CoverWalletTxnType,
+    input: PaginationQuery,
+  ): Promise<Page<CoverWalletTxn>> {
     const all = [...sharedTxns.values()].filter((t) => t.type === type);
     return serializeSlice(all, input);
   }
 
   async findByReference(referenceId: EntityId, referenceType: string): Promise<CoverWalletTxn[]> {
-    return [...sharedTxns.values()].filter((t) => t.referenceId === referenceId && t.referenceType === referenceType);
+    return [...sharedTxns.values()].filter(
+      (t) => t.referenceId === referenceId && t.referenceType === referenceType,
+    );
   }
 
-  async updateStatus(id: EntityId, status: CoverWalletTxnStatus, failureReason?: string, processedAt?: Date): Promise<CoverWalletTxn | null> {
+  async updateStatus(
+    id: EntityId,
+    status: CoverWalletTxnStatus,
+    failureReason?: string,
+    processedAt?: Date,
+  ): Promise<CoverWalletTxn | null> {
     const txn = sharedTxns.get(id);
     if (!txn) return null;
-    const updated = { ...txn, status, failureReason: failureReason ?? txn.failureReason, processedAt: processedAt?.toISOString() ?? txn.processedAt, version: txn.version + 1, updatedAt: new Date().toISOString() };
+    const updated = {
+      ...txn,
+      status,
+      failureReason: failureReason ?? txn.failureReason,
+      processedAt: processedAt?.toISOString() ?? txn.processedAt,
+      version: txn.version + 1,
+      updatedAt: new Date().toISOString(),
+    };
     sharedTxns.set(id, updated);
     return updated;
   }
@@ -425,10 +504,18 @@ export class MemoryCoverWalletTxnRepository implements CoverWalletTxnRepository 
     const all = [...sharedTxns.values()].filter((t) => t.eventId === eventId);
     const committed = all.filter((t) => t.status === 'committed');
     return {
-      totalCredits: committed.filter((t) => t.type === 'credit').reduce((sum, t) => sum + t.amount, 0),
-      totalDebits: committed.filter((t) => t.type === 'debit').reduce((sum, t) => sum + Math.abs(t.amount), 0),
-      totalRefunds: committed.filter((t) => t.type === 'refund').reduce((sum, t) => sum + t.amount, 0),
-      totalAdjustments: committed.filter((t) => t.type === 'adjustment').reduce((sum, t) => sum + t.amount, 0),
+      totalCredits: committed
+        .filter((t) => t.type === 'credit')
+        .reduce((sum, t) => sum + t.amount, 0),
+      totalDebits: committed
+        .filter((t) => t.type === 'debit')
+        .reduce((sum, t) => sum + Math.abs(t.amount), 0),
+      totalRefunds: committed
+        .filter((t) => t.type === 'refund')
+        .reduce((sum, t) => sum + t.amount, 0),
+      totalAdjustments: committed
+        .filter((t) => t.type === 'adjustment')
+        .reduce((sum, t) => sum + t.amount, 0),
       netFlow: committed.reduce((sum, t) => sum + t.amount, 0),
       txnCount: all.length,
     };
@@ -460,40 +547,71 @@ export class MemoryCoverWalletReconciliationRepository implements CoverWalletRec
     return this.reconciliations.get(id) ?? null;
   }
 
-  async findByEventAndDate(eventId: EntityId, date: string): Promise<CoverWalletReconciliation | null> {
+  async findByEventAndDate(
+    eventId: EntityId,
+    date: string,
+  ): Promise<CoverWalletReconciliation | null> {
     for (const r of this.reconciliations.values()) {
       if (r.eventId === eventId && r.reconciliationDate === date) return r;
     }
     return null;
   }
 
-  async findByEvent(eventId: EntityId, input: PaginationQuery): Promise<Page<CoverWalletReconciliation>> {
+  async findByEvent(
+    eventId: EntityId,
+    input: PaginationQuery,
+  ): Promise<Page<CoverWalletReconciliation>> {
     const all = [...this.reconciliations.values()].filter((r) => r.eventId === eventId);
     return serializeSlice(all, input);
   }
 
-  async findByOrganization(organizationId: EntityId, input: PaginationQuery): Promise<Page<CoverWalletReconciliation>> {
-    const all = [...this.reconciliations.values()].filter((r) => r.organizationId === organizationId);
+  async findByOrganization(
+    organizationId: EntityId,
+    input: PaginationQuery,
+  ): Promise<Page<CoverWalletReconciliation>> {
+    const all = [...this.reconciliations.values()].filter(
+      (r) => r.organizationId === organizationId,
+    );
     return serializeSlice(all, input);
   }
 
   async findPending(organizationId: EntityId): Promise<CoverWalletReconciliation[]> {
-    return [...this.reconciliations.values()].filter((r) => r.organizationId === organizationId && r.status === 'pending');
+    return [...this.reconciliations.values()].filter(
+      (r) => r.organizationId === organizationId && r.status === 'pending',
+    );
   }
 
   async findWithDiscrepancies(organizationId: EntityId): Promise<CoverWalletReconciliation[]> {
-    return [...this.reconciliations.values()].filter((r) => r.organizationId === organizationId && r.discrepancies.length > 0);
+    return [...this.reconciliations.values()].filter(
+      (r) => r.organizationId === organizationId && r.discrepancies.length > 0,
+    );
   }
 
-  async resolve(id: EntityId, resolvedBy: EntityId, notes: string): Promise<CoverWalletReconciliation | null> {
+  async resolve(
+    id: EntityId,
+    resolvedBy: EntityId,
+    notes: string,
+  ): Promise<CoverWalletReconciliation | null> {
     const r = this.reconciliations.get(id);
     if (!r) return null;
-    const updated = { ...r, status: 'resolved' as ReconciliationStatus, resolvedBy, resolvedAt: new Date().toISOString(), resolutionNotes: notes, version: r.version + 1, updatedAt: new Date().toISOString() };
+    const updated = {
+      ...r,
+      status: 'resolved' as ReconciliationStatus,
+      resolvedBy,
+      resolvedAt: new Date().toISOString(),
+      resolutionNotes: notes,
+      version: r.version + 1,
+      updatedAt: new Date().toISOString(),
+    };
     this.reconciliations.set(id, updated);
     return updated;
   }
 
-  async getOrganizationStats(organizationId: EntityId, from: Date, to: Date): Promise<{
+  async getOrganizationStats(
+    organizationId: EntityId,
+    from: Date,
+    to: Date,
+  ): Promise<{
     totalReconciliations: number;
     completedCount: number;
     discrepancyCount: number;
@@ -501,7 +619,10 @@ export class MemoryCoverWalletReconciliationRepository implements CoverWalletRec
     totalDiscrepancyAmount: number;
   }> {
     const all = [...this.reconciliations.values()].filter(
-      (r) => r.organizationId === organizationId && new Date(r.createdAt) >= from && new Date(r.createdAt) <= to,
+      (r) =>
+        r.organizationId === organizationId &&
+        new Date(r.createdAt) >= from &&
+        new Date(r.createdAt) <= to,
     );
     return {
       totalReconciliations: all.length,

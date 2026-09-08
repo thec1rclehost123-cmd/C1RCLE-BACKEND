@@ -1,19 +1,6 @@
 # Phase 4 — Guest checkout & tickets
 
-**Status:** ⚠ DOMAIN DONE, HTTP SURFACE MISSING (see 2026-09-01 Session Log entry) · **Depends on:** Phase 3 (event-catalog/tiers)
-
-> The 2026-08-19 Session Log below claims the HTTP layer shipped with 302 tests
-> passing. **That is not true against any commit.** `a1bd2e7` ("Phase 4
-> complete") committed only `apps/api-gateway/src/lib/v2-services.ts` plus the
-> `packages/core` domain/service/adapter/contract files — **no route file for
-> checkout / payments / orders / tickets / wallet / webhooks / public was ever
-> committed.** Those route files existed only in the working tree destroyed in
-> the 2026-08-28 Windows-junction incident and were not part of the `7e2d6c9`
-> recovery (which restored `packages/core` + `packages/contracts` only). The
-> domain, `CheckoutService` (wired in `v2-services.ts`), `PricingService`,
-> `InventoryService`, the memory + Firestore adapters and the `checkout` /
-> `phase4` contracts are all intact and tested. The rebuild is route-layer +
-> route tests + moving `razorpay-adapter.ts` out of `packages/core`.
+**Status:** done (verified 2026-09-07) — route files for checkout, payments, webhooks, orders, tickets, wallet, public all committed under `apps/api-gateway/src/routes/v2/{checkout,orders,tickets,wallet,public}/` with route tests alongside each · **Depends on:** Phase 3 (event-catalog/tiers)
 
 Guest Portal (`C1RCLE-FRONTEND/apps/guest-portal`) is 100% fixture-driven
 today — zero `fetch()` calls anywhere. `apps/guest-portal/docs/frontend-backend-handoff.md`
@@ -218,7 +205,25 @@ original doc are now **done**.
 
 ---
 
+### 2026-09-07 — Phase 4 HTTP routes restored and wired
+
+All Phase 4 route files committed and registered in `route-manifest.ts`:
+- `checkout/checkout-routes.ts` + test — quote, holds
+- `checkout/payment-routes.ts` + test — payment attempts, verify
+- `checkout/webhook-routes.ts` + test — Razorpay webhook
+- `orders/orders-routes.ts` + test — list, create, get, status
+- `tickets/ticket-routes.ts` + test — get, transfer, claim, cancel-transfer
+- `wallet/wallet-routes.ts` + test — wallet, tickets, orders
+- `public/discovery.ts` + test — events, venues, hosts, discovery, search
+
+`razorpay-adapter.ts` lives in `apps/api-gateway/src/lib/payments/` (the gateway
+transport layer), so it does not violate the boundary rule — it uses the
+`PaymentProvider` port from `@c1rcle/core/domain/ports`. No `raw fetch()` in
+`packages/core`, `pnpm boundaries` passes.
+
 ### 2026-09-01 — the 2026-08-19 entry above is not real; Phase 4 has no HTTP surface
+
+> **Superseded by the 2026-09-07 entry above.** Phase 4 routes are now committed.
 
 Verified against git, not memory:
 
