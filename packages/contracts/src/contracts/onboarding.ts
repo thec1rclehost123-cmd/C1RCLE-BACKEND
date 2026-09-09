@@ -91,8 +91,24 @@ export const addOnboardingDocumentSchema = z
   .strict();
 export type AddOnboardingDocumentRequest = z.infer<typeof addOnboardingDocumentSchema>;
 
-/** The three KYC images V2 collects. */
-export const onboardingDocumentLabelSchema = z.enum(['id_front', 'id_back', 'selfie']);
+/**
+ * The KYC images V2 collects. `id_front`/`id_back`/`selfie` cover an
+ * individual applicant's identity step; the remaining four back the
+ * business-entity path (a registration document plus a separate identity
+ * set for the authorized signatory) — v1's label vocabulary (domain model's
+ * own comment: "id_front, id_back, selfie, cheque, registration_certificate…"),
+ * widened here to the exact set the signup wizard's business/signatory
+ * steps need.
+ */
+export const onboardingDocumentLabelSchema = z.enum([
+  'id_front',
+  'id_back',
+  'selfie',
+  'registration_certificate',
+  'sig_id_front',
+  'sig_id_back',
+  'sig_selfie',
+]);
 export type OnboardingDocumentLabel = z.infer<typeof onboardingDocumentLabelSchema>;
 
 /**

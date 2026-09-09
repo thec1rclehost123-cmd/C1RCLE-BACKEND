@@ -164,12 +164,30 @@ export function addOnboardingDocument(
   };
 }
 
-/** Document labels an applicant must supply before an admin can decide. */
+/** Individual-applicant document labels, kept as the default set. */
 export const REQUIRED_DOCUMENT_LABELS: readonly string[] = ['id_front', 'id_back', 'selfie'];
 
+/** Business-entity applicants supply a registration doc plus a signatory's identity set. */
+export const REQUIRED_DOCUMENT_LABELS_BUSINESS: readonly string[] = [
+  'registration_certificate',
+  'sig_id_front',
+  'sig_id_back',
+  'sig_selfie',
+];
+
+/**
+ * `profile.entityType` is a free-form string (v1 precedent), so this only
+ * recognizes the one value that switches the required set — anything else
+ * (including unset) falls back to the individual set, matching prior
+ * behavior for every request that predates this field mattering.
+ */
 export function missingDocuments(request: OnboardingRequest): string[] {
+  const required =
+    request.profile.entityType === 'business'
+      ? REQUIRED_DOCUMENT_LABELS_BUSINESS
+      : REQUIRED_DOCUMENT_LABELS;
   const present = new Set(request.documents.map((document) => document.label));
-  return REQUIRED_DOCUMENT_LABELS.filter((label) => !present.has(label));
+  return required.filter((label) => !present.has(label));
 }
 
 export function submitOnboardingRequest(request: OnboardingRequest, now?: Date): OnboardingRequest {
