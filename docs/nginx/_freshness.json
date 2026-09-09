@@ -1,0 +1,32 @@
+{
+  "last_verified_commit": "69687f7",
+  "last_verified_date": "2026-09-09",
+  "branch": "staging",
+  "verification_command": "bash docs/nginx/regenerate.sh",
+  "source_files_verified": [
+    "deploy/nginx/nginx.conf",
+    "deploy/nginx/conf.d/api.conf",
+    "deploy/nginx/snippets/api-locations.conf",
+    "deploy/nginx/snippets/proxy-common.conf",
+    "deploy/nginx/snippets/rate-limits.conf",
+    "deploy/nginx/snippets/security-headers.conf",
+    "deploy/nginx/snippets/websocket.conf",
+    "deploy/nginx/templates/staging.conf.template",
+    "deploy/nginx/templates/production.conf.template",
+    "deploy/docker/Dockerfile.nginx",
+    "deploy/docker/nginx-entrypoint.sh",
+    "deploy/nginx/tests/run-local-validation.sh",
+    "apps/api-gateway/src/app.ts",
+    "apps/api-gateway/src/config/index.ts",
+    "apps/api-gateway/src/lib/request-tracing.ts",
+    "apps/api-gateway/src/server.ts",
+    "apps/api-gateway/src/routes/v2/internal/index.ts",
+    "render.yaml",
+    "Dockerfile",
+    "docs/operations/nginx.md",
+    "docs/operations/nginx-implementation-status.md",
+    "docs/operations/deployment.md",
+    "docs/operations/staging-environment-contract.md",
+    "docs/operations/render-staging.md"
+  ]
+}
