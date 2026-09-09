@@ -48,6 +48,8 @@ else
     echo "SKIP representative GET: STAGING_LOAD_GET_PATH not provided"
 fi
 
+# Mutation bodies are confined to deploy/staging/baselines/ (see
+# load-baseline.mjs): point STAGING_LOAD_MUTATION_BODY_FILE at a file there.
 if [ -n "${STAGING_LOAD_MUTATION_PATH:-}" ] && [ -n "${STAGING_LOAD_MUTATION_BODY_FILE:-}" ]; then
     run_scenario "safe mutation" \
         STAGING_LOAD_PATH="$STAGING_LOAD_MUTATION_PATH" \
