@@ -1,6 +1,6 @@
 import { getFirestoreClient } from '@c1rcle/core/infrastructure';
 
-import { getGatewayConfig, GatewayConfigError } from '../../config/index.js';
+import { getGatewayConfig, GatewayConfigError, type GatewayConfig } from '../../config/index.js';
 import { createV2Services } from '../../lib/v2-services.js';
 import authContextPlugin, { buildBetterAuth } from '../../plugins/auth.js';
 
@@ -31,8 +31,18 @@ import publicDiscoveryRoutes from './public/discovery.js';
 import ticketRoutes from './tickets/ticket-routes.js';
 import walletRoutes from './wallet/wallet-routes.js';
 
+import type { GatewayRuntimeState } from '../../lib/runtime-state.js';
 import type { BetterAuthInstance } from '../../plugins/auth.js';
 import type { FastifyInstance } from 'fastify';
+
+export type ReadinessCheck = () => boolean | Promise<boolean>;
+export type ReadinessChecks = Record<string, ReadinessCheck>;
+
+export interface RegisterV2RoutesOptions {
+  config?: GatewayConfig;
+  runtimeState?: GatewayRuntimeState;
+  readinessChecks?: ReadinessChecks;
+}
 
 /**
  * ─── V2 route manifest ─────────────────────────────────────────────────────────
@@ -44,8 +54,11 @@ import type { FastifyInstance } from 'fastify';
  * (see `tickets/ticket-routes.ts`'s doc comment); they 404 by absence, never
  * by a 501 stub (D-006), same as any other genuinely-blocked slice.
  */
-export async function registerV2Routes(app: FastifyInstance): Promise<void> {
-  const gw = getGatewayConfig();
+export async function registerV2Routes(
+  app: FastifyInstance,
+  options: RegisterV2RoutesOptions = {},
+): Promise<void> {
+  const gw = options.config ?? getGatewayConfig();
   const services = createV2Services();
 
   // B10: auth is only real on the firestore driver — see plugins/auth.ts and
@@ -81,7 +94,11 @@ export async function registerV2Routes(app: FastifyInstance): Promise<void> {
   // beyond the events.ts org-scoping already done above.
   await app.register(
     async (v2) => {
-      await internalRoutes(v2);
+      await internalRoutes(v2, {
+        config: gw,
+        runtimeState: options.runtimeState,
+        readinessChecks: options.readinessChecks,
+      });
       await v2.register(async (a) => authRoutes(a, { auth }), { prefix: '/auth' });
       await v2.register(otpRoutes, { prefix: '/auth' });
       // Phase 4 PR1: unauthenticated guest-facing discovery reads — never

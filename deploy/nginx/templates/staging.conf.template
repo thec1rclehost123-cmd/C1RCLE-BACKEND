@@ -1,0 +1,40 @@
+# HTTP-only staging profile. TLS belongs at the deployment boundary and is
+# intentionally not guessed here. Provide every value explicitly at runtime.
+
+upstream c1rcle_fastify {
+    server ${FASTIFY_UPSTREAM};
+    keepalive 32;
+}
+
+map $scheme $c1rcle_forwarded_proto {
+    # This value is deployment-owned. For Render, HTTPS is terminated before
+    # this HTTP listener, so the edge sets it to https without trusting a
+    # client-supplied X-Forwarded-Proto header or inventing Render CIDRs.
+    default ${NGINX_FORWARDED_PROTO};
+}
+
+map $host $c1rcle_host_allowed {
+    default 0;
+    ${NGINX_SERVER_NAME} 1;
+}
+
+geo $c1rcle_readiness_allowed {
+    default 0;
+    ${NGINX_READINESS_ALLOWLIST_LINES}
+}
+
+server {
+    listen ${NGINX_HTTP_PORT};
+    server_name ${NGINX_SERVER_NAME};
+
+    if ($c1rcle_host_allowed = 0) { return 444; }
+
+    client_max_body_size 1m;
+    limit_conn c1rcle_edge_connections 100;
+    limit_req_status 429;
+    limit_conn_status 429;
+
+    include /etc/nginx/snippets/c1rcle/security-headers.conf;
+
+    include /etc/nginx/snippets/c1rcle/api-locations.conf;
+}

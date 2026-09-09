@@ -1,5 +1,7 @@
-import { getGatewayConfig } from '../../../config/index.js';
+import { createGatewayRuntimeState, type GatewayRuntimeState } from '../../../lib/runtime-state.js';
 
+import type { GatewayConfig } from '../../../config/index.js';
+import type { ReadinessChecks } from '../route-manifest.js';
 import type { FastifyInstance } from 'fastify';
 
 /**
@@ -8,26 +10,57 @@ import type { FastifyInstance } from 'fastify';
  * probes, and the frontend's boot health checks.
  */
 
-export async function internalRoutes(app: FastifyInstance): Promise<void> {
-  const version = '0.1.0';
-  const startedAt = new Date().toISOString();
-  // Render injects RENDER_GIT_COMMIT into every deploy. CI polls this value to
-  // confirm the *new* build is the one answering, not the previous instance.
-  const commit = getGatewayConfig().RENDER_GIT_COMMIT ?? null;
+export interface InternalRoutesOptions {
+  config: GatewayConfig;
+  runtimeState?: GatewayRuntimeState;
+  readinessChecks?: ReadinessChecks;
+}
+
+export async function internalRoutes(
+  app: FastifyInstance,
+  options: InternalRoutesOptions,
+): Promise<void> {
+  const runtimeState = options.runtimeState ?? createGatewayRuntimeState();
+  const readinessChecks = options.readinessChecks ?? {};
 
   await app.register(
     async (internal) => {
-      internal.get('/health', async () => ({
-        ok: true,
-        uptimeMs: Date.now() - Date.parse(startedAt),
-      }));
+      internal.get('/health', async (_request, reply) => {
+        void reply.header('cache-control', 'no-store');
+        return {
+          ok: true,
+          uptimeMs: Date.now() - Date.parse(runtimeState.startedAt),
+        };
+      });
 
-      internal.get('/version', async () => ({ version, startedAt, commit }));
+      internal.get('/version', async (_request, reply) => {
+        void reply.header('cache-control', 'no-store');
+        return {
+          version: options.config.APP_VERSION,
+          buildSha: options.config.BUILD_SHA,
+          // Kept for the CI deploy gate which polls Render's native commit metadata.
+          commit: options.config.RENDER_GIT_COMMIT ?? options.config.BUILD_SHA,
+          startedAt: runtimeState.startedAt,
+        };
+      });
 
       internal.get('/readiness', async (_request, reply) => {
-        // Readiness depends on infra (redis, firestore) once wired; for now the
-        // gateway itself is the only dependency and it is serving this request.
-        void reply.send({ ok: true, checks: { gateway: 'up' } });
+        void reply.header('cache-control', 'no-store');
+        const checks: Record<string, 'up' | 'down'> = {
+          configuration: 'up',
+          gateway: runtimeState.isShuttingDown ? 'down' : 'up',
+        };
+
+        for (const [name, check] of Object.entries(readinessChecks)) {
+          try {
+            checks[name] = (await check()) ? 'up' : 'down';
+          } catch {
+            checks[name] = 'down';
+          }
+        }
+
+        const ok = Object.values(checks).every((status) => status === 'up');
+        void reply.code(ok ? 200 : 503).send({ ok, checks });
       });
     },
     { prefix: '/internal' },

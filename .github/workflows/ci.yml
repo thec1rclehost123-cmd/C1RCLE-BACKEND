@@ -336,8 +336,11 @@ jobs:
           docker run -d --name c1rcle-smoke -p 8080:8080 \
             -e NODE_ENV=production \
             -e STORAGE_DRIVER=memory \
+            -e ALLOW_MEMORY_STORAGE_IN_PRODUCTION=true \
             -e BETTER_AUTH_SECRET="$(openssl rand -hex 32)" \
             -e BETTER_AUTH_URL="https://smoke.invalid" \
+            -e PUBLIC_API_URL="https://smoke.invalid" \
+            -e ALLOWED_ORIGINS="https://smoke.invalid" \
             -e EMAIL_OTP_SECRET="$(openssl rand -hex 32)" \
             "c1rcle-backend:${GITHUB_SHA}"
           for i in $(seq 1 45); do
