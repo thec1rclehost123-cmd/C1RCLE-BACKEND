@@ -61,15 +61,28 @@ async function seedPublishedEvent(overrides: {
     public: {
       name: 'Seed Venue',
       slug: venueSlug,
-      description: '',
-      photoUrl: null,
-      address: {},
-      facilities: [],
+      description: 'An authoritative public venue profile.',
+      photoUrl: 'https://images.example.test/venue.webp',
+      address: {
+        street: '1 Test Street',
+        city: 'Pune',
+        state: 'Maharashtra',
+        zip: '411001',
+        country: 'IN',
+        lat: 18.5204,
+        lng: 73.8567,
+      },
+      facilities: ['stage'],
       menu: { sections: [], updatedAt: null },
       capacity: null,
       settings: { showGuestList: false, activityEnabled: false },
     },
-    private: { contactEmail: null, contactPhone: null, socials: {}, internalNotes: '' },
+    private: {
+      contactEmail: 'private@example.test',
+      contactPhone: '+910000000000',
+      socials: { instagram: 'private-handle' },
+      internalNotes: 'never public',
+    },
     version: 1,
     createdAt: now.toISOString(),
     updatedAt: now.toISOString(),
@@ -145,7 +158,20 @@ describe('V2 public/discovery routes', () => {
 
     const response = await server.inject({ method: 'GET', url: '/events/evt_pub_2' });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ id: 'evt_pub_2', slug: 'sky-night-2' });
+    expect(response.json()).toMatchObject({
+      id: 'evt_pub_2',
+      slug: 'sky-night-2',
+      venue: {
+        id: 'ven_pub_2',
+        name: 'Seed Venue',
+        photoUrl: 'https://images.example.test/venue.webp',
+        address: { city: 'Pune', country: 'IN' },
+      },
+      organizer: { id: 'org_pub_2', name: 'Seed Host' },
+    });
+    expect(response.body).not.toContain('private@example.test');
+    expect(response.body).not.toContain('never public');
+    expect(response.body).not.toContain('platformFeePercent');
     await server.close();
   });
 
@@ -162,6 +188,37 @@ describe('V2 public/discovery routes', () => {
     const response = await server.inject({ method: 'GET', url: '/events/sky-night-3' });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ id: 'evt_pub_3', slug: 'sky-night-3' });
+    await server.close();
+  });
+
+  it('uses null relationship projections when a public event has no available venue or organizer', async () => {
+    const server = await buildServer();
+    const now = new Date();
+    await createV2Services().repos().events.save({
+      id: 'evt_orphaned_public',
+      organizationId: 'org_missing_public',
+      venueId: null,
+      slug: 'orphaned-public-event',
+      title: 'Orphaned Public Event',
+      summary: 'Still a valid public event.',
+      description: '',
+      imageUrl: null,
+      startAt: '2026-09-01T18:00:00.000Z',
+      endAt: null,
+      status: 'published',
+      isPublic: true,
+      tags: [],
+      startingPricePaise: 0,
+      isFree: true,
+      cancellationReason: null,
+      version: 1,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+    });
+
+    const response = await server.inject({ method: 'GET', url: '/events/orphaned-public-event' });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ venue: null, organizer: null });
     await server.close();
   });
 
@@ -205,6 +262,37 @@ describe('V2 public/discovery routes', () => {
     await server.close();
   });
 
+  it('event detail fails closed when a published record is explicitly private', async () => {
+    const server = await buildServer();
+    const now = new Date();
+    await createV2Services().repos().events.save({
+      id: 'evt_private_1',
+      organizationId: 'org_private_1',
+      venueId: null,
+      slug: 'private-published-event',
+      title: 'Private Published Event',
+      summary: 'Must never be returned publicly.',
+      description: '',
+      imageUrl: null,
+      startAt: now.toISOString(),
+      endAt: null,
+      status: 'published',
+      isPublic: false,
+      tags: [],
+      startingPricePaise: 0,
+      isFree: true,
+      cancellationReason: null,
+      version: 1,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+    });
+
+    const response = await server.inject({ method: 'GET', url: '/events/private-published-event' });
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toMatchObject({ code: 'not_found', status: 404 });
+    await server.close();
+  });
+
   it('rejects a bad idOrSlug param with 422 + fieldErrors', async () => {
     const server = await buildServer();
     const response = await server.inject({ method: 'GET', url: '/events/not%20valid' });
@@ -225,7 +313,16 @@ describe('V2 public/discovery routes', () => {
 
     const response = await server.inject({ method: 'GET', url: `/venues/${venueSlug}` });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ id: 'ven_pub_4', slug: venueSlug });
+    expect(response.json()).toMatchObject({
+      id: 'ven_pub_4',
+      slug: venueSlug,
+      photoUrl: 'https://images.example.test/venue.webp',
+      address: { street: '1 Test Street', city: 'Pune', country: 'IN' },
+      facilities: ['stage'],
+    });
+    expect(response.body).not.toContain('private@example.test');
+    expect(response.body).not.toContain('contactPhone');
+    expect(response.body).not.toContain('internalNotes');
     await server.close();
   });
 
@@ -234,6 +331,27 @@ describe('V2 public/discovery routes', () => {
     const response = await server.inject({ method: 'GET', url: '/venues/does-not-exist' });
     expect(response.statusCode).toBe(404);
     expect(response.json()).toMatchObject({ code: 'not_found', status: 404 });
+    await server.close();
+  });
+
+  it('venue detail returns 404 for a suspended venue', async () => {
+    const server = await buildServer();
+    const { venueSlug } = await seedPublishedEvent({
+      eventId: 'evt_suspended_venue',
+      slug: 'suspended-venue-event',
+      title: 'Suspended Venue Event',
+      organizationId: 'org_suspended_venue',
+      venueId: 'ven_suspended',
+    });
+    const repos = createV2Services().repos();
+    const venue = await repos.venues.getById('ven_suspended');
+    expect(venue).not.toBeNull();
+    if (venue !== null) {
+      await repos.venues.save({ ...venue, status: 'suspended', version: venue.version + 1 });
+    }
+
+    const response = await server.inject({ method: 'GET', url: `/venues/${venueSlug}` });
+    expect(response.statusCode).toBe(404);
     await server.close();
   });
 
@@ -252,6 +370,10 @@ describe('V2 public/discovery routes', () => {
     const body = response.json();
     expect(body).toMatchObject({ id: 'org_pub_5', slug: organizationSlug });
     expect(body).not.toHaveProperty('role');
+    expect(body).not.toHaveProperty('ownerId');
+    expect(body).not.toHaveProperty('members');
+    expect(body).not.toHaveProperty('settings');
+    expect(body).not.toHaveProperty('platformFeePercent');
     await server.close();
   });
 
@@ -260,6 +382,31 @@ describe('V2 public/discovery routes', () => {
     const response = await server.inject({ method: 'GET', url: '/hosts/does-not-exist' });
     expect(response.statusCode).toBe(404);
     expect(response.json()).toMatchObject({ code: 'not_found', status: 404 });
+    await server.close();
+  });
+
+  it('host profile returns 404 for an archived organization', async () => {
+    const server = await buildServer();
+    const { organizationSlug } = await seedPublishedEvent({
+      eventId: 'evt_archived_host',
+      slug: 'archived-host-event',
+      title: 'Archived Host Event',
+      organizationId: 'org_archived_host',
+      venueId: 'ven_archived_host',
+    });
+    const repos = createV2Services().repos();
+    const organization = await repos.organizations.getById('org_archived_host');
+    expect(organization).not.toBeNull();
+    if (organization !== null) {
+      await repos.organizations.save({
+        ...organization,
+        status: 'archived',
+        version: organization.version + 1,
+      });
+    }
+
+    const response = await server.inject({ method: 'GET', url: `/hosts/${organizationSlug}` });
+    expect(response.statusCode).toBe(404);
     await server.close();
   });
 

@@ -399,6 +399,78 @@ agree(
   false,
 );
 
+/* ── public SEO detail projections ──────────────────────────────────────── */
+const VALID_PUBLIC_VENUE = {
+  id: 'ven_1',
+  organizationId: 'org_1',
+  name: 'Neon Room',
+  slug: 'neon-room',
+  status: 'active',
+  description: 'A public venue description.',
+  capacity: 300,
+  city: 'Mumbai',
+  photoUrl: 'https://images.example.test/venue.webp',
+  address: { city: 'Mumbai', state: 'Maharashtra', country: 'IN' },
+  facilities: ['stage'],
+  version: 1,
+  createdAt: ISO,
+  updatedAt: ISO,
+};
+agree(
+  'venuePublicDetailDtoSchema',
+  'accepts authoritative public profile fields',
+  VALID_PUBLIC_VENUE,
+  true,
+);
+agree(
+  'venuePublicDetailDtoSchema',
+  'rejects a malformed public photo URL',
+  { ...VALID_PUBLIC_VENUE, photoUrl: 'not-a-url' },
+  false,
+);
+
+const VALID_PUBLIC_EVENT_DETAIL = {
+  id: 'evt_1',
+  organizationId: 'org_1',
+  venueId: 'ven_1',
+  slug: 'neon-night',
+  title: 'Neon Night',
+  summary: 'A public event summary.',
+  description: '',
+  imageUrl: 'https://images.example.test/event.webp',
+  startAt: ISO,
+  endAt: null,
+  status: 'published',
+  isPublic: true,
+  tags: ['music'],
+  startingPricePaise: 5000,
+  isFree: false,
+  cancellationReason: null,
+  version: 1,
+  createdAt: ISO,
+  updatedAt: ISO,
+  venue: {
+    id: 'ven_1',
+    name: 'Neon Room',
+    slug: 'neon-room',
+    photoUrl: VALID_PUBLIC_VENUE.photoUrl,
+    address: VALID_PUBLIC_VENUE.address,
+  },
+  organizer: { id: 'org_1', name: 'Neon Host', slug: 'neon-host' },
+};
+agree(
+  'eventPublicDetailDtoSchema',
+  'accepts nullable public venue and organizer projections',
+  VALID_PUBLIC_EVENT_DETAIL,
+  true,
+);
+agree(
+  'eventPublicDetailDtoSchema',
+  'rejects an invalid organizer slug',
+  { ...VALID_PUBLIC_EVENT_DETAIL, organizer: { id: 'org_1', name: 'Host', slug: 'Bad Slug' } },
+  false,
+);
+
 /* ── partner access DTO — the RBAC source ───────────────────────────────── */
 const VALID_PARTNER_ACCESS = {
   organizationId: 'org_1',
