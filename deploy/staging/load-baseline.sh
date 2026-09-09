@@ -12,7 +12,9 @@ if [ -z "${STAGING_BASE_URL:-}" ]; then
     exit 64
 fi
 
-node_script=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/load-baseline.mjs
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+node_script="$script_dir/load-baseline.mjs"
+baselines_dir="$script_dir/baselines"
 
 run_scenario() {
     name="$1"
@@ -48,13 +50,33 @@ else
     echo "SKIP representative GET: STAGING_LOAD_GET_PATH not provided"
 fi
 
-# Mutation bodies are confined to deploy/staging/baselines/ (see
-# load-baseline.mjs): point STAGING_LOAD_MUTATION_BODY_FILE at a file there.
+# Mutation bodies: the wrapper (not the Node runtime) reads the fixture, so
+# load-baseline.mjs has no file-access surface. The fixture must be a plain
+# filename inside deploy/staging/baselines/ (no traversal), a regular file,
+# and 256 KiB or smaller; its contents are handed to Node as STAGING_LOAD_BODY.
 if [ -n "${STAGING_LOAD_MUTATION_PATH:-}" ] && [ -n "${STAGING_LOAD_MUTATION_BODY_FILE:-}" ]; then
+    fixture_name="$STAGING_LOAD_MUTATION_BODY_FILE"
+    case "$fixture_name" in
+        */*|*".."*)
+            echo "STAGING_LOAD_MUTATION_BODY_FILE must be a plain filename in deploy/staging/baselines/" >&2
+            exit 64
+            ;;
+    esac
+    fixture_path="$baselines_dir/$fixture_name"
+    if [ ! -f "$fixture_path" ]; then
+        echo "STAGING_LOAD_MUTATION_BODY_FILE is not a regular file in deploy/staging/baselines/" >&2
+        exit 64
+    fi
+    fixture_bytes=$(wc -c <"$fixture_path")
+    if [ "$fixture_bytes" -gt 262144 ]; then
+        echo "STAGING_LOAD_MUTATION_BODY_FILE exceeds 262144 bytes" >&2
+        exit 64
+    fi
+    mutation_body=$(cat "$fixture_path")
     run_scenario "safe mutation" \
         STAGING_LOAD_PATH="$STAGING_LOAD_MUTATION_PATH" \
         STAGING_LOAD_METHOD="${STAGING_LOAD_MUTATION_METHOD:-PATCH}" \
-        STAGING_LOAD_BODY_FILE="$STAGING_LOAD_MUTATION_BODY_FILE" \
+        STAGING_LOAD_BODY="$mutation_body" \
         STAGING_LOAD_ALLOW_MUTATION=YES \
         STAGING_LOAD_IDEMPOTENCY_KEY="${STAGING_LOAD_IDEMPOTENCY_KEY:-}" \
         STAGING_LOAD_REQUESTS="${STAGING_LOAD_MUTATION_REQUESTS:-10}" \

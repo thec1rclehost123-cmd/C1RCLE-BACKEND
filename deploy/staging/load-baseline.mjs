@@ -1,16 +1,11 @@
-import fs from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
-import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 
-// The load harness must never send a file it has not been explicitly told
-// to use, nor to a host it has not been explicitly pointed at. Both inputs
-// are operator-supplied env vars, but this script is also reviewable as a
-// pipeline: the body is a JSON fixture confined to deploy/staging/baselines/
-// and the request only ever goes to STAGING_BASE_URL over HTTPS.
-const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
-const BASELINES_DIR = path.join(SCRIPT_DIR, 'baselines');
-const MAX_FIXTURE_BYTES = 1 * 1024 * 1024;
+// This harness performs no file-system reads: the request body is supplied
+// inline via STAGING_LOAD_BODY and the request only ever targets
+// STAGING_BASE_URL over HTTPS. The operator-facing wrapper (load-baseline.sh)
+// is the only component that reads a fixture (confined to the baselines dir),
+// so the Node runtime keeps no file-access surface feeding the fetch body.
+const MAX_BODY_CHARS = 256 * 1024;
 
 const baseUrl = (process.env.STAGING_BASE_URL ?? '').replace(/\/$/, '');
 const requestPath = process.env.STAGING_LOAD_PATH ?? '/api/v2/internal/health';
@@ -57,32 +52,17 @@ function resolveRequestUrl(base, requestPath) {
   return resolved.toString();
 }
 
-// Load the mutation body. There are two supported sources:
-//   - STAGING_LOAD_BODY: an inline JSON document
-//   - STAGING_LOAD_BODY_FILE: a JSON fixture inside deploy/staging/baselines/
-// The body is always validated as JSON so the default content-type header
-// matches what is actually sent, and the file variant is size-capped.
-async function loadBody() {
+// Load the mutation body. The body is passed inline by the wrapper as
+// STAGING_LOAD_BODY (which is what reads the fixture), so this script never
+// touches a file. The body is validated as JSON so the default content-type
+// header matches what is actually sent, size-capped, and BOM-tolerant.
+function loadBody() {
   const bodyFromEnv = process.env.STAGING_LOAD_BODY;
-  const bodyFile = process.env.STAGING_LOAD_BODY_FILE;
+  if (bodyFromEnv === undefined) return undefined;
 
-  if (bodyFromEnv === undefined && bodyFile === undefined) return undefined;
-
-  let rawBody;
-  if (bodyFile !== undefined) {
-    const fixturePath = path.resolve(BASELINES_DIR, bodyFile);
-    const relative = path.relative(BASELINES_DIR, fixturePath);
-    if (relative.startsWith('..') || path.isAbsolute(relative)) {
-      throw new Error('STAGING_LOAD_BODY_FILE must live under deploy/staging/baselines/');
-    }
-    const stat = await fs.stat(fixturePath);
-    if (!stat.isFile()) throw new Error('STAGING_LOAD_BODY_FILE is not a file');
-    if (stat.size > MAX_FIXTURE_BYTES) {
-      throw new Error(`STAGING_LOAD_BODY_FILE exceeds ${MAX_FIXTURE_BYTES} bytes`);
-    }
-    rawBody = await fs.readFile(fixturePath, 'utf8');
-  } else {
-    rawBody = bodyFromEnv;
+  let rawBody = bodyFromEnv;
+  if (rawBody.length > MAX_BODY_CHARS) {
+    throw new Error(`STAGING_LOAD_BODY exceeds ${MAX_BODY_CHARS} characters`);
   }
   // Tolerate editors that persist a UTF-8 BOM (Windows PowerShell, Notepad
   // via Save As, etc.) without re-encoding the fixture to UTF-8.
@@ -100,7 +80,7 @@ async function loadBody() {
 }
 
 const url = resolveRequestUrl(baseUrl, requestPath);
-const body = await loadBody();
+const body = loadBody();
 const headers = { accept: 'application/json' };
 if (body !== undefined) headers['content-type'] = 'application/json';
 if (process.env.STAGING_ACCESS_TOKEN)
