@@ -132,12 +132,14 @@ to care about.
 
 | Document | What It Covers |
 |---|---|
+| [`sota-architecture.md`](./sota-architecture.md) | Definitive full-edge blueprint: invariants, target topology, BFF two-URL model, config map |
 | [`architecture.md`](./architecture.md) | Full topology diagrams, container layout, trusted-proxy boundary, BFF relationship |
 | [`reverse-proxy.md`](./reverse-proxy.md) | Header washing, smuggling prevention, request-ID lifecycle, proxy-common.conf |
 | [`load-balancing.md`](./load-balancing.md) | Load balancing status: NOT implemented, dependency tree, what's needed |
 | [`url-hiding-rerouting.md`](./url-hiding-rerouting.md) | URL hiding / path rewriting status: NOT implemented, gap analysis |
 | [`config-reference.md`](./config-reference.md) | Every file in deploy/nginx/ explained with include hierarchy diagram |
-| [`deployment.md`](./deployment.md) | Render two-service topology, env contract, step-by-step rollout |
+| [`deployment.md`](./deployment.md) | Render two-service + full-edge topology, env contract, step-by-step rollout |
+| [`migration-plan.md`](./migration-plan.md) | Step-by-step path from Vercel BFFs to the private full-edge network |
 | [`integration-checklist.md`](./integration-checklist.md) | Backend ↔ frontend concerns, env vars, CSRF, rate-limit tuning, CORS |
 | [`issues-and-gaps.md`](./issues-and-gaps.md) | All open items, blockers, deferred work, known limitations |
 
@@ -164,16 +166,26 @@ deploy/nginx/
 │   └── api.conf                        # Local HTTP profile (dev only)
 ├── snippets/
 │   ├── api-locations.conf              # Health, readiness, version, API routing, edge errors
-│   ├── proxy-common.conf               # Header forwarding + smuggling prevention
+│   ├── proxy-common.conf               # API header forwarding + smuggling prevention
+│   ├── proxy-bff-common.conf           # BFF passthrough (preserves cache, washes identity headers)
 │   ├── rate-limits.conf                # Edge rate limit zones
-│   ├── security-headers.conf           # API-safe security headers
+│   ├── security-headers.conf           # API-safe security headers (incl. no-store)
+│   ├── security-headers-bff.conf       # BFF-safe headers (nosniff + no-referrer only)
+│   ├── tls-common.conf                 # http-context TLS policy (production full-edge)
 │   └── websocket.conf                  # Inactive WebSocket policy
 ├── templates/
-│   ├── staging.conf.template           # HTTP-only staging (envsubst rendered)
-│   └── production.conf.template        # HTTPS production (envsubst rendered)
+│   ├── staging.conf.template           # HTTP-only staging API edge (envsubst rendered)
+│   ├── production.conf.template        # HTTPS production API edge (envsubst rendered)
+│   ├── staging-edge.conf.template      # full-edge staging: API + guest/partner/admin BFF blocks
+│   └── production-edge.conf.template   # full-edge production: HTTPS + HSTS + redirect
 └── tests/
     └── run-local-validation.sh         # Local container validation
 ```
+
+Topology selection: `NGINX_TOPOLOGY=api-only` (default, unchanged behavior) or
+`full-edge` (adds BFF server blocks; see
+[`sota-architecture.md`](./sota-architecture.md) and
+[`deployment.md`](./deployment.md)).
 
 ## For AI Agents Reading This
 

@@ -50,6 +50,121 @@ graph TB
 
 ---
 
+## Full-Edge Topology (SOTA)
+
+`NGINX_TOPOLOGY=full-edge` renders the API edge **plus** one server block per
+BFF from a single template file per profile (`staging-edge` /
+`production-edge`). Use the one-file-per-profile rule deliberately: it keeps a
+single `map $host`/`geo` block valid per variable at http level — duplicate
+`map` blocks are a hard nginx error.
+
+### Full-Edge Container View
+
+```mermaid
+graph TB
+  subgraph Render["Render Platform (Singapore)"]
+    subgraph Edge["Public Web Service: circle-v2-edge-staging"]
+      Nginx["Nginx container<br/>Dockerfile.nginx<br/>listen :$PORT<br/>4 server blocks"]
+    end
+
+    subgraph PrivateNet["Render Private Network"]
+      Fastify["Private Service: circle-v2-backend-staging<br/>:8080"]
+      Guest["Private Service: circle-guest-portal<br/>:3000"]
+      Partner["Private Service: circle-partner-dashboard<br/>:3001"]
+      Admin["Private Service: circle-admin-console<br/>:3002"]
+    end
+
+    RenderTLS["Render TLS termination<br/>(platform-owned certificate)"]
+  end
+
+  Browser[Browser] -->|HTTPS| RenderTLS
+  RenderTLS -->|HTTP :$PORT| Nginx
+  Nginx -->|"HTTP :8080<br/>service DNS"| Fastify
+  Nginx -->|"HTTP :3000<br/>service DNS"| Guest
+  Nginx -->|"HTTP :3001<br/>service DNS"| Partner
+  Nginx -->|"HTTP :3002<br/>service DNS"| Admin
+  Guest -->|"INTERNAL_API_BASE_URL<br/>(private HTTP)"| Fastify
+  Partner -->|"INTERNAL_API_BASE_URL<br/>(private HTTP)"| Fastify
+  Admin -->|"INTERNAL_API_BASE_URL<br/>(private HTTP)"| Fastify
+
+  style Edge fill:#e0f0ff,stroke:#36a
+  style PrivateNet fill:#f0f0ff,stroke:#36a
+```
+
+### Full-Edge Nginx Env Matrix
+
+All variables below are **in addition to** the api-only contract in
+[§ Environment Variables](#environment-variables). `NGINX_SERVER_NAME` remains
+required and doubles as the API server name when `NGINX_API_SERVER_NAME` is
+omitted.
+
+| Variable | api-only | full-edge | Example |
+|---|---|---|---|
+| `NGINX_TOPOLOGY` | default `api-only` | `full-edge` | `full-edge` |
+| `BFF_GUEST_UPSTREAM` | ignored | required | `circle-guest-portal:3000` |
+| `BFF_PARTNER_UPSTREAM` | ignored | required | `circle-partner-dashboard:3001` |
+| `BFF_ADMIN_UPSTREAM` | ignored | required | `circle-admin-console:3002` |
+| `NGINX_GUEST_SERVER_NAME` | ignored | required | `guest.circle1.com` |
+| `NGINX_PARTNER_SERVER_NAME` | ignored | required | `partner.circle1.com` |
+| `NGINX_ADMIN_SERVER_NAME` | ignored | required | `admin.circle1.com` |
+| `NGINX_API_SERVER_NAME` | ignored | optional → `NGINX_SERVER_NAME` | `staging-api.circle1.com` |
+
+> `NGINX_READINESS_ALLOWLIST_LINES` stays required — the geo decision is per
+> request and every rendered profile (api-only and full-edge) enforces it.
+
+### Full-Edge BFF Services
+
+| Setting | guest-portal | partner-dashboard | admin-console |
+|---|---|---|---|
+| **Type** | Private Service | Private Service | Private Service |
+| **Internal listener** | `0.0.0.0:3000` | `0.0.0.0:3001` | `0.0.0.0:3002` |
+| **Public exposure** | via `guest.<domain>` only | via `partner.<domain>` only | via `admin.<domain>` only |
+| **NEXT_PUBLIC_API_BASE_URL** | `https://staging-api.circle1.com` | `https://staging-api.circle1.com` | `https://staging-api.circle1.com` |
+| **INTERNAL_API_BASE_URL** | `http://circle-v2-backend-staging:8080` | `http://circle-v2-backend-staging:8080` | `http://circle-v2-backend-staging:8080` |
+
+The BFF origin served to the browser is the `guest./partner./admin.` name; the
+private Fastify `circle-v2-backend-staging:8080` endpoint is **never** exposed
+to the browser, never inlined into client bundles (`INTERNAL_*` is not
+`NEXT_PUBLIC_*`), and never appears in logs the client can read.
+
+### Validating the Edge Templates
+
+Build the real image and validate both topologies before deploy:
+
+```bash
+docker build -f deploy/docker/Dockerfile.nginx -t c1rcle-nginx:test .
+
+docker run --rm -e NGINX_VALIDATE_ONLY=1 -e NGINX_PROFILE=staging \
+  -e NGINX_TOPOLOGY=api-only \
+  -e FASTIFY_UPSTREAM=circle-v2-backend-staging:8080 \
+  -e NGINX_SERVER_NAME=staging-api.circle1.com \
+  -e NGINX_FORWARDED_PROTO=https \
+  -e NGINX_READINESS_ALLOWLIST_LINES="10.0.0.0/8 1;" \
+  c1rcle-nginx:test
+
+docker run --rm -e NGINX_VALIDATE_ONLY=1 -e NGINX_PROFILE=staging \
+  -e NGINX_TOPOLOGY=full-edge \
+  -e FASTIFY_UPSTREAM=circle-v2-backend-staging:8080 \
+  -e BFF_GUEST_UPSTREAM=circle-guest-portal:3000 \
+  -e BFF_PARTNER_UPSTREAM=circle-partner-dashboard:3001 \
+  -e BFF_ADMIN_UPSTREAM=circle-admin-console:3002 \
+  -e NGINX_GUEST_SERVER_NAME=guest.circle1.com \
+  -e NGINX_PARTNER_SERVER_NAME=partner.circle1.com \
+  -e NGINX_ADMIN_SERVER_NAME=admin.circle1.com \
+  -e NGINX_SERVER_NAME=staging-api.circle1.com \
+  -e NGINX_FORWARDED_PROTO=https \
+  -e NGINX_READINESS_ALLOWLIST_LINES="10.0.0.0/8 1;" \
+  c1rcle-nginx:test
+
+# Repeat the full-edge run with NGINX_PROFILE=production and the TLS vars to
+# validate the production-edge template too.
+```
+
+`NGINX_VALIDATE_ONLY=1` makes the entrypoint run `nginx -t` and exit. A healthy
+run exits 0; a bad template exits 64 with a message.
+
+---
+
 ## Environment Variables
 
 ### Nginx Edge Service

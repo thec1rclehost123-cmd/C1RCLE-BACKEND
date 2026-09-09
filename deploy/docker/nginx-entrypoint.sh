@@ -3,6 +3,9 @@
 set -eu
 
 profile="${NGINX_PROFILE:-staging}"
+# api-only = the classic single-host API edge (default, backward compatible).
+# full-edge = API edge + guest/partner/admin BFF server blocks in one render.
+topology="${NGINX_TOPOLOGY:-api-only}"
 
 # Render Web Services inject PORT at runtime. Keep NGINX_HTTP_PORT available
 # for provider-neutral deployments, but let the platform-owned listener win
@@ -11,6 +14,17 @@ if [ -z "${NGINX_HTTP_PORT:-}" ] && [ -n "${PORT:-}" ]; then
     NGINX_HTTP_PORT="$PORT"
     export NGINX_HTTP_PORT
 fi
+
+validate_upstream() {
+    variable_name="$1"
+    eval "variable_value=\${$variable_name:-}"
+    case "$variable_value" in
+        *://*|*/*|*" "*|*\?*)
+            echo "$variable_name must be a host:port value without a scheme, path, or spaces" >&2
+            exit 64
+            ;;
+    esac
+}
 
 require_value() {
     variable_name="$1"
@@ -40,7 +54,6 @@ case "$profile" in
         require_value NGINX_SERVER_NAME
         require_value NGINX_READINESS_ALLOWLIST_LINES
         require_value NGINX_FORWARDED_PROTO
-        template_path=/etc/nginx/c1rcle-templates/staging.conf.template
         ;;
     production)
         require_value FASTIFY_UPSTREAM
@@ -50,13 +63,40 @@ case "$profile" in
         require_value NGINX_READINESS_ALLOWLIST_LINES
         require_value NGINX_TLS_CERTIFICATE
         require_value NGINX_TLS_CERTIFICATE_KEY
-        template_path=/etc/nginx/c1rcle-templates/production.conf.template
         ;;
     *)
         echo "NGINX_PROFILE must be staging or production" >&2
         exit 64
         ;;
 esac
+
+case "$topology" in
+    api-only)
+        template_suffix=""
+        ;;
+    full-edge)
+        template_suffix="-edge"
+        require_value NGINX_GUEST_SERVER_NAME
+        require_value NGINX_PARTNER_SERVER_NAME
+        require_value NGINX_ADMIN_SERVER_NAME
+        require_value BFF_GUEST_UPSTREAM
+        require_value BFF_PARTNER_UPSTREAM
+        require_value BFF_ADMIN_UPSTREAM
+        ;;
+    *)
+        echo "NGINX_TOPOLOGY must be api-only or full-edge" >&2
+        exit 64
+        ;;
+esac
+
+# The API hostname defaults to the classic NGINX_SERVER_NAME so a full-edge
+# deployment can name the API edge exactly as an api-only deployment did.
+if [ -z "${NGINX_API_SERVER_NAME:-}" ]; then
+    NGINX_API_SERVER_NAME="$NGINX_SERVER_NAME"
+    export NGINX_API_SERVER_NAME
+fi
+
+template_path="/etc/nginx/c1rcle-templates/${profile}${template_suffix}.conf.template"
 
 validate_port NGINX_HTTP_PORT
 case "${NGINX_FORWARDED_PROTO:-}" in
@@ -71,14 +111,14 @@ if [ "$profile" = "production" ]; then
     fi
 fi
 
-case "${FASTIFY_UPSTREAM:-}" in
-    *://*|*/*|*" "*|*\?*)
-        echo "FASTIFY_UPSTREAM must be a host:port value without a scheme, path, or spaces" >&2
-        exit 64
-        ;;
-esac
+validate_upstream FASTIFY_UPSTREAM
+if [ "$topology" = "full-edge" ]; then
+    validate_upstream BFF_GUEST_UPSTREAM
+    validate_upstream BFF_PARTNER_UPSTREAM
+    validate_upstream BFF_ADMIN_UPSTREAM
+fi
 
-envsubst '${FASTIFY_UPSTREAM} ${NGINX_HTTP_PORT} ${NGINX_HTTPS_PORT} ${NGINX_SERVER_NAME} ${NGINX_READINESS_ALLOWLIST_LINES} ${NGINX_FORWARDED_PROTO} ${NGINX_TLS_CERTIFICATE} ${NGINX_TLS_CERTIFICATE_KEY}' \
+envsubst '${FASTIFY_UPSTREAM} ${BFF_GUEST_UPSTREAM} ${BFF_PARTNER_UPSTREAM} ${BFF_ADMIN_UPSTREAM} ${NGINX_HTTP_PORT} ${NGINX_HTTPS_PORT} ${NGINX_SERVER_NAME} ${NGINX_API_SERVER_NAME} ${NGINX_GUEST_SERVER_NAME} ${NGINX_PARTNER_SERVER_NAME} ${NGINX_ADMIN_SERVER_NAME} ${NGINX_READINESS_ALLOWLIST_LINES} ${NGINX_FORWARDED_PROTO} ${NGINX_TLS_CERTIFICATE} ${NGINX_TLS_CERTIFICATE_KEY}' \
     < "$template_path" \
     > /etc/nginx/conf.d/c1rcle-api.conf
 

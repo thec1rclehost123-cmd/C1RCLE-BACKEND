@@ -1,0 +1,165 @@
+# SOTA full-edge staging profile. HTTP-only: TLS belongs at the deployment
+# boundary (Render, GCP load balancer, etc.) and is never guessed here.
+#
+# This profile renders the API edge AND the three BFF server blocks into one
+# conf.d file so a single host-allowlist map covers every upstream. Select it
+# with NGINX_TOPOLOGY=full-edge (default is api-only, unchanged behavior).
+#
+# Hostnames are deployment-owned. Provide every value explicitly at runtime.
+
+upstream c1rcle_fastify {
+    server ${FASTIFY_UPSTREAM};
+    keepalive 32;
+}
+
+upstream c1rcle_bff_guest {
+    server ${BFF_GUEST_UPSTREAM};
+    keepalive 32;
+}
+
+upstream c1rcle_bff_partner {
+    server ${BFF_PARTNER_UPSTREAM};
+    keepalive 32;
+}
+
+upstream c1rcle_bff_admin {
+    server ${BFF_ADMIN_UPSTREAM};
+    keepalive 32;
+}
+
+map $scheme $c1rcle_forwarded_proto {
+    # Deployment-owned: Render/GCP terminate HTTPS before this listener, so
+    # the edge sets it to https without trusting a client-supplied
+    # X-Forwarded-Proto header or inventing proxy CIDRs.
+    default ${NGINX_FORWARDED_PROTO};
+}
+
+map $host $c1rcle_host_allowed {
+    default 0;
+    ${NGINX_API_SERVER_NAME} 1;
+    ${NGINX_GUEST_SERVER_NAME} 1;
+    ${NGINX_PARTNER_SERVER_NAME} 1;
+    ${NGINX_ADMIN_SERVER_NAME} 1;
+}
+
+geo $c1rcle_readiness_allowed {
+    default 0;
+    ${NGINX_READINESS_ALLOWLIST_LINES}
+}
+
+# ── API edge: guest/partner/admin BFFs proxy authorized calls here, and the
+#    mobile/standalone clients call it directly. Rate limits + edge errors
+#    come from the shared api-locations snippet.
+server {
+    listen ${NGINX_HTTP_PORT};
+    server_name ${NGINX_API_SERVER_NAME};
+
+    if ($c1rcle_host_allowed = 0) { return 444; }
+
+    client_max_body_size 1m;
+    limit_conn c1rcle_edge_connections 100;
+    limit_req_status 429;
+    limit_conn_status 429;
+
+    include /etc/nginx/snippets/c1rcle/security-headers.conf;
+    include /etc/nginx/snippets/c1rcle/api-locations.conf;
+}
+
+# ── Guest portal BFF (Next.js) — browse/explore/checkout pages.
+server {
+    listen ${NGINX_HTTP_PORT};
+    server_name ${NGINX_GUEST_SERVER_NAME};
+
+    if ($c1rcle_host_allowed = 0) { return 444; }
+
+    client_max_body_size 1m;
+    limit_conn c1rcle_edge_connections 100;
+    limit_req_status 429;
+    limit_conn_status 429;
+
+    include /etc/nginx/snippets/c1rcle/security-headers-bff.conf;
+
+    location / {
+        include /etc/nginx/snippets/c1rcle/proxy-bff-common.conf;
+        proxy_pass http://c1rcle_bff_guest;
+    }
+
+    error_page 502 = @c1rcle_bff_gateway_error;
+    error_page 504 = @c1rcle_bff_gateway_timeout;
+    location @c1rcle_bff_gateway_error {
+        default_type application/json;
+        add_header X-Request-Id $request_id always;
+        return 502 '{"status":502,"code":"bff_upstream_unavailable","message":"Guest portal unavailable","requestId":"$request_id"}';
+    }
+    location @c1rcle_bff_gateway_timeout {
+        default_type application/json;
+        add_header X-Request-Id $request_id always;
+        return 504 '{"status":504,"code":"bff_upstream_timeout","message":"Guest portal timed out","requestId":"$request_id"}';
+    }
+}
+
+# ── Partner dashboard BFF (Next.js) — venue/promoter/partner auth+onboarding.
+server {
+    listen ${NGINX_HTTP_PORT};
+    server_name ${NGINX_PARTNER_SERVER_NAME};
+
+    if ($c1rcle_host_allowed = 0) { return 444; }
+
+    client_max_body_size 1m;
+    limit_conn c1rcle_edge_connections 100;
+    limit_req_status 429;
+    limit_conn_status 429;
+
+    include /etc/nginx/snippets/c1rcle/security-headers-bff.conf;
+
+    location / {
+        include /etc/nginx/snippets/c1rcle/proxy-bff-common.conf;
+        proxy_pass http://c1rcle_bff_partner;
+    }
+
+    error_page 502 = @c1rcle_bff_partner_gateway_error;
+    error_page 504 = @c1rcle_bff_partner_gateway_timeout;
+    location @c1rcle_bff_partner_gateway_error {
+        default_type application/json;
+        add_header X-Request-Id $request_id always;
+        return 502 '{"status":502,"code":"bff_upstream_unavailable","message":"Partner dashboard unavailable","requestId":"$request_id"}';
+    }
+    location @c1rcle_bff_partner_gateway_timeout {
+        default_type application/json;
+        add_header X-Request-Id $request_id always;
+        return 504 '{"status":504,"code":"bff_upstream_timeout","message":"Partner dashboard timed out","requestId":"$request_id"}';
+    }
+}
+
+# ── Admin console BFF (Next.js) — internal operations app.
+server {
+    listen ${NGINX_HTTP_PORT};
+    server_name ${NGINX_ADMIN_SERVER_NAME};
+
+    if ($c1rcle_host_allowed = 0) { return 444; }
+
+    client_max_body_size 1m;
+    limit_conn c1rcle_edge_connections 100;
+    limit_req_status 429;
+    limit_conn_status 429;
+
+    include /etc/nginx/snippets/c1rcle/security-headers-bff.conf;
+
+    location / {
+        include /etc/nginx/snippets/c1rcle/proxy-bff-common.conf;
+        proxy_pass http://c1rcle_bff_admin;
+    }
+
+    error_page 502 = @c1rcle_bff_admin_gateway_error;
+    error_page 504 = @c1rcle_bff_admin_gateway_timeout;
+    location @c1rcle_bff_admin_gateway_error {
+        default_type application/json;
+        add_header X-Request-Id $request_id always;
+        return 502 '{"status":502,"code":"bff_upstream_unavailable","message":"Admin console unavailable","requestId":"$request_id"}';
+    }
+    location @c1rcle_bff_admin_gateway_timeout {
+        default_type application/json;
+        add_header X-Request-Id $request_id always;
+        return 504 '{"status":504,"code":"bff_upstream_timeout","message":"Admin console timed out","requestId":"$request_id"}';
+    }
+}

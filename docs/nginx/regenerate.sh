@@ -46,9 +46,29 @@ if [[ ! -f "$FRESHNESS_FILE" ]]; then
 fi
 
 # Parse freshness manifest
-PYTHON=$(command -v python3 2>/dev/null || command -v python 2>/dev/null || echo "python")
-LAST_VERIFIED=$($PYTHON -c "import json; print(json.load(open('$FRESHNESS_FILE'))['last_verified_commit'])" 2>/dev/null || echo "unknown")
-LAST_DATE=$($PYTHON -c "import json; print(json.load(open('$FRESHNESS_FILE'))['last_verified_date'])" 2>/dev/null || echo "unknown")
+# Pick a working interpreter. The Microsoft Store python3/python stub lives on
+# PATH on Windows and looks like a real command, but never actually runs; probe
+# each candidate and keep the first one that can execute Python.
+PYTHON=""
+for cand in python python3 py; do
+    if command -v "$cand" >/dev/null 2>&1; then
+        if "$cand" -c "raise SystemExit(0)" >/dev/null 2>&1; then
+            PYTHON="$cand"
+            break
+        fi
+    fi
+done
+PYTHON="${PYTHON:-python}"
+
+# Windows Python does not understand Git-bash POSIX paths (/c/...); convert to
+# a native forward-slash path when cygpath exists (Linux/macOS fall through).
+if command -v cygpath >/dev/null 2>&1; then
+    PY_FRESHNESS_FILE="$(cygpath -m "$FRESHNESS_FILE")"
+else
+    PY_FRESHNESS_FILE="$FRESHNESS_FILE"
+fi
+LAST_VERIFIED=$($PYTHON -c "import json; print(json.load(open('$PY_FRESHNESS_FILE'))['last_verified_commit'])" 2>/dev/null || echo "unknown")
+LAST_DATE=$($PYTHON -c "import json; print(json.load(open('$PY_FRESHNESS_FILE'))['last_verified_date'])" 2>/dev/null || echo "unknown")
 
 echo "Last verified commit: $LAST_VERIFIED ($LAST_DATE)"
 
@@ -57,7 +77,7 @@ if [[ "$LAST_VERIFIED" == "$CURRENT_COMMIT" ]]; then
 else
     warn "Documentation may be stale: verified at $LAST_VERIFIED, current is $CURRENT_COMMIT"
     warn "Run with --update to refresh the manifest"
-    ((errors++))
+    errors=$((errors + 1))
 fi
 
 # ─── Verify source files exist ───────────────────────────────────────────────
@@ -66,10 +86,10 @@ echo "Checking source files..."
 
 SOURCE_FILES=$($PYTHON -c "
 import json
-data = json.load(open('$FRESHNESS_FILE'))
+data = json.load(open('$PY_FRESHNESS_FILE'))
 for f in data.get('source_files_verified', []):
     print(f)
-" 2>/dev/null)
+" 2>/dev/null | tr -d '\r')
 
 missing=0
 while IFS= read -r file; do
@@ -77,7 +97,7 @@ while IFS= read -r file; do
         ok "$file"
     else
         fail "$file — NOT FOUND"
-        ((missing++))
+        missing=$((missing + 1))
     fi
 done <<< "$SOURCE_FILES"
 
@@ -97,16 +117,20 @@ MD_FILES=$(find "$SCRIPT_DIR" -name "*.md" -type f)
 mermaid_count=0
 mermaid_errors=0
 
-for md_file in $MD_FILES; do
+while IFS= read -r md_file; do
+    if [ -z "$md_file" ]; then
+        continue
+    fi
     basename_file=$(basename "$md_file")
 
-    # Count mermaid blocks (use grep -E for portability)
-    opens=$(grep -E '```mermaid' "$md_file" 2>/dev/null | wc -l | tr -d ' ')
+    # Count mermaid blocks. `|| true` keeps pipefail from aborting on files
+    # without a match; quoting "$md_file" preserves paths with spaces.
+    opens=$(grep -E '```mermaid' "$md_file" 2>/dev/null | wc -l | tr -d ' ' || true)
     if [[ "$opens" -gt 0 ]] 2>/dev/null; then
         mermaid_count=$((mermaid_count + opens))
         ok "$basename_file: $opens Mermaid block(s)"
     fi
-done
+done <<< "$MD_FILES"
 
 echo ""
 ok "Total Mermaid blocks found: $mermaid_count"
@@ -120,10 +144,10 @@ if [[ "${1:-}" == "--update" ]]; then
 
     $PYTHON -c "
 import json
-data = json.load(open('$FRESHNESS_FILE'))
+data = json.load(open('$PY_FRESHNESS_FILE'))
 data['last_verified_commit'] = '$CURRENT_COMMIT'
 data['last_verified_date'] = '$TODAY'
-with open('$FRESHNESS_FILE', 'w') as f:
+with open('$PY_FRESHNESS_FILE', 'w') as f:
     json.dump(data, f, indent=2)
     f.write('\n')
 print(f'Updated: commit={data[\"last_verified_commit\"]}, date={data[\"last_verified_date\"]}')
