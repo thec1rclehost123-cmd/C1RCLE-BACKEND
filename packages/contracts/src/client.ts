@@ -364,5 +364,19 @@ export {
 } from './contracts/phase6.js';
 
 // Public / discovery (Phase 4 PR1)
-export type { HostPublicDto, DiscoveryFeedDto } from './contracts/public.js';
-export { hostPublicDtoSchema, discoveryFeedDtoSchema } from './contracts/public.js';
+export type {
+  HostPublicDto,
+  VenuePublicDetailDto,
+  EventVenuePublicDto,
+  EventOrganizerPublicDto,
+  EventPublicDetailDto,
+  DiscoveryFeedDto,
+} from './contracts/public.js';
+export {
+  hostPublicDtoSchema,
+  venuePublicDetailDtoSchema,
+  eventVenuePublicDtoSchema,
+  eventOrganizerPublicDtoSchema,
+  eventPublicDetailDtoSchema,
+  discoveryFeedDtoSchema,
+} from './contracts/public.js';

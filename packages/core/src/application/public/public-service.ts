@@ -18,6 +18,12 @@ import type {
 } from '../../domain/ports/repositories.js';
 import type { ServiceDeps } from '../context.js';
 
+export interface PublicEventDetail {
+  event: Event;
+  venue: Venue | null;
+  organizer: Organization | null;
+}
+
 /**
  * ─── Public / discovery reads (Phase 4 §6) ───────────────────────────────────
  * Unauthenticated guest-facing reads: no `ActorContext`, no writes, no
@@ -61,13 +67,23 @@ export class PublicService {
    * `event_not_found` as a truly missing id, so this is never an existence
    * oracle for unpublished work.
    */
-  async getEvent(idOrSlug: EntityId): Promise<Event> {
+  async getEvent(idOrSlug: EntityId): Promise<PublicEventDetail> {
     const byId = await this.events.getById(idOrSlug);
     const event = byId ?? (await this.events.getBySlug(idOrSlug));
-    if (!event || !isPublicStatus(event.status)) {
+    if (!event || !event.isPublic || !isPublicStatus(event.status)) {
       throw new EventNotFoundError(idOrSlug);
     }
-    return event;
+
+    const [venue, organizer] = await Promise.all([
+      event.venueId === null ? null : this.venues.getById(event.venueId),
+      this.organizations.getById(event.organizationId),
+    ]);
+
+    return {
+      event,
+      venue: venue?.status === 'active' ? venue : null,
+      organizer: organizer?.status === 'active' ? organizer : null,
+    };
   }
 
   /** Venue public profile by slug. A suspended venue is not discoverable. */
