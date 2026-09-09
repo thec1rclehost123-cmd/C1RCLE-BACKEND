@@ -12,6 +12,17 @@ COPY deploy/nginx/templates/staging.conf.template /etc/nginx/c1rcle-templates/st
 COPY deploy/nginx/templates/production.conf.template /etc/nginx/c1rcle-templates/production.conf.template
 COPY deploy/docker/nginx-entrypoint.sh /usr/local/bin/c1rcle-nginx-entrypoint
 
-RUN chmod 0755 /usr/local/bin/c1rcle-nginx-entrypoint
+RUN chmod 0755 /usr/local/bin/c1rcle-nginx-entrypoint \
+    # The entrypoint renders /etc/nginx/conf.d/c1rcle-api.conf from a template
+    # at container start, and nginx itself writes access/error logs — all as
+    # the non-root `nginx` user the base image already ships, since the
+    # master process here binds a non-privileged port (Render's assigned
+    # PORT), so it never needs root the way a :80/:443 bind would.
+    && chown -R nginx:nginx /etc/nginx /var/log/nginx /var/cache/nginx
+
+USER nginx
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget -qO- "http://127.0.0.1:${NGINX_HTTP_PORT:-8080}/api/v2/internal/health" || exit 1
 
 ENTRYPOINT ["/usr/local/bin/c1rcle-nginx-entrypoint"]

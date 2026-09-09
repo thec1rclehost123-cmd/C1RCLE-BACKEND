@@ -116,6 +116,17 @@ const envSchema = z.object({
   /** Email OTP delivery and at-rest OTP HMAC key. */
   RESEND_API_KEY: z.string().min(1).optional(),
   EMAIL_OTP_SECRET: z.string().min(1).optional(),
+  /**
+   * Escape hatch for CI's Docker smoke-boot only — it exercises the
+   * production config guards (NODE_ENV=production) without real Firestore
+   * credentials, by design (see ci.yml's "Smoke-boot the container" step).
+   * `render.yaml` never sets this, so the real deploy still fails closed on
+   * STORAGE_DRIVER=memory in production.
+   */
+  ALLOW_MEMORY_STORAGE_IN_PRODUCTION: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
 });
 
 /** Fail closed: STORAGE_DRIVER=firestore requires real credentials, never a silent memory fallback. */
@@ -175,7 +186,7 @@ const validatedEnvSchema = envSchema.superRefine((value, ctx) => {
 
   if (value.NODE_ENV !== 'production') return;
 
-  if (value.STORAGE_DRIVER !== 'firestore') {
+  if (value.STORAGE_DRIVER !== 'firestore' && !value.ALLOW_MEMORY_STORAGE_IN_PRODUCTION) {
     ctx.addIssue({
       code: 'custom',
       path: ['STORAGE_DRIVER'],
