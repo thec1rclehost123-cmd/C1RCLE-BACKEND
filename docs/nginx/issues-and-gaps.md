@@ -42,9 +42,14 @@ flowchart TD
 
 #### 1. Live Render is Single-Service
 
-**Status:** Not deployed
-**Impact:** Nginx exists in codebase and is locally validated, but the live
-service at `circle-v2-backend.onrender.com` is still Fastify-only.
+**Status:** Not deployed. **Deliberately deferred** — the real two-service
+topology needs a Render Private Service, which is a paid tier; the team does
+not have that plan provisioned yet. See
+[`sidecar-deployment.md`](./sidecar-deployment.md) for the interim plan.
+**Impact:** Nginx exists in codebase and is locally validated (both the
+two-service topology AND the sidecar topology, as of 2026-09-10), but the
+live service at `circle-v2-backend.onrender.com` is still Fastify-only, no
+nginx at all yet.
 
 ```mermaid
 graph LR
@@ -52,21 +57,34 @@ graph LR
     Browser1[Browser] -->|HTTPS| Fastify1[Fastify only]
   end
 
-  subgraph Target["Target (not live)"]
+  subgraph Interim["Interim plan (budget tier, not yet deployed)"]
+    Browser3[Browser] -->|HTTPS| Nginx3["Nginx (sidecar,<br/>same container)"]
+    Nginx3 -->|loopback| Fastify3[Fastify]
+  end
+
+  subgraph Target["Target (needs paid Render plan)"]
     Browser2[Browser] -->|HTTPS| Nginx2[Nginx]
-    Nginx2 --> Fastify2[Fastify]
+    Nginx2 --> Fastify2[Fastify, Private Service]
   end
 
   style Current fill:#fff0e0,stroke:#c90
+  style Interim fill:#fff0e0,stroke:#c90
   style Target fill:#e0ffe0,stroke:#3a3
 ```
 
-**What's needed:**
+**What's needed (interim, budget tier — do this next):**
+- Create ONE Render Web Service from `deploy/docker/Dockerfile.sidecar`
+- Configure env vars per [`sidecar-deployment.md`](./sidecar-deployment.md)
+- Point the frontend's `NEXT_PUBLIC_API_BASE_URL` at it
+
+**What's needed (real topology — do this once a paid plan is available):**
 - Create `circle-v2-edge-staging` Web Service on Render
 - Create `circle-v2-backend-staging` Private Service on Render
 - Configure env vars per [`deployment.md`](./deployment.md)
 - Both services on same commit
 - Verify with preflight + smoke + security scripts
+- Retire the sidecar service per
+  [`sidecar-deployment.md`](./sidecar-deployment.md)'s switch procedure
 
 #### 2. PR #25 Pending
 

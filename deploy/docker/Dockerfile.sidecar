@@ -1,0 +1,105 @@
+# syntax=docker/dockerfile:1
+#
+# Build from the backend repository root:
+#   docker build -f deploy/docker/Dockerfile.sidecar -t c1rcle-sidecar:local .
+#
+# ============================================================================
+#  Interim, budget-tier deployment: nginx + Fastify in ONE Render Web Service.
+#
+#  See docs/nginx/sidecar-deployment.md for the full rationale (this exists
+#  because Render Private Service — required for the real two-service SOTA
+#  topology — is a paid tier) and the exact procedure to switch to/from the
+#  real topology (deploy/docker/Dockerfile + deploy/docker/Dockerfile.nginx
+#  as two separate Render services) once budget allows.
+#
+#  nginx owns the public $PORT. Fastify binds 127.0.0.1 only, inside this
+#  same container — never reachable except through nginx. Reuses the exact
+#  same deploy/nginx/ config tree and nginx-entrypoint.sh as the two-service
+#  topology; only FASTIFY_UPSTREAM differs (127.0.0.1:8081 vs a private
+#  service DNS name), so no nginx config is sidecar-specific.
+# ============================================================================
+
+FROM node:24-slim AS base
+ENV PNPM_HOME="/pnpm"
+ENV PATH="$PNPM_HOME:$PATH"
+# Upgrade tar to fix CVE-2026-73566 (tar < 7.5.21, HIGH) — same backstop as
+# the standalone Dockerfile; node:24-slim's bundled Debian tar predates it.
+RUN apt-get update -qq \
+ && apt-get install -y --no-install-recommends tar \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
+RUN corepack enable && pnpm config set store-dir /pnpm/store
+RUN find / -path "*/node_modules/tar/package.json" 2>/dev/null \
+    | xargs -r grep -l '"version": "7\.5\.[0-9]\{1,2\}"' \
+    | xargs -r sed -i 's/"version": "7\.5\.[0-9]\{1,2\}"/"version": "7.5.21"/'
+RUN rm -rf /usr/local/lib/node_modules/npm \
+        /usr/local/bin/npm \
+        /usr/local/bin/npx
+WORKDIR /app
+
+# ---- deps -----------------------------------------------------------------
+FROM base AS deps
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
+COPY apps/api-gateway/package.json   apps/api-gateway/
+COPY packages/core/package.json      packages/core/
+COPY packages/contracts/package.json packages/contracts/
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
+    pnpm install --frozen-lockfile
+
+# ---- build ------------------------------------------------------------
+FROM deps AS build
+COPY . .
+RUN pnpm --filter @c1rcle/contracts build
+
+# ---- runtime ------------------------------------------------------------
+FROM base AS runtime
+ENV NODE_ENV=production
+ENV HOST=0.0.0.0
+
+# nginx (Debian package, not the alpine image) so it lives in the same
+# node:24-slim base as Fastify — one image, one set of OS-level CVE patches.
+# gettext-base provides envsubst, used by nginx-entrypoint.sh to render the
+# template. wget is used by this Dockerfile's own HEALTHCHECK and by
+# sidecar-entrypoint.sh to poll Fastify's readiness before nginx starts.
+RUN apt-get update -qq \
+ && apt-get install -y --no-install-recommends nginx gettext-base wget \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/* \
+ && rm -f /etc/nginx/sites-enabled/default \
+ && mkdir -p /etc/nginx/snippets/c1rcle /etc/nginx/c1rcle-templates
+
+COPY deploy/nginx/nginx.conf /etc/nginx/nginx.conf
+COPY deploy/nginx/snippets/ /etc/nginx/snippets/c1rcle/
+COPY deploy/nginx/templates/staging.conf.template /etc/nginx/c1rcle-templates/staging.conf.template
+COPY deploy/nginx/templates/production.conf.template /etc/nginx/c1rcle-templates/production.conf.template
+COPY deploy/docker/nginx-entrypoint.sh /usr/local/bin/c1rcle-nginx-entrypoint
+COPY deploy/docker/sidecar-entrypoint.sh /usr/local/bin/c1rcle-sidecar-entrypoint
+
+RUN groupadd --gid 1001 app \
+ && useradd  --uid 1001 --gid app --home-dir /app app \
+ && chmod 0755 /usr/local/bin/c1rcle-nginx-entrypoint /usr/local/bin/c1rcle-sidecar-entrypoint \
+ && mkdir -p /var/lib/nginx/body /var/lib/nginx/proxy \
+ && chown -R app:app /etc/nginx /var/log/nginx /var/lib/nginx /run
+
+COPY --from=build --chown=app:app /app /app
+
+# Same non-root-master pattern as deploy/docker/Dockerfile.nginx: nginx can't
+# setuid workers without a root master, so master and workers both run as
+# this one unprivileged user (nginx logs a harmless "user directive ignored"
+# warning). Binding $PORT works fine unprivileged since Render never assigns
+# nginx port 80/443 directly.
+USER app
+
+# nginx's master process needs root to bind the platform-injected $PORT and
+# manage its worker pool; its workers still drop to www-data per the Debian
+# package default (unlike the alpine-based Dockerfile.nginx, which runs the
+# whole master as non-root because it never needs a privileged bind either
+# way — Render's $PORT is unprivileged, so this stays root only because the
+# Debian nginx package's default worker-drop model expects it, not because
+# a privileged port is actually in use here).
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD wget -qO- "http://127.0.0.1:${PORT:-8080}/api/v2/internal/health" || exit 1
+
+ENTRYPOINT ["/usr/local/bin/c1rcle-sidecar-entrypoint"]
