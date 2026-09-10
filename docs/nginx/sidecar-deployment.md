@@ -2,7 +2,7 @@
 
 > **Status:** Implemented, locally verified, and deployed to Render from
 > `staging` as the interim API edge.
-> **Last verified:** `ee9fad9` — 2026-09-10 — run `bash docs/nginx/regenerate.sh` to refresh
+> **Last verified:** `a908dbe` — 2026-09-10 — run `bash docs/nginx/regenerate.sh` to refresh
 >
 > Companion docs: [`deployment.md`](./deployment.md) (the real two-service SOTA
 > topology this is an interim substitute for), [`sota-architecture.md`](./sota-architecture.md)

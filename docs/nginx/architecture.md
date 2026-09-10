@@ -1,6 +1,6 @@
 # Architecture
 
-> **Last verified:** `69687f7` — 2026-09-09 — run `bash docs/nginx/regenerate.sh` to refresh
+> **Last verified:** `a908dbe` — 2026-09-10 — run `bash docs/nginx/regenerate.sh` to refresh
 
 This document describes the full nginx architecture: where it sits, what it
 touches, and what it deliberately does not touch.

@@ -1,6 +1,6 @@
 # C1RCLE Nginx Edge Documentation
 
-> **Last verified:** `ee9fad9` — 2026-09-10 — run `bash docs/nginx/regenerate.sh` to refresh
+> **Last verified:** `a908dbe` — 2026-09-10 — run `bash docs/nginx/regenerate.sh` to refresh
 
 Nginx is the edge reverse-proxy boundary sitting in front of the Fastify API
 gateway. It is **not** a second application layer — it does not make auth

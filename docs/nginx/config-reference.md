@@ -1,6 +1,6 @@
 # Configuration Reference
 
-> **Last verified:** `69687f7` — 2026-09-09 — run `bash docs/nginx/regenerate.sh` to refresh
+> **Last verified:** `a908dbe` — 2026-09-10 — run `bash docs/nginx/regenerate.sh` to refresh
 
 This document maps every file under `deploy/nginx/` to its purpose, explains
 the include hierarchy, and documents the entrypoint rendering pipeline.

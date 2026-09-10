@@ -1,6 +1,6 @@
 # URL Hiding and Rerouting
 
-> **Last verified:** `69687f7` — 2026-09-09 — run `bash docs/nginx/regenerate.sh` to refresh
+> **Last verified:** `a908dbe` — 2026-09-10 — run `bash docs/nginx/regenerate.sh` to refresh
 
 ## Status: NOT Implemented
 

@@ -1,6 +1,6 @@
 # Issues and Gaps
 
-> **Last verified:** `ee9fad9` — 2026-09-10 — run `bash docs/nginx/regenerate.sh` to refresh
+> **Last verified:** `a908dbe` — 2026-09-10 — run `bash docs/nginx/regenerate.sh` to refresh
 
 This document tracks all open items, blockers, deferred work, and known
 limitations related to the nginx edge layer.
