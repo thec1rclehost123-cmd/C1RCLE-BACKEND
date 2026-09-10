@@ -158,6 +158,32 @@ case "$health_response" in
         ;;
 esac
 
+echo "Checking structured catch-all behavior..."
+catch_all_status=$(curl -sS -D "$temp_dir/catch-all.headers" \
+    -o "$temp_dir/catch-all.response" -w '%{http_code}' \
+    http://localhost:18081/)
+catch_all_request_id=$(sed -n 's/^X-Request-Id: *//Ip' \
+    "$temp_dir/catch-all.headers" | tr -d '\r' | head -n 1)
+
+if [ "$catch_all_status" != "404" ] || [ -z "$catch_all_request_id" ]; then
+    echo "Expected the Nginx catch-all to return 404 with X-Request-Id" >&2
+    exit 1
+fi
+
+case "$(sed 's/[[:space:]]//g' "$temp_dir/catch-all.response")" in
+    *'"code":"edge_not_found"'*"$catch_all_request_id"*) : ;;
+    *)
+        echo "Expected a structured catch-all response with request correlation" >&2
+        cat "$temp_dir/catch-all.response" >&2
+        exit 1
+        ;;
+esac
+
+if grep -qi 'welcome to nginx' "$temp_dir/catch-all.response"; then
+    echo "The packaged Nginx welcome page must never be served" >&2
+    exit 1
+fi
+
 echo "Checking access-log query redaction and no-store headers..."
 query_sentinel="query-log-sentinel-$$"
 curl -fsS -D "$temp_dir/query.headers" -o /dev/null \

@@ -188,7 +188,8 @@ forwarded headers, blanks spoofable headers, and configures proxy behavior.
 **Path:** `deploy/nginx/snippets/api-locations.conf`
 
 **Purpose:** Defines all location blocks (health, readiness, version, auth,
-general API) and the structured error page responses.
+general API), the non-API structured 404 catch-all, and the structured error
+page responses.
 
 **See:** [`architecture.md`](./architecture.md) for the location matching order.
 

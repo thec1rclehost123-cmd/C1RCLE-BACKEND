@@ -1,6 +1,6 @@
 # C1RCLE Nginx Edge Documentation
 
-> **Last verified:** `69687f7` — 2026-09-09 — run `bash docs/nginx/regenerate.sh` to refresh
+> **Last verified:** `ee9fad9` — 2026-09-10 — run `bash docs/nginx/regenerate.sh` to refresh
 
 Nginx is the edge reverse-proxy boundary sitting in front of the Fastify API
 gateway. It is **not** a second application layer — it does not make auth
@@ -40,8 +40,8 @@ graph LR
     O[Auth rate limit zone<br/>5r/s burst=10]
   end
 
-  subgraph NotDeployed["🚫 Not on Render yet"]
-    P[Two-service topology<br/>Nginx + Fastify]
+  subgraph NotDeployed["🚫 Target not on Render yet"]
+    P[Two-service topology<br/>separate Nginx + Fastify]
     Q[Render private network<br/>service DNS]
     R[Readiness allowlist<br/>real CIDRs]
   end
@@ -59,10 +59,11 @@ graph LR
 
 ```mermaid
 graph TD
-  subgraph Current["Current Live Render (single-service, no nginx)"]
+  subgraph Current["Current Live Render (interim sidecar)"]
     direction LR
     Browser1[Browser / Client] -->|HTTPS| RenderEdge1[Render TLS termination]
-    RenderEdge1 -->|HTTP :8080| Fastify1[Fastify single container]
+    RenderEdge1 -->|HTTP :PORT| Nginx1[Nginx public listener]
+    Nginx1 -->|loopback| Fastify1[Fastify same container]
     Fastify1 --> Firebase1[Firebase / Firestore]
   end
 

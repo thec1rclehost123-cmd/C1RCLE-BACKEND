@@ -1,6 +1,6 @@
 # Issues and Gaps
 
-> **Last verified:** `69687f7` — 2026-09-09 — run `bash docs/nginx/regenerate.sh` to refresh
+> **Last verified:** `ee9fad9` — 2026-09-10 — run `bash docs/nginx/regenerate.sh` to refresh
 
 This document tracks all open items, blockers, deferred work, and known
 limitations related to the nginx edge layer.
@@ -12,10 +12,10 @@ limitations related to the nginx edge layer.
 ```mermaid
 flowchart TD
   subgraph Blockers["🔴 Blockers — must be resolved before production"]
-    B1["Live Render is single-service<br/>Fastify only, no Nginx"]
-    B2["PR #25 pending<br/>SEO contracts need merge"]
-    B3["TRUSTED_PROXY_CIDRS<br/>not configured for Render"]
-    B4["No staging Nginx service<br/>created on Render"]
+    B1["Frontend production CORS origin<br/>not yet returned by live API"]
+    B2["Paid private service unavailable<br/>sidecar remains interim"]
+    B3["No independent scaling<br/>Nginx + Fastify share resources"]
+    B4["No production load baseline<br/>captured after sidecar deploy"]
   end
 
   subgraph Warnings["🟡 Warnings — should be resolved"]
@@ -40,24 +40,23 @@ flowchart TD
 
 ### 🔴 Blockers
 
-#### 1. Live Render is Single-Service
+#### 1. Interim Sidecar Is Live; Two-Service Target Is Deferred
 
-**Status:** Not deployed. **Deliberately deferred** — the real two-service
-topology needs a Render Private Service, which is a paid tier; the team does
-not have that plan provisioned yet. See
-[`sidecar-deployment.md`](./sidecar-deployment.md) for the interim plan.
-**Impact:** Nginx exists in codebase and is locally validated (both the
-two-service topology AND the sidecar topology, as of 2026-09-10), but the
-live service at `circle-v2-backend.onrender.com` is still Fastify-only, no
-nginx at all yet.
+**Status:** The same-container Nginx + Fastify sidecar is deployed on Render
+from `staging` commit `ee9fad9`. The real two-service topology remains
+**deliberately deferred** because it needs a paid Render Private Service.
+See [`sidecar-deployment.md`](./sidecar-deployment.md).
+**Impact:** Requests now pass through Nginx and Fastify is loopback-only, but
+the two processes cannot scale, restart, or receive resources independently.
 
 ```mermaid
 graph LR
-  subgraph Current["Current (live)"]
-    Browser1[Browser] -->|HTTPS| Fastify1[Fastify only]
+  subgraph Current["Current (live interim)"]
+    Browser1[Browser] -->|HTTPS| Nginx1[Nginx sidecar]
+    Nginx1 -->|loopback| Fastify1[Fastify]
   end
 
-  subgraph Interim["Interim plan (budget tier, not yet deployed)"]
+  subgraph Interim["Interim architecture (deployed)"]
     Browser3[Browser] -->|HTTPS| Nginx3["Nginx (sidecar,<br/>same container)"]
     Nginx3 -->|loopback| Fastify3[Fastify]
   end
@@ -72,10 +71,10 @@ graph LR
   style Target fill:#e0ffe0,stroke:#3a3
 ```
 
-**What's needed (interim, budget tier — do this next):**
-- Create ONE Render Web Service from `deploy/docker/Dockerfile.sidecar`
-- Configure env vars per [`sidecar-deployment.md`](./sidecar-deployment.md)
-- Point the frontend's `NEXT_PUBLIC_API_BASE_URL` at it
+**What's needed while the interim is live:**
+- Keep the frontend API base URL pointed at the sidecar service
+- Add every production frontend origin to `ALLOWED_ORIGINS`
+- Capture smoke, security, and load baselines after each deployment
 
 **What's needed (real topology — do this once a paid plan is available):**
 - Create `circle-v2-edge-staging` Web Service on Render
@@ -86,32 +85,30 @@ graph LR
 - Retire the sidecar service per
   [`sidecar-deployment.md`](./sidecar-deployment.md)'s switch procedure
 
-#### 2. PR #25 Pending
+#### 2. SEO Contract Merge
 
-**Status:** Created, awaiting CI + review
-**Impact:** SEO public data contracts from `codex/most-updated-unified` not
-yet merged to staging.
+**Status:** Resolved — the SEO public data contracts are included in staging
+and in live build `ee9fad9`.
 
 **What's needed:**
 - CI checks pass (CI OK + Security OK)
 - Code review + merge
 - Frontend contracts already synced (commit `12715e9` on `codex/partner-v3-rebuild`)
 
-#### 3. TRUSTED_PROXY_CIDRS Not Configured
+#### 3. Trusted Proxy Configuration
 
-**Status:** Not set for Render deployment
-**Impact:** Fastify will not trust Nginx's forwarded headers. X-Forwarded-For
-and X-Request-Id will be ignored.
+**Status:** Configured for the sidecar loopback boundary. Live responses
+preserve the edge-generated `X-Request-Id`.
 
 **What's needed:**
 - Determine Nginx container's private IP on Render
 - Set `TRUSTED_PROXY_CIDRS` to that CIDR in Fastify env
 - Verify `trustProxy` check passes (check Fastify logs for trust errors)
 
-#### 4. No Staging Nginx Service on Render
+#### 4. No Separate Staging Nginx Service on Render
 
-**Status:** Not created
-**Impact:** Cannot test two-service topology on staging
+**Status:** Expected while the interim sidecar is used. No standalone public
+Nginx service or private Fastify service exists yet.
 
 **What's needed:**
 - Create the service in Render dashboard

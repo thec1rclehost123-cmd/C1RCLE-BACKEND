@@ -108,17 +108,18 @@ flowchart TD
   L4 -->|"✅ Match"| AuthRate["Auth rate limit zone<br/>5r/s, burst=10"]
   L4 -->|No| L5{"location ^~ /api/v2/ ?"}
   L5 -->|"✅ Match"| GeneralRate["General rate limit zone<br/>10r/s, burst=20"]
-  L5 -->|No| NotFound["Nginx default 404"]
+  L5 -->|No| NotFound["Structured edge 404"]
 ```
 
 **Priority order:**
 1. Exact match (`= /api/v2/internal/health`) — highest priority
 2. Prefix with `^~` (`^~ /api/v2/auth/`) — no regex check after match
 3. Prefix with `^~` (`^~ /api/v2/`) — catches remaining API routes
-4. Default — Nginx 404
+4. Catch-all `location /` — structured Nginx JSON 404
 
-**No catch-all route exists.** Requests not matching `/api/v2/*` get Nginx's
-default 404 response (not the structured JSON error format).
+**A catch-all route exists.** Requests not matching `/api/v2/*` receive a
+structured `edge_not_found` JSON response with an edge-generated request ID.
+It does not rewrite or hide API paths.
 
 ---
 
