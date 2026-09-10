@@ -81,7 +81,7 @@ docker run --rm \
     --env FASTIFY_UPSTREAM=host.docker.internal:8080 \
     --env PORT=8081 \
     --env NGINX_SERVER_NAME=localhost \
-    --env 'NGINX_READINESS_ALLOWLIST_LINES=127.0.0.1/32 1;' \
+    --env NGINX_READINESS_TOKEN=local-validation-readiness-token \
     --env NGINX_FORWARDED_PROTO=http \
     --env NGINX_VALIDATE_ONLY=1 \
     --add-host host.docker.internal:host-gateway \
@@ -99,7 +99,7 @@ docker run --rm \
     --env NGINX_HTTP_PORT=80 \
     --env NGINX_HTTPS_PORT=443 \
     --env NGINX_SERVER_NAME=localhost.test \
-    --env 'NGINX_READINESS_ALLOWLIST_LINES=127.0.0.1/32 1;' \
+    --env NGINX_READINESS_TOKEN=local-validation-readiness-token \
     --env NGINX_TLS_CERTIFICATE=/tmp/c1rcle-test.crt \
     --env NGINX_TLS_CERTIFICATE_KEY=/tmp/c1rcle-test.key \
     --env NGINX_VALIDATE_ONLY=1 \
@@ -117,7 +117,7 @@ docker run --detach --rm \
     --env FASTIFY_UPSTREAM=host.docker.internal:8080 \
     --env PORT=8081 \
     --env NGINX_SERVER_NAME=localhost \
-    --env 'NGINX_READINESS_ALLOWLIST_LINES=127.0.0.1/32 1;' \
+    --env NGINX_READINESS_TOKEN=local-validation-readiness-token \
     --env NGINX_FORWARDED_PROTO=http \
     "$image_name" >/dev/null
 
@@ -157,6 +157,23 @@ case "$health_response" in
         exit 1
         ;;
 esac
+
+echo "Checking readiness token gate..."
+readiness_no_token=$(curl -sS -o /dev/null -w '%{http_code}' http://localhost:18081/api/v2/internal/readiness)
+if [ "$readiness_no_token" != "404" ]; then
+    echo "Expected readiness without a token to return 404, got $readiness_no_token" >&2
+    exit 1
+fi
+readiness_wrong_token=$(curl -sS -o /dev/null -w '%{http_code}' -H 'X-Readiness-Token: wrong-guess' http://localhost:18081/api/v2/internal/readiness)
+if [ "$readiness_wrong_token" != "404" ]; then
+    echo "Expected readiness with a wrong token to return 404, got $readiness_wrong_token" >&2
+    exit 1
+fi
+readiness_right_token=$(curl -sS -o /dev/null -w '%{http_code}' -H 'X-Readiness-Token: local-validation-readiness-token' http://localhost:18081/api/v2/internal/readiness)
+if [ "$readiness_right_token" != "200" ]; then
+    echo "Expected readiness with the correct token to return 200, got $readiness_right_token" >&2
+    exit 1
+fi
 
 echo "Checking access-log query redaction and no-store headers..."
 query_sentinel="query-log-sentinel-$$"

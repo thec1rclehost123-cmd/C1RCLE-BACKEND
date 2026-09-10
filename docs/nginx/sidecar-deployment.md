@@ -153,7 +153,7 @@ Fastify-side variables both apply to the same service:
 | `NGINX_PROFILE` | `staging` | Same meaning as the two-service topology |
 | `NGINX_SERVER_NAME` | your Render URL or custom domain | Same meaning as the two-service topology |
 | `NGINX_FORWARDED_PROTO` | `https` | Same meaning as the two-service topology |
-| `NGINX_READINESS_ALLOWLIST_LINES` | real CIDRs | Same meaning as the two-service topology |
+| `NGINX_READINESS_TOKEN` | 32+ byte random secret | Callers must send it as `X-Readiness-Token` to reach `/readiness`/`/version`. **This is a header-based gate, not IP-based** — see the correction below; the value found on the live sidecar service initially used a now-corrected IP-allowlist approach that was a no-op on Render. |
 | `NODE_ENV` | `production` | **Not `staging`** — see the correction in [`deployment.md`](./deployment.md); the schema (`apps/api-gateway/src/config/index.ts`) only accepts `development \| test \| production` |
 | `STORAGE_DRIVER` | `firestore` | Same as the real topology |
 | `FIRESTORE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY`, `FIREBASE_STORAGE_BUCKET` | secrets | Same as the real topology |
@@ -183,7 +183,7 @@ docker run --detach --rm --name c1rcle-sidecar-test \
   --env PORT=8080 --env STORAGE_DRIVER=memory --env NODE_ENV=test \
   --env TRUSTED_PROXY_CIDRS=127.0.0.0/8 --env BUILD_SHA=sidecar-test \
   --env NGINX_PROFILE=staging --env NGINX_SERVER_NAME=localhost \
-  --env 'NGINX_READINESS_ALLOWLIST_LINES=127.0.0.1/32 1;' \
+  --env NGINX_READINESS_TOKEN=local-sidecar-readiness-token \
   --env NGINX_FORWARDED_PROTO=http \
   c1rcle-sidecar:local
 
@@ -201,9 +201,20 @@ docker stop -t 10 c1rcle-sidecar-test
 **Verified 2026-09-10:** image builds clean, runs as non-root (`docker
 inspect --format='{{.Config.User}}'` → `app`), health check through nginx
 returns 200 with `X-Request-Id`/security headers, Fastify unreachable
-directly, graceful shutdown completes well under the stop timeout. Not yet
-verified: a real Render deploy (this document's checklist below is
-unexecuted as of this writing).
+directly, graceful shutdown completes well under the stop timeout.
+
+**Post-deploy correction, same day:** the sidecar went live on Render and a
+security pass against the real deployment found `/api/v2/internal/readiness`
+publicly reachable despite `NGINX_READINESS_ALLOWLIST_LINES` (the original
+IP-based gate) being set correctly — Render's edge terminates TLS and
+reconnects to the container, so `$remote_addr` reflects Render's internal
+hop for every request, real or attacker, not the real client. The gate has
+since been replaced with a shared-secret header (`NGINX_READINESS_TOKEN` /
+`X-Readiness-Token`) across every topology (sidecar, api-only two-service,
+full-edge), verified with the same build-then-curl method above (no
+token/wrong token → 404, correct token → 200), and the live sidecar's env
+var was updated and redeployed. See `docs/operations/nginx.md`'s Health and
+readiness section for the current mechanism.
 
 ---
 

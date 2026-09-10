@@ -112,8 +112,10 @@ Set these on `circle-v2-edge-staging`:
 - `NGINX_SERVER_NAME=<STAGING_EDGE_ONRENDER_HOSTNAME>`
 - `FASTIFY_UPSTREAM=<FASTIFY_PRIVATE_HOSTNAME>:8080`
 - `NGINX_FORWARDED_PROTO=https`
-- `NGINX_READINESS_ALLOWLIST_LINES=127.0.0.1/32 1;` initially, or replace it
-  with exact approved monitor/operator `CIDR 1;` entries
+- `NGINX_READINESS_TOKEN=<32+ byte random secret>` — callers must send it
+  as `X-Readiness-Token` to reach `/readiness`/`/version`. IP-based gating
+  does not work here: Render's edge terminates and reconnects, so
+  `$remote_addr` never reflects the real caller.
 
 Do not set `NGINX_HTTP_PORT`; the entrypoint consumes Render's injected `PORT`.
 Do not configure an HTTPS listener or certificate in Nginx. Request IDs are
@@ -124,7 +126,7 @@ send/read timeouts. Tune only after measured staging load.
 
 The combined operator preflight additionally uses
 `NGINX_TLS_MODE=external`, `FASTIFY_PORT=8080`,
-`NGINX_READINESS_ALLOWLIST_CIDRS`, and all required Fastify values. These are
+`NGINX_READINESS_TOKEN`, and all required Fastify values. These are
 validation inputs, not additional Nginx container requirements.
 
 ## Trusted proxy blocker

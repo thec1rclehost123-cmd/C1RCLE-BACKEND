@@ -82,23 +82,27 @@ else
     fail_check "health response did not include X-Request-Id"
 fi
 
-echo "2. readiness from approved source"
-if [ -n "${STAGING_APPROVED_READINESS_URL:-}" ]; then
-    readiness_status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$STAGING_APPROVED_READINESS_URL")
-    check_status "approved readiness" "$readiness_status" "200,503"
+echo "2. readiness with the token"
+readiness_token="${STAGING_READINESS_TOKEN:-}"
+if [ -n "$readiness_token" ]; then
+    readiness_status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 \
+        -H "X-Readiness-Token: $readiness_token" "$base_url/api/v2/internal/readiness")
+    check_status "token-gated readiness" "$readiness_status" "200,503"
+    public_readiness_status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$base_url/api/v2/internal/readiness")
+    check_status "readiness without the token is restricted" "$public_readiness_status" "404"
 else
     if [ "${STAGING_REQUIRE_APPROVED_READINESS:-0}" = "1" ]; then
-        fail_check "STAGING_APPROVED_READINESS_URL is required"
+        fail_check "STAGING_READINESS_TOKEN is required"
     else
-        skip_check "STAGING_APPROVED_READINESS_URL not provided"
+        skip_check "STAGING_READINESS_TOKEN not provided"
     fi
 fi
 
 echo "3. version"
-if [ -n "${STAGING_APPROVED_READINESS_URL:-}" ]; then
-    approved_version_url=$(printf '%s' "$STAGING_APPROVED_READINESS_URL" | sed 's#/api/v2/internal/readiness$#/api/v2/internal/version#')
-    version_status=$(curl -sS -o "$temp_dir/version.body" -w '%{http_code}' --max-time 10 "$approved_version_url")
-    check_status "approved version" "$version_status" "200"
+if [ -n "$readiness_token" ]; then
+    version_status=$(curl -sS -o "$temp_dir/version.body" -w '%{http_code}' --max-time 10 \
+        -H "X-Readiness-Token: $readiness_token" "$base_url/api/v2/internal/version")
+    check_status "token-gated version" "$version_status" "200"
 else
     public_version_status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$base_url/api/v2/internal/version")
     check_status "public version is restricted" "$public_version_status" "404"

@@ -19,7 +19,7 @@ const environment = {
   FASTIFY_UPSTREAM: 'circle-v2-backend-staging.internal:8080',
   FASTIFY_PORT: '8080',
   PORT: '18080',
-  NGINX_READINESS_ALLOWLIST_CIDRS: '192.0.2.10/32',
+  NGINX_READINESS_TOKEN: 'dry-run-readiness-token-fixture',
   TRUSTED_PROXY_CIDRS: '10.20.0.0/24',
   PUBLIC_API_URL: 'https://circle-v2-edge-staging.invalid',
   ALLOWED_ORIGINS: 'https://partner-staging.invalid',

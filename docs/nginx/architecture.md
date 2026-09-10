@@ -297,5 +297,5 @@ flowchart TD
 3. **General prefix** (`location ^~`): `/api/v2/` catches everything else
 
 **Security note:** `/api/v2/internal/readiness` and `/api/v2/internal/version`
-return `404` when the requesting IP is not in `NGINX_READINESS_ALLOWLIST_LINES`.
+return `404` when the requesting IP is not in `NGINX_READINESS_TOKEN`.
 This prevents internal deployment metadata from being publicly visible.
