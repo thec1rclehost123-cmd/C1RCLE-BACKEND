@@ -10,6 +10,8 @@ COPY deploy/nginx/nginx.conf /etc/nginx/nginx.conf
 COPY deploy/nginx/snippets/ /etc/nginx/snippets/c1rcle/
 COPY deploy/nginx/templates/staging.conf.template /etc/nginx/c1rcle-templates/staging.conf.template
 COPY deploy/nginx/templates/production.conf.template /etc/nginx/c1rcle-templates/production.conf.template
+COPY deploy/nginx/templates/staging-edge.conf.template /etc/nginx/c1rcle-templates/staging-edge.conf.template
+COPY deploy/nginx/templates/production-edge.conf.template /etc/nginx/c1rcle-templates/production-edge.conf.template
 COPY deploy/docker/nginx-entrypoint.sh /usr/local/bin/c1rcle-nginx-entrypoint
 
 RUN chmod 0755 /usr/local/bin/c1rcle-nginx-entrypoint \

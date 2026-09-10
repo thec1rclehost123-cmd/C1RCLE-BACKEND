@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  eventPublicDetailDtoSchema,
   eventDtoSchema,
   idempotencyKeySchema,
   noContentSchema,
@@ -12,6 +13,7 @@ import {
   roleSchema,
   sessionSchema,
   userSchema,
+  venuePublicDetailDtoSchema,
   venueDtoSchema,
   versionHeaderSchema,
 } from './client.js';
@@ -140,6 +142,66 @@ describe('client schemas — canonical fixtures', () => {
 
   it('rejects an unknown event status', () => {
     expect(eventDtoSchema.safeParse({ status: 'live' }).success).toBe(false);
+  });
+
+  it('parses public event relationships and rich public venue detail', () => {
+    const base = {
+      version: 1,
+      createdAt: '2026-08-11T10:00:00.000Z',
+      updatedAt: '2026-08-11T10:00:00.000Z',
+    };
+    const address = { city: 'Pune', state: 'Maharashtra', country: 'IN' };
+    const venue = {
+      id: 'ven_1',
+      organizationId: 'org_1',
+      name: 'Sky Bar',
+      slug: 'sky-bar',
+      status: 'active',
+      description: 'Public venue description.',
+      capacity: 500,
+      city: 'Pune',
+      photoUrl: 'https://images.example.test/venue.webp',
+      address,
+      facilities: ['stage'],
+      ...base,
+    };
+    const event = {
+      id: 'evt_1',
+      organizationId: 'org_1',
+      venueId: 'ven_1',
+      slug: 'sky-night',
+      title: 'Sky Night',
+      summary: 'Public summary.',
+      description: '',
+      imageUrl: 'https://images.example.test/event.webp',
+      startAt: '2026-09-01T18:00:00.000Z',
+      endAt: null,
+      status: 'published',
+      isPublic: true,
+      tags: [],
+      startingPricePaise: 5000,
+      isFree: false,
+      cancellationReason: null,
+      ...base,
+    };
+
+    expect(venuePublicDetailDtoSchema.safeParse(venue).success).toBe(true);
+    expect(
+      eventPublicDetailDtoSchema.safeParse({
+        ...event,
+        venue: {
+          id: venue.id,
+          name: venue.name,
+          slug: venue.slug,
+          photoUrl: venue.photoUrl,
+          address,
+        },
+        organizer: { id: 'org_1', name: 'Sky Host', slug: 'sky-host' },
+      }).success,
+    ).toBe(true);
+    expect(
+      eventPublicDetailDtoSchema.safeParse({ ...event, venue: null, organizer: null }).success,
+    ).toBe(true);
   });
 });
 
