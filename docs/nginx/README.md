@@ -55,18 +55,26 @@ graph LR
   end
 ```
 
-## Topology: Current vs Target
+## Topology: Current vs Interim vs Target
 
 ```mermaid
 graph TD
-  subgraph Current["Current Live Render (single-service)"]
+  subgraph Current["Current Live Render (single-service, no nginx)"]
     direction LR
     Browser1[Browser / Client] -->|HTTPS| RenderEdge1[Render TLS termination]
     RenderEdge1 -->|HTTP :8080| Fastify1[Fastify single container]
     Fastify1 --> Firebase1[Firebase / Firestore]
   end
 
-  subgraph Target["Target (two-service, local-validated)"]
+  subgraph Interim["Interim plan (sidecar, budget tier — see sidecar-deployment.md)"]
+    direction LR
+    Browser3[Browser / Client] -->|HTTPS| RenderEdge3[Render TLS termination]
+    RenderEdge3 -->|HTTP :PORT| Nginx3["Nginx (same container)<br/>public 0.0.0.0:$PORT"]
+    Nginx3 -->|"loopback only"| Fastify3["Fastify (same container)<br/>127.0.0.1:8081"]
+    Fastify3 --> Firebase3[Firebase / Firestore]
+  end
+
+  subgraph Target["Target (two-service, needs paid Render plan, local-validated)"]
     direction LR
     Browser2[Browser / Client] -->|HTTPS| RenderEdge2[Render TLS termination]
     RenderEdge2 -->|HTTP :PORT| Nginx2[Nginx container<br/>public listener]
@@ -75,6 +83,7 @@ graph TD
   end
 
   style Current fill:#fee,stroke:#f66
+  style Interim fill:#fff0e0,stroke:#c90
   style Target fill:#efe,stroke:#6a6
 ```
 
@@ -139,6 +148,7 @@ to care about.
 | [`url-hiding-rerouting.md`](./url-hiding-rerouting.md) | URL hiding / path rewriting status: NOT implemented, gap analysis |
 | [`config-reference.md`](./config-reference.md) | Every file in deploy/nginx/ explained with include hierarchy diagram |
 | [`deployment.md`](./deployment.md) | Render two-service + full-edge topology, env contract, step-by-step rollout |
+| [`sidecar-deployment.md`](./sidecar-deployment.md) | **Interim budget-tier topology, in current use** — nginx + Fastify in one Render Web Service (Render Private Service is a paid tier), the decision record for why, and the exact bidirectional switch procedure to/from the real two-service topology |
 | [`migration-plan.md`](./migration-plan.md) | Step-by-step path from Vercel BFFs to the private full-edge network |
 | [`integration-checklist.md`](./integration-checklist.md) | Backend ↔ frontend concerns, env vars, CSRF, rate-limit tuning, CORS |
 | [`issues-and-gaps.md`](./issues-and-gaps.md) | All open items, blockers, deferred work, known limitations |

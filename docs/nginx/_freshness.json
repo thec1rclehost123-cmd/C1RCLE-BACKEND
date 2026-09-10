@@ -1,5 +1,5 @@
 {
-  "last_verified_commit": "83372a3",
+  "last_verified_commit": "782fd15",
   "last_verified_date": "2026-09-10",
   "branch": "staging",
   "verification_command": "bash docs/nginx/regenerate.sh",
@@ -20,6 +20,8 @@
     "deploy/nginx/templates/production-edge.conf.template",
     "deploy/docker/Dockerfile.nginx",
     "deploy/docker/nginx-entrypoint.sh",
+    "deploy/docker/Dockerfile.sidecar",
+    "deploy/docker/sidecar-entrypoint.sh",
     "deploy/nginx/tests/run-local-validation.sh",
     "apps/api-gateway/src/app.ts",
     "apps/api-gateway/src/config/index.ts",
