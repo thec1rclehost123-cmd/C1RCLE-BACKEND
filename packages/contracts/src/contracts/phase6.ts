@@ -121,6 +121,59 @@ export type DisputeResponse = z.infer<typeof disputeResponseSchema>;
 
 export const disputeListResponseSchema = paginatedSchema(disputeResponseSchema);
 
+// Admin refund (Phase 6 admin) — amount-tiered approval over an order's
+// payment. See `packages/core/src/domain/models/refund-request.ts`.
+export const requestRefundSchema = z
+  .object({
+    orderId: opaqueIdSchema,
+    amountPaise: z.number().int().positive(),
+    reason: z.string().min(1).max(2000),
+  })
+  .strict();
+export type RequestRefundInput = z.infer<typeof requestRefundSchema>;
+
+export const rejectRefundRequestSchema = z
+  .object({
+    reason: z.string().min(1).max(2000),
+  })
+  .strict();
+export type RejectRefundRequestInput = z.infer<typeof rejectRefundRequestSchema>;
+
+export const adminRefundApprovalDtoSchema = z.object({
+  adminId: opaqueIdSchema,
+  approvedAt: z.iso.datetime(),
+});
+
+export const adminRefundRequestStatusSchema = z.enum([
+  'pending',
+  'approved',
+  'rejected',
+  'settled',
+  'failed',
+]);
+export type AdminRefundRequestStatus = z.infer<typeof adminRefundRequestStatusSchema>;
+
+export const adminRefundRequestDtoSchema = z.object({
+  id: opaqueIdSchema,
+  orderId: opaqueIdSchema,
+  organizationId: opaqueIdSchema,
+  amountPaise: z.number().int().positive(),
+  requestedBy: opaqueIdSchema,
+  reason: z.string(),
+  approversRequired: z.number().int().nonnegative(),
+  approvals: z.array(adminRefundApprovalDtoSchema),
+  status: adminRefundRequestStatusSchema,
+  rejectedBy: opaqueIdSchema.nullable(),
+  rejectionReason: z.string().nullable(),
+  providerRefundId: z.string().nullable(),
+  failureReason: z.string().nullable(),
+  createdAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+});
+export type AdminRefundRequestDto = z.infer<typeof adminRefundRequestDtoSchema>;
+
+export const adminRefundRequestListResponseSchema = paginatedSchema(adminRefundRequestDtoSchema);
+
 // Leaderboard
 export const leaderboardPeriodTypeSchema = z.enum(['all_time', 'month', 'week']);
 export type LeaderboardPeriodType = z.infer<typeof leaderboardPeriodTypeSchema>;
