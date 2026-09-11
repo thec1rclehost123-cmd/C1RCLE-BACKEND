@@ -33,7 +33,8 @@ export type AdminAction =
   // TIER3
   | 'ADMIN_PROVISION'
   | 'COMMISSION_ADJUST'
-  | 'PAYOUT_FREEZE';
+  | 'PAYOUT_FREEZE'
+  | 'PAYOUT_RELEASE';
 
 export type AuthorityTier = 1 | 2 | 3;
 
@@ -48,6 +49,7 @@ const TIER3_ACTIONS: readonly AdminAction[] = [
   'ADMIN_PROVISION',
   'COMMISSION_ADJUST',
   'PAYOUT_FREEZE',
+  'PAYOUT_RELEASE',
 ];
 
 /** Roles permitted at TIER2 (v1: `[super, admin, ops, finance]`). */

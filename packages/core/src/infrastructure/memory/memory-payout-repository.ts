@@ -1,7 +1,7 @@
 import { VersionConflictError } from '../../domain/errors.js';
 
 import type { EntityId } from '../../domain/identity.js';
-import type { Payout } from '../../domain/models/payout.js';
+import type { Payout, PayoutStatus } from '../../domain/models/payout.js';
 import type { Page, PaginationQuery, PayoutRepository } from '../../domain/ports/repositories.js';
 
 function serializeSlice<T extends { id: EntityId }>(all: T[], query: PaginationQuery): Page<T> {
@@ -57,5 +57,10 @@ export class MemoryPayoutRepository implements PayoutRepository {
           (p.status === 'requested' || p.status === 'processing'),
       )
       .reduce((sum, p) => sum + p.amount, 0);
+  }
+
+  async listByStatus(status: PayoutStatus, query: PaginationQuery): Promise<Page<Payout>> {
+    const all = [...this.payouts.values()].filter((p) => p.status === status);
+    return serializeSlice(all, query);
   }
 }

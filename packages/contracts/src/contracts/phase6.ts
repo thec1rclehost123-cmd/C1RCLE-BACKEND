@@ -49,7 +49,7 @@ export const payoutResponseSchema = z.object({
   organizationId: opaqueIdSchema,
   bankAccountId: opaqueIdSchema,
   amountPaise: z.number().int().positive(),
-  status: z.enum(['requested', 'processing', 'paid', 'failed']),
+  status: z.enum(['requested', 'processing', 'paid', 'failed', 'frozen']),
   failureReason: z.string().nullable(),
   processedAt: z.iso.datetime().nullable(),
   createdAt: z.iso.datetime(),
@@ -57,6 +57,30 @@ export const payoutResponseSchema = z.object({
 export type PayoutResponse = z.infer<typeof payoutResponseSchema>;
 
 export const payoutListResponseSchema = paginatedSchema(payoutResponseSchema);
+
+// Admin payout controls (Phase 6 admin) — freeze/release (TIER3, dual
+// control, executed from an approved proposal) + batch run (TIER2).
+export const adminPayoutStatusSchema = z.enum([
+  'requested',
+  'processing',
+  'paid',
+  'failed',
+  'frozen',
+]);
+export type AdminPayoutStatus = z.infer<typeof adminPayoutStatusSchema>;
+
+export const runPayoutBatchSchema = z
+  .object({
+    payoutIds: z.array(opaqueIdSchema).min(1).max(200),
+  })
+  .strict();
+export type RunPayoutBatchInput = z.infer<typeof runPayoutBatchSchema>;
+
+export const payoutBatchResultSchema = z.object({
+  processed: z.array(payoutResponseSchema),
+  skipped: z.array(z.object({ id: opaqueIdSchema, reason: z.string() })),
+});
+export type PayoutBatchResult = z.infer<typeof payoutBatchResultSchema>;
 
 // Bank Account
 export const bankAccountRequestSchema = z

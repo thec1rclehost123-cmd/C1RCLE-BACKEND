@@ -28,6 +28,7 @@ import {
   createDoorStatsService,
   createFinanceService,
   createPayoutService,
+  AdminPayoutService,
   createBankAccountService,
   createDisputeService,
   RefundService,
@@ -146,6 +147,8 @@ export interface PartnerV2Services {
   finance: FinanceService;
   /** Phase 6: payout requests + lifecycle. */
   payout: PayoutService;
+  /** Phase 6 admin: freeze/release (TIER3) + batch execution (TIER2). */
+  adminPayout: AdminPayoutService;
   /** Phase 6: bank account management. */
   bankAccount: BankAccountService;
   /** Phase 6: dispute lifecycle. */
@@ -371,6 +374,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   });
 
   const refund = new RefundService(deps, adminAuthority);
+  const adminPayout = new AdminPayoutService(deps, adminAuthority);
 
   const leaderboard = createLeaderboardService({
     leaderboard: repositories.leaderboard,
@@ -421,6 +425,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     bankAccount,
     dispute,
     refund,
+    adminPayout,
     leaderboard,
     emailOtp,
   };

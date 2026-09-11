@@ -68,6 +68,11 @@ export class FirestorePayoutRepository implements PayoutRepository {
       .filter((p) => p.status === 'requested' || p.status === 'processing')
       .reduce((sum, p) => sum + p.amount, 0);
   }
+
+  async listByStatus(status: PayoutStatus, query: PaginationQuery): Promise<Page<Payout>> {
+    const base = this.collection.where('status', '==', status).orderBy('createdAt', 'desc');
+    return paginateQuery(base, query, toPayout);
+  }
 }
 
 function toDoc(payout: Payout): DocumentData {
@@ -80,6 +85,7 @@ function toDoc(payout: Payout): DocumentData {
     failureReason: payout.failureReason,
     requestedBy: payout.requestedBy,
     processedAt: payout.processedAt,
+    previousStatus: payout.previousStatus,
     version: payout.version,
     createdAt: payout.createdAt,
     updatedAt: payout.updatedAt,
@@ -96,6 +102,7 @@ function toPayout(data: DocumentData): Payout {
     failureReason: data.failureReason as string | null,
     requestedBy: data.requestedBy as string,
     processedAt: data.processedAt as string | null,
+    previousStatus: (data.previousStatus as PayoutStatus | undefined) ?? null,
     version: data.version as number,
     createdAt: data.createdAt as string,
     updatedAt: data.updatedAt as string,

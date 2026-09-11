@@ -292,6 +292,9 @@ export type {
   RejectRefundRequestInput,
   AdminRefundRequestStatus,
   AdminRefundRequestDto,
+  AdminPayoutStatus,
+  RunPayoutBatchInput,
+  PayoutBatchResult,
 } from './contracts/phase6.js';
 
 export {
@@ -301,6 +304,9 @@ export {
   payoutRequestSchema,
   payoutResponseSchema,
   payoutListResponseSchema,
+  adminPayoutStatusSchema,
+  runPayoutBatchSchema,
+  payoutBatchResultSchema,
   bankAccountRequestSchema,
   bankAccountResponseSchema,
   bankAccountListResponseSchema,

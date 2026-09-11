@@ -691,6 +691,8 @@ export interface PayoutRepository {
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Payout>>;
   sumPaidByOrganization(organizationId: EntityId): Promise<number>;
   sumRequestedOrProcessingByOrganization(organizationId: EntityId): Promise<number>;
+  /** Cross-org admin view — the batch-run and freeze/release queues. */
+  listByStatus(status: PayoutStatus, query: PaginationQuery): Promise<Page<Payout>>;
 }
 
 /** Partner payout destinations. Full account number never leaves the adapter unmasked. */

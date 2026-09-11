@@ -5,6 +5,7 @@ import { createV2Services } from '../../lib/v2-services.js';
 import authContextPlugin, { buildBetterAuth } from '../../plugins/auth.js';
 
 import adminRoutes from './admin/onboarding-review.js';
+import adminPayoutRoutes from './admin/payouts.js';
 import adminRefundRoutes from './admin/refunds.js';
 import authRoutes from './auth/index.js';
 import otpRoutes from './auth/otp-routes.js';
@@ -118,6 +119,7 @@ export async function registerV2Routes(
       await onboardingRoutes(v2);
       await adminRoutes(v2);
       await adminRefundRoutes(v2);
+      await adminPayoutRoutes(v2);
       // Phase 4 PR2: guest checkout + payments + Razorpay webhook.
       await checkoutRoutes(v2);
       await paymentRoutes(v2);
