@@ -175,18 +175,19 @@ if [ "$readiness_status" != "404" ] || [ "$version_status" != "404" ]; then
     exit 1
 fi
 
-if [ -n "${STAGING_APPROVED_READINESS_URL:-}" ]; then
-    approved_status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
-        --max-time 10 "$STAGING_APPROVED_READINESS_URL")
-    case "$approved_status" in
+if [ -n "${STAGING_READINESS_TOKEN:-}" ]; then
+    token_status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+        --max-time 10 -H "X-Readiness-Token: $STAGING_READINESS_TOKEN" \
+        "$STAGING_BASE_URL/api/v2/internal/readiness")
+    case "$token_status" in
         200|503) : ;;
         *)
-            echo "Approved readiness source returned unexpected status $approved_status" >&2
+            echo "Token-gated readiness returned unexpected status $token_status" >&2
             exit 1
             ;;
     esac
 else
-    echo "UNMEASURED: STAGING_APPROVED_READINESS_URL was not provided; approved-source readiness was not tested."
+    echo "UNMEASURED: STAGING_READINESS_TOKEN was not provided; token-gated readiness was not tested."
 fi
 
 echo "Staging preflight passed."

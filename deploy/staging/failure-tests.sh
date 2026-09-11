@@ -50,7 +50,12 @@ check_url_status() {
     url="$2"
     expected="$3"
     timeout="$4"
-    actual=$(curl -sS --max-time "$timeout" -o /dev/null -w '%{http_code}' "$url" || true)
+    header="${5:-}"
+    if [ -n "$header" ]; then
+        actual=$(curl -sS --max-time "$timeout" -o /dev/null -w '%{http_code}' -H "$header" "$url" || true)
+    else
+        actual=$(curl -sS --max-time "$timeout" -o /dev/null -w '%{http_code}' "$url" || true)
+    fi
     if is_status "$actual" "$expected"; then
         echo "PASS $label ($actual)"
     else
@@ -98,10 +103,10 @@ else
     fi
 
     echo "4. readiness false"
-    if [ -n "${STAGING_READINESS_FALSE_URL:-}" ] && [ "${STAGING_FAILURE_CONFIRM:-}" = "YES" ]; then
-        check_url_status "readiness false" "$STAGING_READINESS_FALSE_URL" "503" 10
+    if [ -n "${STAGING_READINESS_FALSE_URL:-}" ] && [ -n "${STAGING_READINESS_TOKEN:-}" ] && [ "${STAGING_FAILURE_CONFIRM:-}" = "YES" ]; then
+        check_url_status "readiness false" "$STAGING_READINESS_FALSE_URL" "503" 10 "X-Readiness-Token: $STAGING_READINESS_TOKEN"
     else
-        skip_check "STAGING_READINESS_FALSE_URL and confirmation not provided"
+        skip_check "STAGING_READINESS_FALSE_URL, STAGING_READINESS_TOKEN, and confirmation not all provided"
     fi
 
     echo "5. slow upstream/timeout"

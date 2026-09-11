@@ -308,7 +308,7 @@ Env contract summary (full list in [`deployment.md`](./deployment.md)):
 | `NGINX_FORWARDED_PROTO` | required | required (staging) / implied `https` (production) | `https` |
 | `NGINX_HTTP_PORT` / `NGINX_HTTPS_PORT` | req/— | required | `8080` / `8443` |
 | `NGINX_TLS_CERTIFICATE` / `_KEY` | — | required (production) | `/run/secrets/…` |
-| `NGINX_READINESS_ALLOWLIST_LINES` | required | required | `10.0.0.0/8 1;` |
+| `NGINX_READINESS_TOKEN` | required | required | 32+ byte random secret |
 
 ---
 

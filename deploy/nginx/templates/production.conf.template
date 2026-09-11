@@ -15,9 +15,14 @@ map $host $c1rcle_host_allowed {
     ${NGINX_SERVER_NAME} 1;
 }
 
-geo $c1rcle_readiness_allowed {
+# IP-based gating (geo on $remote_addr) does not work on platforms whose
+# edge/load-balancer terminates and reconnects to this container — $remote_addr
+# then reflects the platform's internal hop for every request, real or
+# attacker, making an IP allowlist a no-op (confirmed on Render). Gate on a
+# shared secret header instead, which does not depend on network topology.
+map $http_x_readiness_token $c1rcle_readiness_allowed {
     default 0;
-    ${NGINX_READINESS_ALLOWLIST_LINES}
+    "${NGINX_READINESS_TOKEN}" 1;
 }
 
 server {
