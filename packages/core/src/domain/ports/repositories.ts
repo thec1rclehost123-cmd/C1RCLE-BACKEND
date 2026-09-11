@@ -65,6 +65,7 @@ import type { Partnership } from '../models/partnership.js';
 import type { Payout, PayoutStatus } from '../models/payout.js';
 import type { PromoterConnection } from '../models/promoter-connection.js';
 import type { ReferralLink } from '../models/referral-link.js';
+import type { AdminRefundRequest, AdminRefundRequestStatus } from '../models/refund-request.js';
 import type {
   ScanLedger,
   ScanLedgerStatus,
@@ -711,6 +712,18 @@ export interface DisputeRepository {
     organizationId: EntityId,
     query: PaginationQuery & { status?: DisputeStatus },
   ): Promise<Page<Dispute>>;
+}
+
+/** Admin refund requests (Phase 6 admin). Version-checked saves for the N-approver accumulator. */
+export interface AdminRefundRequestRepository {
+  getById(id: EntityId): Promise<AdminRefundRequest | null>;
+  /** Every request against one order — used to compute the refundable remainder. */
+  listByOrder(orderId: EntityId): Promise<AdminRefundRequest[]>;
+  listByStatus(
+    status: AdminRefundRequestStatus | null,
+    query: PaginationQuery,
+  ): Promise<Page<AdminRefundRequest>>;
+  save(request: AdminRefundRequest, tx?: TxContext | null): Promise<void>;
 }
 
 /**

@@ -126,6 +126,8 @@ export type {
   RaiseDisputeInput,
 } from './finance/dispute-service.js';
 export { createDisputeService } from './finance/dispute-service.js';
+export type { RequestRefundCommand } from './finance/refund-service.js';
+export { RefundService } from './finance/refund-service.js';
 export type { LeaderboardService, LeaderboardServiceDeps } from './finance/leaderboard-service.js';
 export { createLeaderboardService } from './finance/leaderboard-service.js';
 export type { EmailOtpService, EmailOtpServiceDeps } from './auth/email-otp-service.js';

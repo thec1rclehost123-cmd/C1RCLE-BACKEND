@@ -288,6 +288,10 @@ export type {
   LeaderboardPeriodType,
   LeaderboardQuery,
   LeaderboardStatResponse,
+  RequestRefundInput,
+  RejectRefundRequestInput,
+  AdminRefundRequestStatus,
+  AdminRefundRequestDto,
 } from './contracts/phase6.js';
 
 export {
@@ -308,4 +312,10 @@ export {
   leaderboardQuerySchema,
   leaderboardStatResponseSchema,
   leaderboardTopResponseSchema,
+  requestRefundSchema,
+  rejectRefundRequestSchema,
+  adminRefundApprovalDtoSchema,
+  adminRefundRequestStatusSchema,
+  adminRefundRequestDtoSchema,
+  adminRefundRequestListResponseSchema,
 } from './contracts/phase6.js';
