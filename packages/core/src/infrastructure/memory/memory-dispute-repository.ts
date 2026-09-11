@@ -45,8 +45,11 @@ export class MemoryDisputeRepository implements DisputeRepository {
     return serializeSlice(all, query);
   }
 
-  async listByStatus(status: Dispute['status'], query: PaginationQuery): Promise<Page<Dispute>> {
-    const all = [...this.disputes.values()].filter((d) => d.status === status);
+  async listByStatus(
+    status: Dispute['status'] | null,
+    query: PaginationQuery,
+  ): Promise<Page<Dispute>> {
+    const all = [...this.disputes.values()].filter((d) => status === null || d.status === status);
     return serializeSlice(all, query);
   }
 }

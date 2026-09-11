@@ -240,6 +240,24 @@ export function suspendOrganization(org: Organization, now?: Date): Organization
   return { ...org, status: 'suspended', version: org.version + 1, updatedAt: ts };
 }
 
+/**
+ * TIER3 `COMMISSION_ADJUST` — the only way `platformFeePercent` ever changes
+ * after onboarding (see the field's doc comment). Whole-number percent,
+ * 0–100 inclusive.
+ */
+export function adjustPlatformFeePercent(
+  org: Organization,
+  platformFeePercent: number,
+  now?: Date,
+): Organization {
+  if (!Number.isInteger(platformFeePercent) || platformFeePercent < 0 || platformFeePercent > 100) {
+    throw new InvalidOperationError('platformFeePercent must be a whole number between 0 and 100');
+  }
+  if (org.platformFeePercent === platformFeePercent) return org;
+  const ts = (now ?? new Date()).toISOString();
+  return { ...org, platformFeePercent, version: org.version + 1, updatedAt: ts };
+}
+
 /* ─── Invitation behaviour ─────────────────────────────────────────────────── */
 
 /** Default validity window. Long enough to be useful, short enough to expire. */

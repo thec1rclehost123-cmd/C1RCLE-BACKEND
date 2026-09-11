@@ -59,8 +59,10 @@ export class FirestoreDisputeRepository implements DisputeRepository {
     return paginateQuery(base, query, toDispute);
   }
 
-  async listByStatus(status: DisputeStatus, query: PaginationQuery): Promise<Page<Dispute>> {
-    const base = this.collection.where('status', '==', status).orderBy('createdAt', 'desc');
+  async listByStatus(status: DisputeStatus | null, query: PaginationQuery): Promise<Page<Dispute>> {
+    const base: Query = status
+      ? this.collection.where('status', '==', status).orderBy('createdAt', 'desc')
+      : this.collection.orderBy('createdAt', 'desc');
     return paginateQuery(base, query, toDispute);
   }
 }

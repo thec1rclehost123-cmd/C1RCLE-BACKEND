@@ -7,6 +7,7 @@ import authContextPlugin, { buildBetterAuth } from '../../plugins/auth.js';
 import adminDirectoryRoutes from './admin/directory.js';
 import adminDisputeRoutes from './admin/disputes.js';
 import adminRoutes from './admin/onboarding-review.js';
+import adminOrganizationActionRoutes from './admin/organization-actions.js';
 import adminPayoutRoutes from './admin/payouts.js';
 import adminRefundRoutes from './admin/refunds.js';
 import adminVenueActionRoutes from './admin/venue-actions.js';
@@ -126,6 +127,7 @@ export async function registerV2Routes(
       await adminDisputeRoutes(v2);
       await adminDirectoryRoutes(v2);
       await adminVenueActionRoutes(v2);
+      await adminOrganizationActionRoutes(v2);
       // Phase 4 PR2: guest checkout + payments + Razorpay webhook.
       await checkoutRoutes(v2);
       await paymentRoutes(v2);

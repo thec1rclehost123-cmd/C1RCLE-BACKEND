@@ -120,7 +120,11 @@ export class AdminPayoutService {
     return { processed, skipped };
   }
 
-  async listByStatus(adminUserId: EntityId, status: Payout['status'], query: PaginationQuery) {
+  async listByStatus(
+    adminUserId: EntityId,
+    status: Payout['status'] | null,
+    query: PaginationQuery,
+  ) {
     await this.authority.requireAdmin(adminUserId);
     return this.payouts.listByStatus(status, query);
   }

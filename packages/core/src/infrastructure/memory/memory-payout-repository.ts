@@ -59,8 +59,8 @@ export class MemoryPayoutRepository implements PayoutRepository {
       .reduce((sum, p) => sum + p.amount, 0);
   }
 
-  async listByStatus(status: PayoutStatus, query: PaginationQuery): Promise<Page<Payout>> {
-    const all = [...this.payouts.values()].filter((p) => p.status === status);
+  async listByStatus(status: PayoutStatus | null, query: PaginationQuery): Promise<Page<Payout>> {
+    const all = [...this.payouts.values()].filter((p) => status === null || p.status === status);
     return serializeSlice(all, query);
   }
 }

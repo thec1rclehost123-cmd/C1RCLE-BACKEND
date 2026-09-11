@@ -1,4 +1,6 @@
-import { NotFoundError } from '../../domain/errors.js';
+import { InvalidOperationError, NotFoundError } from '../../domain/errors.js';
+import { isExecutable } from '../../domain/models/admin-authority.js';
+import { adjustPlatformFeePercent } from '../../domain/models/organization.js';
 import { suspendVenue } from '../../domain/models/venue.js';
 
 import type { AdminAuthorityService } from './admin-authority-service.js';
@@ -102,9 +104,64 @@ export class AdminOperationsService {
     return suspended;
   }
 
+  /**
+   * Adjusts an organization's platform commission. TIER3, dual control:
+   * executes only from an approved `COMMISSION_ADJUST` proposal, reading
+   * `organizationId`/`platformFeePercent` from the proposal's payload —
+   * never from this call's own arguments — same shape as
+   * `AdminPayoutService`'s freeze/release resolvers.
+   */
+  async adjustCommissionFromProposal(
+    adminUserId: EntityId,
+    proposalId: EntityId,
+  ): Promise<Organization> {
+    const admin = await this.authority.authorize(adminUserId, 'COMMISSION_ADJUST');
+    const proposal = await this.authority.getProposal(adminUserId, proposalId);
+    if (proposal.action !== 'COMMISSION_ADJUST') {
+      throw new InvalidOperationError('This proposal does not adjust a commission');
+    }
+    if (!isExecutable(proposal)) {
+      throw new InvalidOperationError('This proposal has not been approved by a second admin');
+    }
+    const { organizationId, platformFeePercent } = readCommissionPayload(proposal.payload);
+    const org = await this.organizations.getById(organizationId);
+    if (!org) throw new NotFoundError('organization', organizationId);
+
+    const adjusted = adjustPlatformFeePercent(
+      org,
+      platformFeePercent,
+      this.deps.config.clock.now(),
+    );
+    if (adjusted !== org) await this.organizations.save(adjusted);
+    await this.authority.record(admin, {
+      action: 'COMMISSION_ADJUST',
+      targetType: 'organization',
+      targetId: org.id,
+      before: { platformFeePercent: org.platformFeePercent },
+      after: { platformFeePercent: adjusted.platformFeePercent },
+      reason: proposal.reason,
+    });
+    return adjusted;
+  }
+
   private async requireVenue(venueId: EntityId): Promise<Venue> {
     const venue = await this.venues.getById(venueId);
     if (!venue) throw new NotFoundError('venue', venueId);
     return venue;
   }
+}
+
+function readCommissionPayload(payload: Record<string, unknown>): {
+  organizationId: EntityId;
+  platformFeePercent: number;
+} {
+  const organizationId = payload.organizationId;
+  const platformFeePercent = payload.platformFeePercent;
+  if (typeof organizationId !== 'string' || organizationId.length === 0) {
+    throw new InvalidOperationError('Proposal payload is missing `organizationId`');
+  }
+  if (typeof platformFeePercent !== 'number') {
+    throw new InvalidOperationError('Proposal payload is missing `platformFeePercent`');
+  }
+  return { organizationId, platformFeePercent };
 }

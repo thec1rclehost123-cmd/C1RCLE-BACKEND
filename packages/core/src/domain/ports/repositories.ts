@@ -708,8 +708,8 @@ export interface PayoutRepository {
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Payout>>;
   sumPaidByOrganization(organizationId: EntityId): Promise<number>;
   sumRequestedOrProcessingByOrganization(organizationId: EntityId): Promise<number>;
-  /** Cross-org admin view — the batch-run and freeze/release queues. */
-  listByStatus(status: PayoutStatus, query: PaginationQuery): Promise<Page<Payout>>;
+  /** Cross-org admin view — the batch-run and freeze/release queues. `null` = every status. */
+  listByStatus(status: PayoutStatus | null, query: PaginationQuery): Promise<Page<Payout>>;
 }
 
 /** Partner payout destinations. Full account number never leaves the adapter unmasked. */
@@ -731,8 +731,8 @@ export interface DisputeRepository {
     organizationId: EntityId,
     query: PaginationQuery & { status?: DisputeStatus },
   ): Promise<Page<Dispute>>;
-  /** Cross-org admin queue. */
-  listByStatus(status: DisputeStatus, query: PaginationQuery): Promise<Page<Dispute>>;
+  /** Cross-org admin queue. `null` = every status. */
+  listByStatus(status: DisputeStatus | null, query: PaginationQuery): Promise<Page<Dispute>>;
 }
 
 /** Admin refund requests (Phase 6 admin). Version-checked saves for the N-approver accumulator. */

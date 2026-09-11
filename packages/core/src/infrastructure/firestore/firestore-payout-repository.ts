@@ -5,7 +5,7 @@ import { paginateQuery } from './pagination.js';
 import type { EntityId } from '../../domain/identity.js';
 import type { Payout, PayoutStatus } from '../../domain/models/payout.js';
 import type { Page, PaginationQuery, PayoutRepository } from '../../domain/ports/repositories.js';
-import type { DocumentData, Firestore } from 'firebase-admin/firestore';
+import type { DocumentData, Firestore, Query } from 'firebase-admin/firestore';
 
 const PAYOUT_COLLECTION = 'v2_payouts';
 
@@ -69,8 +69,10 @@ export class FirestorePayoutRepository implements PayoutRepository {
       .reduce((sum, p) => sum + p.amount, 0);
   }
 
-  async listByStatus(status: PayoutStatus, query: PaginationQuery): Promise<Page<Payout>> {
-    const base = this.collection.where('status', '==', status).orderBy('createdAt', 'desc');
+  async listByStatus(status: PayoutStatus | null, query: PaginationQuery): Promise<Page<Payout>> {
+    const base: Query = status
+      ? this.collection.where('status', '==', status).orderBy('createdAt', 'desc')
+      : this.collection.orderBy('createdAt', 'desc');
     return paginateQuery(base, query, toPayout);
   }
 }

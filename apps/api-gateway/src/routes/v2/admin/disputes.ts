@@ -37,7 +37,7 @@ const services = createV2Services();
 const disputeIdParam = z.object({ disputeId: opaqueIdSchema });
 const commandHeaders = z.looseObject({ 'idempotency-key': idempotencyKeySchema });
 const disputeQuerySchema = paginationQuerySchema.extend({
-  status: adminDisputeStatusSchema,
+  status: adminDisputeStatusSchema.optional(),
 });
 
 function disputeToDto(dispute: Dispute) {
@@ -126,7 +126,10 @@ export default async function adminDisputeRoutes(fastify: FastifyInstance) {
       const query = request.query as z.infer<typeof disputeQuerySchema>;
 
       const page = await services.adminDispute
-        .listByStatus(userId, query.status, { limit: query.limit, cursor: query.cursor ?? null })
+        .listByStatus(userId, query.status ?? null, {
+          limit: query.limit,
+          cursor: query.cursor ?? null,
+        })
         .catch((error: unknown) => mapDomainError(reply, request, userId, error));
       if (page === undefined) return reply;
 

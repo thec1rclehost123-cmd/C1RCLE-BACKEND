@@ -42,7 +42,7 @@ const proposalIdParam = z.object({ proposalId: opaqueIdSchema });
 const payoutIdParam = z.object({ payoutId: opaqueIdSchema });
 const commandHeaders = z.looseObject({ 'idempotency-key': idempotencyKeySchema });
 const payoutQuerySchema = paginationQuerySchema.extend({
-  status: adminPayoutStatusSchema,
+  status: adminPayoutStatusSchema.optional(),
 });
 
 function payoutToDto(payout: Payout) {
@@ -209,7 +209,10 @@ export default async function adminPayoutRoutes(fastify: FastifyInstance) {
       const query = request.query as z.infer<typeof payoutQuerySchema>;
 
       const page = await services.adminPayout
-        .listByStatus(userId, query.status, { limit: query.limit, cursor: query.cursor ?? null })
+        .listByStatus(userId, query.status ?? null, {
+          limit: query.limit,
+          cursor: query.cursor ?? null,
+        })
         .catch((error: unknown) => mapDomainError(reply, request, userId, error));
       if (page === undefined) return reply;
 

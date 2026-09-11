@@ -80,7 +80,11 @@ export class AdminDisputeService {
     return resolved;
   }
 
-  async listByStatus(adminUserId: EntityId, status: Dispute['status'], query: PaginationQuery) {
+  async listByStatus(
+    adminUserId: EntityId,
+    status: Dispute['status'] | null,
+    query: PaginationQuery,
+  ) {
     await this.authority.requireAdmin(adminUserId);
     return this.disputes.listByStatus(status, query);
   }
