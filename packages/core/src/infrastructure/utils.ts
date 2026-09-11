@@ -47,6 +47,7 @@ import {
   FirestoreLeaderboardRepository,
   FirestoreEmailOtpRepository,
   FirestoreRefundRequestRepository,
+  FirestoreUserAccountRepository,
 } from './firestore/index.js';
 import {
   MemoryOrganizationRepository,
@@ -82,6 +83,7 @@ import {
   MemoryLeaderboardRepository,
   MemoryEmailOtpRepository,
   MemoryRefundRequestRepository,
+  MemoryUserAccountRepository,
 } from './memory/index.js';
 import { MemoryIdempotencyStore } from './memory/memory-idempotency-store.js';
 
@@ -143,6 +145,7 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
       leaderboard: new MemoryLeaderboardRepository(),
       emailOtp: new MemoryEmailOtpRepository(),
       refundRequests: new MemoryRefundRequestRepository(),
+      users: new MemoryUserAccountRepository(),
     };
   }
 
@@ -193,6 +196,7 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
     leaderboard: new FirestoreLeaderboardRepository(db),
     emailOtp: new FirestoreEmailOtpRepository(db),
     refundRequests: new FirestoreRefundRequestRepository(db),
+    users: new FirestoreUserAccountRepository(db),
   };
 }
 

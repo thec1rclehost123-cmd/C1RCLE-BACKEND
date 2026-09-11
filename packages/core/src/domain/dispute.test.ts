@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { beginReview, createDispute, resolveDispute } from './models/dispute.js';
+import {
+  adminResolveDispute,
+  beginReview,
+  createDispute,
+  resolveDispute,
+} from './models/dispute.js';
 
 import type { DisputeCreateInput } from './models/dispute.js';
 
@@ -61,5 +66,32 @@ describe('dispute FSM', () => {
   it('cannot resolve a dispute that is already resolved', () => {
     const resolved = resolveDispute(createDispute(input()), 'done');
     expect(() => resolveDispute(resolved, 'again')).toThrow(/already resolved/);
+  });
+});
+
+describe('adminResolveDispute', () => {
+  it('records the outcome, unlike the partner-side resolveDispute', () => {
+    const open = createDispute(input());
+    const resolved = adminResolveDispute(open, 'upheld', 'Confirmed short payout', new Date());
+    expect(resolved.status).toBe('resolved');
+    expect(resolved.resolution).toBe('upheld');
+  });
+
+  it('denied leaves the same terminal state, just a different outcome', () => {
+    const open = createDispute(input());
+    const resolved = adminResolveDispute(open, 'denied', 'Amount was correct', new Date());
+    expect(resolved.resolution).toBe('denied');
+  });
+
+  it('refuses to resolve a dispute that is already resolved', () => {
+    const resolved = adminResolveDispute(createDispute(input()), 'upheld', 'done', new Date());
+    expect(() => adminResolveDispute(resolved, 'denied', 'again', new Date())).toThrow(
+      /already resolved/,
+    );
+  });
+
+  it('the partner-side resolveDispute never sets a resolution outcome', () => {
+    const resolved = resolveDispute(createDispute(input()), 'Dismissed');
+    expect(resolved.resolution).toBeNull();
   });
 });

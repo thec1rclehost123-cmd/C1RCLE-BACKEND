@@ -27,6 +27,7 @@ export * from './models/dispute.js';
 export * from './models/refund-request.js';
 export * from './models/leaderboard.js';
 export * from './models/email-otp.js';
+export type * from './models/platform-user.js';
 export * from './ports/email-sender.js';
 export * from './events.js';
 export * from './ports/outbox.js';

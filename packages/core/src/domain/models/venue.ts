@@ -179,6 +179,17 @@ export function updateVenue(venue: Venue, update: VenueUpdate, now?: Date): Venu
 }
 
 /**
+ * Suspends a venue (admin dual-control resolution for `VENUE_SUSPEND`).
+ * Mirrors `suspendOrganization`'s shape. Reactivation is a separate product
+ * decision and intentionally not modelled here.
+ */
+export function suspendVenue(venue: Venue, now?: Date): Venue {
+  if (venue.status === 'suspended') return venue;
+  const ts = (now ?? new Date()).toISOString();
+  return { ...venue, status: 'suspended', version: venue.version + 1, updatedAt: ts };
+}
+
+/**
  * ─── Venue slots ──────────────────────────────────────────────────────────────
  * A slot is an offered time window (recurring intents handled upstream).
  */

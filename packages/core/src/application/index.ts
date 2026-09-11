@@ -37,6 +37,7 @@ export type { RequestPartnershipCommand } from './partnerships/partnership-servi
 export { PublicService } from './public/public-service.js';
 export { AdminAuthorityService } from './admin/admin-authority-service.js';
 export type { ProposeCommand, AuditInput } from './admin/admin-authority-service.js';
+export { AdminOperationsService } from './admin/admin-ops-service.js';
 export { OnboardingService } from './onboarding/onboarding-service.js';
 export type {
   StartApplicationCommand,
@@ -127,6 +128,7 @@ export type {
   RaiseDisputeInput,
 } from './finance/dispute-service.js';
 export { createDisputeService } from './finance/dispute-service.js';
+export { AdminDisputeService } from './finance/admin-dispute-service.js';
 export type { RequestRefundCommand } from './finance/refund-service.js';
 export { RefundService } from './finance/refund-service.js';
 export type { LeaderboardService, LeaderboardServiceDeps } from './finance/leaderboard-service.js';

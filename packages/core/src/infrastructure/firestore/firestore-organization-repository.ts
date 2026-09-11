@@ -44,6 +44,10 @@ export class FirestoreOrganizationRepository implements OrganizationRepository {
     return paginateQuery(base, query, toOrganization);
   }
 
+  async listAll(query: PaginationQuery): Promise<Page<Organization>> {
+    return paginateQuery(this.collection, query, toOrganization);
+  }
+
   async listMembers(
     organizationId: EntityId,
     query: PaginationQuery,

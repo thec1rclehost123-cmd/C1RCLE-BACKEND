@@ -63,6 +63,7 @@ import type {
 } from '../models/organization.js';
 import type { Partnership } from '../models/partnership.js';
 import type { Payout, PayoutStatus } from '../models/payout.js';
+import type { PlatformUser } from '../models/platform-user.js';
 import type { PromoterConnection } from '../models/promoter-connection.js';
 import type { ReferralLink } from '../models/referral-link.js';
 import type { AdminRefundRequest, AdminRefundRequestStatus } from '../models/refund-request.js';
@@ -109,10 +110,22 @@ export interface OrganizationRepository {
   getBySlug(slug: string): Promise<Organization | null>;
   /** All orgs a user id belongs to as a member. */
   listForMember(userId: EntityId, query: PaginationQuery): Promise<Page<Organization>>;
+  /** Platform-wide org directory (admin hosts view) — global, not org-scoped. */
+  listAll(query: PaginationQuery): Promise<Page<Organization>>;
   listMembers(organizationId: EntityId, query: PaginationQuery): Promise<Page<OrganizationMember>>;
   getMember(organizationId: EntityId, userId: EntityId): Promise<OrganizationMember | null>;
   save(org: Organization, tx?: TxContext | null): Promise<void>;
   delete(organizationId: EntityId, tx?: TxContext | null): Promise<void>;
+}
+
+/**
+ * Platform user directory (admin users view). READ-ONLY by design — admin
+ * routes never mutate Better Auth accounts. Implementations read the
+ * `v2_auth_users` collection (firestore) or an in-memory seed (memory driver).
+ */
+export interface UserAccountRepository {
+  /** Platform-wide user directory — global, not org-scoped. */
+  listAll(query: PaginationQuery): Promise<Page<PlatformUser>>;
 }
 
 /**
@@ -181,6 +194,8 @@ export interface VenueRepository {
    * addresses a venue by slug alone, with no tenant context of its own. */
   getBySlugGlobal(slug: string): Promise<Venue | null>;
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Venue>>;
+  /** Platform-wide venue directory (admin venues view) — global, not org-scoped. */
+  listAll(query: PaginationQuery): Promise<Page<Venue>>;
   save(venue: Venue, tx?: TxContext | null): Promise<void>;
 }
 
@@ -205,6 +220,8 @@ export interface EventRepository {
   getBySlug(slug: string): Promise<Event | null>;
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Event>>;
   listByVenue(venueId: EntityId, query: PaginationQuery): Promise<Page<Event>>;
+  /** Platform-wide event directory (admin events view) — global, includes non-public. */
+  listAll(query: PaginationQuery): Promise<Page<Event>>;
   listPublic(query: PaginationQuery): Promise<Page<Event>>;
   save(event: Event, tx?: TxContext | null): Promise<void>;
   delete(eventId: EntityId, tx?: TxContext | null): Promise<void>;
@@ -714,6 +731,8 @@ export interface DisputeRepository {
     organizationId: EntityId,
     query: PaginationQuery & { status?: DisputeStatus },
   ): Promise<Page<Dispute>>;
+  /** Cross-org admin queue. */
+  listByStatus(status: DisputeStatus, query: PaginationQuery): Promise<Page<Dispute>>;
 }
 
 /** Admin refund requests (Phase 6 admin). Version-checked saves for the N-approver accumulator. */

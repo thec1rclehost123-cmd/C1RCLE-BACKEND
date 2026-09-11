@@ -128,6 +128,9 @@ export const resolveDisputeRequestSchema = z
   .strict();
 export type ResolveDisputeRequest = z.infer<typeof resolveDisputeRequestSchema>;
 
+export const disputeResolutionOutcomeSchema = z.enum(['upheld', 'denied']);
+export type DisputeResolutionOutcome = z.infer<typeof disputeResolutionOutcomeSchema>;
+
 export const disputeResponseSchema = z.object({
   id: opaqueIdSchema,
   organizationId: opaqueIdSchema,
@@ -139,11 +142,25 @@ export const disputeResponseSchema = z.object({
   status: z.enum(['open', 'under_review', 'resolved']),
   resolutionNote: z.string().nullable(),
   resolvedAt: z.iso.datetime().nullable(),
+  resolution: disputeResolutionOutcomeSchema.nullable(),
   createdAt: z.iso.datetime(),
 });
 export type DisputeResponse = z.infer<typeof disputeResponseSchema>;
 
 export const disputeListResponseSchema = paginatedSchema(disputeResponseSchema);
+
+// Admin dispute resolution (Phase 6 admin) — `upheld` writes a correcting
+// ledger entry, `denied` leaves the ledger untouched.
+export const adminDisputeStatusSchema = z.enum(['open', 'under_review', 'resolved']);
+export type AdminDisputeStatus = z.infer<typeof adminDisputeStatusSchema>;
+
+export const adminResolveDisputeSchema = z
+  .object({
+    outcome: disputeResolutionOutcomeSchema,
+    resolutionNote: z.string().min(1).max(2000),
+  })
+  .strict();
+export type AdminResolveDisputeInput = z.infer<typeof adminResolveDisputeSchema>;
 
 // Admin refund (Phase 6 admin) — amount-tiered approval over an order's
 // payment. See `packages/core/src/domain/models/refund-request.ts`.

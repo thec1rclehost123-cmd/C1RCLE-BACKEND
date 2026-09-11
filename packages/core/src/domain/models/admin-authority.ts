@@ -30,6 +30,7 @@ export type AdminAction =
   | 'VENUE_SUSPEND'
   | 'FINANCIAL_REFUND'
   | 'PAYOUT_BATCH_RUN'
+  | 'DISPUTE_RESOLVE'
   // TIER3
   | 'ADMIN_PROVISION'
   | 'COMMISSION_ADJUST'
@@ -43,6 +44,7 @@ const TIER2_ACTIONS: readonly AdminAction[] = [
   'VENUE_SUSPEND',
   'FINANCIAL_REFUND',
   'PAYOUT_BATCH_RUN',
+  'DISPUTE_RESOLVE',
 ];
 
 const TIER3_ACTIONS: readonly AdminAction[] = [
