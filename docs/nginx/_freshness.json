@@ -1,5 +1,5 @@
 {
-  "last_verified_commit": "782fd15",
+  "last_verified_commit": "a908dbe",
   "last_verified_date": "2026-09-10",
   "branch": "staging",
   "verification_command": "bash docs/nginx/regenerate.sh",

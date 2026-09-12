@@ -1,6 +1,6 @@
 # Architecture
 
-> **Last verified:** `69687f7` — 2026-09-09 — run `bash docs/nginx/regenerate.sh` to refresh
+> **Last verified:** `a908dbe` — 2026-09-10 — run `bash docs/nginx/regenerate.sh` to refresh
 
 This document describes the full nginx architecture: where it sits, what it
 touches, and what it deliberately does not touch.
@@ -287,7 +287,7 @@ flowchart TD
   PrefixAuth -->|"Yes"| AuthRate["Auth rate limit<br/>5r/s, burst=10"]
   PrefixAuth -->|"No"| PrefixAPI{"Starts with<br/>/api/v2/ ?"}
   PrefixAPI -->|"Yes"| GeneralRate["General rate limit<br/>10r/s, burst=20"]
-  PrefixAPI -->|"No"| NotFound["Nginx default 404"]
+  PrefixAPI -->|"No"| NotFound["Structured edge 404<br/>with request ID"]
 ```
 
 **Three tiers of routing:**
@@ -295,6 +295,8 @@ flowchart TD
 2. **Prefix match with priority** (`location ^~`): `/api/v2/auth/` catches auth
    routes before the general `/api/v2/` prefix
 3. **General prefix** (`location ^~`): `/api/v2/` catches everything else
+4. **Catch-all** (`location /`): rejects every non-API path with structured
+   JSON instead of serving the packaged Nginx document root
 
 **Security note:** `/api/v2/internal/readiness` and `/api/v2/internal/version`
 return `404` when the requesting IP is not in `NGINX_READINESS_TOKEN`.

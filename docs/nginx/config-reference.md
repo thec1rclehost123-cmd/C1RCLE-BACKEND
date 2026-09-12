@@ -1,6 +1,6 @@
 # Configuration Reference
 
-> **Last verified:** `69687f7` — 2026-09-09 — run `bash docs/nginx/regenerate.sh` to refresh
+> **Last verified:** `a908dbe` — 2026-09-10 — run `bash docs/nginx/regenerate.sh` to refresh
 
 This document maps every file under `deploy/nginx/` to its purpose, explains
 the include hierarchy, and documents the entrypoint rendering pipeline.
@@ -188,7 +188,8 @@ forwarded headers, blanks spoofable headers, and configures proxy behavior.
 **Path:** `deploy/nginx/snippets/api-locations.conf`
 
 **Purpose:** Defines all location blocks (health, readiness, version, auth,
-general API) and the structured error page responses.
+general API), the non-API structured 404 catch-all, and the structured error
+page responses.
 
 **See:** [`architecture.md`](./architecture.md) for the location matching order.
 

@@ -1,7 +1,8 @@
 # Sidecar Deployment (Option A — interim, budget-tier)
 
-> **Status:** Implemented and locally verified. **Not yet deployed to Render.**
-> **Last verified:** `782fd15` — 2026-09-10 — run `bash docs/nginx/regenerate.sh` to refresh
+> **Status:** Implemented, locally verified, and deployed to Render from
+> `staging` as the interim API edge.
+> **Last verified:** `a908dbe` — 2026-09-10 — run `bash docs/nginx/regenerate.sh` to refresh
 >
 > Companion docs: [`deployment.md`](./deployment.md) (the real two-service SOTA
 > topology this is an interim substitute for), [`sota-architecture.md`](./sota-architecture.md)
@@ -198,9 +199,16 @@ docker stop -t 10 c1rcle-sidecar-test
 # should stop within a few seconds (graceful trap), not hang until the 10s kill
 ```
 
-**Verified 2026-09-10:** image builds clean, runs as non-root (`docker
+**Verified locally 2026-09-10:** image builds clean, runs as non-root (`docker
 inspect --format='{{.Config.User}}'` → `app`), health check through nginx
 returns 200 with `X-Request-Id`/security headers, Fastify unreachable
+directly, graceful shutdown completes well under the stop timeout. Not yet
+verified locally: the paid two-service topology.
+
+**Verified on Render 2026-09-10:** `/api/v2/internal/health` returned 200
+through Nginx, `X-Request-Id` correlation was present, and
+`/api/v2/internal/version` reported build `ee9fad9`. The deployed service is
+the sidecar topology; this does not prove the paid two-service target.
 directly, graceful shutdown completes well under the stop timeout.
 
 **Post-deploy correction, same day:** the sidecar went live on Render and a
