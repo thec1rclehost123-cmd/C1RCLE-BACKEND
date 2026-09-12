@@ -182,10 +182,6 @@ function rejectPlaceholder(value, field, issues) {
   }
 }
 
-export function cidrToGeoLines(entries) {
-  return entries.map((entry) => `${entry} 1;`).join('\n');
-}
-
 export function validateStagingEnvironment(env = process.env) {
   const issues = [];
   const values = {};
@@ -244,12 +240,17 @@ export function validateStagingEnvironment(env = process.env) {
     addIssue(issues, 'FASTIFY_UPSTREAM', 'port must match Fastify PORT');
   }
 
-  const readinessCidrs = validateCidrList(
-    requireValue(env, issues, 'NGINX_READINESS_ALLOWLIST_CIDRS'),
-    'NGINX_READINESS_ALLOWLIST_CIDRS',
-    issues,
-  );
-  values.readinessCidrs = readinessCidrs;
+  // IP-based readiness gating (geo on $remote_addr) is a no-op on platforms
+  // whose edge/load-balancer terminates and reconnects to this container —
+  // $remote_addr then reflects the platform's internal hop for every
+  // request, real or attacker (confirmed on Render). The gate is a shared
+  // secret header instead; the value itself is the credential.
+  const readinessToken = requireValue(env, issues, 'NGINX_READINESS_TOKEN');
+  if (readinessToken && readinessToken.length < 16) {
+    addIssue(issues, 'NGINX_READINESS_TOKEN', 'must be at least 16 characters');
+  }
+  rejectPlaceholder(readinessToken, 'NGINX_READINESS_TOKEN', issues);
+  values.readinessToken = readinessToken;
 
   const trustedProxyCidrs = validateCidrList(
     requireValue(env, issues, 'TRUSTED_PROXY_CIDRS'),

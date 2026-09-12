@@ -82,15 +82,16 @@ client-provided `X-Request-Id` is not authoritative.
 
 - `/api/v2/internal/health` is public so an edge or process monitor can check
   that the gateway is alive.
-- `/api/v2/internal/readiness` is denied with `404` unless the rendered profile
-  includes the deployment's explicit `NGINX_READINESS_ALLOWLIST_LINES`.
-- `/api/v2/internal/version` follows the same readiness allowlist boundary.
+- `/api/v2/internal/readiness` is denied with `404` unless the request carries
+  an `X-Readiness-Token` header matching the deployment's `NGINX_READINESS_TOKEN`.
+- `/api/v2/internal/version` follows the same token boundary.
 
-Do not put a public load balancer, provider health-check CIDR, or private
-network range into the repository. Supply the actual values at deployment
-time. For local-only validation, `127.0.0.1/32 1;` is used as an explicit
-example; it must not be reused for production unless it is the verified probe
-source.
+This is a shared-secret header, not an IP allowlist. An IP-based `geo` gate
+(matching on `$remote_addr`) was the original design but does not work on
+platforms whose edge/load-balancer terminates and reconnects to the
+container — `$remote_addr` then reflects the platform's internal hop for
+every request, real or attacker, confirmed on Render. Do not put the secret
+value in the repository. Supply it at deployment time.
 
 ## Local container integration
 
@@ -154,9 +155,8 @@ least:
 - `FASTIFY_UPSTREAM` — one resolvable Fastify host and port, such as an
   orchestrator service name; never a guessed address.
 - `NGINX_SERVER_NAME` — the verified API hostname.
-- `NGINX_READINESS_ALLOWLIST_LINES` — explicit Nginx `geo` entries for the
-  verified health-check source networks, for example a deployment-generated
-  set of `CIDR 1;` lines.
+- `NGINX_READINESS_TOKEN` — a 32+ byte random secret; callers must send it
+  as `X-Readiness-Token` to reach `/readiness` and `/version`.
 - `NGINX_HTTP_PORT` — the explicit staging or production HTTP listener. The
   container entrypoint falls back to the platform-provided `PORT` for Render
   Web Services.

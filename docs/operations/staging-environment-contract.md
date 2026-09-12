@@ -18,7 +18,7 @@ none are hardcoded in the repository. Run
 | `NGINX_HTTP_PORT` | non-Render deployments only | Explicit Nginx HTTP listener; the container falls back to `PORT`. |
 | `NGINX_HTTPS_PORT` | only for `nginx` TLS | Nginx HTTPS listen port. It is not required when TLS is external. |
 | `TRUSTED_PROXY_CIDRS` | yes | Exact Nginx/LB/ingress peer CIDRs consumed by Fastify. `/0` is rejected. |
-| `NGINX_READINESS_ALLOWLIST_CIDRS` | yes | Exact health-check source CIDRs. `/0` is rejected. The renderer converts these into Nginx `geo` entries. |
+| `NGINX_READINESS_TOKEN` | yes | 32+ byte random secret. Callers send it as `X-Readiness-Token` to reach `/readiness`/`/version`. Not an IP allowlist — Render's edge terminates and reconnects, so `$remote_addr` cannot gate this. |
 | `NGINX_FORWARDED_PROTO` | only for `external` TLS | Deployment-owned public scheme. Set `https` for Render. Incoming forwarding headers are ignored. |
 | `HOST` | yes | `0.0.0.0` or `::` inside the private Fastify runtime. |
 
@@ -105,7 +105,7 @@ private service address from Render's Connect panel as `FASTIFY_UPSTREAM`.
 
 Render Private Services support only TCP health checks. Configure the public
 Nginx Web Service HTTP health path as `/api/v2/internal/health`; keep readiness
-and version restricted by `NGINX_READINESS_ALLOWLIST_LINES`. The exact stable
+and version restricted by `NGINX_READINESS_TOKEN`. The exact stable
 source range that Fastify should trust for the Nginx private hop is not
 published in the repository or Render's general private-network documentation.
 `TRUSTED_PROXY_CIDRS` therefore remains a blocking value to obtain and verify;

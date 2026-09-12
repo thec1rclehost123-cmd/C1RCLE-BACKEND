@@ -12,7 +12,7 @@ function validEnvironment(overrides = {}) {
     FASTIFY_UPSTREAM: 'fastify.internal:8080',
     FASTIFY_PORT: '8080',
     PORT: '18080',
-    NGINX_READINESS_ALLOWLIST_CIDRS: '10.20.0.0/16,2001:db8:1::/64',
+    NGINX_READINESS_TOKEN: 'test-fixture-readiness-token-value',
     NGINX_FORWARDED_PROTO: 'https',
     TRUSTED_PROXY_CIDRS: '10.30.0.0/16,2001:db8:2::/64',
     PUBLIC_API_URL: 'https://api.staging.c1rcle.com',
@@ -146,7 +146,7 @@ test('reports missing values and malformed infrastructure inputs together', () =
     ...validEnvironment(),
     FASTIFY_UPSTREAM: '',
     NGINX_SERVER_NAME: 'https://not-a-host',
-    NGINX_READINESS_ALLOWLIST_CIDRS: '0.0.0.0/0',
+    NGINX_READINESS_TOKEN: 'too-short',
     TRUSTED_PROXY_CIDRS: 'not-a-cidr',
     ALLOWED_ORIGINS: 'http://localhost:3000',
     BETTER_AUTH_TRUSTED_ORIGINS: '',
@@ -154,7 +154,7 @@ test('reports missing values and malformed infrastructure inputs together', () =
   });
   assert.equal(result.ok, false);
   assert.match(result.issues.join('\n'), /FASTIFY_UPSTREAM/);
-  assert.match(result.issues.join('\n'), /NGINX_READINESS_ALLOWLIST_CIDRS/);
+  assert.match(result.issues.join('\n'), /NGINX_READINESS_TOKEN/);
   assert.match(result.issues.join('\n'), /TRUSTED_PROXY_CIDRS/);
   assert.match(result.issues.join('\n'), /ALLOWED_ORIGINS/);
   assert.match(result.issues.join('\n'), /BETTER_AUTH_TRUSTED_ORIGINS/);

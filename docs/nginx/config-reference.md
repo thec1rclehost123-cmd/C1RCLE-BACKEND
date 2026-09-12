@@ -121,7 +121,7 @@ are injected via `envsubst`. No TLS — Render handles TLS termination.
 - `${NGINX_HTTP_PORT}` — public listener (Render injects `PORT`)
 - `${NGINX_SERVER_NAME}` — verified staging hostname
 - `${NGINX_FORWARDED_PROTO}` — must be `https` for Render
-- `${NGINX_READINESS_ALLOWLIST_LINES}` — `CIDR 1;` lines for health-check IPs
+- `${NGINX_READINESS_TOKEN}` — shared secret, required in the `X-Readiness-Token` header to reach `/readiness` and `/version`
 
 ```mermaid
 flowchart LR
@@ -293,8 +293,8 @@ variables like `$host` or `$request_uri`.
 ```mermaid
 flowchart TD
   Start["Container start"] --> Profile{"NGINX_PROFILE?"}
-  Profile -->|staging| StagingEnv["Require:<br/>FASTIFY_UPSTREAM<br/>NGINX_HTTP_PORT<br/>NGINX_SERVER_NAME<br/>NGINX_READINESS_ALLOWLIST_LINES<br/>NGINX_FORWARDED_PROTO"]
-  Profile -->|production| ProdEnv["Require:<br/>FASTIFY_UPSTREAM<br/>NGINX_HTTP_PORT<br/>NGINX_HTTPS_PORT<br/>NGINX_SERVER_NAME<br/>NGINX_READINESS_ALLOWLIST_LINES<br/>NGINX_TLS_CERTIFICATE<br/>NGINX_TLS_CERTIFICATE_KEY"]
+  Profile -->|staging| StagingEnv["Require:<br/>FASTIFY_UPSTREAM<br/>NGINX_HTTP_PORT<br/>NGINX_SERVER_NAME<br/>NGINX_READINESS_TOKEN<br/>NGINX_FORWARDED_PROTO"]
+  Profile -->|production| ProdEnv["Require:<br/>FASTIFY_UPSTREAM<br/>NGINX_HTTP_PORT<br/>NGINX_HTTPS_PORT<br/>NGINX_SERVER_NAME<br/>NGINX_READINESS_TOKEN<br/>NGINX_TLS_CERTIFICATE<br/>NGINX_TLS_CERTIFICATE_KEY"]
   Profile -->|other| Error["Exit 64<br/>NGINX_PROFILE must be<br/>staging or production"]
 
   StagingEnv --> Validate["Validate:<br/>- Port numbers are integers<br/>- FASTIFY_UPSTREAM has no scheme/path<br/>- NGINX_FORWARDED_PROTO is http or https"]

@@ -130,10 +130,10 @@ The internal routes (`/api/v2/internal/*`) are behind Nginx but gated:
 ```mermaid
 flowchart TD
   HealthReq["GET /api/v2/internal/health"] --> HealthCheck["Always accessible<br/>(no allowlist check)"]
-  ReadinessReq["GET /api/v2/internal/readiness"] --> ReadinessCheck{"IP in<br/>NGINX_READINESS_ALLOWLIST?"}
+  ReadinessReq["GET /api/v2/internal/readiness"] --> ReadinessCheck{"X-Readiness-Token<br/>matches NGINX_READINESS_TOKEN?"}
   ReadinessCheck -->|Yes| ReadinessOK["Proxy to Fastify"]
   ReadinessCheck -->|No| Readiness404["404 Not Found"]
-  VersionReq["GET /api/v2/internal/version"] --> VersionCheck{"IP in<br/>NGINX_READINESS_ALLOWLIST?"}
+  VersionReq["GET /api/v2/internal/version"] --> VersionCheck{"X-Readiness-Token<br/>matches NGINX_READINESS_TOKEN?"}
   VersionCheck -->|Yes| VersionOK["Proxy to Fastify"]
   VersionCheck -->|No| Version404["404 Not Found"]
 ```

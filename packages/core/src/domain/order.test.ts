@@ -10,14 +10,18 @@ import {
   voidEntitlement,
 } from './models/entitlement.js';
 import {
+  applyOrderRefund,
   attachPaymentIntent,
   cancelOrder,
   createOrder,
   expireOrder,
   holdsInventory,
   isReservationExpired,
+  lockOrderForRefund,
   markFailed,
   markPaid,
+  refundableBalance,
+  restoreOrderAfterRefundFailure,
   totalUnits,
 } from './models/order.js';
 import { calculatePricing } from './models/pricing.js';
@@ -275,5 +279,96 @@ describe('scanning', () => {
     entitlement = scanEntitlement(entitlement, T0);
     expect(entitlement.status).toBe('redeemed');
     expect(voidEntitlement(entitlement, T0).status).toBe('void');
+  });
+});
+
+describe('admin refunds', () => {
+  it('starts with the full grand total refundable', () => {
+    const order = paidOrder();
+    expect(refundableBalance(order)).toBe(order.grandTotalPaise);
+    expect(order.refundedPaise).toBe(0);
+  });
+
+  it('locks a paid order into refund_requested', () => {
+    const locked = lockOrderForRefund(paidOrder(), T0);
+    expect(locked.status).toBe('refund_requested');
+  });
+
+  it('refuses to lock an order that is not paid', () => {
+    expect(() => lockOrderForRefund(order(), T0)).toThrow(StateTransitionError);
+  });
+
+  it('locking an already-locked order is an idempotent no-op, not a re-lock', () => {
+    // Same-state transitions are a deliberate no-op across this codebase
+    // (see fsm.ts) — safe for a caller to retry. Preventing a genuinely
+    // second, concurrent refund request for the same order is
+    // RefundRequest's own uniqueness invariant, not this FSM's job.
+    const locked = lockOrderForRefund(paidOrder(), T0);
+    const relocked = lockOrderForRefund(locked, T0);
+    expect(relocked.status).toBe('refund_requested');
+    expect(relocked.version).toBe(locked.version);
+  });
+
+  it('a partial refund returns the order to paid with the remainder still refundable', () => {
+    const locked = lockOrderForRefund(paidOrder(), T0);
+    const partial = Math.floor(locked.grandTotalPaise / 2);
+    const refunded = applyOrderRefund(locked, partial, T0);
+    expect(refunded.status).toBe('paid');
+    expect(refunded.refundedPaise).toBe(partial);
+    expect(refundableBalance(refunded)).toBe(locked.grandTotalPaise - partial);
+  });
+
+  it('a refund that exhausts the balance reaches the terminal refunded status', () => {
+    const locked = lockOrderForRefund(paidOrder(), T0);
+    const full = applyOrderRefund(locked, locked.grandTotalPaise, T0);
+    expect(full.status).toBe('refunded');
+    expect(refundableBalance(full)).toBe(0);
+  });
+
+  it('two partial refunds in sequence fully exhaust the balance', () => {
+    let ord = paidOrder();
+    const total = ord.grandTotalPaise;
+    const first = Math.floor(total / 2);
+
+    ord = lockOrderForRefund(ord, T0);
+    ord = applyOrderRefund(ord, first, T0);
+    expect(ord.status).toBe('paid');
+
+    ord = lockOrderForRefund(ord, T0);
+    ord = applyOrderRefund(ord, total - first, T0);
+    expect(ord.status).toBe('refunded');
+    expect(ord.refundedPaise).toBe(total);
+  });
+
+  it('refuses a refund larger than the remaining balance', () => {
+    const locked = lockOrderForRefund(paidOrder(), T0);
+    expect(() => applyOrderRefund(locked, locked.grandTotalPaise + 1, T0)).toThrow(
+      InvalidOperationError,
+    );
+  });
+
+  it('refuses to apply a refund to an order that is not locked', () => {
+    expect(() => applyOrderRefund(paidOrder(), 1000, T0)).toThrow(InvalidOperationError);
+  });
+
+  it('restores a locked order back to paid on refund failure — never a hardcoded status', () => {
+    const locked = lockOrderForRefund(paidOrder(), T0);
+    const restored = restoreOrderAfterRefundFailure(locked, T0);
+    expect(restored.status).toBe('paid');
+    // The remainder is untouched — a failed settlement never partially applies.
+    expect(restored.refundedPaise).toBe(0);
+  });
+
+  it('refuses to restore an order that was never locked', () => {
+    expect(() => restoreOrderAfterRefundFailure(paidOrder(), T0)).toThrow(InvalidOperationError);
+  });
+
+  it('a restored order can be locked and refunded again — the door was not silently reopened', () => {
+    let ord = lockOrderForRefund(paidOrder(), T0);
+    ord = restoreOrderAfterRefundFailure(ord, T0);
+    expect(ord.status).toBe('paid');
+    ord = lockOrderForRefund(ord, T0);
+    ord = applyOrderRefund(ord, ord.grandTotalPaise, T0);
+    expect(ord.status).toBe('refunded');
   });
 });

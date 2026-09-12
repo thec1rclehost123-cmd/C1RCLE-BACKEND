@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { assertValidStagingEnvironment, cidrToGeoLines } from './validate-environment.mjs';
+import { assertValidStagingEnvironment } from './validate-environment.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(here, '../..');
@@ -38,7 +38,7 @@ export function renderStagingNginx(environment = process.env) {
     NGINX_SERVER_NAME: result.values.serverName,
     NGINX_TLS_CERTIFICATE: result.values.tlsCertificate,
     NGINX_TLS_CERTIFICATE_KEY: result.values.tlsCertificateKey,
-    NGINX_READINESS_ALLOWLIST_LINES: cidrToGeoLines(result.values.readinessCidrs),
+    NGINX_READINESS_TOKEN: result.values.readinessToken,
     NGINX_FORWARDED_PROTO: result.values.forwardedProto,
   };
 

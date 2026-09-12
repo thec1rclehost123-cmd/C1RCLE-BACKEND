@@ -30,6 +30,7 @@ import {
   createPayoutService,
   createBankAccountService,
   createDisputeService,
+  RefundService,
   createLeaderboardService,
   createEmailOtpService,
   type ScannerService,
@@ -149,6 +150,8 @@ export interface PartnerV2Services {
   bankAccount: BankAccountService;
   /** Phase 6: dispute lifecycle. */
   dispute: DisputeService;
+  /** Phase 6 admin: amount-tiered refund approval over an order's payment. */
+  refund: RefundService;
   /** Phase 6: promoter leaderboard. */
   leaderboard: LeaderboardService;
   /** Email OTP (signup verification). */
@@ -367,6 +370,8 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     config: coreConfig,
   });
 
+  const refund = new RefundService(deps, adminAuthority);
+
   const leaderboard = createLeaderboardService({
     leaderboard: repositories.leaderboard,
     config: coreConfig,
@@ -415,6 +420,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     payout,
     bankAccount,
     dispute,
+    refund,
     leaderboard,
     emailOtp,
   };

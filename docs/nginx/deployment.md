@@ -109,8 +109,11 @@ omitted.
 | `NGINX_ADMIN_SERVER_NAME` | ignored | required | `admin.circle1.com` |
 | `NGINX_API_SERVER_NAME` | ignored | optional → `NGINX_SERVER_NAME` | `staging-api.circle1.com` |
 
-> `NGINX_READINESS_ALLOWLIST_LINES` stays required — the geo decision is per
-> request and every rendered profile (api-only and full-edge) enforces it.
+> `NGINX_READINESS_TOKEN` stays required — the shared-secret header check is
+> evaluated per request and every rendered profile (api-only and full-edge)
+> enforces it. IP-based gating was tried first and found to be a no-op on
+> Render (the container never sees the real client IP — see
+> `issues-and-gaps.md`), hence the header-based mechanism.
 
 ### Full-Edge BFF Services
 
@@ -139,7 +142,7 @@ docker run --rm -e NGINX_VALIDATE_ONLY=1 -e NGINX_PROFILE=staging \
   -e FASTIFY_UPSTREAM=circle-v2-backend-staging:8080 \
   -e NGINX_SERVER_NAME=staging-api.circle1.com \
   -e NGINX_FORWARDED_PROTO=https \
-  -e NGINX_READINESS_ALLOWLIST_LINES="10.0.0.0/8 1;" \
+  -e NGINX_READINESS_TOKEN="a-real-32-byte-hex-secret" \
   c1rcle-nginx:test
 
 docker run --rm -e NGINX_VALIDATE_ONLY=1 -e NGINX_PROFILE=staging \
@@ -153,7 +156,7 @@ docker run --rm -e NGINX_VALIDATE_ONLY=1 -e NGINX_PROFILE=staging \
   -e NGINX_ADMIN_SERVER_NAME=admin.circle1.com \
   -e NGINX_SERVER_NAME=staging-api.circle1.com \
   -e NGINX_FORWARDED_PROTO=https \
-  -e NGINX_READINESS_ALLOWLIST_LINES="10.0.0.0/8 1;" \
+  -e NGINX_READINESS_TOKEN="a-real-32-byte-hex-secret" \
   c1rcle-nginx:test
 
 # Repeat the full-edge run with NGINX_PROFILE=production and the TLS vars to
@@ -176,7 +179,7 @@ run exits 0; a bad template exits 64 with a message.
 | `NGINX_HTTP_PORT` | (omit — Render injects `PORT`) | Render platform |
 | `NGINX_SERVER_NAME` | `staging-api.circle1.com` | Dashboard |
 | `NGINX_FORWARDED_PROTO` | `https` | Dashboard |
-| `NGINX_READINESS_ALLOWLIST_LINES` | `10.0.0.0/8 1;` (actual CIDRs) | Dashboard |
+| `NGINX_READINESS_TOKEN` | 32+ byte random secret (Dashboard "Generate") | Dashboard |
 
 ### Fastify Backend Service
 

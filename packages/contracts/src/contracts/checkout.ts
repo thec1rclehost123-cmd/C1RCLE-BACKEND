@@ -135,6 +135,8 @@ const checkoutOrderStatusSchema = z.enum([
   'expired',
   'cancelled',
   'failed',
+  /** A refund is being settled with the payment provider (Phase 6 admin). */
+  'refund_requested',
   'refunded',
 ]);
 
@@ -175,6 +177,7 @@ export const checkoutOrderDtoSchema = z.object({
   paidAt: z.iso.datetime().nullable(),
   reservationExpiresAt: z.iso.datetime(),
   failureReason: z.string().nullable(),
+  refundedPaise: z.number().int().nonnegative(),
   version: z.number().int().positive(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),

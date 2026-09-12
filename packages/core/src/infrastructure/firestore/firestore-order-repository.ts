@@ -100,6 +100,7 @@ function toDoc(order: Order): DocumentData {
     paidAt: order.paidAt,
     reservationExpiresAt: order.reservationExpiresAt,
     failureReason: order.failureReason,
+    refundedPaise: order.refundedPaise,
     version: order.version,
     createdAt: order.createdAt,
     updatedAt: order.updatedAt,
@@ -130,6 +131,9 @@ function toOrder(data: DocumentData): Order {
     paidAt: data.paidAt as string | null,
     reservationExpiresAt: data.reservationExpiresAt as string,
     failureReason: data.failureReason as string | null,
+    // Existing orders written before this field existed have no value —
+    // they predate refunds, so zero is the correct read, not a guess.
+    refundedPaise: (data.refundedPaise as number | undefined) ?? 0,
     version: data.version as number,
     createdAt: data.createdAt as string,
     updatedAt: data.updatedAt as string,
