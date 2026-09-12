@@ -1,7 +1,11 @@
 import { InvalidOperationError, NotFoundError } from '../../domain/errors.js';
 import { isExecutable } from '../../domain/models/admin-authority.js';
-import { adjustPlatformFeePercent } from '../../domain/models/organization.js';
-import { suspendVenue } from '../../domain/models/venue.js';
+import {
+  adjustPlatformFeePercent,
+  reinstateOrganization,
+  suspendOrganization,
+} from '../../domain/models/organization.js';
+import { reinstateVenue, suspendVenue } from '../../domain/models/venue.js';
 
 import type { AdminAuthorityService } from './admin-authority-service.js';
 import type { EntityId } from '../../domain/identity.js';
@@ -144,10 +148,84 @@ export class AdminOperationsService {
     return adjusted;
   }
 
+  /** Reinstates a suspended venue. TIER2, direct command, mirrors `suspendVenue`. */
+  async reinstateVenue(adminUserId: EntityId, venueId: EntityId): Promise<Venue> {
+    const admin = await this.authority.authorize(adminUserId, 'VENUE_REINSTATE');
+    const venue = await this.requireVenue(venueId);
+    const now = this.deps.config.clock.now();
+    const reinstated = reinstateVenue(venue, now);
+    if (reinstated === venue) return venue;
+    await this.venues.save(reinstated);
+    await this.authority.record(admin, {
+      action: 'VENUE_REINSTATE',
+      targetType: 'venue',
+      targetId: venue.id,
+      before: { status: venue.status },
+      after: { status: reinstated.status },
+      reason: null,
+    });
+    return reinstated;
+  }
+
+  /**
+   * Suspends an organization. TIER2, direct command. V1 modelled host/venue/
+   * promoter as separate entity types with separate suspend actions; v2
+   * unifies them into `Organization` (capabilities live on members, not on
+   * a type-per-tenant), so this single action covers all three.
+   */
+  async suspendOrganization(
+    adminUserId: EntityId,
+    organizationId: EntityId,
+  ): Promise<Organization> {
+    const admin = await this.authority.authorize(adminUserId, 'ORGANIZATION_SUSPEND');
+    const org = await this.requireOrganization(organizationId);
+    const now = this.deps.config.clock.now();
+    const suspended = suspendOrganization(org, now);
+    if (suspended === org) return org;
+    await this.organizations.save(suspended);
+    await this.authority.record(admin, {
+      action: 'ORGANIZATION_SUSPEND',
+      targetType: 'organization',
+      targetId: org.id,
+      before: { status: org.status },
+      after: { status: suspended.status },
+      reason: null,
+    });
+    return suspended;
+  }
+
+  /** Reinstates a suspended organization. TIER2, direct command. */
+  async reinstateOrganization(
+    adminUserId: EntityId,
+    organizationId: EntityId,
+  ): Promise<Organization> {
+    const admin = await this.authority.authorize(adminUserId, 'ORGANIZATION_REINSTATE');
+    const org = await this.requireOrganization(organizationId);
+    const now = this.deps.config.clock.now();
+    const reinstated = reinstateOrganization(org, now);
+    if (reinstated === org) return org;
+    await this.organizations.save(reinstated);
+    await this.authority.record(admin, {
+      action: 'ORGANIZATION_REINSTATE',
+      targetType: 'organization',
+      targetId: org.id,
+      before: { status: org.status },
+      after: { status: reinstated.status },
+      reason: null,
+    });
+    return reinstated;
+  }
+
   private async requireVenue(venueId: EntityId): Promise<Venue> {
     const venue = await this.venues.getById(venueId);
     if (!venue) throw new NotFoundError('venue', venueId);
     return venue;
+  }
+
+  private async requireOrganization(organizationId: EntityId): Promise<Organization> {
+    const org = await this.organizations.getById(organizationId);
+    if (!org) throw new NotFoundError('organization', organizationId);
+    return org;
   }
 }
 

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { adjustPlatformFeePercent, createOrganization } from './models/organization.js';
+import {
+  adjustPlatformFeePercent,
+  createOrganization,
+  reinstateOrganization,
+  suspendOrganization,
+} from './models/organization.js';
 
 import type { Organization } from './models/organization.js';
 
@@ -46,5 +51,38 @@ describe('adjustPlatformFeePercent', () => {
     const before = org({ platformFeePercent: 15 });
     expect(() => adjustPlatformFeePercent(before, 0, new Date())).not.toThrow();
     expect(() => adjustPlatformFeePercent(before, 100, new Date())).not.toThrow();
+  });
+});
+
+describe('suspendOrganization / reinstateOrganization', () => {
+  it('suspends an active org and bumps the version', () => {
+    const before = org({ status: 'active' });
+    const after = suspendOrganization(before, new Date());
+    expect(after.status).toBe('suspended');
+    expect(after.version).toBe(before.version + 1);
+  });
+
+  it('suspending an already-suspended org is a no-op', () => {
+    const before = org({ status: 'suspended' });
+    const after = suspendOrganization(before, new Date());
+    expect(after).toBe(before);
+  });
+
+  it('reinstates a suspended org back to the literal "active" status', () => {
+    const before = org({ status: 'suspended' });
+    const after = reinstateOrganization(before, new Date());
+    expect(after.status).toBe('active');
+    expect(after.version).toBe(before.version + 1);
+  });
+
+  it('reinstating an already-active org is a no-op', () => {
+    const before = org({ status: 'active' });
+    const after = reinstateOrganization(before, new Date());
+    expect(after).toBe(before);
+  });
+
+  it('refuses to reinstate an archived org', () => {
+    const before = org({ status: 'archived' });
+    expect(() => reinstateOrganization(before, new Date())).toThrow(/archived/);
   });
 });

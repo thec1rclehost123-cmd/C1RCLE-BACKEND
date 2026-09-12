@@ -24,6 +24,7 @@ import type { FastifyInstance } from 'fastify';
 const services = createV2Services();
 
 const proposalIdParam = z.object({ proposalId: opaqueIdSchema });
+const organizationIdParam = z.object({ organizationId: opaqueIdSchema });
 const commandHeaders = z.looseObject({ 'idempotency-key': idempotencyKeySchema });
 
 function hostToDto(org: Organization) {
@@ -74,6 +75,84 @@ export default async function adminOrganizationActionRoutes(fastify: FastifyInst
               conflictId: v2Headers['idempotency-key'],
             })
           : mapDomainError(reply, request, proposalId, error),
+      );
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
+
+  fastify.post(
+    '/admin/organizations/:organizationId/suspend',
+    {
+      preHandler: [
+        fastify.rateLimit('SENSITIVE_COMMAND'),
+        fastify.validateV2({ params: organizationIdParam, headers: commandHeaders }),
+      ],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+      const { organizationId } = request.params as z.infer<typeof organizationIdParam>;
+      const v2Headers = request.v2Headers ?? {};
+
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: userId,
+        commandName: 'admin.organization.suspend',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { organizationId }, body: {} },
+        run: async () => {
+          const org = await services.adminOps.suspendOrganization(userId, organizationId);
+          const validated = validateV2Response(reply, request, adminHostDtoSchema, hostToDto(org));
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
+        },
+      }).catch((error: unknown) =>
+        isIdempotencyConflict(error)
+          ? mapDomainError(reply, request, organizationId, error, {
+              conflictId: v2Headers['idempotency-key'],
+            })
+          : mapDomainError(reply, request, organizationId, error),
+      );
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
+
+  fastify.post(
+    '/admin/organizations/:organizationId/reinstate',
+    {
+      preHandler: [
+        fastify.rateLimit('SENSITIVE_COMMAND'),
+        fastify.validateV2({ params: organizationIdParam, headers: commandHeaders }),
+      ],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+      const { organizationId } = request.params as z.infer<typeof organizationIdParam>;
+      const v2Headers = request.v2Headers ?? {};
+
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: userId,
+        commandName: 'admin.organization.reinstate',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { organizationId }, body: {} },
+        run: async () => {
+          const org = await services.adminOps.reinstateOrganization(userId, organizationId);
+          const validated = validateV2Response(reply, request, adminHostDtoSchema, hostToDto(org));
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
+        },
+      }).catch((error: unknown) =>
+        isIdempotencyConflict(error)
+          ? mapDomainError(reply, request, organizationId, error, {
+              conflictId: v2Headers['idempotency-key'],
+            })
+          : mapDomainError(reply, request, organizationId, error),
       );
       if (result === undefined) return reply;
       return reply.status(result.statusCode).send(result.body);

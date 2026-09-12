@@ -304,6 +304,61 @@ describe('VENUE_SUSPEND (TIER2, direct command)', () => {
   });
 });
 
+describe('VENUE_REINSTATE (TIER2, direct command)', () => {
+  it('reinstates a suspended venue to the literal "active" status', async () => {
+    await seedAdmin('admin_a', 'ops');
+    const venue = await seedVenue();
+    await services
+      .repos()
+      .venues.save({ ...venue, status: 'suspended', version: venue.version + 1 });
+
+    const executed = await server.inject({
+      method: 'POST',
+      url: `/admin/venues/${venue.id}/reinstate`,
+      headers: asUser('admin_a'),
+    });
+
+    expect(executed.statusCode).toBe(200);
+    expect(executed.json()).toMatchObject({ id: venue.id, status: 'active' });
+
+    const audit = await server.inject({
+      method: 'GET',
+      url: '/admin/audit?limit=10',
+      headers: { 'x-user-id': 'admin_a' },
+    });
+    const records = audit.json().items as { action: string; targetType: string }[];
+    expect(records.some((record) => record.action === 'VENUE_REINSTATE')).toBe(true);
+  });
+
+  it('refuses a role below TIER2', async () => {
+    await seedAdmin('admin_support', 'support');
+    const venue = await seedVenue();
+    await services
+      .repos()
+      .venues.save({ ...venue, status: 'suspended', version: venue.version + 1 });
+
+    const executed = await server.inject({
+      method: 'POST',
+      url: `/admin/venues/${venue.id}/reinstate`,
+      headers: asUser('admin_support'),
+    });
+    expect(executed.statusCode).toBe(403);
+  });
+
+  it('repeat reinstate is idempotent (200, still active)', async () => {
+    await seedAdmin('admin_a', 'ops');
+    const venue = await seedVenue();
+
+    const first = await server.inject({
+      method: 'POST',
+      url: `/admin/venues/${venue.id}/reinstate`,
+      headers: asUser('admin_a'),
+    });
+    expect(first.statusCode).toBe(200);
+    expect(first.json().status).toBe('active');
+  });
+});
+
 describe('GET /admin/audit/export.csv', () => {
   it('returns CSV with a recorded ADMIN_EXPORT row', async () => {
     await seedAdmin('admin_a', 'ops');

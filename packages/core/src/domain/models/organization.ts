@@ -233,11 +233,32 @@ export function removeMember(org: Organization, userId: EntityId, now?: Date): O
   };
 }
 
-/** Suspends a whole org; all memberships remain but the tenant is closed. */
+/**
+ * Suspends a whole org (host/venue/promoter capabilities live on members,
+ * not on a separate entity per type — so "host suspend"/"promoter suspend"
+ * from v1 are both this same operation in v2). Memberships remain but the
+ * tenant is closed.
+ */
 export function suspendOrganization(org: Organization, now?: Date): Organization {
   if (org.status === 'suspended') return org;
   const ts = (now ?? new Date()).toISOString();
   return { ...org, status: 'suspended', version: org.version + 1, updatedAt: ts };
+}
+
+/**
+ * Reinstates a suspended org. Always restores the single literal
+ * `'active'` status (see `reinstateVenue`'s doc comment for why that
+ * matters — v1's divergent `'reinstated'` string broke active-count
+ * queries). Refuses from `archived`: archival is a separate, further-along
+ * terminal state that reinstate does not reach back through.
+ */
+export function reinstateOrganization(org: Organization, now?: Date): Organization {
+  if (org.status === 'active') return org;
+  if (org.status === 'archived') {
+    throw new InvalidOperationError('An archived organization cannot be reinstated');
+  }
+  const ts = (now ?? new Date()).toISOString();
+  return { ...org, status: 'active', version: org.version + 1, updatedAt: ts };
 }
 
 /**

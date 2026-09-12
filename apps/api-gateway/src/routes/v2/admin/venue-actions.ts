@@ -89,4 +89,48 @@ export default async function adminVenueActionRoutes(fastify: FastifyInstance) {
       return reply.status(result.statusCode).send(result.body);
     },
   );
+
+  fastify.post(
+    '/admin/venues/:venueId/reinstate',
+    {
+      preHandler: [
+        fastify.rateLimit('SENSITIVE_COMMAND'),
+        fastify.validateV2({ params: venueIdParam, headers: commandHeaders }),
+      ],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+      const { venueId } = request.params as z.infer<typeof venueIdParam>;
+      const v2Headers = request.v2Headers ?? {};
+
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: userId,
+        commandName: 'admin.venue.reinstate',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { venueId }, body: {} },
+        run: async () => {
+          const venue = await services.adminOps.reinstateVenue(userId, venueId);
+          const validated = validateV2Response(
+            reply,
+            request,
+            adminVenueDtoSchema,
+            venueToDto(venue),
+          );
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
+        },
+      }).catch((error: unknown) =>
+        isIdempotencyConflict(error)
+          ? mapDomainError(reply, request, venueId, error, {
+              conflictId: v2Headers['idempotency-key'],
+            })
+          : mapDomainError(reply, request, venueId, error),
+      );
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
 }

@@ -138,3 +138,76 @@ describe('commission adjust — dual control', () => {
     expect(executed.statusCode).toBe(400);
   });
 });
+
+describe('ORGANIZATION_SUSPEND / ORGANIZATION_REINSTATE (TIER2, direct command)', () => {
+  it('suspends an org and writes an audit row', async () => {
+    await seedAdmin('admin_a', 'ops');
+    const org = await seedOrganization();
+
+    const executed = await server.inject({
+      method: 'POST',
+      url: `/admin/organizations/${org.id}/suspend`,
+      headers: asUser('admin_a'),
+    });
+    expect(executed.statusCode).toBe(200);
+    expect(executed.json()).toMatchObject({ id: org.id, status: 'suspended' });
+  });
+
+  it('refuses a role below TIER2', async () => {
+    await seedAdmin('admin_support', 'support');
+    const org = await seedOrganization();
+
+    const executed = await server.inject({
+      method: 'POST',
+      url: `/admin/organizations/${org.id}/suspend`,
+      headers: asUser('admin_support'),
+    });
+    expect(executed.statusCode).toBe(403);
+  });
+
+  it('reinstates a suspended org back to the literal "active" status', async () => {
+    await seedAdmin('admin_a', 'ops');
+    const org = await seedOrganization();
+    await services
+      .repos()
+      .organizations.save({ ...org, status: 'suspended', version: org.version + 1 });
+
+    const executed = await server.inject({
+      method: 'POST',
+      url: `/admin/organizations/${org.id}/reinstate`,
+      headers: asUser('admin_a'),
+    });
+    expect(executed.statusCode).toBe(200);
+    expect(executed.json()).toMatchObject({ id: org.id, status: 'active' });
+  });
+
+  it('repeat suspend is idempotent (200, still suspended)', async () => {
+    await seedAdmin('admin_a', 'ops');
+    const org = await seedOrganization();
+
+    const first = await server.inject({
+      method: 'POST',
+      url: `/admin/organizations/${org.id}/suspend`,
+      headers: asUser('admin_a'),
+    });
+    expect(first.statusCode).toBe(200);
+
+    const second = await server.inject({
+      method: 'POST',
+      url: `/admin/organizations/${org.id}/suspend`,
+      headers: asUser('admin_a'),
+    });
+    expect(second.statusCode).toBe(200);
+    expect(second.json().status).toBe('suspended');
+  });
+
+  it('unknown organization id -> 404 not_found', async () => {
+    await seedAdmin('admin_a', 'ops');
+    const executed = await server.inject({
+      method: 'POST',
+      url: '/admin/organizations/org_missing/suspend',
+      headers: asUser('admin_a'),
+    });
+    expect(executed.statusCode).toBe(404);
+  });
+});
