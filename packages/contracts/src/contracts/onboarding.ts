@@ -253,11 +253,16 @@ export const adminRoleSchema = z.enum(['super', 'admin', 'ops', 'finance', 'supp
 export const adminActionSchema = z.enum([
   'ONBOARDING_APPROVE',
   'VENUE_SUSPEND',
+  'VENUE_REINSTATE',
+  'ORGANIZATION_SUSPEND',
+  'ORGANIZATION_REINSTATE',
   'FINANCIAL_REFUND',
   'PAYOUT_BATCH_RUN',
+  'DISPUTE_RESOLVE',
   'ADMIN_PROVISION',
   'COMMISSION_ADJUST',
   'PAYOUT_FREEZE',
+  'PAYOUT_RELEASE',
 ]);
 
 export const proposalStatusSchema = z.enum(['pending', 'approved', 'rejected', 'cancelled']);

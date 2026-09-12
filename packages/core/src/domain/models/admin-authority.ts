@@ -28,26 +28,36 @@ export type AdminAction =
   // TIER2
   | 'ONBOARDING_APPROVE'
   | 'VENUE_SUSPEND'
+  | 'VENUE_REINSTATE'
+  | 'ORGANIZATION_SUSPEND'
+  | 'ORGANIZATION_REINSTATE'
   | 'FINANCIAL_REFUND'
   | 'PAYOUT_BATCH_RUN'
+  | 'DISPUTE_RESOLVE'
   // TIER3
   | 'ADMIN_PROVISION'
   | 'COMMISSION_ADJUST'
-  | 'PAYOUT_FREEZE';
+  | 'PAYOUT_FREEZE'
+  | 'PAYOUT_RELEASE';
 
 export type AuthorityTier = 1 | 2 | 3;
 
 const TIER2_ACTIONS: readonly AdminAction[] = [
   'ONBOARDING_APPROVE',
   'VENUE_SUSPEND',
+  'VENUE_REINSTATE',
+  'ORGANIZATION_SUSPEND',
+  'ORGANIZATION_REINSTATE',
   'FINANCIAL_REFUND',
   'PAYOUT_BATCH_RUN',
+  'DISPUTE_RESOLVE',
 ];
 
 const TIER3_ACTIONS: readonly AdminAction[] = [
   'ADMIN_PROVISION',
   'COMMISSION_ADJUST',
   'PAYOUT_FREEZE',
+  'PAYOUT_RELEASE',
 ];
 
 /** Roles permitted at TIER2 (v1: `[super, admin, ops, finance]`). */

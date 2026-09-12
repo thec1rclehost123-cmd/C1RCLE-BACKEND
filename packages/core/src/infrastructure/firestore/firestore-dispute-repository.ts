@@ -58,6 +58,13 @@ export class FirestoreDisputeRepository implements DisputeRepository {
     }
     return paginateQuery(base, query, toDispute);
   }
+
+  async listByStatus(status: DisputeStatus | null, query: PaginationQuery): Promise<Page<Dispute>> {
+    const base: Query = status
+      ? this.collection.where('status', '==', status).orderBy('createdAt', 'desc')
+      : this.collection.orderBy('createdAt', 'desc');
+    return paginateQuery(base, query, toDispute);
+  }
 }
 
 function toDoc(dispute: Dispute): DocumentData {
@@ -72,6 +79,7 @@ function toDoc(dispute: Dispute): DocumentData {
     status: dispute.status,
     resolutionNote: dispute.resolutionNote,
     resolvedAt: dispute.resolvedAt,
+    resolution: dispute.resolution,
     version: dispute.version,
     createdAt: dispute.createdAt,
     updatedAt: dispute.updatedAt,
@@ -90,6 +98,7 @@ function toDispute(data: DocumentData): Dispute {
     status: data.status as DisputeStatus,
     resolutionNote: data.resolutionNote as string | null,
     resolvedAt: data.resolvedAt as string | null,
+    resolution: (data.resolution as Dispute['resolution'] | undefined) ?? null,
     version: data.version as number,
     createdAt: data.createdAt as string,
     updatedAt: data.updatedAt as string,

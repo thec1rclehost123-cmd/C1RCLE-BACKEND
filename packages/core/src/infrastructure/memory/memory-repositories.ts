@@ -115,6 +115,10 @@ export class MemoryEventRepository implements EventRepository {
     return serializeSlice(all, query);
   }
 
+  async listAll(query: PaginationQuery): Promise<Page<Event>> {
+    return serializeSlice([...this.events.values()], query);
+  }
+
   async save(event: Event, _tx?: TxContext | null): Promise<void> {
     casSet(this.events, event);
   }
@@ -144,6 +148,10 @@ export class MemoryOrganizationRepository implements OrganizationRepository {
       org.members?.some((m) => m.userId === userId),
     );
     return serializeSlice(all, query);
+  }
+
+  async listAll(query: PaginationQuery): Promise<Page<Organization>> {
+    return serializeSlice([...this.organizations.values()], query);
   }
 
   async listMembers(
@@ -202,6 +210,10 @@ export class MemoryVenueRepository implements VenueRepository {
   async listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Venue>> {
     const all = [...this.venues.values()].filter((v) => v.organizationId === organizationId);
     return serializeSlice(all, query);
+  }
+
+  async listAll(query: PaginationQuery): Promise<Page<Venue>> {
+    return serializeSlice([...this.venues.values()], query);
   }
 
   async save(venue: Venue, _tx?: TxContext | null): Promise<void> {
