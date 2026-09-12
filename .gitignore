@@ -20,3 +20,8 @@ coverage/
 .claude/
 # Added by code-review-graph
 .code-review-graph/
+
+# Firebase emulator debug logs (local dev only)
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
