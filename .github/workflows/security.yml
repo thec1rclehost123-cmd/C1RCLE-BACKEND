@@ -8,7 +8,7 @@ on:
   pull_request:
     branches: [main, staging]
   push:
-    branches: [main]
+    branches: [main, staging]
   schedule:
     # Mondays 06:15 UTC. Catches CVEs published against unchanged code.
     - cron: '15 6 * * 1'
