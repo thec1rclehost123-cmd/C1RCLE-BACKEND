@@ -46,9 +46,33 @@ via live Firestore-emulator browser click-through (not just unit tests).
       capabilities on a member, so there is no cross-type repair to do.
       Not building it; flagging here so a future session doesn't treat it
       as an oversight.
+- [x] Event pause/resume admin override — DONE (2026-09-13). `EVENT_PAUSE`/
+      `EVENT_RESUME` added to `AdminAction` as TIER1 (any active admin,
+      merely logged — no dual control). New `Event.adminOverride: boolean`
+      field (default `false`; any real status transition via
+      `transitionEvent` clears it — only `adminPauseEvent` sets it).
+      Domain: `adminPauseEvent`/`adminResumeEvent` in `event.ts`, guarded to
+      `published`/`sales_paused` only (v1's "cannot pause a completed or
+      past event" guard — here it's structural, since the FSM table has no
+      other inbound edge to `sales_paused`). Service:
+      `AdminOperationsService.{pauseEvent,resumeEvent}`. Route (new file):
+      `event-actions.ts` — `POST /admin/events/:eventId/{pause,resume}`.
+      Frontend: `apps/admin-console/src/app/events/page.tsx` now has
+      working Pause/Resume buttons + an "Admin override" badge. Firestore
+      adapter's `toEvent` mapper updated (field-by-field reconstruction,
+      defaults `adminOverride: false` for pre-existing docs). Full
+      `pnpm check` (backend) + `pnpm turbo run lint typecheck test build
+      --concurrency=4` (frontend, 58/58 — the uncapped run OOM'd 3 unrelated
+      Next.js build workers, confirmed resource contention not a regression
+      by rebuilding each app alone) green.
+      **Scope decision:** discovery-weight bounds and featured/spotlight
+      curation (also named in this checklist item originally) are deferred
+      to Phase D alongside the rest of operator tooling — they're curation
+      features with no existing V2 concept to extend (no discovery-weight
+      field anywhere in the domain yet), unlike pause/resume which builds
+      directly on the existing event FSM. Not an oversight; split out so
+      this entry could close on the reused-infrastructure half.
 - [ ] KYC per-step review state machine + admin signed-read URLs
-- [ ] Event platform-override (pause/resume, `adminOverride` flag,
-      discovery-weight bounds, featured/spotlight — typed endpoints)
 
 ## Phase C — Trust & safety, support — NOT STARTED
 

@@ -251,6 +251,8 @@ export type ApproveOnboardingResult = z.infer<typeof approveOnboardingResultSche
 export const adminRoleSchema = z.enum(['super', 'admin', 'ops', 'finance', 'support']);
 
 export const adminActionSchema = z.enum([
+  'EVENT_PAUSE',
+  'EVENT_RESUME',
   'ONBOARDING_APPROVE',
   'VENUE_SUSPEND',
   'VENUE_REINSTATE',

@@ -25,6 +25,9 @@ import type { EntityId, VersionedEntity } from '../identity.js';
 export type AdminRole = 'super' | 'admin' | 'ops' | 'finance' | 'support';
 
 export type AdminAction =
+  // TIER1 — any admin, merely logged
+  | 'EVENT_PAUSE'
+  | 'EVENT_RESUME'
   // TIER2
   | 'ONBOARDING_APPROVE'
   | 'VENUE_SUSPEND'

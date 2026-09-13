@@ -124,6 +124,7 @@ async function seedEvent(): Promise<void> {
     startingPricePaise: null,
     isFree: false,
     cancellationReason: null,
+    adminOverride: false,
     version: 1,
     createdAt: now,
     updatedAt: now,

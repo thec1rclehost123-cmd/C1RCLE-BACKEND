@@ -1,5 +1,6 @@
 import { InvalidOperationError, NotFoundError } from '../../domain/errors.js';
 import { isExecutable } from '../../domain/models/admin-authority.js';
+import { adminPauseEvent, adminResumeEvent } from '../../domain/models/event.js';
 import {
   adjustPlatformFeePercent,
   reinstateOrganization,
@@ -214,6 +215,53 @@ export class AdminOperationsService {
       reason: null,
     });
     return reinstated;
+  }
+
+  /**
+   * Admin override pause. TIER1 — any admin may call it, the action is
+   * merely logged (no role gate beyond being an active admin at all).
+   */
+  async pauseEvent(adminUserId: EntityId, eventId: EntityId): Promise<Event> {
+    const admin = await this.authority.authorize(adminUserId, 'EVENT_PAUSE');
+    const event = await this.requireEvent(eventId);
+    const now = this.deps.config.clock.now();
+    const paused = adminPauseEvent(event, now);
+    if (paused === event) return event;
+    await this.events.save(paused);
+    await this.authority.record(admin, {
+      action: 'EVENT_PAUSE',
+      targetType: 'event',
+      targetId: event.id,
+      before: { status: event.status, adminOverride: event.adminOverride },
+      after: { status: paused.status, adminOverride: paused.adminOverride },
+      reason: null,
+    });
+    return paused;
+  }
+
+  /** Admin override resume. TIER1, reverses `pauseEvent`. */
+  async resumeEvent(adminUserId: EntityId, eventId: EntityId): Promise<Event> {
+    const admin = await this.authority.authorize(adminUserId, 'EVENT_RESUME');
+    const event = await this.requireEvent(eventId);
+    const now = this.deps.config.clock.now();
+    const resumed = adminResumeEvent(event, now);
+    if (resumed === event) return event;
+    await this.events.save(resumed);
+    await this.authority.record(admin, {
+      action: 'EVENT_RESUME',
+      targetType: 'event',
+      targetId: event.id,
+      before: { status: event.status, adminOverride: event.adminOverride },
+      after: { status: resumed.status, adminOverride: resumed.adminOverride },
+      reason: null,
+    });
+    return resumed;
+  }
+
+  private async requireEvent(eventId: EntityId): Promise<Event> {
+    const event = await this.events.getById(eventId);
+    if (!event) throw new NotFoundError('event', eventId);
+    return event;
   }
 
   private async requireVenue(venueId: EntityId): Promise<Venue> {

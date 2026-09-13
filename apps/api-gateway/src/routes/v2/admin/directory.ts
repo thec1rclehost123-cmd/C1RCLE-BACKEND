@@ -69,6 +69,7 @@ function eventToDto(event: Event) {
     title: event.title,
     status: event.status,
     isPublic: event.isPublic,
+    adminOverride: event.adminOverride,
     startAt: event.startAt,
     endAt: event.endAt,
     startingPricePaise: event.startingPricePaise,

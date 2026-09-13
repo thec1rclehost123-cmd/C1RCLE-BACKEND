@@ -88,6 +88,14 @@ export interface Event extends VersionedEntity {
   isFree: boolean;
   /** Reason/meta recorded when CANCELLED. */
   cancellationReason: string | null;
+  /**
+   * True while the current `sales_paused` state was forced by a platform
+   * admin rather than the partner pausing their own sales. Lets partner UI
+   * tell an admin halt apart from a self-pause instead of showing the same
+   * "paused" badge for both (v1's `adminStore.js:509` did this with the
+   * same flag name).
+   */
+  adminOverride: boolean;
 }
 
 export interface CreateEventInput {
@@ -133,6 +141,7 @@ export function createEvent(input: CreateEventInput): Event {
     startingPricePaise: 0,
     isFree: true,
     cancellationReason: null,
+    adminOverride: false,
     ...newVersionedEntity(now),
   };
 }
@@ -181,6 +190,10 @@ export function transitionEvent(event: Event, to: EventStatus, now?: Date): Even
     ...stamped,
     status: next,
     isPublic: computeIsPublic(next),
+    // Any real status change clears an admin override — `adminPauseEvent`
+    // re-sets it explicitly right after calling this. A self-pause or a
+    // partner's own resume should never carry a stale override flag.
+    adminOverride: false,
   };
 }
 
@@ -189,6 +202,36 @@ export function cancelEvent(event: Event, reason: string, now?: Date): Event {
   transitionStatus(event.status, 'cancelled', EVENT_TRANSITIONS);
   const stamped = bumpVersion(event, now ?? new Date());
   return { ...stamped, status: 'cancelled', isPublic: false, cancellationReason: reason };
+}
+
+const PAUSABLE_STATUSES: readonly EventStatus[] = ['published', 'sales_paused'];
+
+/**
+ * Admin pause (`EVENT_PAUSE`, TIER1 — any admin, merely logged). Only
+ * reachable from `published`/already-`sales_paused`: the terminal-state
+ * guard is the FSM table itself (`sales_paused` has no inbound edge from
+ * `draft`/`scheduled`/`started`/`ended`/`archived`/`cancelled`), but this
+ * explicit check gives a clear message instead of a generic
+ * `StateTransitionError` — v1's equivalent guard (`adminStore.js:500-502`)
+ * used the same "cannot pause a completed or past event" wording.
+ */
+export function adminPauseEvent(event: Event, now?: Date): Event {
+  if (!PAUSABLE_STATUSES.includes(event.status)) {
+    throw new InvalidOperationError('Cannot pause a completed, past, or cancelled event');
+  }
+  if (event.status === 'sales_paused') {
+    if (event.adminOverride) return event;
+    return { ...bumpVersion(event, now ?? new Date()), adminOverride: true };
+  }
+  return { ...transitionEvent(event, 'sales_paused', now), adminOverride: true };
+}
+
+/** Admin resume (`EVENT_RESUME`, TIER1). Reverses `adminPauseEvent`. */
+export function adminResumeEvent(event: Event, now?: Date): Event {
+  if (!PAUSABLE_STATUSES.includes(event.status)) {
+    throw new InvalidOperationError('Cannot resume a completed, past, or cancelled event');
+  }
+  return transitionEvent(event, 'published', now);
 }
 
 function computeIsPublic(status: EventStatus): boolean {

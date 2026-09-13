@@ -34,6 +34,7 @@ export const adminEventDtoSchema = z.object({
   title: z.string(),
   status: eventStatusSchema,
   isPublic: z.boolean(),
+  adminOverride: z.boolean(),
   startAt: z.string(),
   endAt: z.string().nullable(),
   startingPricePaise: z.number().int().nonnegative().nullable(),
