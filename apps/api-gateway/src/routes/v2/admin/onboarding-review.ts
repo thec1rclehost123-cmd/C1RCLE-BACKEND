@@ -438,8 +438,9 @@ export default async function adminRoutes(fastify: FastifyInstance) {
       ).catch((error: unknown) => mapDomainError(reply, request, userId, error));
       if (records === undefined) return reply;
 
+      const names = await services.adminOps.resolveTargetNames(records);
       const validated = validateV2Response(reply, request, auditListSchema, {
-        items: records.map(auditToDto),
+        items: records.map((record) => auditToDto(record, names)),
       });
       if (validated === undefined) return reply;
       return reply.send(validated);
@@ -604,7 +605,7 @@ function adminToDto(admin: PlatformAdmin) {
   };
 }
 
-function auditToDto(record: AdminAuditRecord) {
+function auditToDto(record: AdminAuditRecord, names: Map<string, string | null>) {
   return {
     id: record.id,
     adminId: record.adminId,
@@ -612,6 +613,7 @@ function auditToDto(record: AdminAuditRecord) {
     action: record.action,
     targetType: record.targetType,
     targetId: record.targetId,
+    targetName: names.get(`${record.targetType ?? ''}:${record.targetId ?? ''}`) ?? null,
     before: record.before,
     after: record.after,
     reason: record.reason,

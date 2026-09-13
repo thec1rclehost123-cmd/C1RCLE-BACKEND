@@ -150,13 +150,42 @@ via live Firestore-emulator browser click-through (not just unit tests).
       pattern — no slug/email fallback search (v1's own indexed-email
       lookup was a separate, secondary path; not ported here, add later
       if a real need shows up).
-- [ ] Generic filtered list + audited CSV export with PII redaction
-      (extend the existing `directory.ts` reads + `exportAudit` with a
-      per-role collection matrix)
-- [ ] Audit log IP/UA capture + target-name resolution
+- [x] Audited CSV export with PII redaction — DONE (2026-09-13), scoped to
+      the user directory (the one collection with real PII; venues/events/
+      hosts carry none in their current DTOs). `GET
+      /admin/users/export.csv` redacts email to `[redacted]` for every
+      role except `super`/`finance` (v1's exact rule), audited as
+      `ADMIN_EXPORT`/`user_directory` with row count. **Scope decision:**
+      did NOT port v1's per-admin-role *read* matrix restricting which of
+      venues/events/hosts/users each role may even list — v2's existing
+      directory routes deliberately let any active admin read all four
+      (see `directory.ts`'s own header comment), and narrowing that is a
+      real access-policy decision, not an engineering default; left as-is
+      rather than guessing a matrix.
+- [x] Audit log target-name resolution — DONE (2026-09-13).
+      `AdminOperationsService.resolveTargetNames` batch-resolves
+      venue/event/organization/platform_user targets to a display name at
+      READ time (`GET /admin/audit` and the audit CSV export), never
+      baked into the write — matches the plan's "small lookup helper, not
+      baked into the audit write itself." Unresolvable/unknown target
+      types (proposed_action, platform_admin, audit_log, user_directory,
+      onboarding_request) return `null`, not an error.
+      **IP/UA capture — NOT done, real scope reason:** every admin write
+      funnels through `AdminAuthorityService.record()`, called from
+      ~25 call sites across ~10 route files; the plan deliberately rejects
+      an AsyncLocalStorage shortcut in favor of explicit route→service
+      passing, which means adding `ipAddress`/`userAgent` correctly means
+      touching every one of those ~25 call sites (route handler extracts
+      `request.ip`/`request.headers['user-agent']`, passes to the service
+      method, service forwards into `AuditInput`) — a large, uniform,
+      low-risk-per-edit but wide mechanical change. Left for a dedicated
+      pass: `grep -rn "authority.record(" packages/core/src/application`
+      lists every call site that needs the two new parameters threaded
+      through from its route.
 - [ ] Admin invite + role-update flow (provision/revoke already exist;
       needs the actual invite-by-email mechanics — no-password-ever
-      pattern, `getSecureOrigin` header-injection defense)
+      pattern, `getSecureOrigin` header-injection defense, and a decision
+      on which email provider to use — not yet made this session)
 
 ## v1 proven logic to port (`thec1rcle`, `apps/admin-console/lib/server/adminStore.js`)
 

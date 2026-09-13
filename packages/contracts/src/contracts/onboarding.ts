@@ -332,6 +332,8 @@ export const adminAuditRecordDtoSchema = z.object({
   action: z.string(),
   targetType: z.string(),
   targetId: opaqueIdSchema,
+  /** Live-resolved display name for the target; `null` when unresolvable. */
+  targetName: z.string().nullable(),
   before: z.record(z.string(), z.unknown()).nullable(),
   after: z.record(z.string(), z.unknown()).nullable(),
   reason: z.string().nullable(),

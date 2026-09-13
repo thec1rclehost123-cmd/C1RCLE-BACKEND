@@ -258,6 +258,46 @@ export default async function adminDirectoryRoutes(fastify: FastifyInstance) {
     },
   );
 
+  /**
+   * User directory CSV export, PII-redacted — ported from v1's
+   * `exports/route.js`. Only `super`/`finance` see a real email; every
+   * other role gets it redacted. Audited with the row count.
+   */
+  fastify.get(
+    '/admin/users/export.csv',
+    {
+      preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({})],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+
+      const result = await services.adminOps
+        .exportUsers(userId)
+        .catch((error: unknown) => mapDomainError(reply, request, userId, error));
+      if (result === undefined) return reply;
+
+      const header = ['id', 'name', 'email', 'role', 'emailVerified', 'isBanned', 'createdAt'];
+      const lines = result.rows.map((row) =>
+        [
+          csvEscape(row.id),
+          csvEscape(row.name),
+          csvEscape(result.redactEmail ? '[redacted]' : row.email),
+          csvEscape(row.role),
+          csvEscape(row.emailVerified ? 'true' : 'false'),
+          csvEscape(row.isBanned ? 'true' : 'false'),
+          csvEscape(new Date(row.createdAt).toISOString()),
+        ].join(','),
+      );
+      const csv = [header.join(','), ...lines].join('\n');
+
+      return reply
+        .header('content-type', 'text/csv; charset=utf-8')
+        .header('content-disposition', 'attachment; filename="users.csv"')
+        .send(csv);
+    },
+  );
+
   fastify.get(
     '/admin/audit/export.csv',
     {
@@ -272,12 +312,14 @@ export default async function adminDirectoryRoutes(fastify: FastifyInstance) {
         .catch((error: unknown) => mapDomainError(reply, request, userId, error));
       if (rows === undefined) return reply;
 
+      const names = await services.adminOps.resolveTargetNames(rows);
       const header = [
         'adminId',
         'adminRole',
         'action',
         'targetType',
         'targetId',
+        'targetName',
         'reason',
         'occurredAt',
       ];
@@ -288,6 +330,7 @@ export default async function adminDirectoryRoutes(fastify: FastifyInstance) {
           csvEscape(row.action),
           csvEscape(row.targetType),
           csvEscape(row.targetId),
+          csvEscape(names.get(`${row.targetType ?? ''}:${row.targetId ?? ''}`) ?? null),
           csvEscape(row.reason ?? null),
           csvEscape(new Date(row.occurredAt ?? Date.now()).toISOString()),
         ].join(','),

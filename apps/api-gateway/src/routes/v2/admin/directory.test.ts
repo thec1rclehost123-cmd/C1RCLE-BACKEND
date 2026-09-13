@@ -253,10 +253,15 @@ describe('VENUE_SUSPEND (TIER2, direct command)', () => {
       url: '/admin/audit?limit=10',
       headers: { 'x-user-id': 'admin_a' },
     });
-    const records = audit.json().items as { action: string; targetType: string }[];
+    const records = audit.json().items as {
+      action: string;
+      targetType: string;
+      targetName: string | null;
+    }[];
     const auditRow = records.find((record) => record.action === 'VENUE_SUSPEND');
     expect(auditRow).toBeDefined();
     expect(auditRow?.targetType).toBe('venue');
+    expect(auditRow?.targetName).toBe('Sky Bar');
   });
 
   it('refuses a role below TIER2 (support cannot suspend a venue)', async () => {
@@ -359,6 +364,48 @@ describe('VENUE_REINSTATE (TIER2, direct command)', () => {
   });
 });
 
+describe('GET /admin/users/export.csv', () => {
+  it('redacts email for a non-super/finance role', async () => {
+    await seedAdmin('admin_ops', 'ops');
+    seedUser('usr_1', 'host');
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/admin/users/export.csv',
+      headers: { 'x-user-id': 'admin_ops' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toContain('text/csv');
+    expect(response.body).toContain('[redacted]');
+    expect(response.body).not.toContain('usr_1@c1rcle.test');
+  });
+
+  it('shows the real email for super/finance', async () => {
+    await seedAdmin('admin_super', 'super');
+    seedUser('usr_1', 'host');
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/admin/users/export.csv',
+      headers: { 'x-user-id': 'admin_super' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain('usr_1@c1rcle.test');
+
+    const audit = await server.inject({
+      method: 'GET',
+      url: '/admin/audit?limit=10',
+      headers: { 'x-user-id': 'admin_super' },
+    });
+    const records = audit.json().items as { action: string; targetType: string }[];
+    expect(
+      records.some(
+        (record) => record.action === 'ADMIN_EXPORT' && record.targetType === 'user_directory',
+      ),
+    ).toBe(true);
+  });
+});
+
 describe('GET /admin/lookup', () => {
   it('finds a venue by id', async () => {
     await seedAdmin('admin_a', 'ops');
@@ -444,7 +491,7 @@ describe('GET /admin/audit/export.csv', () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toContain('text/csv');
     expect(response.body).toContain(
-      '"adminId","adminRole","action","targetType","targetId","reason","occurredAt"',
+      '"adminId","adminRole","action","targetType","targetId","targetName","reason","occurredAt"',
     );
 
     const audit = await server.inject({

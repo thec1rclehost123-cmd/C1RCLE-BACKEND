@@ -161,6 +161,30 @@ export class AdminOperationsService {
     };
   }
 
+  /**
+   * CSV export of the user directory, with PII redaction — ported from
+   * v1's `exports/route.js`. Only `super`/`finance` see a real email;
+   * every other role gets it redacted, matching v1's rule verbatim. The
+   * export itself is audited with the row count, same as `exportAudit`.
+   */
+  async exportUsers(adminUserId: EntityId): Promise<{
+    rows: PlatformUserWithBanStatus[];
+    redactEmail: boolean;
+  }> {
+    const admin = await this.authority.requireAdmin(adminUserId);
+    const redactEmail = admin.role !== 'super' && admin.role !== 'finance';
+    const page = await this.listUsers(adminUserId, { limit: 1000, cursor: null });
+    await this.authority.record(admin, {
+      action: 'ADMIN_EXPORT',
+      targetType: 'user_directory',
+      targetId: admin.id,
+      before: null,
+      after: { rows: page.items.length },
+      reason: null,
+    });
+    return { rows: page.items, redactEmail };
+  }
+
   /** CSV export of the admin audit trail; a matching audit row is recorded. */
   async exportAudit(adminUserId: EntityId, limit: number) {
     const admin = await this.authority.requireAdmin(adminUserId);
@@ -353,6 +377,47 @@ export class AdminOperationsService {
     const event = await this.events.getById(eventId);
     if (!event) throw new NotFoundError('event', eventId);
     return event;
+  }
+
+  /**
+   * Resolves audit-record targets to human-readable names for display —
+   * a small lookup helper, not baked into the audit write itself (v1's
+   * equivalent walked a 12-entry collection map at read time too;
+   * `logAdminAction` never stored a name). Unresolvable/unknown target
+   * types return `null` rather than throwing — a display nicety is never
+   * worth failing the whole audit read over.
+   */
+  async resolveTargetNames(
+    targets: readonly { targetType?: string; targetId?: EntityId }[],
+  ): Promise<Map<string, string | null>> {
+    const result = new Map<string, string | null>();
+    await Promise.all(
+      targets.map(async ({ targetType, targetId }) => {
+        const key = `${targetType ?? ''}:${targetId ?? ''}`;
+        if (result.has(key) || targetId === undefined) return;
+        result.set(key, await this.resolveOneTargetName(targetType, targetId));
+      }),
+    );
+    return result;
+  }
+
+  private async resolveOneTargetName(
+    targetType: string | undefined,
+    targetId: EntityId,
+  ): Promise<string | null> {
+    if (targetType === undefined) return null;
+    switch (targetType) {
+      case 'venue':
+        return (await this.venues.getById(targetId))?.public.name ?? null;
+      case 'event':
+        return (await this.events.getById(targetId))?.title ?? null;
+      case 'organization':
+        return (await this.organizations.getById(targetId))?.name ?? null;
+      case 'platform_user':
+        return (await this.users.getById(targetId))?.email ?? null;
+      default:
+        return null;
+    }
   }
 
   /**
