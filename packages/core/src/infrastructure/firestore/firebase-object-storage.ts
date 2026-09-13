@@ -13,6 +13,8 @@
 import type { Storage } from './client.js';
 import type {
   ObjectStoragePort,
+  ReadUrlGrant,
+  ReadUrlRequest,
   UploadUrlGrant,
   UploadUrlRequest,
 } from '../../domain/ports/object-storage.js';
@@ -49,5 +51,15 @@ export class FirebaseObjectStorage implements ObjectStoragePort {
       storagePath: request.key,
       expiresAt: request.expiresAt,
     };
+  }
+
+  async issueReadUrl(request: ReadUrlRequest): Promise<ReadUrlGrant> {
+    const [readUrl] = await this.storage.bucket(this.bucketName).file(request.key).getSignedUrl({
+      version: 'v4',
+      action: 'read',
+      expires: request.expiresAt,
+    });
+
+    return { readUrl, expiresAt: request.expiresAt };
   }
 }

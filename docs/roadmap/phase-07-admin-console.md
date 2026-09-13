@@ -1,6 +1,7 @@
 # Phase 7 — Admin console backend
 
-**Status:** Phase A DONE (2026-09-12) · Phase B IN PROGRESS · Depends on:
+**Status:** Phase A DONE (2026-09-12) · Phase B DONE (2026-09-13) ·
+Phase C/D NOT STARTED · Depends on:
 Phase 2 (onboarding approvals), Phase 6 (financial actions)
 
 Living status doc for the admin-console build-out — read this before
@@ -72,7 +73,32 @@ via live Firestore-emulator browser click-through (not just unit tests).
       field anywhere in the domain yet), unlike pause/resume which builds
       directly on the existing event FSM. Not an oversight; split out so
       this entry could close on the reused-infrastructure half.
-- [ ] KYC per-step review state machine + admin signed-read URLs
+- [x] KYC admin signed-read URLs — DONE (2026-09-13, half-scope, see below).
+      `ObjectStoragePort` gained `issueReadUrl`/`ReadUrlRequest`/
+      `ReadUrlGrant` (both `EchoObjectStorage` and `FirebaseObjectStorage`
+      implement it — v4 signed GET, 10-minute TTL, same pattern as the
+      existing upload grant). `OnboardingService.issueDocumentReadUrl`
+      (any admin — viewing isn't a decision, unlike approve which stays
+      TIER2) resolves the document's `storagePath` from the
+      `OnboardingRequest` itself, never from caller input, so no separate
+      prefix allowlist is needed the way v1's version had one. Route:
+      `GET /admin/onboarding/applications/:requestId/documents/:label/read-url`
+      in `onboarding-review.ts`. Frontend: `apps/admin-console/src/app/
+      onboarding/page.tsx` now has a Documents column with per-label
+      "view" buttons that open the signed URL in a new tab. Full
+      `pnpm check` (374 tests) + frontend turbo gate (58/58) green.
+      **Scope decision — per-step review state machine NOT built:** v1's
+      `deriveKycStatus` rolled multiple per-document statuses into one of
+      7 states because v1 had no request-level status at all for KYC
+      specifically. V2's `OnboardingRequest.status` (draft/submitted/
+      changes_requested/approved/rejected) already serves the same purpose
+      at the whole-application grain, and `onboarding-review.ts` already
+      ships approve/reject/request-changes on it. Adding a SECOND,
+      per-document FSM underneath would duplicate that state rather than
+      extend it, for a granularity v2's admin flow has never needed (admins
+      review the whole document set at once, not document-by-document).
+      Revisit only if/when a real product need for per-document rejection
+      shows up — not speculatively.
 
 ## Phase C — Trust & safety, support — NOT STARTED
 

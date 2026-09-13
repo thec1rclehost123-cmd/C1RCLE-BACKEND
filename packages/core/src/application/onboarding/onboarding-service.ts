@@ -1,6 +1,7 @@
 import {
   ForbiddenError,
   InvalidOperationError,
+  NotFoundError,
   OnboardingRequestNotFoundError,
 } from '../../domain/errors.js';
 import {
@@ -60,6 +61,8 @@ const VERIFICATION_WINDOW_MS = 24 * 60 * 60 * 1000;
 const MAX_DOCUMENT_BYTES = 5 * 1024 * 1024;
 const UPLOAD_URL_TTL_MS = 10 * 60 * 1000;
 const ALLOWED_UPLOAD_CONTENT_TYPES: readonly string[] = ['image/jpeg', 'image/png', 'image/webp'];
+/** Admin read URLs are minted per view, not cached — short-lived on purpose. */
+const READ_URL_TTL_MS = 10 * 60 * 1000;
 
 export interface StartApplicationCommand {
   requestedType: PartnerEntityType;
@@ -284,6 +287,35 @@ export class OnboardingService {
   async getForReview(adminUserId: EntityId, requestId: EntityId): Promise<OnboardingRequest> {
     await this.authority.requireAdmin(adminUserId);
     return this.requireRequest(requestId);
+  }
+
+  /**
+   * Mints a short-lived signed GET URL so an admin can actually view an
+   * uploaded KYC image before deciding on the application — v1 had this
+   * (`kyc/[uid]/route.js`'s signed-URL helper, prefix-allowlisted since it
+   * took an arbitrary key); v2 doesn't need a separate allowlist because the
+   * key is derived from a document already attached to a request this
+   * method loaded, never from caller input.
+   *
+   * Any admin may view (matches v1's broader view-vs-decide role split —
+   * approval itself stays ONBOARDING_APPROVE/TIER2, viewing isn't a decision).
+   */
+  async issueDocumentReadUrl(
+    adminUserId: EntityId,
+    requestId: EntityId,
+    label: string,
+  ): Promise<{ readUrl: string; expiresAt: number }> {
+    await this.authority.requireAdmin(adminUserId);
+    const request = await this.requireRequest(requestId);
+    const document = request.documents.find((doc) => doc.label === label);
+    if (!document) throw new NotFoundError('onboarding_document', label);
+
+    const expiresAt = this.deps.config.clock.now().getTime() + READ_URL_TTL_MS;
+    const grant = await this.deps.objectStorage.issueReadUrl({
+      key: document.storagePath,
+      expiresAt,
+    });
+    return { readUrl: grant.readUrl, expiresAt: grant.expiresAt };
   }
 
   /**

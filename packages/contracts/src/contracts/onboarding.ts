@@ -138,6 +138,16 @@ export const documentUploadUrlDtoSchema = z
   .strict();
 export type DocumentUploadUrlDto = z.infer<typeof documentUploadUrlDtoSchema>;
 
+/** Admin-side signed GET for one uploaded KYC document. */
+export const documentReadUrlDtoSchema = z
+  .object({
+    readUrl: z.string().min(1),
+    /** Epoch ms — the URL is unusable after this. */
+    expiresAt: z.number().int().positive(),
+  })
+  .strict();
+export type DocumentReadUrlDto = z.infer<typeof documentReadUrlDtoSchema>;
+
 export const verifyDocumentSchema = z
   .object({
     documentType: z.string().min(1).max(40),

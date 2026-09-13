@@ -391,6 +391,66 @@ describe('admin review', () => {
   });
 });
 
+describe('admin document read URLs', () => {
+  async function submittedApplication(): Promise<string> {
+    const created = await startApplication('user_a');
+    await uploadRequiredDocuments('user_a', created.id);
+    await server.inject({
+      method: 'POST',
+      url: `/onboarding/applications/${created.id}/submit`,
+      headers: asUser('user_a'),
+    });
+    return created.id;
+  }
+
+  it('any admin (even support, below TIER2) can mint a read URL for an uploaded document', async () => {
+    const requestId = await submittedApplication();
+    await seedAdmin('admin_support', 'support');
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/admin/onboarding/applications/${requestId}/documents/id_front/read-url`,
+      headers: { 'x-user-id': 'admin_support' },
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json<{ readUrl: string; expiresAt: number }>();
+    expect(body.readUrl.length).toBeGreaterThan(0);
+    expect(body.expiresAt).toBeGreaterThan(Date.now());
+  });
+
+  it('refuses a non-admin', async () => {
+    const requestId = await submittedApplication();
+    const response = await server.inject({
+      method: 'GET',
+      url: `/admin/onboarding/applications/${requestId}/documents/id_front/read-url`,
+      headers: { 'x-user-id': 'not_an_admin' },
+    });
+    expect(response.statusCode).toBe(401);
+  });
+
+  it('404s for a label that was never uploaded', async () => {
+    const requestId = await submittedApplication();
+    await seedAdmin('admin_ops', 'ops');
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/admin/onboarding/applications/${requestId}/documents/registration_certificate/read-url`,
+      headers: { 'x-user-id': 'admin_ops' },
+    });
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('404s for an unknown request id', async () => {
+    await seedAdmin('admin_ops', 'ops');
+    const response = await server.inject({
+      method: 'GET',
+      url: '/admin/onboarding/applications/req_missing/documents/id_front/read-url',
+      headers: { 'x-user-id': 'admin_ops' },
+    });
+    expect(response.statusCode).toBe(404);
+  });
+});
+
 describe('dual control', () => {
   async function raiseProvisionProposal(proposer: string) {
     const response = await server.inject({
