@@ -355,6 +355,41 @@ export class AdminOperationsService {
     return event;
   }
 
+  /**
+   * Global entity lookup (the "omnibox"). Ported from v1's `lookup/route.js`:
+   * parallel O(1) doc-id fetches across known collections rather than a
+   * scan. Read-only, any admin. Below 3 characters returns no results —
+   * a 1-2 char id lookup is never meaningful, so there is nothing to save
+   * by even issuing the reads.
+   */
+  async globalLookup(
+    adminUserId: EntityId,
+    query: string,
+  ): Promise<{ type: 'venue' | 'event' | 'organization' | 'user'; id: EntityId; label: string }[]> {
+    await this.authority.requireAdmin(adminUserId);
+    const q = query.trim();
+    if (q.length < 3) return [];
+
+    const [venue, event, organization, user] = await Promise.all([
+      this.venues.getById(q),
+      this.events.getById(q),
+      this.organizations.getById(q),
+      this.users.getById(q),
+    ]);
+
+    const results: {
+      type: 'venue' | 'event' | 'organization' | 'user';
+      id: EntityId;
+      label: string;
+    }[] = [];
+    if (venue) results.push({ type: 'venue', id: venue.id, label: venue.public.name });
+    if (event) results.push({ type: 'event', id: event.id, label: event.title });
+    if (organization)
+      results.push({ type: 'organization', id: organization.id, label: organization.name });
+    if (user) results.push({ type: 'user', id: user.id, label: user.email });
+    return results;
+  }
+
   private async requireVenue(venueId: EntityId): Promise<Venue> {
     const venue = await this.venues.getById(venueId);
     if (!venue) throw new NotFoundError('venue', venueId);

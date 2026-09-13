@@ -359,6 +359,78 @@ describe('VENUE_REINSTATE (TIER2, direct command)', () => {
   });
 });
 
+describe('GET /admin/lookup', () => {
+  it('finds a venue by id', async () => {
+    await seedAdmin('admin_a', 'ops');
+    const venue = await seedVenue();
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/admin/lookup?q=${venue.id}`,
+      headers: { 'x-user-id': 'admin_a' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().items).toEqual([{ type: 'venue', id: venue.id, label: 'Sky Bar' }]);
+  });
+
+  it('finds a user by id', async () => {
+    await seedAdmin('admin_a', 'ops');
+    const user = seedUser('usr_1', 'host');
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/admin/lookup?q=${user.id}`,
+      headers: { 'x-user-id': 'admin_a' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().items).toEqual([{ type: 'user', id: user.id, label: user.email }]);
+  });
+
+  it('returns no results for an id that matches nothing', async () => {
+    await seedAdmin('admin_a', 'ops');
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/admin/lookup?q=nothing_matches_this',
+      headers: { 'x-user-id': 'admin_a' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().items).toEqual([]);
+  });
+
+  it('rejects a missing/empty q as a validation error', async () => {
+    await seedAdmin('admin_a', 'ops');
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/admin/lookup?q=',
+      headers: { 'x-user-id': 'admin_a' },
+    });
+    expect(response.statusCode).toBe(422);
+  });
+
+  it('a query under 3 characters is well-formed but yields no results', async () => {
+    await seedAdmin('admin_a', 'ops');
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/admin/lookup?q=ab',
+      headers: { 'x-user-id': 'admin_a' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().items).toEqual([]);
+  });
+
+  it('refuses a non-admin', async () => {
+    const response = await server.inject({
+      method: 'GET',
+      url: '/admin/lookup?q=abc',
+      headers: { 'x-user-id': 'not_an_admin' },
+    });
+    expect(response.statusCode).toBe(401);
+  });
+});
+
 describe('GET /admin/audit/export.csv', () => {
   it('returns CSV with a recorded ADMIN_EXPORT row', async () => {
     await seedAdmin('admin_a', 'ops');

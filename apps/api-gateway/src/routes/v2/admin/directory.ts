@@ -1,10 +1,12 @@
 import {
   adminEventListResponseSchema,
   adminHostListResponseSchema,
+  adminLookupResponseSchema,
   adminUserListResponseSchema,
   adminVenueListResponseSchema,
   paginationQuerySchema,
 } from '@c1rcle/contracts/client';
+import { z } from 'zod';
 
 import type { Event, Organization, PlatformUser, Venue } from '@c1rcle/core/domain';
 
@@ -14,7 +16,6 @@ import { requireUserId } from '../onboarding.js';
 import { mapDomainError } from '../partner/events.js';
 
 import type { FastifyInstance } from 'fastify';
-import type { z } from 'zod';
 
 /**
  * ─── Admin directory (Phase 7 admin) ─────────────────────────────────────────
@@ -33,6 +34,7 @@ import type { z } from 'zod';
 const services = createV2Services();
 
 const directoryQuerySchema = paginationQuerySchema;
+const lookupQuerySchema = z.object({ q: z.string().min(1).max(200) });
 
 function listResponse<T>(items: T[], total: number, limit: number, nextCursor: string | null) {
   return {
@@ -227,6 +229,30 @@ export default async function adminDirectoryRoutes(fastify: FastifyInstance) {
         adminUserListResponseSchema,
         listResponse(page.items.map(userToDto), page.total, query.limit, page.nextCursor),
       );
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  fastify.get(
+    '/admin/lookup',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({ querystring: lookupQuerySchema }),
+      ],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+      const query = request.query as z.infer<typeof lookupQuerySchema>;
+
+      const items = await services.adminOps
+        .globalLookup(userId, query.q)
+        .catch((error: unknown) => mapDomainError(reply, request, userId, error));
+      if (items === undefined) return reply;
+
+      const validated = validateV2Response(reply, request, adminLookupResponseSchema, { items });
       if (validated === undefined) return reply;
       return reply.send(validated);
     },

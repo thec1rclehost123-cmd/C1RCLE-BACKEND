@@ -1,8 +1,9 @@
 # Phase 7 — Admin console backend
 
 **Status:** Phase A DONE (2026-09-12) · Phase B DONE (2026-09-13) ·
-Phase C IN PROGRESS (user ban done, safety/support remaining) · Phase D
-NOT STARTED · Depends on:
+Phase C PAUSED (user ban done 2026-09-13; safety-reports/support-desk
+deferred, no intake path exists — see below) · Phase D IN PROGRESS
+(2026-09-13) · Depends on:
 Phase 2 (onboarding approvals), Phase 6 (financial actions)
 
 Living status doc for the admin-console build-out — read this before
@@ -122,14 +123,40 @@ via live Firestore-emulator browser click-through (not just unit tests).
       required-feeling reason field, confirm step) / unban buttons and an
       Active/Banned status badge. Full `pnpm check` (379 tests) + frontend
       turbo gate (58/58) green.
-- [ ] Safety reports + content moderation (soft-delete pattern)
-- [ ] Support ticket desk (timeline, internal notes, merge logic, SLA)
+- [ ] Safety reports + content moderation (soft-delete pattern) — PAUSED.
+      Both this and the support desk need a public-facing intake path
+      (someone reports content; a user opens a ticket) that doesn't exist
+      anywhere in v2 yet. Building only the admin dismiss/resolve side
+      would ship a screen that's permanently empty — confirmed with user
+      2026-09-13 to skip for now rather than build dead scaffolding.
+      Revisit once a real reporting/ticket intake surface is scoped
+      (guest-portal or partner-dashboard side).
+- [ ] Support ticket desk (timeline, internal notes, merge logic, SLA) —
+      PAUSED, same reasoning as above.
 
-## Phase D — Operator tooling — NOT STARTED
+## Phase D — Operator tooling — IN PROGRESS
 
-Generic filtered list + audited CSV export with PII redaction; global
-entity lookup (omnibox); audit log IP/UA + target-name resolution; admin
-invite + role-update flow.
+- [x] Global entity lookup (omnibox) — DONE (2026-09-13). Ported v1's
+      O(1)-parallel-fetch pattern (`lookup/route.js`), not a scan:
+      `AdminOperationsService.globalLookup` fires `Promise.all` across
+      venue/event/organization/user `getById` — all four already existed
+      on their repository ports except `UserAccountRepository`, which
+      gained `getById` for this (previously list-only). Below 3 chars
+      returns `[]` without issuing any reads. Route: `GET /admin/lookup?q=`
+      in `directory.ts`. Frontend: new `/lookup` page + nav entry — enter
+      an exact id, get back type/name/id across all four collections.
+      Full `pnpm check` (385 tests) + frontend turbo gate (58/58) green.
+      **Scope note:** doc-id lookup only, matching v1's actual O(1)
+      pattern — no slug/email fallback search (v1's own indexed-email
+      lookup was a separate, secondary path; not ported here, add later
+      if a real need shows up).
+- [ ] Generic filtered list + audited CSV export with PII redaction
+      (extend the existing `directory.ts` reads + `exportAudit` with a
+      per-role collection matrix)
+- [ ] Audit log IP/UA capture + target-name resolution
+- [ ] Admin invite + role-update flow (provision/revoke already exist;
+      needs the actual invite-by-email mechanics — no-password-ever
+      pattern, `getSecureOrigin` header-injection defense)
 
 ## v1 proven logic to port (`thec1rcle`, `apps/admin-console/lib/server/adminStore.js`)
 

@@ -338,3 +338,20 @@ export const adminAuditRecordDtoSchema = z.object({
   occurredAt: z.number().int().nonnegative(),
 });
 export type AdminAuditRecordDto = z.infer<typeof adminAuditRecordDtoSchema>;
+
+/**
+ * Global entity lookup (the "omnibox") — O(1) parallel doc-id fetches
+ * across known collections rather than a scan, ported from v1's
+ * `lookup/route.js`. `type` names which collection matched.
+ */
+export const adminLookupResultItemSchema = z.object({
+  type: z.enum(['venue', 'event', 'organization', 'user']),
+  id: opaqueIdSchema,
+  label: z.string(),
+});
+export type AdminLookupResultItem = z.infer<typeof adminLookupResultItemSchema>;
+
+export const adminLookupResponseSchema = z.object({
+  items: z.array(adminLookupResultItemSchema),
+});
+export type AdminLookupResponse = z.infer<typeof adminLookupResponseSchema>;
