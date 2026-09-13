@@ -84,6 +84,46 @@ describe('USER_BAN / USER_UNBAN (TIER2, direct command)', () => {
     expect(row?.reason).toBe('Harassment report');
   });
 
+  it("redacts the banned user's email in the audit trail for a non-super/finance viewer", async () => {
+    await seedAdmin('admin_ops', 'ops');
+    const user = seedUser('usr_redact');
+
+    await server.inject({
+      method: 'POST',
+      url: `/admin/users/${user.id}/ban`,
+      headers: asUser('admin_ops'),
+    });
+
+    const audit = await server.inject({
+      method: 'GET',
+      url: '/admin/audit?limit=10',
+      headers: { 'x-user-id': 'admin_ops' },
+    });
+    const records = audit.json().items as { action: string; targetName: string | null }[];
+    const row = records.find((record) => record.action === 'USER_BAN');
+    expect(row?.targetName).toBeNull();
+  });
+
+  it('shows the real email in the audit trail for a super viewer', async () => {
+    await seedAdmin('admin_super', 'super');
+    const user = seedUser('usr_visible');
+
+    await server.inject({
+      method: 'POST',
+      url: `/admin/users/${user.id}/ban`,
+      headers: asUser('admin_super'),
+    });
+
+    const audit = await server.inject({
+      method: 'GET',
+      url: '/admin/audit?limit=10',
+      headers: { 'x-user-id': 'admin_super' },
+    });
+    const records = audit.json().items as { action: string; targetName: string | null }[];
+    const row = records.find((record) => record.action === 'USER_BAN');
+    expect(row?.targetName).toBe(user.email);
+  });
+
   it('refuses a role below TIER2', async () => {
     await seedAdmin('admin_support', 'support');
     const user = seedUser('user_1');

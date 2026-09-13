@@ -312,7 +312,7 @@ export default async function adminDirectoryRoutes(fastify: FastifyInstance) {
         .catch((error: unknown) => mapDomainError(reply, request, userId, error));
       if (rows === undefined) return reply;
 
-      const names = await services.adminOps.resolveTargetNames(rows);
+      const names = await services.adminOps.resolveTargetNames(userId, rows);
       const header = [
         'adminId',
         'adminRole',

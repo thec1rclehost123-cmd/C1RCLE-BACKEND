@@ -386,16 +386,26 @@ export class AdminOperationsService {
    * `logAdminAction` never stored a name). Unresolvable/unknown target
    * types return `null` rather than throwing — a display nicety is never
    * worth failing the whole audit read over.
+   *
+   * `adminUserId` is the *viewer*, not the actor who performed the
+   * audited action — a `platform_user` target's email is only resolved
+   * for `super`/`finance` viewers, the same redaction rule `exportUsers`
+   * uses. Without this, any admin (including `support`) could read a
+   * banned user's real email straight out of the audit trail even though
+   * the CSV export redacts it for that same role.
    */
   async resolveTargetNames(
+    adminUserId: EntityId,
     targets: readonly { targetType?: string; targetId?: EntityId }[],
   ): Promise<Map<string, string | null>> {
+    const admin = await this.authority.requireAdmin(adminUserId);
+    const canSeeEmail = admin.role === 'super' || admin.role === 'finance';
     const result = new Map<string, string | null>();
     await Promise.all(
       targets.map(async ({ targetType, targetId }) => {
         const key = `${targetType ?? ''}:${targetId ?? ''}`;
         if (result.has(key) || targetId === undefined) return;
-        result.set(key, await this.resolveOneTargetName(targetType, targetId));
+        result.set(key, await this.resolveOneTargetName(targetType, targetId, canSeeEmail));
       }),
     );
     return result;
@@ -404,6 +414,7 @@ export class AdminOperationsService {
   private async resolveOneTargetName(
     targetType: string | undefined,
     targetId: EntityId,
+    canSeeEmail: boolean,
   ): Promise<string | null> {
     if (targetType === undefined) return null;
     switch (targetType) {
@@ -414,6 +425,7 @@ export class AdminOperationsService {
       case 'organization':
         return (await this.organizations.getById(targetId))?.name ?? null;
       case 'platform_user':
+        if (!canSeeEmail) return null;
         return (await this.users.getById(targetId))?.email ?? null;
       default:
         return null;

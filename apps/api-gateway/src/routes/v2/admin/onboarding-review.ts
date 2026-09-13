@@ -438,7 +438,7 @@ export default async function adminRoutes(fastify: FastifyInstance) {
       ).catch((error: unknown) => mapDomainError(reply, request, userId, error));
       if (records === undefined) return reply;
 
-      const names = await services.adminOps.resolveTargetNames(records);
+      const names = await services.adminOps.resolveTargetNames(userId, records);
       const validated = validateV2Response(reply, request, auditListSchema, {
         items: records.map((record) => auditToDto(record, names)),
       });
