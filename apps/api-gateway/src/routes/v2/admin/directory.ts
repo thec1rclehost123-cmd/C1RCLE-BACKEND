@@ -93,7 +93,7 @@ function hostToDto(org: Organization) {
   };
 }
 
-function userToDto(user: PlatformUser) {
+function userToDto(user: PlatformUser & { isBanned: boolean }) {
   return {
     id: user.id,
     email: user.email,
@@ -101,6 +101,7 @@ function userToDto(user: PlatformUser) {
     image: user.image,
     emailVerified: user.emailVerified,
     role: user.role,
+    isBanned: user.isBanned,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
   };

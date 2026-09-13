@@ -1,10 +1,11 @@
+import type { EntityId } from '../../domain/identity.js';
 import type { PlatformUser } from '../../domain/models/platform-user.js';
 import type {
   Page,
   PaginationQuery,
   UserAccountRepository,
 } from '../../domain/ports/repositories.js';
-import type { DocumentData, Firestore, QueryDocumentSnapshot } from 'firebase-admin/firestore';
+import type { DocumentData, Firestore } from 'firebase-admin/firestore';
 
 const COLLECTION = 'v2_auth_users';
 
@@ -38,16 +39,21 @@ export class FirestoreUserAccountRepository implements UserAccountRepository {
       base.offset(start).limit(limit).get(),
     ]);
     const total = countSnap.data().count;
-    const items = pageSnap.docs.map((doc: QueryDocumentSnapshot) => toPlatformUser(doc));
+    const items = pageSnap.docs.map((doc) => toPlatformUser(doc.id, doc.data()));
     const nextCursor = start + items.length < total ? String(start + items.length) : null;
     return { items, total, nextCursor };
   }
+
+  async getById(userId: EntityId): Promise<PlatformUser | null> {
+    const doc = await this.collection.doc(userId).get();
+    const data = doc.data();
+    return data ? toPlatformUser(doc.id, data) : null;
+  }
 }
 
-function toPlatformUser(doc: QueryDocumentSnapshot): PlatformUser {
-  const data: DocumentData = doc.data();
+function toPlatformUser(id: EntityId, data: DocumentData): PlatformUser {
   return {
-    id: doc.id,
+    id,
     email: data.email as string,
     name: (data.name as string | null) ?? '',
     image: (data.image as string | null) ?? null,

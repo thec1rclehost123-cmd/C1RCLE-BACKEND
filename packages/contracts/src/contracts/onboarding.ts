@@ -271,6 +271,8 @@ export const adminActionSchema = z.enum([
   'FINANCIAL_REFUND',
   'PAYOUT_BATCH_RUN',
   'DISPUTE_RESOLVE',
+  'USER_BAN',
+  'USER_UNBAN',
   'ADMIN_PROVISION',
   'COMMISSION_ADJUST',
   'PAYOUT_FREEZE',

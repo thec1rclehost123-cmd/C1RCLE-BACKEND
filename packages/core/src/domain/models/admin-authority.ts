@@ -37,6 +37,8 @@ export type AdminAction =
   | 'FINANCIAL_REFUND'
   | 'PAYOUT_BATCH_RUN'
   | 'DISPUTE_RESOLVE'
+  | 'USER_BAN'
+  | 'USER_UNBAN'
   // TIER3
   | 'ADMIN_PROVISION'
   | 'COMMISSION_ADJUST'
@@ -54,6 +56,8 @@ const TIER2_ACTIONS: readonly AdminAction[] = [
   'FINANCIAL_REFUND',
   'PAYOUT_BATCH_RUN',
   'DISPUTE_RESOLVE',
+  'USER_BAN',
+  'USER_UNBAN',
 ];
 
 const TIER3_ACTIONS: readonly AdminAction[] = [

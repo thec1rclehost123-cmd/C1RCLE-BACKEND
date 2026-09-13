@@ -48,6 +48,7 @@ import {
   FirestoreEmailOtpRepository,
   FirestoreRefundRequestRepository,
   FirestoreUserAccountRepository,
+  FirestoreUserBanRepository,
 } from './firestore/index.js';
 import {
   MemoryOrganizationRepository,
@@ -84,6 +85,7 @@ import {
   MemoryEmailOtpRepository,
   MemoryRefundRequestRepository,
   MemoryUserAccountRepository,
+  MemoryUserBanRepository,
 } from './memory/index.js';
 import { MemoryIdempotencyStore } from './memory/memory-idempotency-store.js';
 
@@ -146,6 +148,7 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
       emailOtp: new MemoryEmailOtpRepository(),
       refundRequests: new MemoryRefundRequestRepository(),
       users: new MemoryUserAccountRepository(),
+      userBans: new MemoryUserBanRepository(),
     };
   }
 
@@ -197,6 +200,7 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
     emailOtp: new FirestoreEmailOtpRepository(db),
     refundRequests: new FirestoreRefundRequestRepository(db),
     users: new FirestoreUserAccountRepository(db),
+    userBans: new FirestoreUserBanRepository(db),
   };
 }
 

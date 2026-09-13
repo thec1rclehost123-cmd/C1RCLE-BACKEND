@@ -51,6 +51,7 @@ import type {
   EmailOtpRepository,
   AdminRefundRequestRepository,
   UserAccountRepository,
+  UserBanRepository,
 } from '../domain/ports/repositories.js';
 import type { VerificationProvider } from '../domain/ports/verification.js';
 import type { Logger } from '../telemetry/logger.js';
@@ -133,6 +134,8 @@ export interface ServiceDeps {
     refundRequests: AdminRefundRequestRepository;
     /** Platform user directory (admin users view) — read-only. */
     users: UserAccountRepository;
+    /** Platform user ban state — Phase 7 trust & safety. */
+    userBans: UserBanRepository;
   };
 }
 

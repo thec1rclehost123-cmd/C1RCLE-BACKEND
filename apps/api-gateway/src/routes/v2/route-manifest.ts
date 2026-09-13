@@ -11,6 +11,7 @@ import adminRoutes from './admin/onboarding-review.js';
 import adminOrganizationActionRoutes from './admin/organization-actions.js';
 import adminPayoutRoutes from './admin/payouts.js';
 import adminRefundRoutes from './admin/refunds.js';
+import adminUserActionRoutes from './admin/user-actions.js';
 import adminVenueActionRoutes from './admin/venue-actions.js';
 import authRoutes from './auth/index.js';
 import otpRoutes from './auth/otp-routes.js';
@@ -130,6 +131,7 @@ export async function registerV2Routes(
       await adminVenueActionRoutes(v2);
       await adminOrganizationActionRoutes(v2);
       await adminEventActionRoutes(v2);
+      await adminUserActionRoutes(v2);
       // Phase 4 PR2: guest checkout + payments + Razorpay webhook.
       await checkoutRoutes(v2);
       await paymentRoutes(v2);

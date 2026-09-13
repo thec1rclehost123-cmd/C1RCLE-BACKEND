@@ -70,6 +70,7 @@ export const adminUserDtoSchema = z.object({
   image: z.string().nullable(),
   emailVerified: z.boolean(),
   role: z.string().nullable(),
+  isBanned: z.boolean(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
 });

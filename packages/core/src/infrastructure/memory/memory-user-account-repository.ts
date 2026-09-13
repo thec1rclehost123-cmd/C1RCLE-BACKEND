@@ -29,4 +29,8 @@ export class MemoryUserAccountRepository implements UserAccountRepository {
   async listAll(query: PaginationQuery): Promise<Page<PlatformUser>> {
     return serializeSlice([...this.users.values()], query);
   }
+
+  async getById(userId: EntityId): Promise<PlatformUser | null> {
+    return this.users.get(userId) ?? null;
+  }
 }

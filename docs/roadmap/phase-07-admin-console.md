@@ -1,7 +1,8 @@
 # Phase 7 — Admin console backend
 
 **Status:** Phase A DONE (2026-09-12) · Phase B DONE (2026-09-13) ·
-Phase C/D NOT STARTED · Depends on:
+Phase C IN PROGRESS (user ban done, safety/support remaining) · Phase D
+NOT STARTED · Depends on:
 Phase 2 (onboarding approvals), Phase 6 (financial actions)
 
 Living status doc for the admin-console build-out — read this before
@@ -100,9 +101,29 @@ via live Firestore-emulator browser click-through (not just unit tests).
       Revisit only if/when a real product need for per-document rejection
       shows up — not speculatively.
 
-## Phase C — Trust & safety, support — NOT STARTED
+## Phase C — Trust & safety, support — IN PROGRESS
 
-User ban + safety reports + content moderation; support ticket desk.
+- [x] User ban/unban — DONE (2026-09-13). `USER_BAN`/`USER_UNBAN` added to
+      `AdminAction` (TIER2, direct command — matches v1's
+      `setUserBanStatus`). New domain model `UserBan` (own aggregate/
+      collection `v2_user_bans`), NOT a field on `PlatformUser` —
+      `UserAccountRepository` is read-only by design (never mutates the
+      Better Auth `v2_auth_users` collection), so ban state lives
+      separately and is joined onto the directory read at query time.
+      `UserAccountRepository` gained a `getById` (previously list-only) so
+      the ban/unban response can assemble a real user view without an
+      O(n) directory scan. Domain: `banUser`/`unbanUser` in `user-ban.ts`
+      (nulls `bannedAt`/`bannedBy`/`banReason` on unban, matching v1's
+      exact field-clearing behavior). Service:
+      `AdminOperationsService.{banUser,unbanUser}`, and `listUsers` now
+      joins ban status onto each page. Route (new file): `user-actions.ts`
+      — `POST /admin/users/:userId/{ban,unban}`. Frontend:
+      `apps/admin-console/src/app/users/page.tsx` now has ban (with a
+      required-feeling reason field, confirm step) / unban buttons and an
+      Active/Banned status badge. Full `pnpm check` (379 tests) + frontend
+      turbo gate (58/58) green.
+- [ ] Safety reports + content moderation (soft-delete pattern)
+- [ ] Support ticket desk (timeline, internal notes, merge logic, SLA)
 
 ## Phase D — Operator tooling — NOT STARTED
 

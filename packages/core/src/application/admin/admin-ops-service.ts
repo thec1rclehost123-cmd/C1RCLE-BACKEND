@@ -6,6 +6,7 @@ import {
   reinstateOrganization,
   suspendOrganization,
 } from '../../domain/models/organization.js';
+import { banUser, unbanUser } from '../../domain/models/user-ban.js';
 import { reinstateVenue, suspendVenue } from '../../domain/models/venue.js';
 
 import type { AdminAuthorityService } from './admin-authority-service.js';
@@ -16,6 +17,9 @@ import type { PlatformUser } from '../../domain/models/platform-user.js';
 import type { Venue } from '../../domain/models/venue.js';
 import type { Page, PaginationQuery } from '../../domain/ports/repositories.js';
 import type { ServiceDeps } from '../context.js';
+
+/** The admin users view adds ban status; the domain model itself stays clean. */
+export type PlatformUserWithBanStatus = PlatformUser & { isBanned: boolean };
 
 /**
  * ─── Admin directory + operations (Phase 7 admin) ───────────────────────────
@@ -50,6 +54,10 @@ export class AdminOperationsService {
     return this.deps.repositories.users;
   }
 
+  private get userBans() {
+    return this.deps.repositories.userBans;
+  }
+
   async listVenues(adminUserId: EntityId, query: PaginationQuery): Promise<Page<Venue>> {
     await this.authority.requireAdmin(adminUserId);
     return this.venues.listAll(query);
@@ -65,9 +73,92 @@ export class AdminOperationsService {
     return this.organizations.listAll(query);
   }
 
-  async listUsers(adminUserId: EntityId, query: PaginationQuery): Promise<Page<PlatformUser>> {
+  async listUsers(
+    adminUserId: EntityId,
+    query: PaginationQuery,
+  ): Promise<Page<PlatformUserWithBanStatus>> {
     await this.authority.requireAdmin(adminUserId);
-    return this.users.listAll(query);
+    const page = await this.users.listAll(query);
+    const items = await Promise.all(
+      page.items.map(async (user) => ({
+        ...user,
+        isBanned: (await this.userBans.getByUserId(user.id))?.isBanned ?? false,
+      })),
+    );
+    return { ...page, items };
+  }
+
+  /** Bans a user. TIER2, direct command. Idempotent on repeat. */
+  async banUser(
+    adminUserId: EntityId,
+    targetUserId: EntityId,
+    reason?: string,
+  ): Promise<PlatformUserWithBanStatus> {
+    const admin = await this.authority.authorize(adminUserId, 'USER_BAN');
+    const existing = await this.userBans.getByUserId(targetUserId);
+    const banned = banUser(existing, targetUserId, { bannedBy: admin.id, reason });
+    if (banned !== existing) {
+      await this.userBans.save(banned);
+      await this.authority.record(admin, {
+        action: 'USER_BAN',
+        targetType: 'platform_user',
+        targetId: targetUserId,
+        before: { isBanned: existing?.isBanned ?? false },
+        after: { isBanned: banned.isBanned },
+        reason: banned.banReason,
+      });
+    }
+    return this.withBanStatus(targetUserId, banned.isBanned);
+  }
+
+  /** Reverses `banUser`. TIER2, direct command. Idempotent on repeat. */
+  async unbanUser(
+    adminUserId: EntityId,
+    targetUserId: EntityId,
+  ): Promise<PlatformUserWithBanStatus> {
+    const admin = await this.authority.authorize(adminUserId, 'USER_UNBAN');
+    const existing = await this.userBans.getByUserId(targetUserId);
+    if (!existing) return this.withBanStatus(targetUserId, false);
+    const unbanned = unbanUser(existing);
+    if (unbanned !== existing) {
+      await this.userBans.save(unbanned);
+      await this.authority.record(admin, {
+        action: 'USER_UNBAN',
+        targetType: 'platform_user',
+        targetId: targetUserId,
+        before: { isBanned: existing.isBanned },
+        after: { isBanned: unbanned.isBanned },
+        reason: null,
+      });
+    }
+    return this.withBanStatus(targetUserId, unbanned.isBanned);
+  }
+
+  /**
+   * Assembles the admin-facing user view. Banning/unbanning a user id that
+   * isn't in the directory (yet, or ever) still succeeds — the ban record
+   * is independent of `UserAccountRepository`, which is read-only by
+   * design — so this falls back to a minimal shape rather than 404ing.
+   */
+  private async withBanStatus(
+    userId: EntityId,
+    isBanned: boolean,
+  ): Promise<PlatformUserWithBanStatus> {
+    const found = await this.users.getById(userId);
+    if (found) return { ...found, isBanned };
+    return {
+      id: userId,
+      // A syntactically valid placeholder — the wire DTO requires a real
+      // email shape even for a ban record with no matching directory entry.
+      email: `${userId}@unknown.c1rcle.internal`,
+      name: '',
+      image: null,
+      emailVerified: false,
+      role: null,
+      createdAt: 0,
+      updatedAt: 0,
+      isBanned,
+    };
   }
 
   /** CSV export of the admin audit trail; a matching audit row is recorded. */

@@ -73,6 +73,7 @@ import type {
   ScanLedgerCreateInput,
   ScanDenyReason,
 } from '../models/scan-ledger.js';
+import type { UserBan } from '../models/user-ban.js';
 import type { Venue, VenueSlot, SlotRequest } from '../models/venue.js';
 
 // ─── Phase 5: Scan Ledger, Event Code, Scanner Session, Door Sale, Cover Wallet ───────
@@ -126,6 +127,13 @@ export interface OrganizationRepository {
 export interface UserAccountRepository {
   /** Platform-wide user directory — global, not org-scoped. */
   listAll(query: PaginationQuery): Promise<Page<PlatformUser>>;
+  getById(userId: EntityId): Promise<PlatformUser | null>;
+}
+
+/** Ban state for platform users, one record per user, keyed by user id. */
+export interface UserBanRepository {
+  getByUserId(userId: EntityId): Promise<UserBan | null>;
+  save(ban: UserBan, tx?: TxContext | null): Promise<void>;
 }
 
 /**
