@@ -387,6 +387,57 @@ export default async function adminRoutes(fastify: FastifyInstance) {
     },
   );
 
+  /**
+   * Execute an approved ADMIN_ROLE_UPDATE proposal. Same idempotency and
+   * proposal-payload-not-caller-args shape as provision-admin above.
+   */
+  fastify.post(
+    '/admin/proposals/:proposalId/update-admin-role',
+    {
+      preHandler: [
+        fastify.rateLimit('SENSITIVE_COMMAND'),
+        fastify.validateV2({ params: proposalIdParam, headers: commandHeaders }),
+      ],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+      const { proposalId } = request.params as z.infer<typeof proposalIdParam>;
+      const v2Headers = request.v2Headers ?? {};
+
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: userId,
+        commandName: 'admin.role_update',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { proposalId }, body: undefined },
+        run: async () => {
+          const admin = await services.adminAuthority.updateAdminRoleFromProposal(
+            userId,
+            proposalId,
+          );
+          const validated = validateV2Response(
+            reply,
+            request,
+            platformAdminDtoSchema,
+            adminToDto(admin),
+          );
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
+        },
+      }).catch((error: unknown) =>
+        isIdempotencyConflict(error)
+          ? mapDomainError(reply, request, proposalId, error, {
+              conflictId: v2Headers['idempotency-key'],
+            })
+          : mapDomainError(reply, request, proposalId, error),
+      );
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
+
   fastify.post(
     '/admin/admins/:adminId/revoke',
     {

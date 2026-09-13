@@ -41,6 +41,7 @@ export type AdminAction =
   | 'USER_UNBAN'
   // TIER3
   | 'ADMIN_PROVISION'
+  | 'ADMIN_ROLE_UPDATE'
   | 'COMMISSION_ADJUST'
   | 'PAYOUT_FREEZE'
   | 'PAYOUT_RELEASE';
@@ -62,6 +63,7 @@ const TIER2_ACTIONS: readonly AdminAction[] = [
 
 const TIER3_ACTIONS: readonly AdminAction[] = [
   'ADMIN_PROVISION',
+  'ADMIN_ROLE_UPDATE',
   'COMMISSION_ADJUST',
   'PAYOUT_FREEZE',
   'PAYOUT_RELEASE',
@@ -137,6 +139,28 @@ export function createPlatformAdmin(input: CreatePlatformAdminInput): PlatformAd
 export function deactivatePlatformAdmin(admin: PlatformAdmin, now?: Date): PlatformAdmin {
   if (!admin.isActive) return admin;
   return { ...bumpVersion(admin, now ?? new Date()), isActive: false };
+}
+
+const ADMIN_ROLES: readonly AdminRole[] = ['super', 'admin', 'ops', 'finance', 'support'];
+
+/**
+ * Changes an admin's role. TIER3, dual control — this is what v1 gated
+ * behind Firebase custom claims and a `claimsSynced` report; v2 has no
+ * separate claims cache to fall out of sync in the first place (the
+ * `PlatformAdmin.role` field IS the authority — `AdminAuthorityService`
+ * reads it directly, nothing else caches it), so that half of v1's
+ * concern doesn't apply here. No-op if the role is unchanged.
+ */
+export function updatePlatformAdminRole(
+  admin: PlatformAdmin,
+  role: AdminRole,
+  now?: Date,
+): PlatformAdmin {
+  if (!ADMIN_ROLES.includes(role)) {
+    throw new InvalidOperationError(`Unknown admin role: ${role}`);
+  }
+  if (admin.role === role) return admin;
+  return { ...bumpVersion(admin, now ?? new Date()), role };
 }
 
 /* ─── Proposed actions (dual control) ──────────────────────────────────────── */

@@ -2,8 +2,9 @@
 
 **Status:** Phase A DONE (2026-09-12) · Phase B DONE (2026-09-13) ·
 Phase C PAUSED (user ban done 2026-09-13; safety-reports/support-desk
-deferred, no intake path exists — see below) · Phase D IN PROGRESS
-(2026-09-13) · Depends on:
+deferred, no intake path exists — see below) · Phase D DONE except
+admin invite-by-email (deferred, needs Better Auth API verification —
+see below) · Depends on:
 Phase 2 (onboarding approvals), Phase 6 (financial actions)
 
 Living status doc for the admin-console build-out — read this before
@@ -182,10 +183,40 @@ via live Firestore-emulator browser click-through (not just unit tests).
       pass: `grep -rn "authority.record(" packages/core/src/application`
       lists every call site that needs the two new parameters threaded
       through from its route.
-- [ ] Admin invite + role-update flow (provision/revoke already exist;
-      needs the actual invite-by-email mechanics — no-password-ever
-      pattern, `getSecureOrigin` header-injection defense, and a decision
-      on which email provider to use — not yet made this session)
+- [x] Admin role-update flow — DONE (2026-09-13, half-scope, see below).
+      `ADMIN_ROLE_UPDATE` added as TIER3 (dual control, same
+      execute-from-approved-proposal shape as `ADMIN_PROVISION`). Domain:
+      `updatePlatformAdminRole` in `admin-authority.ts` (no-op if
+      unchanged). Service:
+      `AdminAuthorityService.updateAdminRoleFromProposal`. Route:
+      `POST /admin/proposals/:proposalId/update-admin-role`. Frontend: the
+      Admins desk gets a "Change role" trigger that raises the proposal
+      (role select + required reason), and the Proposals desk gets an
+      "Apply role update" execute button once a second admin approves —
+      mirrors the existing Provision-admin pattern exactly.
+      **v1's `claimsSynced` concept does not apply**: v1 needed it because
+      role lived in Firebase custom claims, a cache that could fall out
+      of sync with Firestore; v2's `PlatformAdmin.role` field IS the
+      authority (`AdminAuthorityService` reads it directly, nothing else
+      caches it), so there is no second store to desync from.
+      **Admin invitation-by-email — NOT done, real scope reason:** v1's
+      invite flow creates a brand-new Better Auth-equivalent account with
+      a throwaway password and emails a signed reset link
+      (`getSecureOrigin` header-injection defense included). V2's
+      `ADMIN_PROVISION` already assumes the target user has an existing
+      account (a deliberate, safer v2 simplification — promotion, not
+      account creation) — porting v1's invite-a-brand-new-person flow on
+      top would require calling Better Auth's server-side account-creation
+      + password-reset-link-minting API, which this session did not
+      verify against the actual `better-auth` package version in use
+      (`apps/api-gateway/src/plugins/auth.ts`). Guessing that API surface
+      risks shipping code that looks complete but doesn't work — exactly
+      the failure mode this whole gap-closure effort has been avoiding.
+      An `EmailSender` port already exists (`email-sender.ts`, Resend-
+      backed) and would need one new method for a generic invite email.
+      Next step for whoever picks this up: read `better-auth`'s actual
+      server API (`auth.api.*`) for admin-initiated user creation and
+      password-reset-link generation before writing any code.
 
 ## v1 proven logic to port (`thec1rcle`, `apps/admin-console/lib/server/adminStore.js`)
 
