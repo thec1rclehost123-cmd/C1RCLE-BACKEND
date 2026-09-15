@@ -571,6 +571,52 @@ describe('dual control', () => {
     expect(executed.json()).toMatchObject({ id: 'admin_ops', role: 'finance' });
   });
 
+  it('refuses to demote the last active super admin, even racing two approved proposals', async () => {
+    await seedAdmin('admin_super', 'super');
+    await seedAdmin('admin_super2', 'super');
+
+    // Two proposals in flight at once: each supers demotes the other,
+    // each approved by the other while both are still super. Both reach
+    // 'approved' — the demotion-time guard, not the approval step, is
+    // what has to catch the second execution.
+    async function raiseAndApprove(proposer: string, approver: string, target: string) {
+      const proposed = await server.inject({
+        method: 'POST',
+        url: '/admin/proposals',
+        headers: asUser(proposer),
+        payload: {
+          action: 'ADMIN_ROLE_UPDATE',
+          reason: 'Stepping down',
+          payload: { targetUserId: target, role: 'ops' },
+        },
+      });
+      const proposalId = proposed.json().id as string;
+      await server.inject({
+        method: 'POST',
+        url: `/admin/proposals/${proposalId}/approve`,
+        headers: asUser(approver),
+      });
+      return proposalId;
+    }
+
+    const proposalA = await raiseAndApprove('admin_super', 'admin_super2', 'admin_super');
+    const proposalB = await raiseAndApprove('admin_super2', 'admin_super', 'admin_super2');
+
+    const firstExecute = await server.inject({
+      method: 'POST',
+      url: `/admin/proposals/${proposalA}/update-admin-role`,
+      headers: asUser('admin_super'),
+    });
+    expect(firstExecute.statusCode).toBe(200);
+
+    const secondExecute = await server.inject({
+      method: 'POST',
+      url: `/admin/proposals/${proposalB}/update-admin-role`,
+      headers: asUser('admin_super2'),
+    });
+    expect(secondExecute.statusCode).toBe(400);
+  });
+
   it('refuses to update a role from a proposal nobody has approved', async () => {
     await seedAdmin('admin_super', 'super');
     await seedAdmin('admin_ops', 'ops');

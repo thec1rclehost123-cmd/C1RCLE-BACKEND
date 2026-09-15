@@ -295,6 +295,19 @@ export class AdminAuthorityService {
     const target = await this.admins.getById(targetUserId);
     if (!target) throw new InvalidOperationError(`No such admin: ${targetUserId}`);
 
+    // Demoting the last active `super` would leave nobody able to propose
+    // any future TIER3 action (all of them require `super` to propose) —
+    // an availability lockout, not a dual-control bypass, but the same
+    // "don't let the console lock itself out" reasoning `revokeAdmin`
+    // already applies to self-revoke.
+    if (target.role === 'super' && role !== 'super') {
+      const { items } = await this.admins.list({ limit: 1000, cursor: null });
+      const activeSupers = items.filter((a) => a.role === 'super' && a.isActive).length;
+      if (activeSupers <= 1) {
+        throw new InvalidOperationError('Cannot demote the last active super admin');
+      }
+    }
+
     const updated = updatePlatformAdminRole(target, role, this.deps.config.clock.now());
     if (updated !== target) await this.admins.save(updated);
     await this.record(admin, {
