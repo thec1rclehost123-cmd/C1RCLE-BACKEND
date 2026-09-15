@@ -1,20 +1,26 @@
 import { InvalidOperationError, NotFoundError } from '../../domain/errors.js';
 import { isExecutable } from '../../domain/models/admin-authority.js';
+import { adminPauseEvent, adminResumeEvent } from '../../domain/models/event.js';
 import {
   adjustPlatformFeePercent,
   reinstateOrganization,
   suspendOrganization,
 } from '../../domain/models/organization.js';
+import { banUser, unbanUser } from '../../domain/models/user-ban.js';
 import { reinstateVenue, suspendVenue } from '../../domain/models/venue.js';
 
 import type { AdminAuthorityService } from './admin-authority-service.js';
 import type { EntityId } from '../../domain/identity.js';
 import type { Event } from '../../domain/models/event.js';
+import type { Order } from '../../domain/models/order.js';
 import type { Organization } from '../../domain/models/organization.js';
 import type { PlatformUser } from '../../domain/models/platform-user.js';
 import type { Venue } from '../../domain/models/venue.js';
 import type { Page, PaginationQuery } from '../../domain/ports/repositories.js';
 import type { ServiceDeps } from '../context.js';
+
+/** The admin users view adds ban status; the domain model itself stays clean. */
+export type PlatformUserWithBanStatus = PlatformUser & { isBanned: boolean };
 
 /**
  * ─── Admin directory + operations (Phase 7 admin) ───────────────────────────
@@ -49,6 +55,14 @@ export class AdminOperationsService {
     return this.deps.repositories.users;
   }
 
+  private get userBans() {
+    return this.deps.repositories.userBans;
+  }
+
+  private get orders() {
+    return this.deps.repositories.orders;
+  }
+
   async listVenues(adminUserId: EntityId, query: PaginationQuery): Promise<Page<Venue>> {
     await this.authority.requireAdmin(adminUserId);
     return this.venues.listAll(query);
@@ -64,9 +78,122 @@ export class AdminOperationsService {
     return this.organizations.listAll(query);
   }
 
-  async listUsers(adminUserId: EntityId, query: PaginationQuery): Promise<Page<PlatformUser>> {
+  async listUsers(
+    adminUserId: EntityId,
+    query: PaginationQuery,
+  ): Promise<Page<PlatformUserWithBanStatus>> {
     await this.authority.requireAdmin(adminUserId);
-    return this.users.listAll(query);
+    const page = await this.users.listAll(query);
+    const items = await Promise.all(
+      page.items.map(async (user) => ({
+        ...user,
+        isBanned: (await this.userBans.getByUserId(user.id))?.isBanned ?? false,
+      })),
+    );
+    return { ...page, items };
+  }
+
+  /** Platform-wide order list for the admin order desk. Read-only, any admin. */
+  async listOrders(adminUserId: EntityId, query: PaginationQuery): Promise<Page<Order>> {
+    await this.authority.requireAdmin(adminUserId);
+    return this.orders.listAll(query);
+  }
+
+  /** Bans a user. TIER2, direct command. Idempotent on repeat. */
+  async banUser(
+    adminUserId: EntityId,
+    targetUserId: EntityId,
+    reason?: string,
+  ): Promise<PlatformUserWithBanStatus> {
+    const admin = await this.authority.authorize(adminUserId, 'USER_BAN');
+    const existing = await this.userBans.getByUserId(targetUserId);
+    const banned = banUser(existing, targetUserId, { bannedBy: admin.id, reason });
+    if (banned !== existing) {
+      await this.userBans.save(banned);
+      await this.authority.record(admin, {
+        action: 'USER_BAN',
+        targetType: 'platform_user',
+        targetId: targetUserId,
+        before: { isBanned: existing?.isBanned ?? false },
+        after: { isBanned: banned.isBanned },
+        reason: banned.banReason,
+      });
+    }
+    return this.withBanStatus(targetUserId, banned.isBanned);
+  }
+
+  /** Reverses `banUser`. TIER2, direct command. Idempotent on repeat. */
+  async unbanUser(
+    adminUserId: EntityId,
+    targetUserId: EntityId,
+  ): Promise<PlatformUserWithBanStatus> {
+    const admin = await this.authority.authorize(adminUserId, 'USER_UNBAN');
+    const existing = await this.userBans.getByUserId(targetUserId);
+    if (!existing) return this.withBanStatus(targetUserId, false);
+    const unbanned = unbanUser(existing);
+    if (unbanned !== existing) {
+      await this.userBans.save(unbanned);
+      await this.authority.record(admin, {
+        action: 'USER_UNBAN',
+        targetType: 'platform_user',
+        targetId: targetUserId,
+        before: { isBanned: existing.isBanned },
+        after: { isBanned: unbanned.isBanned },
+        reason: null,
+      });
+    }
+    return this.withBanStatus(targetUserId, unbanned.isBanned);
+  }
+
+  /**
+   * Assembles the admin-facing user view. Banning/unbanning a user id that
+   * isn't in the directory (yet, or ever) still succeeds — the ban record
+   * is independent of `UserAccountRepository`, which is read-only by
+   * design — so this falls back to a minimal shape rather than 404ing.
+   */
+  private async withBanStatus(
+    userId: EntityId,
+    isBanned: boolean,
+  ): Promise<PlatformUserWithBanStatus> {
+    const found = await this.users.getById(userId);
+    if (found) return { ...found, isBanned };
+    return {
+      id: userId,
+      // A syntactically valid placeholder — the wire DTO requires a real
+      // email shape even for a ban record with no matching directory entry.
+      email: `${userId}@unknown.c1rcle.internal`,
+      name: '',
+      image: null,
+      emailVerified: false,
+      role: null,
+      createdAt: 0,
+      updatedAt: 0,
+      isBanned,
+    };
+  }
+
+  /**
+   * CSV export of the user directory, with PII redaction — ported from
+   * v1's `exports/route.js`. Only `super`/`finance` see a real email;
+   * every other role gets it redacted, matching v1's rule verbatim. The
+   * export itself is audited with the row count, same as `exportAudit`.
+   */
+  async exportUsers(adminUserId: EntityId): Promise<{
+    rows: PlatformUserWithBanStatus[];
+    redactEmail: boolean;
+  }> {
+    const admin = await this.authority.requireAdmin(adminUserId);
+    const redactEmail = admin.role !== 'super' && admin.role !== 'finance';
+    const page = await this.listUsers(adminUserId, { limit: 1000, cursor: null });
+    await this.authority.record(admin, {
+      action: 'ADMIN_EXPORT',
+      targetType: 'user_directory',
+      targetId: admin.id,
+      before: null,
+      after: { rows: page.items.length },
+      reason: null,
+    });
+    return { rows: page.items, redactEmail };
   }
 
   /** CSV export of the admin audit trail; a matching audit row is recorded. */
@@ -214,6 +341,141 @@ export class AdminOperationsService {
       reason: null,
     });
     return reinstated;
+  }
+
+  /**
+   * Admin override pause. TIER1 — any admin may call it, the action is
+   * merely logged (no role gate beyond being an active admin at all).
+   */
+  async pauseEvent(adminUserId: EntityId, eventId: EntityId): Promise<Event> {
+    const admin = await this.authority.authorize(adminUserId, 'EVENT_PAUSE');
+    const event = await this.requireEvent(eventId);
+    const now = this.deps.config.clock.now();
+    const paused = adminPauseEvent(event, now);
+    if (paused === event) return event;
+    await this.events.save(paused);
+    await this.authority.record(admin, {
+      action: 'EVENT_PAUSE',
+      targetType: 'event',
+      targetId: event.id,
+      before: { status: event.status, adminOverride: event.adminOverride },
+      after: { status: paused.status, adminOverride: paused.adminOverride },
+      reason: null,
+    });
+    return paused;
+  }
+
+  /** Admin override resume. TIER1, reverses `pauseEvent`. */
+  async resumeEvent(adminUserId: EntityId, eventId: EntityId): Promise<Event> {
+    const admin = await this.authority.authorize(adminUserId, 'EVENT_RESUME');
+    const event = await this.requireEvent(eventId);
+    const now = this.deps.config.clock.now();
+    const resumed = adminResumeEvent(event, now);
+    if (resumed === event) return event;
+    await this.events.save(resumed);
+    await this.authority.record(admin, {
+      action: 'EVENT_RESUME',
+      targetType: 'event',
+      targetId: event.id,
+      before: { status: event.status, adminOverride: event.adminOverride },
+      after: { status: resumed.status, adminOverride: resumed.adminOverride },
+      reason: null,
+    });
+    return resumed;
+  }
+
+  private async requireEvent(eventId: EntityId): Promise<Event> {
+    const event = await this.events.getById(eventId);
+    if (!event) throw new NotFoundError('event', eventId);
+    return event;
+  }
+
+  /**
+   * Resolves audit-record targets to human-readable names for display —
+   * a small lookup helper, not baked into the audit write itself (v1's
+   * equivalent walked a 12-entry collection map at read time too;
+   * `logAdminAction` never stored a name). Unresolvable/unknown target
+   * types return `null` rather than throwing — a display nicety is never
+   * worth failing the whole audit read over.
+   *
+   * `adminUserId` is the *viewer*, not the actor who performed the
+   * audited action — a `platform_user` target's email is only resolved
+   * for `super`/`finance` viewers, the same redaction rule `exportUsers`
+   * uses. Without this, any admin (including `support`) could read a
+   * banned user's real email straight out of the audit trail even though
+   * the CSV export redacts it for that same role.
+   */
+  async resolveTargetNames(
+    adminUserId: EntityId,
+    targets: readonly { targetType?: string; targetId?: EntityId }[],
+  ): Promise<Map<string, string | null>> {
+    const admin = await this.authority.requireAdmin(adminUserId);
+    const canSeeEmail = admin.role === 'super' || admin.role === 'finance';
+    const result = new Map<string, string | null>();
+    await Promise.all(
+      targets.map(async ({ targetType, targetId }) => {
+        const key = `${targetType ?? ''}:${targetId ?? ''}`;
+        if (result.has(key) || targetId === undefined) return;
+        result.set(key, await this.resolveOneTargetName(targetType, targetId, canSeeEmail));
+      }),
+    );
+    return result;
+  }
+
+  private async resolveOneTargetName(
+    targetType: string | undefined,
+    targetId: EntityId,
+    canSeeEmail: boolean,
+  ): Promise<string | null> {
+    if (targetType === undefined) return null;
+    switch (targetType) {
+      case 'venue':
+        return (await this.venues.getById(targetId))?.public.name ?? null;
+      case 'event':
+        return (await this.events.getById(targetId))?.title ?? null;
+      case 'organization':
+        return (await this.organizations.getById(targetId))?.name ?? null;
+      case 'platform_user':
+        if (!canSeeEmail) return null;
+        return (await this.users.getById(targetId))?.email ?? null;
+      default:
+        return null;
+    }
+  }
+
+  /**
+   * Global entity lookup (the "omnibox"). Ported from v1's `lookup/route.js`:
+   * parallel O(1) doc-id fetches across known collections rather than a
+   * scan. Read-only, any admin. Below 3 characters returns no results —
+   * a 1-2 char id lookup is never meaningful, so there is nothing to save
+   * by even issuing the reads.
+   */
+  async globalLookup(
+    adminUserId: EntityId,
+    query: string,
+  ): Promise<{ type: 'venue' | 'event' | 'organization' | 'user'; id: EntityId; label: string }[]> {
+    await this.authority.requireAdmin(adminUserId);
+    const q = query.trim();
+    if (q.length < 3) return [];
+
+    const [venue, event, organization, user] = await Promise.all([
+      this.venues.getById(q),
+      this.events.getById(q),
+      this.organizations.getById(q),
+      this.users.getById(q),
+    ]);
+
+    const results: {
+      type: 'venue' | 'event' | 'organization' | 'user';
+      id: EntityId;
+      label: string;
+    }[] = [];
+    if (venue) results.push({ type: 'venue', id: venue.id, label: venue.public.name });
+    if (event) results.push({ type: 'event', id: event.id, label: event.title });
+    if (organization)
+      results.push({ type: 'organization', id: organization.id, label: organization.name });
+    if (user) results.push({ type: 'user', id: user.id, label: user.email });
+    return results;
   }
 
   private async requireVenue(venueId: EntityId): Promise<Venue> {

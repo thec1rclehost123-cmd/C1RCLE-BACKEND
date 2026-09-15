@@ -441,6 +441,10 @@ export class MemoryOrderRepository implements OrderRepository {
     return serializeSlice(all, query);
   }
 
+  async listAll(query: PaginationQuery): Promise<Page<Order>> {
+    return serializeSlice([...this.orders.values()], query);
+  }
+
   async save(order: Order, _tx?: TxContext | null): Promise<void> {
     casSet(this.orders, order);
     if (order.paymentId) this.byPaymentId.set(order.paymentId, order);

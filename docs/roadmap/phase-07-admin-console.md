@@ -1,6 +1,10 @@
 # Phase 7 — Admin console backend
 
-**Status:** Phase A DONE (2026-09-12) · Phase B IN PROGRESS · Depends on:
+**Status:** Phase A DONE (2026-09-12) · Phase B DONE (2026-09-13) ·
+Phase C PAUSED (user ban done 2026-09-13; safety-reports/support-desk
+deferred, no intake path exists — see below) · Phase D DONE except
+admin invite-by-email (deferred, needs Better Auth API verification —
+see below) · Depends on:
 Phase 2 (onboarding approvals), Phase 6 (financial actions)
 
 Living status doc for the admin-console build-out — read this before
@@ -11,9 +15,13 @@ last looked. Full gap audit + phase plan:
 `apps/admin-console/src/lib/admin/admin-api.ts` are ground truth).
 
 `C1RCLE-FRONTEND/apps/admin-console` now has real screens (not an empty
-scaffold): onboarding, refunds, payouts, disputes(stub), venues, events,
+scaffold): onboarding, orders, refunds, payouts, disputes, venues, events,
 users, hosts, admins, audit, proposals, overview — all live API calls, no
 mocks.
+
+> **Remaining-work backlog:** see `ADMIN-DASHBOARD-GAPS.md` (V1→V2 parity
+> gap audit + execution batches). Deferred items and decisions below are
+> mirrored there.
 
 ## Phase A — Money correctness — ✅ DONE
 
@@ -46,19 +54,173 @@ via live Firestore-emulator browser click-through (not just unit tests).
       capabilities on a member, so there is no cross-type repair to do.
       Not building it; flagging here so a future session doesn't treat it
       as an oversight.
-- [ ] KYC per-step review state machine + admin signed-read URLs
-- [ ] Event platform-override (pause/resume, `adminOverride` flag,
-      discovery-weight bounds, featured/spotlight — typed endpoints)
+- [x] Event pause/resume admin override — DONE (2026-09-13). `EVENT_PAUSE`/
+      `EVENT_RESUME` added to `AdminAction` as TIER1 (any active admin,
+      merely logged — no dual control). New `Event.adminOverride: boolean`
+      field (default `false`; any real status transition via
+      `transitionEvent` clears it — only `adminPauseEvent` sets it).
+      Domain: `adminPauseEvent`/`adminResumeEvent` in `event.ts`, guarded to
+      `published`/`sales_paused` only (v1's "cannot pause a completed or
+      past event" guard — here it's structural, since the FSM table has no
+      other inbound edge to `sales_paused`). Service:
+      `AdminOperationsService.{pauseEvent,resumeEvent}`. Route (new file):
+      `event-actions.ts` — `POST /admin/events/:eventId/{pause,resume}`.
+      Frontend: `apps/admin-console/src/app/events/page.tsx` now has
+      working Pause/Resume buttons + an "Admin override" badge. Firestore
+      adapter's `toEvent` mapper updated (field-by-field reconstruction,
+      defaults `adminOverride: false` for pre-existing docs). Full
+      `pnpm check` (backend) + `pnpm turbo run lint typecheck test build
+      --concurrency=4` (frontend, 58/58 — the uncapped run OOM'd 3 unrelated
+      Next.js build workers, confirmed resource contention not a regression
+      by rebuilding each app alone) green.
+      **Scope decision:** discovery-weight bounds and featured/spotlight
+      curation (also named in this checklist item originally) are deferred
+      to Phase D alongside the rest of operator tooling — they're curation
+      features with no existing V2 concept to extend (no discovery-weight
+      field anywhere in the domain yet), unlike pause/resume which builds
+      directly on the existing event FSM. Not an oversight; split out so
+      this entry could close on the reused-infrastructure half.
+- [x] KYC admin signed-read URLs — DONE (2026-09-13, half-scope, see below).
+      `ObjectStoragePort` gained `issueReadUrl`/`ReadUrlRequest`/
+      `ReadUrlGrant` (both `EchoObjectStorage` and `FirebaseObjectStorage`
+      implement it — v4 signed GET, 10-minute TTL, same pattern as the
+      existing upload grant). `OnboardingService.issueDocumentReadUrl`
+      (any admin — viewing isn't a decision, unlike approve which stays
+      TIER2) resolves the document's `storagePath` from the
+      `OnboardingRequest` itself, never from caller input, so no separate
+      prefix allowlist is needed the way v1's version had one. Route:
+      `GET /admin/onboarding/applications/:requestId/documents/:label/read-url`
+      in `onboarding-review.ts`. Frontend: `apps/admin-console/src/app/
+      onboarding/page.tsx` now has a Documents column with per-label
+      "view" buttons that open the signed URL in a new tab. Full
+      `pnpm check` (374 tests) + frontend turbo gate (58/58) green.
+      **Scope decision — per-step review state machine NOT built:** v1's
+      `deriveKycStatus` rolled multiple per-document statuses into one of
+      7 states because v1 had no request-level status at all for KYC
+      specifically. V2's `OnboardingRequest.status` (draft/submitted/
+      changes_requested/approved/rejected) already serves the same purpose
+      at the whole-application grain, and `onboarding-review.ts` already
+      ships approve/reject/request-changes on it. Adding a SECOND,
+      per-document FSM underneath would duplicate that state rather than
+      extend it, for a granularity v2's admin flow has never needed (admins
+      review the whole document set at once, not document-by-document).
+      Revisit only if/when a real product need for per-document rejection
+      shows up — not speculatively.
 
-## Phase C — Trust & safety, support — NOT STARTED
+## Phase C — Trust & safety, support — IN PROGRESS
 
-User ban + safety reports + content moderation; support ticket desk.
+- [x] User ban/unban — DONE (2026-09-13). `USER_BAN`/`USER_UNBAN` added to
+      `AdminAction` (TIER2, direct command — matches v1's
+      `setUserBanStatus`). New domain model `UserBan` (own aggregate/
+      collection `v2_user_bans`), NOT a field on `PlatformUser` —
+      `UserAccountRepository` is read-only by design (never mutates the
+      Better Auth `v2_auth_users` collection), so ban state lives
+      separately and is joined onto the directory read at query time.
+      `UserAccountRepository` gained a `getById` (previously list-only) so
+      the ban/unban response can assemble a real user view without an
+      O(n) directory scan. Domain: `banUser`/`unbanUser` in `user-ban.ts`
+      (nulls `bannedAt`/`bannedBy`/`banReason` on unban, matching v1's
+      exact field-clearing behavior). Service:
+      `AdminOperationsService.{banUser,unbanUser}`, and `listUsers` now
+      joins ban status onto each page. Route (new file): `user-actions.ts`
+      — `POST /admin/users/:userId/{ban,unban}`. Frontend:
+      `apps/admin-console/src/app/users/page.tsx` now has ban (with a
+      required-feeling reason field, confirm step) / unban buttons and an
+      Active/Banned status badge. Full `pnpm check` (379 tests) + frontend
+      turbo gate (58/58) green.
+- [ ] Safety reports + content moderation (soft-delete pattern) — PAUSED.
+      Both this and the support desk need a public-facing intake path
+      (someone reports content; a user opens a ticket) that doesn't exist
+      anywhere in v2 yet. Building only the admin dismiss/resolve side
+      would ship a screen that's permanently empty — confirmed with user
+      2026-09-13 to skip for now rather than build dead scaffolding.
+      Revisit once a real reporting/ticket intake surface is scoped
+      (guest-portal or partner-dashboard side).
+- [ ] Support ticket desk (timeline, internal notes, merge logic, SLA) —
+      PAUSED, same reasoning as above.
 
-## Phase D — Operator tooling — NOT STARTED
+## Phase D — Operator tooling — IN PROGRESS
 
-Generic filtered list + audited CSV export with PII redaction; global
-entity lookup (omnibox); audit log IP/UA + target-name resolution; admin
-invite + role-update flow.
+- [x] Global entity lookup (omnibox) — DONE (2026-09-13). Ported v1's
+      O(1)-parallel-fetch pattern (`lookup/route.js`), not a scan:
+      `AdminOperationsService.globalLookup` fires `Promise.all` across
+      venue/event/organization/user `getById` — all four already existed
+      on their repository ports except `UserAccountRepository`, which
+      gained `getById` for this (previously list-only). Below 3 chars
+      returns `[]` without issuing any reads. Route: `GET /admin/lookup?q=`
+      in `directory.ts`. Frontend: new `/lookup` page + nav entry — enter
+      an exact id, get back type/name/id across all four collections.
+      Full `pnpm check` (385 tests) + frontend turbo gate (58/58) green.
+      **Scope note:** doc-id lookup only, matching v1's actual O(1)
+      pattern — no slug/email fallback search (v1's own indexed-email
+      lookup was a separate, secondary path; not ported here, add later
+      if a real need shows up).
+- [x] Audited CSV export with PII redaction — DONE (2026-09-13), scoped to
+      the user directory (the one collection with real PII; venues/events/
+      hosts carry none in their current DTOs). `GET
+      /admin/users/export.csv` redacts email to `[redacted]` for every
+      role except `super`/`finance` (v1's exact rule), audited as
+      `ADMIN_EXPORT`/`user_directory` with row count. **Scope decision:**
+      did NOT port v1's per-admin-role *read* matrix restricting which of
+      venues/events/hosts/users each role may even list — v2's existing
+      directory routes deliberately let any active admin read all four
+      (see `directory.ts`'s own header comment), and narrowing that is a
+      real access-policy decision, not an engineering default; left as-is
+      rather than guessing a matrix.
+- [x] Audit log target-name resolution — DONE (2026-09-13).
+      `AdminOperationsService.resolveTargetNames` batch-resolves
+      venue/event/organization/platform_user targets to a display name at
+      READ time (`GET /admin/audit` and the audit CSV export), never
+      baked into the write — matches the plan's "small lookup helper, not
+      baked into the audit write itself." Unresolvable/unknown target
+      types (proposed_action, platform_admin, audit_log, user_directory,
+      onboarding_request) return `null`, not an error.
+      **IP/UA capture — NOT done, real scope reason:** every admin write
+      funnels through `AdminAuthorityService.record()`, called from
+      ~25 call sites across ~10 route files; the plan deliberately rejects
+      an AsyncLocalStorage shortcut in favor of explicit route→service
+      passing, which means adding `ipAddress`/`userAgent` correctly means
+      touching every one of those ~25 call sites (route handler extracts
+      `request.ip`/`request.headers['user-agent']`, passes to the service
+      method, service forwards into `AuditInput`) — a large, uniform,
+      low-risk-per-edit but wide mechanical change. Left for a dedicated
+      pass: `grep -rn "authority.record(" packages/core/src/application`
+      lists every call site that needs the two new parameters threaded
+      through from its route.
+- [x] Admin role-update flow — DONE (2026-09-13, half-scope, see below).
+      `ADMIN_ROLE_UPDATE` added as TIER3 (dual control, same
+      execute-from-approved-proposal shape as `ADMIN_PROVISION`). Domain:
+      `updatePlatformAdminRole` in `admin-authority.ts` (no-op if
+      unchanged). Service:
+      `AdminAuthorityService.updateAdminRoleFromProposal`. Route:
+      `POST /admin/proposals/:proposalId/update-admin-role`. Frontend: the
+      Admins desk gets a "Change role" trigger that raises the proposal
+      (role select + required reason), and the Proposals desk gets an
+      "Apply role update" execute button once a second admin approves —
+      mirrors the existing Provision-admin pattern exactly.
+      **v1's `claimsSynced` concept does not apply**: v1 needed it because
+      role lived in Firebase custom claims, a cache that could fall out
+      of sync with Firestore; v2's `PlatformAdmin.role` field IS the
+      authority (`AdminAuthorityService` reads it directly, nothing else
+      caches it), so there is no second store to desync from.
+      **Admin invitation-by-email — NOT done, real scope reason:** v1's
+      invite flow creates a brand-new Better Auth-equivalent account with
+      a throwaway password and emails a signed reset link
+      (`getSecureOrigin` header-injection defense included). V2's
+      `ADMIN_PROVISION` already assumes the target user has an existing
+      account (a deliberate, safer v2 simplification — promotion, not
+      account creation) — porting v1's invite-a-brand-new-person flow on
+      top would require calling Better Auth's server-side account-creation
+      + password-reset-link-minting API, which this session did not
+      verify against the actual `better-auth` package version in use
+      (`apps/api-gateway/src/plugins/auth.ts`). Guessing that API surface
+      risks shipping code that looks complete but doesn't work — exactly
+      the failure mode this whole gap-closure effort has been avoiding.
+      An `EmailSender` port already exists (`email-sender.ts`, Resend-
+      backed) and would need one new method for a generic invite email.
+      Next step for whoever picks this up: read `better-auth`'s actual
+      server API (`auth.api.*`) for admin-initiated user creation and
+      password-reset-link generation before writing any code.
 
 ## v1 proven logic to port (`thec1rcle`, `apps/admin-console/lib/server/adminStore.js`)
 

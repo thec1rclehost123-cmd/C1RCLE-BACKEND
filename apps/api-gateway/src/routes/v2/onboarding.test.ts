@@ -391,6 +391,66 @@ describe('admin review', () => {
   });
 });
 
+describe('admin document read URLs', () => {
+  async function submittedApplication(): Promise<string> {
+    const created = await startApplication('user_a');
+    await uploadRequiredDocuments('user_a', created.id);
+    await server.inject({
+      method: 'POST',
+      url: `/onboarding/applications/${created.id}/submit`,
+      headers: asUser('user_a'),
+    });
+    return created.id;
+  }
+
+  it('any admin (even support, below TIER2) can mint a read URL for an uploaded document', async () => {
+    const requestId = await submittedApplication();
+    await seedAdmin('admin_support', 'support');
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/admin/onboarding/applications/${requestId}/documents/id_front/read-url`,
+      headers: { 'x-user-id': 'admin_support' },
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json<{ readUrl: string; expiresAt: number }>();
+    expect(body.readUrl.length).toBeGreaterThan(0);
+    expect(body.expiresAt).toBeGreaterThan(Date.now());
+  });
+
+  it('refuses a non-admin', async () => {
+    const requestId = await submittedApplication();
+    const response = await server.inject({
+      method: 'GET',
+      url: `/admin/onboarding/applications/${requestId}/documents/id_front/read-url`,
+      headers: { 'x-user-id': 'not_an_admin' },
+    });
+    expect(response.statusCode).toBe(401);
+  });
+
+  it('404s for a label that was never uploaded', async () => {
+    const requestId = await submittedApplication();
+    await seedAdmin('admin_ops', 'ops');
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/admin/onboarding/applications/${requestId}/documents/registration_certificate/read-url`,
+      headers: { 'x-user-id': 'admin_ops' },
+    });
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('404s for an unknown request id', async () => {
+    await seedAdmin('admin_ops', 'ops');
+    const response = await server.inject({
+      method: 'GET',
+      url: '/admin/onboarding/applications/req_missing/documents/id_front/read-url',
+      headers: { 'x-user-id': 'admin_ops' },
+    });
+    expect(response.statusCode).toBe(404);
+  });
+});
+
 describe('dual control', () => {
   async function raiseProvisionProposal(proposer: string) {
     const response = await server.inject({
@@ -475,6 +535,110 @@ describe('dual control', () => {
     expect(provisioned.statusCode).toBe(201);
     const body = provisioned.json();
     expect(body).toMatchObject({ id: 'user_new_admin', role: 'ops', isActive: true });
+  });
+
+  it('updates an admin role once two different super admins have signed', async () => {
+    await seedAdmin('admin_super', 'super');
+    await seedAdmin('admin_super2', 'super');
+    await seedAdmin('admin_ops', 'ops');
+
+    const proposed = await server.inject({
+      method: 'POST',
+      url: '/admin/proposals',
+      headers: asUser('admin_super'),
+      payload: {
+        action: 'ADMIN_ROLE_UPDATE',
+        reason: 'Promoting to finance',
+        payload: { targetUserId: 'admin_ops', role: 'finance' },
+      },
+    });
+    expect(proposed.statusCode).toBe(201);
+    const proposalId = proposed.json().id as string;
+
+    const approved = await server.inject({
+      method: 'POST',
+      url: `/admin/proposals/${proposalId}/approve`,
+      headers: asUser('admin_super2'),
+    });
+    expect(approved.statusCode).toBe(200);
+
+    const executed = await server.inject({
+      method: 'POST',
+      url: `/admin/proposals/${proposalId}/update-admin-role`,
+      headers: asUser('admin_super2'),
+    });
+    expect(executed.statusCode).toBe(200);
+    expect(executed.json()).toMatchObject({ id: 'admin_ops', role: 'finance' });
+  });
+
+  it('refuses to demote the last active super admin, even racing two approved proposals', async () => {
+    await seedAdmin('admin_super', 'super');
+    await seedAdmin('admin_super2', 'super');
+
+    // Two proposals in flight at once: each supers demotes the other,
+    // each approved by the other while both are still super. Both reach
+    // 'approved' — the demotion-time guard, not the approval step, is
+    // what has to catch the second execution.
+    async function raiseAndApprove(proposer: string, approver: string, target: string) {
+      const proposed = await server.inject({
+        method: 'POST',
+        url: '/admin/proposals',
+        headers: asUser(proposer),
+        payload: {
+          action: 'ADMIN_ROLE_UPDATE',
+          reason: 'Stepping down',
+          payload: { targetUserId: target, role: 'ops' },
+        },
+      });
+      const proposalId = proposed.json().id as string;
+      await server.inject({
+        method: 'POST',
+        url: `/admin/proposals/${proposalId}/approve`,
+        headers: asUser(approver),
+      });
+      return proposalId;
+    }
+
+    const proposalA = await raiseAndApprove('admin_super', 'admin_super2', 'admin_super');
+    const proposalB = await raiseAndApprove('admin_super2', 'admin_super', 'admin_super2');
+
+    const firstExecute = await server.inject({
+      method: 'POST',
+      url: `/admin/proposals/${proposalA}/update-admin-role`,
+      headers: asUser('admin_super'),
+    });
+    expect(firstExecute.statusCode).toBe(200);
+
+    const secondExecute = await server.inject({
+      method: 'POST',
+      url: `/admin/proposals/${proposalB}/update-admin-role`,
+      headers: asUser('admin_super2'),
+    });
+    expect(secondExecute.statusCode).toBe(400);
+  });
+
+  it('refuses to update a role from a proposal nobody has approved', async () => {
+    await seedAdmin('admin_super', 'super');
+    await seedAdmin('admin_ops', 'ops');
+
+    const proposed = await server.inject({
+      method: 'POST',
+      url: '/admin/proposals',
+      headers: asUser('admin_super'),
+      payload: {
+        action: 'ADMIN_ROLE_UPDATE',
+        reason: 'test',
+        payload: { targetUserId: 'admin_ops', role: 'finance' },
+      },
+    });
+    const proposalId = proposed.json().id as string;
+
+    const executed = await server.inject({
+      method: 'POST',
+      url: `/admin/proposals/${proposalId}/update-admin-role`,
+      headers: asUser('admin_super'),
+    });
+    expect(executed.statusCode).toBe(403);
   });
 
   it('revokes authority without a second signature, and never one’s own', async () => {

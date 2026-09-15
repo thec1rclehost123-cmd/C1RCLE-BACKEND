@@ -177,6 +177,7 @@ export type {
   OnboardingDocumentLabel,
   DocumentUploadUrlRequest,
   DocumentUploadUrlDto,
+  DocumentReadUrlDto,
   VerifyDocumentRequest,
   VerificationResultDto,
   ReviewOnboardingRequest,
@@ -187,6 +188,8 @@ export type {
   ProposeActionRequest,
   ResolveProposalRequest,
   AdminAuditRecordDto,
+  AdminLookupResultItem,
+  AdminLookupResponse,
 } from './contracts/onboarding.js';
 
 export {
@@ -201,6 +204,7 @@ export {
   onboardingDocumentLabelSchema,
   documentUploadUrlRequestSchema,
   documentUploadUrlDtoSchema,
+  documentReadUrlDtoSchema,
   verifyDocumentSchema,
   verificationResultDtoSchema,
   reviewOnboardingSchema,
@@ -214,6 +218,8 @@ export {
   proposeActionSchema,
   resolveProposalSchema,
   adminAuditRecordDtoSchema,
+  adminLookupResultItemSchema,
+  adminLookupResponseSchema,
 } from './contracts/onboarding.js';
 
 // Checkout / Orders / Payments / Entitlements
@@ -349,6 +355,19 @@ export {
   adminUserDtoSchema,
   adminUserListResponseSchema,
 } from './contracts/admin.js';
+
+// Phase 7: Admin orders desk (platform-wide read-only order list)
+export type {
+  AdminOrderContactDto,
+  AdminOrderDto,
+  AdminOrderListResponse,
+} from './contracts/admin-orders.js';
+
+export {
+  adminOrderContactDtoSchema,
+  adminOrderDtoSchema,
+  adminOrderListResponseSchema,
+} from './contracts/admin-orders.js';
 
 // Phase 6: Finance / Ledger / Payouts
 export type {

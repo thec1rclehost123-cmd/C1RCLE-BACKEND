@@ -19,6 +19,7 @@ export * from './memory-referral-link-repository.js';
 export * from './memory-promoter-connection-repository.js';
 export * from './memory-repositories.js';
 export * from './memory-user-account-repository.js';
+export * from './memory-user-ban-repository.js';
 export * from './memory-onboarding-repository.js';
 export * from './memory-scan-ledger-repository.js';
 export * from './memory-event-code-repository.js';
