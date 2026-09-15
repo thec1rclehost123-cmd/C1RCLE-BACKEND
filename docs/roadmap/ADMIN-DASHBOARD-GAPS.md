@@ -46,7 +46,7 @@
 | V1 feature | V1 LOC / page | Why it's valuable | Backend work | Frontend work |
 |---|---|---|---|---|
 | **Orders/payments list** | `/payments` (1,152 LOC) | ✅ **DONE 2026-09-13** — `/orders` desk live (read-only list; see §1) | New `orders.ts` admin read-only route (`v2_orders` paginated via new `OrderRepository.listAll`) | `/orders` desk: table + status filters (order detail row = lower priority) |
-| **KYC review desk** | `/kyc-review` (692 LOC) | Currently routed through onboarding — a dedicated review desk surfaces pending applications faster for large queues | No new backend; reuse `onboarding-review.ts` | `/kyc-review` filtered view of onboarding queue, doc-heavy layout |
+| **KYC review desk** | `/kyc-review` (692 LOC) | ✅ **DONE 2026-09-15** — `/kyc-review` card-layout view, always scoped to `submitted`+`changes_requested`, documents shown up front per applicant | No new backend; reuse `onboarding-review.ts` | `/kyc-review` filtered view of onboarding queue, doc-heavy layout |
 | **Analytics dashboard** | `/analytics` (1,317 LOC) | Revenue/event/user metrics for ops decisions | New `analytics.ts` aggregate queries (revenue totals, ticket stats, active events) | `/analytics` charts + summary cards |
 
 ### Tier B: medium value, V1 has screens but deferred scope or blocked
@@ -97,8 +97,8 @@
 - Frontend: `/orders` desk + `listOrders` admin-api client + `ORDER_STATUSES` (derived from schema) + nav entry
 - Note: no new Firestore composite index — platform-wide list is equality-free on a single `createdAt` index
 
-**Batch 3 — KYC review filtered view**
-- Frontend-only: `/kyc-review` as a filter-preset of `/onboarding` (status=submitted), doc-focused layout
+**Batch 3 — KYC review filtered view** (DONE 2026-09-15)
+- Frontend-only: `/kyc-review` — card layout, always `submitted`+`changes_requested`, documents shown up front per applicant, same approve/reject/request-changes actions as `/onboarding`
 - No backend changes needed
 
 **Batch 4 — Analytics dashboard**
@@ -118,4 +118,5 @@
 | 2026-09-13 | Initial gap audit created. Verified V1 claims against actual `thec1rcle` source (tiers, dual-approval, amount-tiered refunds, previousStatus restore, DUAL_APPROVAL config). V2 E2E confirmed for 12 features. 2 backend-only features (disputes, commission-adjust). 7+ Tier A–B features missing entirely. Batch 1 (disputes desk) execution started. |
 | 2026-09-13 | **Batch 1 DONE** — disputes desk E2E: `contract-types.ts` (DisputeStatus/Outcome), `format.tsx` (labels + tone), `admin-api.ts` (`listDisputes`/`resolveDispute`), `/disputes` page, nav entry. Gate: turbo lint/typecheck/test/build on admin-console 16/16. |
 | 2026-09-13 | **Batch 2 DONE** — orders desk E2E. Backend: `OrderRepository.listAll` (port + memory + firestore), `AdminOperationsService.listOrders`, `admin-orders.ts` contracts, `admin/orders.ts` route registered in manifest. Gates: `pnpm check` green (format/lint/typecheck/boundaries/391 tests/build), contract-parity 63/63. Frontend: contracts synced via export-contracts, `/orders` desk + `listOrders` + `ORDER_STATUSES` + nav entry. Gate: turbo 16/16 on admin-console. No new Firestore composite indexes. |
-| | Next: Batch 3 (KYC review filtered view, frontend-only) → Batch 4 (analytics, backend + frontend). |
+| 2026-09-15 | **Batch 3 DONE** — KYC review desk: `/kyc-review` frontend-only, card layout scoped to `submitted`+`changes_requested`, documents shown up front. Nav entry added. Gate: turbo lint/typecheck/test/build 58/58 on full frontend monorepo. |
+| | Next: Batch 4 (analytics, backend + frontend). |
