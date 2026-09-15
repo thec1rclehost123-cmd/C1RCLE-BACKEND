@@ -444,6 +444,8 @@ export interface OrderRepository {
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Order>>;
   /** Lists orders for an event. */
   listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<Order>>;
+  /** Lists all orders platform-wide (admin read-only dashboards). */
+  listAll(query: PaginationQuery): Promise<Page<Order>>;
   /** Saves (create or update). Version is checked for optimistic locking. */
   save(order: Order, tx?: TxContext | null): Promise<void>;
 }

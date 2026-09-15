@@ -66,6 +66,11 @@ export class FirestoreOrderRepository implements OrderRepository {
     return paginateQuery(base, query, toOrder);
   }
 
+  async listAll(query: PaginationQuery): Promise<Page<Order>> {
+    const base = this.collection.orderBy('createdAt', 'desc');
+    return paginateQuery(base, query, toOrder);
+  }
+
   async save(order: Order, _tx?: TxContext | null): Promise<void> {
     // Compare-and-set: a write of version N must find N-1 (see compare-and-set.ts).
     await compareAndSet(this.db, this.collection, order, toDoc);

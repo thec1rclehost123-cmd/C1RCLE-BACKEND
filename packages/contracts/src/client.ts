@@ -356,6 +356,19 @@ export {
   adminUserListResponseSchema,
 } from './contracts/admin.js';
 
+// Phase 7: Admin orders desk (platform-wide read-only order list)
+export type {
+  AdminOrderContactDto,
+  AdminOrderDto,
+  AdminOrderListResponse,
+} from './contracts/admin-orders.js';
+
+export {
+  adminOrderContactDtoSchema,
+  adminOrderDtoSchema,
+  adminOrderListResponseSchema,
+} from './contracts/admin-orders.js';
+
 // Phase 6: Finance / Ledger / Payouts
 export type {
   LedgerEntryDto,

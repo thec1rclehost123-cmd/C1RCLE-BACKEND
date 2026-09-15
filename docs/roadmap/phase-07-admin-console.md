@@ -15,9 +15,13 @@ last looked. Full gap audit + phase plan:
 `apps/admin-console/src/lib/admin/admin-api.ts` are ground truth).
 
 `C1RCLE-FRONTEND/apps/admin-console` now has real screens (not an empty
-scaffold): onboarding, refunds, payouts, disputes(stub), venues, events,
+scaffold): onboarding, orders, refunds, payouts, disputes, venues, events,
 users, hosts, admins, audit, proposals, overview — all live API calls, no
 mocks.
+
+> **Remaining-work backlog:** see `ADMIN-DASHBOARD-GAPS.md` (V1→V2 parity
+> gap audit + execution batches). Deferred items and decisions below are
+> mirrored there.
 
 ## Phase A — Money correctness — ✅ DONE
 

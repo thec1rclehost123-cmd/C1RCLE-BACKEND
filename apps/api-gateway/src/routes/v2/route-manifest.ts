@@ -8,6 +8,7 @@ import adminDirectoryRoutes from './admin/directory.js';
 import adminDisputeRoutes from './admin/disputes.js';
 import adminEventActionRoutes from './admin/event-actions.js';
 import adminRoutes from './admin/onboarding-review.js';
+import adminOrderRoutes from './admin/orders.js';
 import adminOrganizationActionRoutes from './admin/organization-actions.js';
 import adminPayoutRoutes from './admin/payouts.js';
 import adminRefundRoutes from './admin/refunds.js';
@@ -128,6 +129,7 @@ export async function registerV2Routes(
       await adminPayoutRoutes(v2);
       await adminDisputeRoutes(v2);
       await adminDirectoryRoutes(v2);
+      await adminOrderRoutes(v2);
       await adminVenueActionRoutes(v2);
       await adminOrganizationActionRoutes(v2);
       await adminEventActionRoutes(v2);

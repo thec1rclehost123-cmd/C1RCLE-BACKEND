@@ -12,6 +12,7 @@ import { reinstateVenue, suspendVenue } from '../../domain/models/venue.js';
 import type { AdminAuthorityService } from './admin-authority-service.js';
 import type { EntityId } from '../../domain/identity.js';
 import type { Event } from '../../domain/models/event.js';
+import type { Order } from '../../domain/models/order.js';
 import type { Organization } from '../../domain/models/organization.js';
 import type { PlatformUser } from '../../domain/models/platform-user.js';
 import type { Venue } from '../../domain/models/venue.js';
@@ -58,6 +59,10 @@ export class AdminOperationsService {
     return this.deps.repositories.userBans;
   }
 
+  private get orders() {
+    return this.deps.repositories.orders;
+  }
+
   async listVenues(adminUserId: EntityId, query: PaginationQuery): Promise<Page<Venue>> {
     await this.authority.requireAdmin(adminUserId);
     return this.venues.listAll(query);
@@ -86,6 +91,12 @@ export class AdminOperationsService {
       })),
     );
     return { ...page, items };
+  }
+
+  /** Platform-wide order list for the admin order desk. Read-only, any admin. */
+  async listOrders(adminUserId: EntityId, query: PaginationQuery): Promise<Page<Order>> {
+    await this.authority.requireAdmin(adminUserId);
+    return this.orders.listAll(query);
   }
 
   /** Bans a user. TIER2, direct command. Idempotent on repeat. */
