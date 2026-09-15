@@ -28,3 +28,7 @@ overrides:
   'fast-uri@^3.0.0': '3.1.6'
   'fast-uri@^4.0.0': '4.1.4'
   'nanoid@^3.0.0': '3.3.18'
+  # js-yaml: remediate CVE-2026-84375 (DoS in YAML parsing, < 4.3.2). Pulled
+  # in transitively by commitlint/eslint's cosmiconfig chain (devDependency),
+  # but still lands in the built image's node_modules — Trivy scans it there.
+  js-yaml: '>=4.3.2'

@@ -5,11 +5,13 @@ import {
   approveProposal,
   cancelProposal,
   canInitiate,
+  createPlatformAdmin,
   isExecutable,
   proposeAction,
   rejectProposal,
   requiresDualControl,
   tierOf,
+  updatePlatformAdminRole,
 } from './models/admin-authority.js';
 
 /**
@@ -168,5 +170,30 @@ describe('dual control', () => {
   it('lets only the proposer cancel', () => {
     expect(cancelProposal(proposal('admin_a'), 'admin_a', NOW).status).toBe('cancelled');
     expect(() => cancelProposal(proposal('admin_a'), 'admin_b', NOW)).toThrow(ForbiddenError);
+  });
+});
+
+describe('updatePlatformAdminRole', () => {
+  const admin = () =>
+    createPlatformAdmin({ id: 'admin_a', email: 'a@c1rcle.test', role: 'ops', now: NOW });
+
+  it('changes the role and bumps the version', () => {
+    const before = admin();
+    const after = updatePlatformAdminRole(before, 'super', NOW);
+    expect(after.role).toBe('super');
+    expect(after.version).toBe(before.version + 1);
+  });
+
+  it('setting the same role is a no-op', () => {
+    const before = admin();
+    const after = updatePlatformAdminRole(before, 'ops', NOW);
+    expect(after).toBe(before);
+  });
+
+  it('rejects an unknown role', () => {
+    const before = admin();
+    expect(() => updatePlatformAdminRole(before, 'owner' as never, NOW)).toThrow(
+      InvalidOperationError,
+    );
   });
 });

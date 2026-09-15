@@ -1,7 +1,9 @@
 import {
   adminAuditRecordDtoSchema,
   approveOnboardingResultSchema,
+  documentReadUrlDtoSchema,
   idempotencyKeySchema,
+  onboardingDocumentLabelSchema,
   onboardingRequestDtoSchema,
   onboardingStatusSchema,
   opaqueIdSchema,
@@ -42,6 +44,10 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 const services = createV2Services();
 
 const requestIdParam = z.object({ requestId: opaqueIdSchema });
+const requestDocumentParam = z.object({
+  requestId: opaqueIdSchema,
+  label: onboardingDocumentLabelSchema,
+});
 const proposalIdParam = z.object({ proposalId: opaqueIdSchema });
 const adminIdParam = z.object({ adminId: opaqueIdSchema });
 const commandHeaders = z.looseObject({ 'idempotency-key': idempotencyKeySchema });
@@ -121,6 +127,36 @@ export default async function adminRoutes(fastify: FastifyInstance) {
         onboardingRequestDtoSchema,
         toDto(found),
       );
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  /**
+   * Admin-side signed read for one uploaded KYC image — lets an admin
+   * actually view a document before approving/rejecting. Not
+   * idempotency-keyed: minting a fresh short-lived URL per view has no
+   * side effect worth de-duplicating.
+   */
+  fastify.get(
+    '/admin/onboarding/applications/:requestId/documents/:label/read-url',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({ params: requestDocumentParam }),
+      ],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+      const { requestId, label } = request.params as z.infer<typeof requestDocumentParam>;
+
+      const grant = await services.onboarding
+        .issueDocumentReadUrl(userId, requestId, label)
+        .catch((error: unknown) => mapDomainError(reply, request, requestId, error));
+      if (grant === undefined) return reply;
+
+      const validated = validateV2Response(reply, request, documentReadUrlDtoSchema, grant);
       if (validated === undefined) return reply;
       return reply.send(validated);
     },
@@ -351,6 +387,57 @@ export default async function adminRoutes(fastify: FastifyInstance) {
     },
   );
 
+  /**
+   * Execute an approved ADMIN_ROLE_UPDATE proposal. Same idempotency and
+   * proposal-payload-not-caller-args shape as provision-admin above.
+   */
+  fastify.post(
+    '/admin/proposals/:proposalId/update-admin-role',
+    {
+      preHandler: [
+        fastify.rateLimit('SENSITIVE_COMMAND'),
+        fastify.validateV2({ params: proposalIdParam, headers: commandHeaders }),
+      ],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+      const { proposalId } = request.params as z.infer<typeof proposalIdParam>;
+      const v2Headers = request.v2Headers ?? {};
+
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: userId,
+        commandName: 'admin.role_update',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { proposalId }, body: undefined },
+        run: async () => {
+          const admin = await services.adminAuthority.updateAdminRoleFromProposal(
+            userId,
+            proposalId,
+          );
+          const validated = validateV2Response(
+            reply,
+            request,
+            platformAdminDtoSchema,
+            adminToDto(admin),
+          );
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
+        },
+      }).catch((error: unknown) =>
+        isIdempotencyConflict(error)
+          ? mapDomainError(reply, request, proposalId, error, {
+              conflictId: v2Headers['idempotency-key'],
+            })
+          : mapDomainError(reply, request, proposalId, error),
+      );
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
+
   fastify.post(
     '/admin/admins/:adminId/revoke',
     {
@@ -402,8 +489,9 @@ export default async function adminRoutes(fastify: FastifyInstance) {
       ).catch((error: unknown) => mapDomainError(reply, request, userId, error));
       if (records === undefined) return reply;
 
+      const names = await services.adminOps.resolveTargetNames(userId, records);
       const validated = validateV2Response(reply, request, auditListSchema, {
-        items: records.map(auditToDto),
+        items: records.map((record) => auditToDto(record, names)),
       });
       if (validated === undefined) return reply;
       return reply.send(validated);
@@ -568,7 +656,7 @@ function adminToDto(admin: PlatformAdmin) {
   };
 }
 
-function auditToDto(record: AdminAuditRecord) {
+function auditToDto(record: AdminAuditRecord, names: Map<string, string | null>) {
   return {
     id: record.id,
     adminId: record.adminId,
@@ -576,6 +664,7 @@ function auditToDto(record: AdminAuditRecord) {
     action: record.action,
     targetType: record.targetType,
     targetId: record.targetId,
+    targetName: names.get(`${record.targetType ?? ''}:${record.targetId ?? ''}`) ?? null,
     before: record.before,
     after: record.after,
     reason: record.reason,

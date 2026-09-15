@@ -29,6 +29,7 @@ export function orderToDto(order: Order): OrderDto {
     paidAt: order.paidAt,
     reservationExpiresAt: order.reservationExpiresAt,
     failureReason: order.failureReason,
+    refundedPaise: order.refundedPaise,
     version: order.version,
     createdAt: order.createdAt,
     updatedAt: order.updatedAt,

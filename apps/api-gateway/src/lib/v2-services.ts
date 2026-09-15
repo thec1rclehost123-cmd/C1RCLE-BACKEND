@@ -14,6 +14,7 @@ import {
   IdempotencyService,
   OnboardingService,
   AdminAuthorityService,
+  AdminOperationsService,
   InProcessEventBus,
   createAuditConsumer,
   createProjectionConsumer,
@@ -28,8 +29,11 @@ import {
   createDoorStatsService,
   createFinanceService,
   createPayoutService,
+  AdminPayoutService,
   createBankAccountService,
   createDisputeService,
+  AdminDisputeService,
+  RefundService,
   createLeaderboardService,
   createEmailOtpService,
   type ScannerService,
@@ -104,6 +108,8 @@ export interface PartnerV2Services {
   onboarding: OnboardingService;
   /** Phase 2: platform-admin resolution, tiering and dual control. */
   adminAuthority: AdminAuthorityService;
+  /** Phase 7 admin: platform directory views + venue suspension resolution. */
+  adminOps: AdminOperationsService;
   checkout: CheckoutService;
   /** Phase 4 PR1: unauthenticated guest-facing discovery reads. */
   public: PublicService;
@@ -145,10 +151,16 @@ export interface PartnerV2Services {
   finance: FinanceService;
   /** Phase 6: payout requests + lifecycle. */
   payout: PayoutService;
+  /** Phase 6 admin: freeze/release (TIER3) + batch execution (TIER2). */
+  adminPayout: AdminPayoutService;
   /** Phase 6: bank account management. */
   bankAccount: BankAccountService;
   /** Phase 6: dispute lifecycle. */
   dispute: DisputeService;
+  /** Phase 6 admin: dispute resolution desk (mutates the ledger on `upheld`). */
+  adminDispute: AdminDisputeService;
+  /** Phase 6 admin: amount-tiered refund approval over an order's payment. */
+  refund: RefundService;
   /** Phase 6: promoter leaderboard. */
   leaderboard: LeaderboardService;
   /** Email OTP (signup verification). */
@@ -179,8 +191,8 @@ export function createV2Services(logger?: Logger): PartnerV2Services {
  * `plugins/auth.ts`'s `onRequest` hook always populates `request.actor`
  * before this runs when there's a real session — this never fabricates one.
  */
-function actorFromRequest(gw: GatewayConfig, request: FastifyRequest): ActorContext {
-  if (gw.STORAGE_DRIVER === 'memory' && !request.actor) {
+export function actorFromRequest(gw: GatewayConfig, request: FastifyRequest): ActorContext {
+  if (gw.NODE_ENV !== 'production' && gw.STORAGE_DRIVER === 'memory' && !request.actor) {
     // "The memory driver has a single fixed dev actor" (see
     // `partner/invitations.test.ts`) — always fabricates on this driver,
     // never throws. Only `STORAGE_DRIVER=firestore` (real auth) reaches the
@@ -367,6 +379,11 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     config: coreConfig,
   });
 
+  const refund = new RefundService(deps, adminAuthority);
+  const adminPayout = new AdminPayoutService(deps, adminAuthority);
+  const adminDispute = new AdminDisputeService(deps, adminAuthority);
+  const adminOps = new AdminOperationsService(deps, adminAuthority);
+
   const leaderboard = createLeaderboardService({
     leaderboard: repositories.leaderboard,
     config: coreConfig,
@@ -391,6 +408,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     analytics: new AnalyticsService(deps),
     onboarding: new OnboardingService(deps, adminAuthority),
     adminAuthority,
+    adminOps,
     checkout: new CheckoutService(deps),
     public: new PublicService(deps),
     paymentProvider,
@@ -415,6 +433,9 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     payout,
     bankAccount,
     dispute,
+    refund,
+    adminPayout,
+    adminDispute,
     leaderboard,
     emailOtp,
   };
