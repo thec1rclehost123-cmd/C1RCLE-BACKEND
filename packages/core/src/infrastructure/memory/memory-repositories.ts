@@ -307,6 +307,10 @@ export class MemoryEventCatalogRepository implements EventCatalogRepository {
     return serializeSlice(all, query);
   }
 
+  async listAllPromos(query: PaginationQuery): Promise<Page<PromoCode>> {
+    return serializeSlice([...this.promos.values()], query);
+  }
+
   async savePromo(promo: PromoCode, _tx?: TxContext | null): Promise<void> {
     casSet(this.promos, promo);
   }
@@ -329,6 +333,10 @@ export class MemoryEventCatalogRepository implements EventCatalogRepository {
 
   async listAssignments(eventId: EntityId): Promise<PromoterAssignment[]> {
     return [...this.assignments.values()].filter((a) => a.eventId === eventId);
+  }
+
+  async listAllAssignments(query: PaginationQuery): Promise<Page<PromoterAssignment>> {
+    return serializeSlice([...this.assignments.values()], query);
   }
 
   async saveAssignment(assignment: PromoterAssignment, _tx?: TxContext | null): Promise<void> {

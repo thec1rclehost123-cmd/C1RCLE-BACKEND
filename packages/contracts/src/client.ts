@@ -393,6 +393,34 @@ export {
   adminTicketListResponseSchema,
 } from './contracts/admin-tickets.js';
 
+// Phase 7: Admin promotions desk (platform-wide, read-only promo code listing)
+export type {
+  AdminPromoType,
+  AdminPromoDiscountType,
+  AdminPromoDto,
+  AdminPromoListResponse,
+} from './contracts/admin-promotions.js';
+
+export {
+  adminPromoTypeSchema,
+  adminPromoDiscountTypeSchema,
+  adminPromoDtoSchema,
+  adminPromoListResponseSchema,
+} from './contracts/admin-promotions.js';
+
+// Phase 7: Admin promoters desk (platform-wide, read-only assignment listing)
+export type {
+  AdminPromoterAssignmentStatus,
+  AdminPromoterAssignmentDto,
+  AdminPromoterAssignmentListResponse,
+} from './contracts/admin-promoters.js';
+
+export {
+  adminPromoterAssignmentStatusSchema,
+  adminPromoterAssignmentDtoSchema,
+  adminPromoterAssignmentListResponseSchema,
+} from './contracts/admin-promoters.js';
+
 // Phase 6: Finance / Ledger / Payouts
 export type {
   LedgerEntryDto,

@@ -12,6 +12,7 @@ import { reinstateVenue, suspendVenue } from '../../domain/models/venue.js';
 import type { AdminAuthorityService } from './admin-authority-service.js';
 import type { EntityId } from '../../domain/identity.js';
 import type { Entitlement } from '../../domain/models/entitlement.js';
+import type { PromoCode, PromoterAssignment } from '../../domain/models/event-catalog.js';
 import type { Event } from '../../domain/models/event.js';
 import type { Order } from '../../domain/models/order.js';
 import type { Organization } from '../../domain/models/organization.js';
@@ -81,6 +82,10 @@ export class AdminOperationsService {
     return this.deps.repositories.entitlements;
   }
 
+  private get catalog() {
+    return this.deps.repositories.catalog;
+  }
+
   async listVenues(adminUserId: EntityId, query: PaginationQuery): Promise<Page<Venue>> {
     await this.authority.requireAdmin(adminUserId);
     return this.venues.listAll(query);
@@ -125,6 +130,30 @@ export class AdminOperationsService {
   async listTickets(adminUserId: EntityId, query: PaginationQuery): Promise<Page<Entitlement>> {
     await this.authority.requireAdmin(adminUserId);
     return this.entitlements.listAll(query);
+  }
+
+  /**
+   * Platform-wide promo code listing for the admin promotions desk.
+   * Read-only, any admin — creation/editing stays a partner action
+   * (`EventCatalogService.createPromotion`, scoped to their own event).
+   */
+  async listPromotions(adminUserId: EntityId, query: PaginationQuery): Promise<Page<PromoCode>> {
+    await this.authority.requireAdmin(adminUserId);
+    return this.catalog.listAllPromos(query);
+  }
+
+  /**
+   * Platform-wide promoter-assignment listing for the admin promoters desk.
+   * V2 has no standalone "promoter" entity — a promoter is an
+   * `Organization` member with a versioned commission assignment per event
+   * (`PromoterAssignment`). Read-only, any admin.
+   */
+  async listPromoterAssignments(
+    adminUserId: EntityId,
+    query: PaginationQuery,
+  ): Promise<Page<PromoterAssignment>> {
+    await this.authority.requireAdmin(adminUserId);
+    return this.catalog.listAllAssignments(query);
   }
 
   /**

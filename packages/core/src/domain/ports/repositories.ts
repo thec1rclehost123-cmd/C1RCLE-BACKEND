@@ -248,6 +248,8 @@ export interface EventCatalogRepository {
   getPromoById(promoId: EntityId): Promise<PromoCode | null>;
   getPromoByCode(code: string, eventId: EntityId | null): Promise<PromoCode | null>;
   listPromos(eventId: EntityId, query: PaginationQuery): Promise<Page<PromoCode>>;
+  /** Platform-wide promo listing (admin read-only dashboard). */
+  listAllPromos(query: PaginationQuery): Promise<Page<PromoCode>>;
   savePromo(promo: PromoCode, tx?: TxContext | null): Promise<void>;
   // Table packages
   getTableById(tableId: EntityId): Promise<TablePackage | null>;
@@ -256,6 +258,8 @@ export interface EventCatalogRepository {
   // Promoter assignments
   getAssignmentById(assignmentId: EntityId): Promise<PromoterAssignment | null>;
   listAssignments(eventId: EntityId): Promise<PromoterAssignment[]>;
+  /** Platform-wide promoter-assignment listing (admin read-only dashboard). */
+  listAllAssignments(query: PaginationQuery): Promise<Page<PromoterAssignment>>;
   saveAssignment(assignment: PromoterAssignment, tx?: TxContext | null): Promise<void>;
 }
 
