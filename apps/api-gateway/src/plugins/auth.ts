@@ -20,16 +20,11 @@ import fp from 'fastify-plugin';
 import type { OrganizationRepository, OrganizationRole, Capability } from '@c1rcle/core/domain';
 import type { Firestore } from '@c1rcle/core/infrastructure';
 
-import type { GatewayConfig } from '../config/index.js';
+import { getBetterAuthTrustedOrigins, type GatewayConfig } from '../config/index.js';
+
 import type { FastifyInstance } from 'fastify';
 
 export type BetterAuthInstance = ReturnType<typeof buildBetterAuth>;
-
-const FRONTEND_DEV_ORIGINS = [
-  'http://localhost:3000', // guest-portal
-  'http://localhost:3001', // partner-dashboard
-  'http://localhost:3002', // admin-console
-];
 
 /**
  * Builds the Better Auth instance. Only called when `STORAGE_DRIVER=firestore`.
@@ -45,8 +40,8 @@ const FRONTEND_DEV_ORIGINS = [
  *   - session lifetime: `expiresIn` 7 days, `updateAge` 1 day — a read inside the
  *     updateAge window extends expiry in place; the token string is NOT rotated
  *     (see `routes/v2/auth/index.ts` `/refresh`, and phase-00 Session Log).
- *   - `trustedOrigins`: the 3 frontend dev origins (3000 guest-portal /
- *     3001 partner-dashboard / 3002 admin-console) — `FRONTEND_DEV_ORIGINS`.
+ *   - `trustedOrigins`: explicit environment-driven browser origins from
+ *     `BETTER_AUTH_TRUSTED_ORIGINS` or `ALLOWED_ORIGINS`.
  * No behaviour change is intended here; adjust the explicit options below only if
  * a test proves a default diverges from the above.
  */
@@ -77,7 +72,7 @@ export function buildBetterAuth(gw: GatewayConfig, db: Firestore) {
     advanced: {
       useSecureCookies: gw.NODE_ENV === 'production',
     },
-    trustedOrigins: FRONTEND_DEV_ORIGINS,
+    trustedOrigins: getBetterAuthTrustedOrigins(gw),
     plugins: [bearer()],
   });
 }

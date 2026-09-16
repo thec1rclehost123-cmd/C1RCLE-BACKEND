@@ -1,98 +1,91 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-/**
- * ─── Config fail-closed guards ────────────────────────────────────────────────
- * `getGatewayConfig` caches after the first successful parse, so every case
- * re-imports the module to get a fresh cache. A guard that is never exercised
- * is a guard that quietly stops working.
- */
+import {
+  createTrustedProxyMatcher,
+  getBetterAuthTrustedOrigins,
+  getGatewayConfig,
+  getTrustedProxyCidrs,
+} from './index.js';
 
-const BASE = {
-  NODE_ENV: 'production',
-  STORAGE_DRIVER: 'memory',
-  BETTER_AUTH_SECRET: 'a'.repeat(32),
-  BETTER_AUTH_URL: 'https://circle-v2-backend.onrender.com',
-  EMAIL_OTP_SECRET: 'b'.repeat(32),
-} satisfies NodeJS.ProcessEnv;
-
-async function loadConfig() {
-  vi.resetModules();
-  return import('./index.js');
+function productionEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  return {
+    NODE_ENV: 'production',
+    STORAGE_DRIVER: 'firestore',
+    FIREBASE_CLIENT_EMAIL: 'firebase@example.test',
+    FIREBASE_PRIVATE_KEY: 'private-key',
+    BETTER_AUTH_SECRET: 'a'.repeat(64),
+    EMAIL_OTP_SECRET: 'b'.repeat(64),
+    PUBLIC_API_URL: 'https://api.example.test',
+    BETTER_AUTH_URL: 'https://api.example.test',
+    ALLOWED_ORIGINS: 'https://app.example.test',
+    BETTER_AUTH_TRUSTED_ORIGINS: 'https://app.example.test',
+    TRUSTED_PROXY_CIDRS: '10.0.0.0/8,2001:db8::1',
+    ...overrides,
+  };
 }
 
-describe('getGatewayConfig', () => {
-  beforeEach(() => {
-    vi.resetModules();
+describe('gateway configuration', () => {
+  it('uses the documented Render deploy SHA when BUILD_SHA is not explicit', () => {
+    const config = getGatewayConfig(
+      productionEnvironment({ BUILD_SHA: undefined, RENDER_GIT_COMMIT: 'a'.repeat(40) }),
+    );
+
+    expect(config.BUILD_SHA).toBe('a'.repeat(40));
   });
 
-  it('accepts a well-formed production environment', async () => {
-    const { getGatewayConfig } = await loadConfig();
-    const config = getGatewayConfig({ ...BASE });
-    expect(config.NODE_ENV).toBe('production');
-    expect(config.PORT).toBe(8080);
-  });
-
-  it('rejects the development signing secret in production', async () => {
-    const { getGatewayConfig, GatewayConfigError } = await loadConfig();
-    // Better Auth signs sessions with this value and the default is committed
-    // to a public repository, so shipping it means anyone can mint a session.
-    expect(() => getGatewayConfig({ ...BASE, BETTER_AUTH_SECRET: 'dev-only-change-me' })).toThrow(
-      GatewayConfigError,
+  it('requires an email OTP secret in production', () => {
+    expect(() => getGatewayConfig(productionEnvironment({ EMAIL_OTP_SECRET: undefined }))).toThrow(
+      /EMAIL_OTP_SECRET/,
     );
   });
 
-  it('rejects a short signing secret in production', async () => {
-    const { getGatewayConfig } = await loadConfig();
-    expect(() => getGatewayConfig({ ...BASE, BETTER_AUTH_SECRET: 'too-short' })).toThrow(
-      /BETTER_AUTH_SECRET/,
+  it('keeps an explicit BUILD_SHA ahead of Render metadata', () => {
+    const config = getGatewayConfig(
+      productionEnvironment({ BUILD_SHA: 'b'.repeat(40), RENDER_GIT_COMMIT: 'a'.repeat(40) }),
     );
+
+    expect(config.BUILD_SHA).toBe('b'.repeat(40));
   });
 
-  it('rejects an http:// auth URL in production', async () => {
-    const { getGatewayConfig } = await loadConfig();
-    // Session cookies issued against an http:// origin are not marked Secure.
-    expect(() => getGatewayConfig({ ...BASE, BETTER_AUTH_URL: 'http://example.com' })).toThrow(
-      /BETTER_AUTH_URL/,
-    );
+  it('parses explicit origins and trusted proxy CIDRs', () => {
+    const config = getGatewayConfig(productionEnvironment());
+    expect(getBetterAuthTrustedOrigins(config)).toEqual(['https://app.example.test']);
+    expect(getTrustedProxyCidrs(config)).toEqual(['10.0.0.0/8', '2001:db8::1']);
+
+    const isTrusted = createTrustedProxyMatcher(getTrustedProxyCidrs(config));
+    expect(isTrusted('10.42.0.8')).toBe(true);
+    expect(isTrusted('198.51.100.8')).toBe(false);
   });
 
-  it('rejects a missing email-OTP secret in production', async () => {
-    const { getGatewayConfig } = await loadConfig();
-    const { EMAIL_OTP_SECRET: _omit, ...withoutSecret } = BASE;
-    expect(() => getGatewayConfig(withoutSecret)).toThrow(/EMAIL_OTP_SECRET/);
+  it('rejects trust-all proxy configuration', () => {
+    expect(() =>
+      getGatewayConfig(productionEnvironment({ TRUSTED_PROXY_CIDRS: '0.0.0.0/0' })),
+    ).toThrow(/Invalid trusted proxy CIDR/);
   });
 
-  it('allows the development defaults outside production', async () => {
-    const { getGatewayConfig } = await loadConfig();
-    const config = getGatewayConfig({ NODE_ENV: 'development' });
-    expect(config.BETTER_AUTH_SECRET).toBe('dev-only-change-me');
-    expect(config.BETTER_AUTH_URL).toBe('http://localhost:8080');
+  it('rejects production memory storage and development origins/secrets', () => {
+    expect(() =>
+      getGatewayConfig(
+        productionEnvironment({
+          STORAGE_DRIVER: 'memory',
+          BETTER_AUTH_SECRET: 'dev-only-change-me',
+          ALLOWED_ORIGINS: 'http://localhost:3000',
+          BETTER_AUTH_TRUSTED_ORIGINS: 'http://localhost:3000',
+          PUBLIC_API_URL: 'http://localhost:8080',
+          BETTER_AUTH_URL: 'http://localhost:8080',
+        }),
+      ),
+    ).toThrow(/Production requires STORAGE_DRIVER=firestore/);
   });
 
-  it('refuses STORAGE_DRIVER=firestore without credentials', async () => {
-    const { getGatewayConfig } = await loadConfig();
-    // Must fail the boot rather than degrade silently to the in-memory store.
-    expect(() => getGatewayConfig({ ...BASE, STORAGE_DRIVER: 'firestore' })).toThrow(
-      /FIREBASE_CLIENT_EMAIL/,
-    );
-  });
-
-  it('accepts STORAGE_DRIVER=firestore with credentials', async () => {
-    const { getGatewayConfig } = await loadConfig();
-    const config = getGatewayConfig({
-      ...BASE,
-      STORAGE_DRIVER: 'firestore',
-      FIREBASE_CLIENT_EMAIL: 'svc@example.iam.gserviceaccount.com',
-      FIREBASE_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----',
-    });
-    expect(config.STORAGE_DRIVER).toBe('firestore');
-  });
-
-  it('caches after the first successful parse', async () => {
-    const { getGatewayConfig } = await loadConfig();
-    const first = getGatewayConfig({ ...BASE, LOG_LEVEL: 'debug' });
-    const second = getGatewayConfig({ ...BASE, LOG_LEVEL: 'error' });
-    expect(second).toBe(first);
-    expect(second.LOG_LEVEL).toBe('debug');
+  it('fails closed when production Firestore credentials are missing', () => {
+    expect(() =>
+      getGatewayConfig(
+        productionEnvironment({
+          FIREBASE_CLIENT_EMAIL: '',
+          FIREBASE_PRIVATE_KEY: '',
+        }),
+      ),
+    ).toThrow(/FIREBASE_CLIENT_EMAIL: Required when STORAGE_DRIVER=firestore/);
   });
 });

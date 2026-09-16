@@ -25,29 +25,48 @@ import type { EntityId, VersionedEntity } from '../identity.js';
 export type AdminRole = 'super' | 'admin' | 'ops' | 'finance' | 'support';
 
 export type AdminAction =
+  // TIER1 — any admin, merely logged
+  | 'EVENT_PAUSE'
+  | 'EVENT_RESUME'
   // TIER2
   | 'ONBOARDING_APPROVE'
   | 'VENUE_SUSPEND'
+  | 'VENUE_REINSTATE'
+  | 'ORGANIZATION_SUSPEND'
+  | 'ORGANIZATION_REINSTATE'
   | 'FINANCIAL_REFUND'
   | 'PAYOUT_BATCH_RUN'
+  | 'DISPUTE_RESOLVE'
+  | 'USER_BAN'
+  | 'USER_UNBAN'
   // TIER3
   | 'ADMIN_PROVISION'
+  | 'ADMIN_ROLE_UPDATE'
   | 'COMMISSION_ADJUST'
-  | 'PAYOUT_FREEZE';
+  | 'PAYOUT_FREEZE'
+  | 'PAYOUT_RELEASE';
 
 export type AuthorityTier = 1 | 2 | 3;
 
 const TIER2_ACTIONS: readonly AdminAction[] = [
   'ONBOARDING_APPROVE',
   'VENUE_SUSPEND',
+  'VENUE_REINSTATE',
+  'ORGANIZATION_SUSPEND',
+  'ORGANIZATION_REINSTATE',
   'FINANCIAL_REFUND',
   'PAYOUT_BATCH_RUN',
+  'DISPUTE_RESOLVE',
+  'USER_BAN',
+  'USER_UNBAN',
 ];
 
 const TIER3_ACTIONS: readonly AdminAction[] = [
   'ADMIN_PROVISION',
+  'ADMIN_ROLE_UPDATE',
   'COMMISSION_ADJUST',
   'PAYOUT_FREEZE',
+  'PAYOUT_RELEASE',
 ];
 
 /** Roles permitted at TIER2 (v1: `[super, admin, ops, finance]`). */
@@ -120,6 +139,28 @@ export function createPlatformAdmin(input: CreatePlatformAdminInput): PlatformAd
 export function deactivatePlatformAdmin(admin: PlatformAdmin, now?: Date): PlatformAdmin {
   if (!admin.isActive) return admin;
   return { ...bumpVersion(admin, now ?? new Date()), isActive: false };
+}
+
+const ADMIN_ROLES: readonly AdminRole[] = ['super', 'admin', 'ops', 'finance', 'support'];
+
+/**
+ * Changes an admin's role. TIER3, dual control — this is what v1 gated
+ * behind Firebase custom claims and a `claimsSynced` report; v2 has no
+ * separate claims cache to fall out of sync in the first place (the
+ * `PlatformAdmin.role` field IS the authority — `AdminAuthorityService`
+ * reads it directly, nothing else caches it), so that half of v1's
+ * concern doesn't apply here. No-op if the role is unchanged.
+ */
+export function updatePlatformAdminRole(
+  admin: PlatformAdmin,
+  role: AdminRole,
+  now?: Date,
+): PlatformAdmin {
+  if (!ADMIN_ROLES.includes(role)) {
+    throw new InvalidOperationError(`Unknown admin role: ${role}`);
+  }
+  if (admin.role === role) return admin;
+  return { ...bumpVersion(admin, now ?? new Date()), role };
 }
 
 /* ─── Proposed actions (dual control) ──────────────────────────────────────── */

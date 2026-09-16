@@ -23,6 +23,7 @@ import { createVenue } from '../../domain/models/venue.js';
 import { getFirestoreClient } from './client.js';
 import { FirestoreEventRepository } from './firestore-event-repository.js';
 import { FirestoreOrganizationRepository } from './firestore-organization-repository.js';
+import { FirestoreUserAccountRepository } from './firestore-user-account-repository.js';
 import { FirestoreVenueRepository } from './firestore-venue-repository.js';
 
 const RUN = process.env.RUN_FIRESTORE_TESTS === '1';
@@ -117,6 +118,38 @@ describe.runIf(RUN)('Firestore adapters (live project)', () => {
 
       const publicPage = await repo.listPublic({ limit: 100 });
       expect(publicPage.items.map((e) => e.id)).not.toContain(event.id);
+    },
+    NETWORK_TIMEOUT,
+  );
+
+  it(
+    "user account: listAll recovers the id from the document's own id, not a stored field",
+    async () => {
+      // Better Auth's own Firestore adapter never writes an `id` field into
+      // the document body — only the collection structure's doc id carries
+      // it (confirmed by reading a real emulator-seeded user doc). Writing
+      // the fixture the same way here is what makes this test catch the
+      // regression: a version of the adapter that reads `data.id` would see
+      // `undefined` and fail `opaqueIdSchema` at the route layer.
+      const docId = `test-user-${randomUUID()}`;
+      await db
+        .collection('v2_auth_users')
+        .doc(docId)
+        .set({
+          email: `${docId}@example.com`,
+          name: 'Integration Test User',
+          emailVerified: true,
+          role: 'partner',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+
+      const repo = new FirestoreUserAccountRepository(db);
+      const page = await repo.listAll({ limit: 100 });
+      const found = page.items.find((u) => u.id === docId);
+      expect(found).toBeDefined();
+      expect(found?.email).toBe(`${docId}@example.com`);
+      expect(typeof found?.createdAt).toBe('number');
     },
     NETWORK_TIMEOUT,
   );
