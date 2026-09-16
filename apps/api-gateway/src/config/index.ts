@@ -113,6 +113,13 @@ const envSchema = z.object({
   RAZORPAY_KEY_ID: z.string().min(1).optional(),
   RAZORPAY_KEY_SECRET: z.string().min(1).optional(),
   RAZORPAY_WEBHOOK_SECRET: z.string().min(1).optional(),
+  /**
+   * Phase 5: HMAC key for rotating door QR codes ("magic tickets") and for
+   * signing offline admission manifests. Forging this key forges entry to a
+   * paid event, so production refuses to boot without a real one rather than
+   * falling back to the well-known development default.
+   */
+  MAGIC_TICKET_SECRET: z.string().min(1).optional(),
   /** Email OTP delivery and at-rest OTP HMAC key. */
   RESEND_API_KEY: z.string().min(1).optional(),
   EMAIL_OTP_SECRET: z.string().min(1).optional(),
@@ -205,6 +212,13 @@ const validatedEnvSchema = envSchema.superRefine((value, ctx) => {
       code: 'custom',
       path: ['EMAIL_OTP_SECRET'],
       message: 'Production requires EMAIL_OTP_SECRET',
+    });
+  }
+  if (!value.MAGIC_TICKET_SECRET || value.MAGIC_TICKET_SECRET.length < 32) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['MAGIC_TICKET_SECRET'],
+      message: 'Production requires MAGIC_TICKET_SECRET of at least 32 characters',
     });
   }
   for (const [field, rawOrigins] of [

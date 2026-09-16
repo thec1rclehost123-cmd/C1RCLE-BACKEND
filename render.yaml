@@ -60,6 +60,13 @@ services:
       - key: BETTER_AUTH_URL
         value: https://circle-v2-backend.onrender.com
 
+      # Phase 5 door scanning. The HMAC key behind rotating ticket QRs and
+      # signed offline admission manifests — forging it forges entry to a paid
+      # event, so production refuses to boot without a real 32+ character
+      # value (apps/api-gateway/src/config/index.ts).
+      - key: MAGIC_TICKET_SECRET
+        sync: false
+
       # Validated but currently unused: rate limiting is an in-memory sliding
       # window (apps/api-gateway/src/plugins/rate-limit.ts). Keep the value
       # accurate anyway so wiring Redis is a one-line change.

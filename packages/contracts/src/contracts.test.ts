@@ -135,6 +135,7 @@ describe('client schemas — canonical fixtures', () => {
         startingPricePaise: 0,
         isFree: true,
         cancellationReason: null,
+        capacity: null,
         ...base,
       }).success,
     ).toBe(true);
@@ -182,6 +183,7 @@ describe('client schemas — canonical fixtures', () => {
       startingPricePaise: 5000,
       isFree: false,
       cancellationReason: null,
+      capacity: null,
       ...base,
     };
 

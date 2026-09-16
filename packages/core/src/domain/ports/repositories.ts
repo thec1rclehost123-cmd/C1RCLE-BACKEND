@@ -33,7 +33,7 @@ import type {
   DoorSaleStatus,
 } from '../models/door-sale.js';
 import type { EmailOtp } from '../models/email-otp.js';
-import type { Entitlement } from '../models/entitlement.js';
+import type { AdmissionClaim, Entitlement } from '../models/entitlement.js';
 import type {
   TicketTier,
   PromoCode,
@@ -72,6 +72,7 @@ import type {
   ScanLedgerCreateInput,
   ScanDenyReason,
 } from '../models/scan-ledger.js';
+import type { ScannerDevice } from '../models/scanner-device.js';
 import type { Venue, VenueSlot, SlotRequest } from '../models/venue.js';
 
 // ─── Phase 5: Scan Ledger, Event Code, Scanner Session, Door Sale, Cover Wallet ───────
@@ -443,6 +444,46 @@ export interface EntitlementRepository {
   saveMany(entitlements: Entitlement[], tx?: TxContext | null): Promise<void>;
   /** Counts valid entitlements for a tier (inventory/sell-through). */
   countValidByTier(tierId: EntityId): Promise<number>;
+  /**
+   * Atomically admits one person against this entitlement, or refuses.
+   *
+   * This is the door's ONLY admission primitive. Two physical scanners can
+   * present the same QR in the same millisecond; a read-then-write in a
+   * service would let both through (both read `scanCount: 0`, both write
+   * `1`). The check and the increment therefore happen where atomicity
+   * actually exists — inside the adapter, in one Firestore transaction
+   * (D-015's rule, applied to admission rather than to `version`).
+   *
+   * The rule itself is not duplicated here: both adapters call the domain's
+   * `admitSeats`, so the transactional path and the read-only preview path
+   * can never disagree about what is admissible.
+   */
+  claimAdmission(
+    entitlementId: EntityId,
+    eventId: EntityId,
+    options?: ClaimAdmissionOptions,
+  ): Promise<AdmissionClaim>;
+}
+
+export type { AdmissionClaim };
+
+export interface ClaimAdmissionOptions {
+  /**
+   * How many people this one call admits. 1 for an ordinary scan; 2 for a
+   * confirmed couple ticket, where both guests walk through together and the
+   * pair must be consumed in ONE transaction — claiming twice would let the
+   * two halves land either side of a concurrent scan and admit three people
+   * on a two-person ticket. Defaults to 1.
+   */
+  seats?: number;
+  /**
+   * Refuses the claim unless the ticket's scan count is exactly this. The
+   * couple-confirmation token was minted against a state a staff member saw;
+   * if anything consumed a seat since, the confirmation must fail rather than
+   * admit against a target that moved underneath it.
+   */
+  expectedScansUsed?: number;
+  now?: Date;
 }
 
 /** Promo redemption tracking (shared with Phase 3 event-catalog). */
@@ -487,8 +528,64 @@ export interface ScanLedgerRepository {
   /** Legal only from `denied` — see `domain/models/scan-ledger.ts`'s `overrideScan`. */
   markOverridden(id: EntityId, overriddenBy: string, reason: string): Promise<ScanLedger | null>;
   countByEventAndStatus(eventId: EntityId, status: ScanLedgerStatus): Promise<number>;
+  /**
+   * People actually admitted for an event, and how they came in.
+   *
+   * A count of rows is NOT this number: one confirmed couple-ticket row
+   * admits two, an override row admits one against a denial, and a denied row
+   * admits nobody. The door's occupancy gauge is a life-safety number, so it
+   * sums `admittedCount` rather than counting scans.
+   */
+  getAdmissionStats(eventId: EntityId, tierNames: readonly string[]): Promise<ScanAdmissionStats>;
   countConsumedByEntitlement(entitlementId: EntityId): Promise<number>;
   findOfflineScans(eventId: EntityId, before: Date): Promise<ScanLedger[]>;
+}
+
+export interface ScanAdmissionStats {
+  /** Total people admitted by ticket scans (couples counted as two). */
+  admitted: number;
+  /** Admitted per tier name, for the tier names asked for. */
+  byEntryType: Record<string, number>;
+  /**
+   * Admitted against a tier that no longer appears in the event's catalog
+   * (renamed or deleted mid-event). Surfaced rather than dropped so the parts
+   * always add up to `admitted` — a breakdown that silently loses people is
+   * worse than one that says "and these".
+   */
+  unattributed: number;
+}
+
+/**
+ * Bound scanner devices — the handsets a venue has authorized for its door.
+ * Keyed by `${organizationId}_${deviceId}` so a device id only ever means
+ * something inside one tenant.
+ */
+export interface ScannerDeviceRepository {
+  findById(id: EntityId): Promise<ScannerDevice | null>;
+  findByDevice(organizationId: EntityId, deviceId: string): Promise<ScannerDevice | null>;
+  listByOrganization(
+    organizationId: EntityId,
+    query: PaginationQuery,
+  ): Promise<Page<ScannerDevice>>;
+  save(device: ScannerDevice, tx?: TxContext | null): Promise<void>;
+  /**
+   * Liveness + per-device counters. Deliberately NOT a `save` of the whole
+   * aggregate: heartbeats and scan counters arrive constantly and from every
+   * device at once, and routing them through the version check would make
+   * ordinary traffic conflict with itself. Nothing here is an invariant —
+   * these fields are observability, not truth.
+   */
+  touch(
+    id: EntityId,
+    patch: {
+      lastSeenAt: string;
+      lastEventId?: EntityId | null;
+      lastGate?: string | null;
+      lastScanAt?: string | null;
+      lastScanResult?: string | null;
+      incrementScanCount?: boolean;
+    },
+  ): Promise<void>;
 }
 
 /** Event Code repository — authorization codes for scanner apps. */

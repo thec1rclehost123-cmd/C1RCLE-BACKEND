@@ -16,6 +16,7 @@ export * from './models/order.js';
 export * from './models/entitlement.js';
 export * from './models/cart-reservation.js';
 export * from './models/scan-ledger.js';
+export * from './models/scanner-device.js';
 export * from './models/event-code.js';
 export * from './models/door-sale.js';
 export * from './models/cover-wallet.js';

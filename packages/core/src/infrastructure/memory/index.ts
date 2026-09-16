@@ -21,6 +21,7 @@ export * from './memory-repositories.js';
 export * from './memory-onboarding-repository.js';
 export * from './memory-scan-ledger-repository.js';
 export * from './memory-event-code-repository.js';
+export * from './memory-scanner-device-repository.js';
 export * from './memory-door-sale-repository.js';
 export * from './memory-cover-wallet-repository.js';
 export * from './memory-ledger-repository.js';

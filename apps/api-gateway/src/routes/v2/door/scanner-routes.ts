@@ -1,127 +1,81 @@
-import { buildV2ErrorResponse } from '@c1rcle/contracts';
 import {
   opaqueIdSchema,
   scannerSessionCreateBodySchema,
   scannerSessionDtoSchema,
+  startShiftResponseSchema,
+  scannerSessionTokenHeaderSchema,
   scanRequestSchema,
   scanResponseSchema,
+  ticketLookupResponseSchema,
+  checkInDtoSchema,
   magicQrResponseSchema,
+  offlineManifestRequestSchema,
+  offlineManifestResponseSchema,
   offlineSyncRequestSchema,
   offlineSyncResponseSchema,
+  overrideRequestSchema,
   overrideResponseSchema,
 } from '@c1rcle/contracts/client';
-import { InvalidOperationError } from '@c1rcle/core/domain';
 import { z } from 'zod';
 
 import type { ScanResult, TicketResolution } from '@c1rcle/core/application';
-import type { ScanLedger, ScannerSession } from '@c1rcle/core/domain';
+import type { ScanLedger } from '@c1rcle/core/domain';
 
 import { runIdempotent } from '../../../lib/v2-idempotency.js';
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
-import { createV2Services, type PartnerV2Services } from '../../../lib/v2-services.js';
+import { createV2Services } from '../../../lib/v2-services.js';
+import { mapDomainError } from '../partner/events.js';
 
-import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { sessionToDto } from './event-code-routes.js';
+
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 
 /**
- * ─── V2 door/scanner slice (Phase 5, Builder A) ─────────────────────────────
- * Thin routes: validate -> build actor -> call `ScannerService` -> serialize.
- * Registered by whoever wires `route-manifest.ts` — this file only exports
- * the plugin function, it does not register itself anywhere.
+ * ─── V2 door/scanner slice (Phase 5) ────────────────────────────────────────
+ * Thin routes: validate → actor → scanner-session token → one `ScannerService`
+ * call → serialize. Every route here is fully wired; there are no stubs left
+ * in this file.
  *
- * One of the ten routes below (`GET /door/offline-manifest`) is still an
- * honest 501 stub, not real wiring — see the comment on it. `POST
- * /door/override` used to be the other one; it's now real (a `denied ->
- * overridden` FSM transition, see `domain/models/scan-ledger.ts`).
- * Everything else below is fully wired to the real, already-built Phase 5
- * application services.
+ * **Two credentials, every scan.** The Better Auth session (cookie/Bearer,
+ * plus `X-Organization-Id`) establishes the operator and the tenant.
+ * `X-Scanner-Session-Token` — issued exactly once by `POST /door/sessions`,
+ * stored only as a SHA-256 hash — establishes the device, the shift, the
+ * event, and the permission set (`full` / `scan_only` / `charge`). The
+ * previous version of this file trusted a `deviceId` string in the request
+ * body for the second half, which any caller could supply; the permission
+ * model was therefore decorative. It is now enforced.
+ *
+ * Door codes themselves (mint/list/revoke) are a manager concern and live in
+ * `event-code-routes.ts`.
  */
 
-const services: PartnerV2Services = createV2Services();
-
-/**
- * ─── QR payload decode (plan point 2) ───────────────────────────────────────
- * Investigated rather than guessed: `packages/core/src/domain/models/entitlement.ts`
- * states the regular-ticket QR payload is deliberately NOT persisted anywhere
- * in Phase 4 backend code — nothing in `packages/core` or the Phase 4 checkout
- * routes generates or encodes one. The ONLY concrete QR encoding that exists
- * anywhere in this codebase is the magic-ticket format implemented in
- * `scanner-service.ts`'s `scanMagicTicket`: `entitlementId:floor(unixTime/30):hmac`
- * (3 colon-separated parts). `opaqueIdSchema` (packages/contracts/src/contracts/shared.ts)
- * forbids ':' in any entity id, so a payload with exactly 2 colons can never
- * be a bare entitlementId — the two cases are mutually exclusive by
- * construction, not by heuristic. Anything that isn't the 3-part magic format
- * is therefore treated as a direct entitlementId, matching `scanTicket`'s
- * input contract (`entitlementId: EntityId`) exactly.
- */
-function decodeQrPayload(
-  qrPayload: string,
-): { kind: 'magic' } | { kind: 'direct'; entitlementId: string } {
-  const parts = qrPayload.split(':');
-  if (parts.length === 3 && parts.every((part) => part.length > 0)) {
-    return { kind: 'magic' };
-  }
-  return { kind: 'direct', entitlementId: qrPayload };
-}
+const services = createV2Services();
 
 const sessionIdParam = z.object({ sessionId: opaqueIdSchema });
 const checkInIdParam = z.object({ checkInId: opaqueIdSchema });
 const ticketIdParam = z.object({ ticketId: opaqueIdSchema });
 
-const overrideBody = z.object({ checkInId: opaqueIdSchema, reason: z.string().min(1) }).strict();
-
-const offlineManifestQuery = z
-  .object({
-    eventId: opaqueIdSchema,
-    scannerSessionId: opaqueIdSchema,
-    expiresAt: z.string().min(1),
-  })
-  .strict();
-
 /**
- * `scannerSessionDtoSchema.sessionToken` is a required non-empty string, but
- * `ScannerSession.sessionToken` is deliberately `null` on every read after
- * creation (domain comment: "only returned on creation" — a raw token
- * shouldn't be re-servable from a GET). GET /door/sessions/:sessionId uses
- * this locally-adjusted schema instead of the contract one, rather than
- * either violating that security intent or leaking a fabricated token.
+ * Pulls the scanner-session bearer off the request. Absent or malformed is
+ * an empty string, which `authenticateSession` rejects with the same generic
+ * `unauthorized` as a wrong one — a scanner must not be able to tell "you
+ * sent no token" from "your token is not valid here" and work backwards.
  */
-const scannerSessionReadDto = scannerSessionDtoSchema
-  .omit({ sessionToken: true })
-  .extend({ sessionToken: z.null() });
-
-const checkInDetailDto = z.object({
-  id: opaqueIdSchema,
-  eventId: opaqueIdSchema,
-  status: z.enum(['pending', 'consumed', 'denied', 'cancelled', 'revoked', 'expired']),
-  denyReason: z.string().nullable(),
-  denyMessage: z.string().nullable(),
-  entitlementId: z.string().nullable(),
-  tierId: z.string().nullable(),
-  tierName: z.string().nullable(),
-  operatorUid: z.string().nullable(),
-  operatorName: z.string().nullable(),
-  operatorRole: z.string().nullable(),
-  gate: z.string().nullable(),
-  deviceId: z.string().nullable(),
-  guestName: z.string().nullable(),
-  scannedAt: z.string(),
-  admittedCount: z.number().int(),
-  scanCountUsed: z.number().int().nullable(),
-  scanCountAllowed: z.number().int().nullable(),
-  isOffline: z.boolean(),
-  createdAt: z.string(),
-});
+export function sessionTokenFrom(request: FastifyRequest): string {
+  const raw = request.headers['x-scanner-session-token'];
+  return typeof raw === 'string' ? raw : '';
+}
 
 export default async function phase5ScannerRoutes(fastify: FastifyInstance) {
-  // ── POST /door/sessions ─────────────────────────────────────────────────
-  // Two service calls, not one (plan point 1): resolve the human `code`
-  // string to an `EventCode` via `validateEventCode`, then mint a session
-  // from its `codeId` via `createScannerSession`.
+  // ── POST /door/sessions ───────────────────────────────────────────────────
+  // Redeem a door code for a device session. The only place a raw session
+  // token is ever produced; `SENSITIVE_COMMAND` because this is the door's
+  // credential-redemption surface and therefore its guessing surface.
   fastify.post(
     '/door/sessions',
     {
       preHandler: [
-        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.rateLimit('SENSITIVE_COMMAND'),
         fastify.validateV2({ body: scannerSessionCreateBodySchema }),
       ],
     },
@@ -137,58 +91,37 @@ export default async function phase5ScannerRoutes(fastify: FastifyInstance) {
         idempotency: services.idempotency,
         request,
         actorId: actor.userId,
-        commandName: 'door.session.create',
-        idempotencyKey,
+        commandName: 'door.session.open',
         context: { path: {}, body },
+        ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
         run: async () => {
-          const eventCode = await services.scanner.validateEventCode(body.code, actor);
-          if (eventCode.eventId !== body.eventId) {
-            throw new InvalidOperationError('Event code does not belong to the given event');
-          }
-          const created = await services.scanner.createScannerSession(
+          // One call starts the whole shift: bind the handset, mint the
+          // session, and return the event, its sellable tiers, the gate and
+          // an opening stats snapshot. A door phone on club wifi may not get
+          // a second round trip.
+          const shift = await services.doorOps.startShift(
             {
-              codeId: eventCode.id,
-              codeData: {
-                id: eventCode.id,
-                code: eventCode.code,
-                eventId: eventCode.eventId,
-                venueId: eventCode.venueId,
-                type: eventCode.type,
-                gate: eventCode.gate,
-                maxDevices: eventCode.maxDevices,
-                allowReuse: eventCode.allowReuse,
-              },
+              eventId: body.eventId,
+              code: body.code,
               deviceId: body.deviceId,
               deviceName: body.deviceName,
-              // ActorContext carries no display name — userId is the best
-              // available audit label here.
-              createdBy: actor.userId,
-              createdByName: actor.userId,
               sessionType: body.sessionType,
             },
             actor,
           );
-          const dto = {
-            id: created.sessionId,
-            eventId: created.session.eventId,
-            codeId: created.session.codeId,
-            sessionToken: created.sessionToken,
-            sessionExpiresAt: created.sessionExpiresAt,
-            permissions: created.session.permissions,
-            status: 'active' as const,
-            createdAt: created.session.createdAt,
-          };
-          const validated = validateV2Response(reply, request, scannerSessionDtoSchema, dto);
+          const validated = validateV2Response(reply, request, startShiftResponseSchema, shift);
           if (validated === undefined) throw new Error('v2 response validation failed');
           return { statusCode: 201, body: validated };
         },
-      }).catch((error: unknown) => mapDomainError(reply, request, body.eventId, error));
+      }).catch((error: unknown) =>
+        mapDomainError(reply, request, body.eventId, error, { hideForbidden: true }),
+      );
       if (result === undefined) return reply;
       return reply.status(result.statusCode).send(result.body);
     },
   );
 
-  // ── GET /door/sessions/:sessionId ───────────────────────────────────────
+  // ── GET /door/sessions/:sessionId ─────────────────────────────────────────
   fastify.get(
     '/door/sessions/:sessionId',
     {
@@ -203,22 +136,29 @@ export default async function phase5ScannerRoutes(fastify: FastifyInstance) {
           mapDomainError(reply, request, sessionId, error, { hideForbidden: true }),
         );
       if (session === undefined) return reply;
-      const dto = sessionToReadDto(session);
-      const validated = validateV2Response(reply, request, scannerSessionReadDto, dto);
+      const validated = validateV2Response(
+        reply,
+        request,
+        scannerSessionDtoSchema,
+        sessionToDto(session),
+      );
       if (validated === undefined) return reply;
       return reply.send(validated);
     },
   );
 
-  // ── POST /door/check-ins ────────────────────────────────────────────────
-  // Real admission decision — consumes the entitlement (or records a denial)
-  // via `scanTicket`/`scanMagicTicket` depending on the decoded payload kind.
+  // ── POST /door/check-ins ──────────────────────────────────────────────────
+  // The real admission. Always 200 with a verdict: a refused guest is a
+  // normal, expected outcome the door app must render, not an HTTP error.
   fastify.post(
     '/door/check-ins',
     {
       preHandler: [
-        fastify.rateLimit('STANDARD_COMMAND'),
-        fastify.validateV2({ body: scanRequestSchema }),
+        fastify.rateLimit('SCANNER_COMMAND'),
+        fastify.validateV2({
+          body: scanRequestSchema,
+          headers: scannerSessionTokenHeaderSchema,
+        }),
       ],
     },
     async (request, reply) => {
@@ -234,92 +174,97 @@ export default async function phase5ScannerRoutes(fastify: FastifyInstance) {
         request,
         actorId: actor.userId,
         commandName: 'door.check-in',
-        idempotencyKey,
         context: { path: {}, body },
+        ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
         run: async () => {
-          const decoded = decodeQrPayload(body.qrPayload);
-          const scanResult: ScanResult =
-            decoded.kind === 'magic'
-              ? await services.scanner.scanMagicTicket(
-                  {
-                    eventId: body.eventId,
-                    qrPayload: body.qrPayload,
-                    gate: body.gate ?? '',
-                    deviceId: body.deviceId ?? '',
-                    operatorUid: body.scannedBy.uid,
-                    operatorName: body.scannedBy.name,
-                    operatorRole: body.scannedBy.role,
-                    scannedAt: new Date().toISOString(),
-                  },
-                  actor,
-                )
-              : await services.scanner.scanTicket(
-                  {
-                    eventId: body.eventId,
-                    entitlementId: decoded.entitlementId,
-                    gate: body.gate ?? '',
-                    deviceId: body.deviceId ?? '',
-                    operatorUid: body.scannedBy.uid,
-                    operatorName: body.scannedBy.name,
-                    operatorRole: body.scannedBy.role,
-                    scannedAt: new Date().toISOString(),
-                    isOffline: body.isOffline,
-                  },
-                  actor,
-                );
-          const dto = scanResultToDto(scanResult);
-          const validated = validateV2Response(reply, request, scanResponseSchema, dto);
+          const scanResult: ScanResult = await services.scanner.scan(
+            {
+              eventId: body.eventId,
+              qrPayload: body.qrPayload,
+              sessionToken: sessionTokenFrom(request),
+              ...(body.operatorName === undefined ? {} : { operatorName: body.operatorName }),
+              ...(body.operatorRole === undefined ? {} : { operatorRole: body.operatorRole }),
+              ...(body.gate === undefined ? {} : { gate: body.gate }),
+            },
+            actor,
+          );
+          const validated = validateV2Response(
+            reply,
+            request,
+            scanResponseSchema,
+            scanResultToDto(scanResult),
+          );
           if (validated === undefined) throw new Error('v2 response validation failed');
           return { statusCode: 200, body: validated };
         },
-      }).catch((error: unknown) => mapDomainError(reply, request, body.eventId, error));
+      }).catch((error: unknown) =>
+        mapDomainError(reply, request, body.eventId, error, { hideForbidden: true }),
+      );
       if (result === undefined) return reply;
       return reply.status(result.statusCode).send(result.body);
     },
   );
 
-  // ── POST /door/check-ins/verify ─────────────────────────────────────────
-  // Read-only preview. `scanTicket`/`scanMagicTicket` have no dry-run flag
-  // (plan point 2's investigation) — rather than call the mutating path and
-  // pretend it's non-mutating, this calls the new `resolveTicket`/
-  // `resolveMagicTicket` methods added to `ScannerService` for this route,
-  // which mirror the same checks without writing a scan-ledger entry.
+  // ── POST /door/check-ins/verify ───────────────────────────────────────────
+  // Read-only preview: same rule, nothing written, nothing spent.
   fastify.post(
     '/door/check-ins/verify',
     {
-      preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({ body: scanRequestSchema })],
+      preHandler: [
+        fastify.rateLimit('SCANNER_COMMAND'),
+        fastify.validateV2({
+          body: scanRequestSchema,
+          headers: scannerSessionTokenHeaderSchema,
+        }),
+      ],
     },
-    async (request, reply) => {
-      const body = request.body as z.infer<typeof scanRequestSchema>;
-      const actor = services.actor(request);
-      const decoded = decodeQrPayload(body.qrPayload);
-      let resolution: TicketResolution;
-      try {
-        resolution =
-          decoded.kind === 'magic'
-            ? await services.scanner.resolveMagicTicket(
-                { eventId: body.eventId, qrPayload: body.qrPayload, deviceId: body.deviceId ?? '' },
-                actor,
-              )
-            : await services.scanner.resolveTicket(
-                {
-                  eventId: body.eventId,
-                  entitlementId: decoded.entitlementId,
-                  deviceId: body.deviceId ?? '',
-                },
-                actor,
-              );
-      } catch (error) {
-        return mapDomainError(reply, request, body.eventId, error);
-      }
-      const dto = ticketResolutionToDto(resolution);
-      const validated = validateV2Response(reply, request, scanResponseSchema, dto);
-      if (validated === undefined) return reply;
-      return reply.send(validated);
-    },
+    async (request, reply) => lookup(request, reply),
   );
 
-  // ── GET /door/check-ins/:checkInId ──────────────────────────────────────
+  // ── POST /door/lookup ─────────────────────────────────────────────────────
+  // Same non-mutating resolution under the name the door app uses when staff
+  // are checking a guest rather than admitting them.
+  fastify.post(
+    '/door/lookup',
+    {
+      preHandler: [
+        fastify.rateLimit('SCANNER_COMMAND'),
+        fastify.validateV2({
+          body: scanRequestSchema,
+          headers: scannerSessionTokenHeaderSchema,
+        }),
+      ],
+    },
+    async (request, reply) => lookup(request, reply),
+  );
+
+  async function lookup(request: FastifyRequest, reply: Parameters<typeof validateV2Response>[0]) {
+    const body = request.body as z.infer<typeof scanRequestSchema>;
+    const actor = services.actor(request);
+    const resolution = await services.scanner
+      .resolve(
+        {
+          eventId: body.eventId,
+          qrPayload: body.qrPayload,
+          sessionToken: sessionTokenFrom(request),
+        },
+        actor,
+      )
+      .catch((error: unknown) =>
+        mapDomainError(reply, request, body.eventId, error, { hideForbidden: true }),
+      );
+    if (resolution === undefined) return reply;
+    const validated = validateV2Response(
+      reply,
+      request,
+      ticketLookupResponseSchema,
+      resolutionToDto(resolution),
+    );
+    if (validated === undefined) return reply;
+    return reply.send(validated);
+  }
+
+  // ── GET /door/check-ins/:checkInId ────────────────────────────────────────
   fastify.get(
     '/door/check-ins/:checkInId',
     {
@@ -334,71 +279,27 @@ export default async function phase5ScannerRoutes(fastify: FastifyInstance) {
           mapDomainError(reply, request, checkInId, error, { hideForbidden: true }),
         );
       if (scan === undefined) return reply;
-      const dto = scanToDetailDto(scan);
-      const validated = validateV2Response(reply, request, checkInDetailDto, dto);
+      const validated = validateV2Response(reply, request, checkInDtoSchema, checkInToDto(scan));
       if (validated === undefined) return reply;
       return reply.send(validated);
     },
   );
 
-  // ── POST /door/lookup ────────────────────────────────────────────────────
-  // Same read-only resolution as /door/check-ins/verify — the plan lists
-  // these as two routes ("preview a scan" vs "look up a ticket") but neither
-  // the plan nor any contract distinguishes their behavior, so both wrap the
-  // same non-mutating resolution.
-  fastify.post(
-    '/door/lookup',
-    {
-      preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({ body: scanRequestSchema })],
-    },
-    async (request, reply) => {
-      const body = request.body as z.infer<typeof scanRequestSchema>;
-      const actor = services.actor(request);
-      const decoded = decodeQrPayload(body.qrPayload);
-      let resolution: TicketResolution | undefined;
-      try {
-        resolution =
-          decoded.kind === 'magic'
-            ? await services.scanner.resolveMagicTicket(
-                { eventId: body.eventId, qrPayload: body.qrPayload, deviceId: body.deviceId ?? '' },
-                actor,
-              )
-            : await services.scanner.resolveTicket(
-                {
-                  eventId: body.eventId,
-                  entitlementId: decoded.entitlementId,
-                  deviceId: body.deviceId ?? '',
-                },
-                actor,
-              );
-      } catch (error) {
-        return mapDomainError(reply, request, body.eventId, error);
-      }
-      const dto = ticketResolutionToDto(resolution);
-      const validated = validateV2Response(reply, request, scanResponseSchema, dto);
-      if (validated === undefined) return reply;
-      return reply.send(validated);
-    },
-  );
-
-  // ── POST /door/override ─────────────────────────────────────────────────
-  // `ScanLedgerStatus` gained a real `denied -> overridden` transition
-  // (domain/models/scan-ledger.ts) — a terminal state distinct from
-  // `consumed`, recording who overrode the denial and why on the same
-  // record the denial itself is on. `ScannerService.overrideScan` enforces
-  // `ticket.override` (route-level) + org scope + the FSM guard (rejects
-  // overriding anything that isn't currently `denied`).
+  // ── POST /door/override ───────────────────────────────────────────────────
+  // Manual admission of a denied scan. `denied -> overridden` keeps both
+  // halves of the story on one record: why entry was refused, and who let the
+  // guest in anyway. Deliberately does not top the ticket back up.
   fastify.post(
     '/door/override',
     {
       preHandler: [
         fastify.rateLimit('SENSITIVE_COMMAND'),
-        fastify.validateV2({ body: overrideBody }),
+        fastify.validateV2({ body: overrideRequestSchema }),
         fastify.requirePermission('ticket.override'),
       ],
     },
     async (request, reply) => {
-      const body = request.body as z.infer<typeof overrideBody>;
+      const body = request.body as z.infer<typeof overrideRequestSchema>;
       const actor = services.actor(request);
       const scan = await services.scanner
         .overrideScan(body.checkInId, body.reason, actor)
@@ -406,60 +307,62 @@ export default async function phase5ScannerRoutes(fastify: FastifyInstance) {
           mapDomainError(reply, request, body.checkInId, error, { hideForbidden: true }),
         );
       if (scan === undefined) return reply;
-      const payload = {
+      const validated = validateV2Response(reply, request, overrideResponseSchema, {
         checkInId: scan.id,
         status: 'overridden' as const,
         overriddenBy: scan.overriddenBy,
         overrideReason: scan.overrideReason,
-      };
-      const validated = validateV2Response(reply, request, overrideResponseSchema, payload);
+      });
       if (validated === undefined) return reply;
       return reply.send(validated);
     },
   );
 
-  // ── GET /door/offline-manifest ──────────────────────────────────────────
-  // HONEST 501, not real wiring. No `ScannerService` method generates this,
-  // and — more importantly — nothing in `syncOfflineScans` (or anywhere else)
-  // verifies a manifest signature. Inventing a signing scheme here would be
-  // unverified security theater: a device would trust a signature the server
-  // never checks on the way back in. Flagged in the report.
+  // ── GET /door/offline-manifest ────────────────────────────────────────────
+  // Real, because the verifying side is real too: entries are signed with the
+  // same key `POST /door/offline-sync` verifies, and syncing re-runs the full
+  // atomic admission rather than trusting the device's decision. Shipping the
+  // manifest without that verifying side (the reason this used to be a 501)
+  // would have been a device trusting a signature nobody ever checked.
   fastify.get(
     '/door/offline-manifest',
     {
       preHandler: [
-        fastify.rateLimit('AUTH_READ'),
-        fastify.validateV2({ querystring: offlineManifestQuery }),
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({
+          querystring: offlineManifestRequestSchema,
+          headers: scannerSessionTokenHeaderSchema,
+        }),
       ],
     },
-    async (_request, reply) => {
-      return reply.status(501).send({
-        error:
-          'Not yet implemented: generating a signed manifest is straightforward, but ' +
-          'POST /door/offline-sync (a frozen, already-consumed wire contract) has no field to ' +
-          'carry a manifest signature back for verification, and no ScannerService method ' +
-          're-validates an offline decision against server state at sync time either. Shipping ' +
-          'the manifest alone — without a verifying side — would be a device trusting a ' +
-          'signature the server never checks on the way back in. Needs a contract change ' +
-          'decision, not a route-wiring one. See FOUNDER-TASKS-2026-08-29.md Task A2.',
-      });
+    async (request, reply) => {
+      const query = request.query as z.infer<typeof offlineManifestRequestSchema>;
+      const actor = services.actor(request);
+      const manifest = await services.scanner
+        .buildOfflineManifest(query.eventId, sessionTokenFrom(request), actor)
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, query.eventId, error, { hideForbidden: true }),
+        );
+      if (manifest === undefined) return reply;
+      const validated = validateV2Response(reply, request, offlineManifestResponseSchema, manifest);
+      if (validated === undefined) return reply;
+      return reply.send(validated);
     },
   );
 
-  // ── POST /door/offline-sync ──────────────────────────────────────────────
-  // `syncOfflineScans` is a raw bulk-insert (it hardcodes status 'pending'
-  // for everything — createScanLedger ignores any status/denyReason on its
-  // input) with no per-scan authorization of its own. This route derives
-  // eventId/venueId from an org-checked scanner session lookup, and uses
-  // `actor.organizationId` (not `session.organizationId`, which is
-  // unreliable — see the comment on `getSession` in scanner-service.ts) so
-  // every synced record is stamped with a verified org.
+  // ── POST /door/offline-sync ───────────────────────────────────────────────
+  // Replays a device's offline backlog through the same server-side decision
+  // every online scan takes. Entries the server refuses come back as
+  // `conflicts` — the operator's list of who got in on a bad ticket.
   fastify.post(
     '/door/offline-sync',
     {
       preHandler: [
         fastify.rateLimit('STANDARD_COMMAND'),
-        fastify.validateV2({ body: offlineSyncRequestSchema }),
+        fastify.validateV2({
+          body: offlineSyncRequestSchema,
+          headers: scannerSessionTokenHeaderSchema,
+        }),
       ],
     },
     async (request, reply) => {
@@ -475,60 +378,33 @@ export default async function phase5ScannerRoutes(fastify: FastifyInstance) {
         request,
         actorId: actor.userId,
         commandName: 'door.offline-sync',
-        idempotencyKey,
         context: { path: {}, body },
+        ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
         run: async () => {
-          const session = await services.scanner.getSession(body.scannerSessionId, actor);
-          const scanInputs = body.scans.map((scan) => {
-            const decoded = decodeQrPayload(scan.payload);
-            const entitlementId =
-              decoded.kind === 'magic' ? (scan.payload.split(':')[0] ?? '') : decoded.entitlementId;
-            return {
-              eventId: session.eventId,
-              organizationId: actor.organizationId,
-              venueId: session.venueId,
-              entitlementId,
-              doorSaleId: null,
-              entryType: null,
-              tierName: null,
-              tierId: null,
-              operatorUid: null,
-              operatorName: null,
-              operatorRole: null,
-              gate: null,
-              deviceId: scan.deviceId,
-              deviceName: session.deviceName,
-              deviceBound: true,
-              guestName: null,
-              guestEmail: null,
-              guestPhone: null,
-              scannedAt: scan.scannedAt,
-              admittedCount: 1,
-              scanCountUsed: null,
-              scanCountAllowed: null,
-              isOffline: true,
-              offlineDeviceId: scan.deviceId,
-            };
-          });
-          const created = await services.scanner.syncOfflineScans(scanInputs, actor);
-          const dto = {
-            synced: created.length,
-            conflicts: [] as { payload: string; reason: string }[],
-          };
-          const validated = validateV2Response(reply, request, offlineSyncResponseSchema, dto);
+          const synced = await services.scanner.syncOfflineScans(
+            {
+              eventId: body.eventId,
+              sessionToken: sessionTokenFrom(request),
+              scans: body.scans,
+            },
+            actor,
+          );
+          const validated = validateV2Response(reply, request, offlineSyncResponseSchema, synced);
           if (validated === undefined) throw new Error('v2 response validation failed');
           return { statusCode: 200, body: validated };
         },
-      }).catch((error: unknown) => mapDomainError(reply, request, body.scannerSessionId, error));
+      }).catch((error: unknown) =>
+        mapDomainError(reply, request, body.eventId, error, { hideForbidden: true }),
+      );
       if (result === undefined) return reply;
       return reply.status(result.statusCode).send(result.body);
     },
   );
 
-  // ── GET /tickets/:ticketId/qr ────────────────────────────────────────────
-  // `ticketId` is the entitlementId. Does NOT enforce the >= Rs 5000
-  // eligibility threshold server-side (see comment on `generateMagicTicketQr`
-  // in scanner-service.ts) — flagged in the report.
+  // ── GET /tickets/:ticketId/qr ─────────────────────────────────────────────
+  // The rotating QR. Readable by the ticket holder or by staff of the org
+  // running the event; anyone else gets a 404, never a 403, so a stranger
+  // cannot confirm a ticket id exists.
   fastify.get(
     '/tickets/:ticketId/qr',
     {
@@ -543,6 +419,8 @@ export default async function phase5ScannerRoutes(fastify: FastifyInstance) {
           mapDomainError(reply, request, ticketId, error, { hideForbidden: true }),
         );
       if (result === undefined) return reply;
+      // A rotating credential must never sit in a cache.
+      reply.header('cache-control', 'no-store');
       const validated = validateV2Response(reply, request, magicQrResponseSchema, result);
       if (validated === undefined) return reply;
       return reply.send(validated);
@@ -550,25 +428,7 @@ export default async function phase5ScannerRoutes(fastify: FastifyInstance) {
   );
 }
 
-function sessionToReadDto(session: ScannerSession) {
-  const status: 'active' | 'revoked' | 'expired' = session.revokedAt
-    ? 'revoked'
-    : new Date(session.expiresAt) < new Date()
-      ? 'expired'
-      : 'active';
-  return {
-    id: session.id,
-    eventId: session.eventId,
-    codeId: session.codeId,
-    sessionToken: null,
-    sessionExpiresAt: session.expiresAt,
-    permissions: session.permissions,
-    status,
-    createdAt: session.createdAt,
-  };
-}
-
-function scanToDetailDto(scan: ScanLedger) {
+export function checkInToDto(scan: ScanLedger) {
   return {
     id: scan.id,
     eventId: scan.eventId,
@@ -589,143 +449,34 @@ function scanToDetailDto(scan: ScanLedger) {
     scanCountUsed: scan.scanCountUsed,
     scanCountAllowed: scan.scanCountAllowed,
     isOffline: scan.isOffline,
+    overriddenBy: scan.overriddenBy,
+    overrideReason: scan.overrideReason,
     createdAt: scan.createdAt,
   };
 }
 
-function scanResultToDto(result: ScanResult) {
+/**
+ * `checkInId` is present only when something was actually written. A
+ * `confirmation_required` response deliberately carries none: nothing has been
+ * spent while the door waits for a human, and a client that saw an id there
+ * could reasonably conclude the guest was already in.
+ */
+export function scanResultToDto(result: ScanResult) {
   return {
     status: result.status,
-    checkInId: result.scan.id,
+    ...(result.scan ? { checkInId: result.scan.id } : {}),
     denyReason: result.denyReason,
     denyMessage: result.denyMessage,
-    entitlement: result.entitlement
-      ? {
-          id: result.entitlement.id,
-          tierName: result.entitlement.tierName,
-          holderName: result.entitlement.holderName,
-          scansUsed: result.entitlement.scansUsed,
-          scansAllowed: result.entitlement.scansAllowed,
-        }
-      : undefined,
+    entitlement: result.entitlement,
+    ...(result.confirmation ? { confirmation: result.confirmation } : {}),
   };
 }
 
-/**
- * `scanResponseSchema.status` only has `'consumed' | 'denied'` — there is no
- * third "would be valid" wire value. A preview's `'valid'` outcome maps to
- * `'consumed'` on the wire; the absence of `checkInId` (nothing was
- * persisted) is what actually distinguishes a preview response from a real
- * scan response.
- */
-function ticketResolutionToDto(result: TicketResolution) {
+function resolutionToDto(result: TicketResolution) {
   return {
-    status: result.status === 'valid' ? ('consumed' as const) : ('denied' as const),
+    status: result.status,
     denyReason: result.denyReason,
     denyMessage: result.denyMessage,
-    entitlement: result.entitlement
-      ? {
-          id: result.entitlement.id,
-          tierName: result.entitlement.tierName,
-          holderName: result.entitlement.holderName,
-          scansUsed: result.entitlement.scansUsed,
-          scansAllowed: result.entitlement.scansAllowed,
-        }
-      : undefined,
+    entitlement: result.entitlement,
   };
-}
-
-/** Local copy of the V2 domain-error mapping (plan point 4: the central
- * `error-handler.ts`'s `mapDomainError` only maps specific `*NotFoundError`
- * subclasses to 404 — Phase 5 services throw the generic `NotFoundError`
- * (`code: 'not_found'`), which falls through to an unlogged 500 there. This
- * copy handles `'not_found'` as a first-class branch, matching
- * `partner/events.ts:418`'s pattern. */
-function mapDomainError(
-  reply: FastifyReply,
-  request: FastifyRequest,
-  resourceId: string,
-  error: unknown,
-  options: { hideForbidden?: boolean } = {},
-): undefined {
-  const known = error as { code?: string; message?: string };
-  if (known?.code === 'not_found') {
-    reply.status(404).send(
-      buildV2ErrorResponse({
-        status: 404,
-        message: known.message ?? 'Not found',
-        code: 'not_found',
-        requestId: request.id,
-      }),
-    );
-    return undefined;
-  }
-  if (known?.code === 'unauthorized') {
-    reply.status(401).send(
-      buildV2ErrorResponse({
-        status: 401,
-        message: known.message ?? 'Authentication required',
-        code: 'unauthorized',
-        requestId: request.id,
-      }),
-    );
-    return undefined;
-  }
-  if (known?.code === 'forbidden') {
-    const status = options.hideForbidden ? 404 : 403;
-    const code = options.hideForbidden ? 'not_found' : 'forbidden';
-    reply.status(status).send(
-      buildV2ErrorResponse({
-        status,
-        message: options.hideForbidden ? 'Not found' : (known.message ?? 'Forbidden'),
-        code,
-        requestId: request.id,
-      }),
-    );
-    return undefined;
-  }
-  if (known?.code === 'idempotency_conflict' || known?.code === 'idempotency_in_flight') {
-    reply.status(409).send(
-      buildV2ErrorResponse({
-        status: 409,
-        message: known.message ?? 'Idempotency conflict',
-        code: 'conflict',
-        requestId: request.id,
-      }),
-    );
-    return undefined;
-  }
-  if (known?.code === 'invalid_operation') {
-    reply.status(400).send(
-      buildV2ErrorResponse({
-        status: 400,
-        message: known.message ?? 'Invalid operation',
-        code: 'validation',
-        requestId: request.id,
-      }),
-    );
-    return undefined;
-  }
-  if (known?.code === 'state_transition') {
-    // e.g. POST /door/override on a scan that isn't currently `denied`.
-    reply.status(409).send(
-      buildV2ErrorResponse({
-        status: 409,
-        message: known.message ?? 'Illegal state transition',
-        code: 'conflict',
-        requestId: request.id,
-      }),
-    );
-    return undefined;
-  }
-  request.log.error({ resourceId, err: error }, 'unmapped_domain_error');
-  reply.status(500).send(
-    buildV2ErrorResponse({
-      status: 500,
-      message: 'Internal server error',
-      code: 'server',
-      requestId: request.id,
-    }),
-  );
-  return undefined;
 }

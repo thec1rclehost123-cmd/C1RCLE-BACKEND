@@ -9,6 +9,7 @@ import {
   createScannerSession,
   getSessionPermissions,
   isSessionValid,
+  hashSessionToken,
 } from './models/event-code.js';
 
 import type { EventCodeCreateInput, ScannerSessionCreateInput } from './models/event-code.js';
@@ -35,6 +36,7 @@ function sessionInput(
 ): ScannerSessionCreateInput {
   return {
     codeId: 'CODE-1',
+    organizationId: 'org_1',
     codeData: {
       id: 'CODE-1',
       code: 'C1R-ABCDEF',
@@ -70,9 +72,23 @@ describe('createEventCode', () => {
     });
   });
 
-  it('generates a human-readable C1R-XXXXXX code', () => {
+  it('generates a human-typeable code from an unambiguous CSPRNG alphabet', () => {
     const code = createEventCode(codeInput());
-    expect(code.code).toMatch(/^C1R-[0-9A-Z]{6}$/);
+    // No O/0, I/1, S/5 or B/8: staff read these off one screen and type them
+    // into another in a dark room.
+    expect(code.code).toMatch(/^C1R-[ACDEFGHJKLMNPQRTUVWXYZ2346789]{8}$/);
+  });
+
+  it('does not repeat a code across calls (CSPRNG, not a predictable seed)', () => {
+    const codes = new Set(Array.from({ length: 50 }, () => createEventCode(codeInput()).code));
+    expect(codes.size).toBe(50);
+  });
+
+  it('mints a distinct opaque id under the 64-char cap', () => {
+    const a = createEventCode(codeInput());
+    const b = createEventCode(codeInput());
+    expect(a.id).not.toBe(b.id);
+    expect(a.id.length).toBeLessThanOrEqual(64);
   });
 
   it('honors an explicit maxDevices/allowReuse override', () => {
@@ -110,13 +126,35 @@ describe('createScannerSession / getSessionPermissions', () => {
     });
   });
 
-  it('creates a session with a raw token, 12-hour expiry, and permissions matching the code type', () => {
+  it('returns a raw token that is NEVER carried on the stored session', () => {
     const result = createScannerSession(sessionInput());
-    expect(result.sessionToken).toMatch(/^sess_/);
-    expect(result.session.sessionToken).toBe(result.sessionToken);
+    expect(result.sessionToken).toMatch(/^scn_/);
+    // The whole point: only the hash is persisted, so a database read (or a
+    // leaked backup) cannot impersonate a scanner.
+    expect(result.session.sessionToken).toBeNull();
     expect(result.session.permissions).toEqual(getSessionPermissions('full'));
     const expiresAt = new Date(result.sessionExpiresAt);
     expect(expiresAt.getTime() - T0.getTime()).toBe(12 * 60 * 60 * 1000);
+  });
+
+  it('does not embed the door code in the token', () => {
+    const result = createScannerSession(sessionInput());
+    // A leaked token must not also hand over the code that mints unlimited
+    // further sessions.
+    expect(result.sessionToken).not.toContain('C1R-ABCDEF');
+  });
+
+  it('scopes the session to the code owner’s organization, not the staff member', () => {
+    const result = createScannerSession(sessionInput({ createdBy: 'staff_9' }));
+    expect(result.session.organizationId).toBe('org_1');
+    expect(result.session.createdBy).toBe('staff_9');
+  });
+
+  it('hashes a token deterministically and differently per token', () => {
+    const a = createScannerSession(sessionInput());
+    const b = createScannerSession(sessionInput());
+    expect(hashSessionToken(a.sessionToken)).toBe(hashSessionToken(a.sessionToken));
+    expect(hashSessionToken(a.sessionToken)).not.toBe(hashSessionToken(b.sessionToken));
   });
 
   it('derives scan_only permissions on the created session from codeData.type', () => {

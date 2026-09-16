@@ -34,6 +34,69 @@ export type CoverWalletTxnType =
 
 export type CoverWalletTxnStatus = 'pending' | 'committed' | 'failed' | 'reversed';
 
+/**
+ * One thing a bartender can ring up against a tab.
+ *
+ * Preset items exist so the scanner never types an amount. Free-entry pricing
+ * at a door, on a phone, at 1am, is how a ₹500 drink becomes a ₹5,000 charge
+ * — and the guest cannot check the screen before it is taken. The price comes
+ * from the venue's own list, and the scanner only ever names the item.
+ */
+export interface CoverWalletPresetItem {
+  id: EntityId;
+  label: string;
+  amountPaise: number;
+  /** Run out of a drink? Turn it off without editing the venue's price list. */
+  isAvailable: boolean;
+}
+
+export interface CoverWalletRules {
+  /** The only things this wallet can be charged for. Empty = nothing. */
+  presetItems: CoverWalletPresetItem[];
+  /** Belt-and-braces bounds on one charge, independent of the item list. */
+  minChargePaise: number;
+  maxChargePaise: number;
+  /** Whether the scanner may show the guest's balance on screen. */
+  showBalanceToGuest: boolean;
+}
+
+export const DEFAULT_COVER_WALLET_RULES: CoverWalletRules = {
+  presetItems: [],
+  minChargePaise: 1,
+  // A single charge above ₹50,000 is a typo or a fraud, not a round of drinks.
+  maxChargePaise: 5_000_000,
+  showBalanceToGuest: true,
+};
+
+/** Fails closed: an unknown or unavailable item can never be charged. */
+export function findChargeableItem(
+  rules: CoverWalletRules,
+  presetItemId: EntityId,
+): CoverWalletPresetItem | null {
+  const item = rules.presetItems.find((candidate) => candidate.id === presetItemId);
+  if (!item || !item.isAvailable) return null;
+  return item;
+}
+
+/**
+ * Price for a charge, computed from the venue's list — never from the client.
+ * Returns null when the item is unknown, unavailable, or the total falls
+ * outside the wallet's own bounds.
+ */
+export function priceForCharge(
+  rules: CoverWalletRules,
+  presetItemId: EntityId,
+  quantity: number,
+): number | null {
+  const item = findChargeableItem(rules, presetItemId);
+  if (!item) return null;
+  if (!Number.isSafeInteger(quantity) || quantity < 1) return null;
+  const total = item.amountPaise * quantity;
+  if (!Number.isSafeInteger(total)) return null;
+  if (total < rules.minChargePaise || total > rules.maxChargePaise) return null;
+  return total;
+}
+
 export interface CoverWallet extends VersionedEntity {
   id: EntityId;
   /** User UID (guest or staff) */
@@ -65,6 +128,8 @@ export interface CoverWallet extends VersionedEntity {
   lastDebitAt: string | null;
   /** Metadata */
   metadata: Record<string, unknown>;
+  /** What this wallet may be charged for, and within what bounds. */
+  rules: CoverWalletRules;
 }
 
 export interface CoverWalletTxn extends VersionedEntity {
@@ -109,6 +174,7 @@ export interface CoverWalletCreateInput {
   venueId: EntityId | null;
   openingBalance: number;
   metadata?: Record<string, unknown>;
+  rules?: Partial<CoverWalletRules>;
   now?: Date;
 }
 
@@ -135,6 +201,7 @@ export function createCoverWallet(input: CoverWalletCreateInput): CoverWallet {
     lastCreditAt: null,
     lastDebitAt: null,
     metadata: input.metadata ?? {},
+    rules: { ...DEFAULT_COVER_WALLET_RULES, ...input.rules },
     ...newVersionedEntity(now),
   };
 }

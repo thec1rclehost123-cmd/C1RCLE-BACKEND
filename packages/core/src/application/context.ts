@@ -39,6 +39,7 @@ import type {
   ScanLedgerRepository,
   EventCodeRepository,
   ScannerSessionRepository,
+  ScannerDeviceRepository,
   DoorSaleRepository,
   CoverWalletRepository,
   CoverWalletTxnRepository,
@@ -118,6 +119,8 @@ export interface ServiceDeps {
     scanLedger: ScanLedgerRepository;
     eventCodes: EventCodeRepository;
     scannerSessions: ScannerSessionRepository;
+    /** Phase 5: handsets a venue has authorized to work its door. */
+    scannerDevices: ScannerDeviceRepository;
     doorSales: DoorSaleRepository;
     coverWallets: CoverWalletRepository;
     coverWalletTxns: CoverWalletTxnRepository;

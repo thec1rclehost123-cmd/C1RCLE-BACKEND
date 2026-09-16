@@ -46,6 +46,7 @@ number; Render supplies `PORT` to the Web Service.
 | `FIREBASE_PRIVATE_KEY` | REQUIRED | Required with Firestore; secret value. |
 | `FIREBASE_STORAGE_BUCKET` | REQUIRED NOW | Code can derive a bucket, but staging requires the verified bucket explicitly. |
 | `BETTER_AUTH_SECRET` | REQUIRED | Production requires at least 32 non-development characters. |
+| `MAGIC_TICKET_SECRET` | REQUIRED | Phase 5 door QR / offline-manifest HMAC key; production requires at least 32 characters. Forging it forges event entry. |
 | `BETTER_AUTH_URL` | REQUIRED | Must be the HTTPS staging edge URL. |
 | `PUBLIC_API_URL` | REQUIRED | Must be the HTTPS staging edge URL. |
 | `ALLOWED_ORIGINS` | REQUIRED | Explicit HTTPS browser origins; no wildcard. |
@@ -69,6 +70,7 @@ Required now:
 - `FIREBASE_PRIVATE_KEY=<STAGING_FIREBASE_PRIVATE_KEY_SECRET>`
 - `FIREBASE_STORAGE_BUCKET=<STAGING_FIREBASE_STORAGE_BUCKET>`
 - `BETTER_AUTH_SECRET=<STAGING_BETTER_AUTH_SECRET>`
+- `MAGIC_TICKET_SECRET=<STAGING_MAGIC_TICKET_SECRET>`
 - `BETTER_AUTH_URL=https://<STAGING_EDGE_HOSTNAME>`
 - `PUBLIC_API_URL=https://<STAGING_EDGE_HOSTNAME>`
 - `ALLOWED_ORIGINS=https://<STAGING_PARTNER_HOSTNAME>[,https://<OTHER_STAGING_ORIGIN>]`

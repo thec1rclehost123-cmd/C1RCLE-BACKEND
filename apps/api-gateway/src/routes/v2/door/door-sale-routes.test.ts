@@ -220,3 +220,52 @@ describe('V2 door sales slice — walk-in / dine-in / sales list', () => {
     await server.close();
   });
 });
+
+/**
+ * The door form's own rules, enforced server-side. They used to live only in
+ * the app's submit button, which means they did not apply at all to anyone
+ * calling the API directly.
+ */
+describe('door guest validation', () => {
+  async function post(overrides: Record<string, unknown>) {
+    const server = await buildServer();
+    const { event, walkInTier } = await seedEventWithTiers();
+    return server.inject({
+      method: 'POST',
+      url: '/door/walk-in',
+      headers: HEADERS,
+      payload: {
+        eventId: event.id,
+        guestName: 'Ada Lovelace',
+        totalGuests: 1,
+        paymentMode: 'cash',
+        tierId: walkInTier.id,
+        quantity: 1,
+        idempotencyKey: `idem-val-${Math.random().toString(36).slice(2)}`,
+        ...overrides,
+      },
+    });
+  }
+
+  it('rejects a phone that is not exactly ten digits', async () => {
+    expect((await post({ guestPhone: '98765' })).statusCode).toBe(422);
+    expect((await post({ guestPhone: '+919876543210' })).statusCode).toBe(422);
+  });
+
+  it('accepts a well-formed ten-digit phone', async () => {
+    expect((await post({ guestPhone: '9876543210' })).statusCode).toBe(201);
+  });
+
+  it('rejects an under-age guest — a licensing problem, not a rounding one', async () => {
+    expect((await post({ guestAge: 17 })).statusCode).toBe(422);
+  });
+
+  it('rejects free-text gender and a malformed email', async () => {
+    expect((await post({ gender: 'whatever' })).statusCode).toBe(422);
+    expect((await post({ contact: 'not-an-email' })).statusCode).toBe(422);
+  });
+
+  it('rejects a client-supplied price — the server owns the amount', async () => {
+    expect((await post({ amountPaise: 1 })).statusCode).toBe(422);
+  });
+});

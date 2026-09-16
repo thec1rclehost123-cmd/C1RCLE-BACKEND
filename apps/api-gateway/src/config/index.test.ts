@@ -15,6 +15,7 @@ function productionEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.Proces
     FIREBASE_PRIVATE_KEY: 'private-key',
     BETTER_AUTH_SECRET: 'a'.repeat(64),
     EMAIL_OTP_SECRET: 'b'.repeat(64),
+    MAGIC_TICKET_SECRET: 'c'.repeat(64),
     PUBLIC_API_URL: 'https://api.example.test',
     BETTER_AUTH_URL: 'https://api.example.test',
     ALLOWED_ORIGINS: 'https://app.example.test',
@@ -34,6 +35,15 @@ describe('gateway configuration', () => {
   });
 
   it('requires an email OTP secret in production', () => {
+    // A forged magic-ticket key forges entry to a paid event, so production
+    // must refuse to boot on the well-known development default rather than
+    // silently using it (which every deploy did until this was wired).
+    expect(() =>
+      getGatewayConfig(productionEnvironment({ MAGIC_TICKET_SECRET: undefined })),
+    ).toThrow(/MAGIC_TICKET_SECRET/);
+    expect(() => getGatewayConfig(productionEnvironment({ MAGIC_TICKET_SECRET: 'short' }))).toThrow(
+      /MAGIC_TICKET_SECRET/,
+    );
     expect(() => getGatewayConfig(productionEnvironment({ EMAIL_OTP_SECRET: undefined }))).toThrow(
       /EMAIL_OTP_SECRET/,
     );

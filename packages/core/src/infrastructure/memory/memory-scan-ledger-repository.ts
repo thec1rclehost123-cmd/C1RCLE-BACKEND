@@ -9,6 +9,7 @@ import type {
   ScanDenyReason,
 } from '../../domain/models/scan-ledger.js';
 import type {
+  ScanAdmissionStats,
   ScanLedgerRepository,
   Page,
   PaginationQuery,
@@ -139,6 +140,28 @@ export class MemoryScanLedgerRepository implements ScanLedgerRepository {
   async countByEventAndStatus(eventId: EntityId, status: ScanLedgerStatus): Promise<number> {
     return [...this.scans.values()].filter((s) => s.eventId === eventId && s.status === status)
       .length;
+  }
+
+  async getAdmissionStats(
+    eventId: EntityId,
+    tierNames: readonly string[],
+  ): Promise<ScanAdmissionStats> {
+    const byEntryType: Record<string, number> = {};
+    for (const tierName of tierNames) byEntryType[tierName] = 0;
+
+    let admitted = 0;
+    let attributed = 0;
+    for (const scan of this.scans.values()) {
+      if (scan.eventId !== eventId) continue;
+      if (scan.admittedCount <= 0) continue;
+      admitted += scan.admittedCount;
+      const key = scan.tierName;
+      if (key !== null && key in byEntryType) {
+        byEntryType[key] = (byEntryType[key] ?? 0) + scan.admittedCount;
+        attributed += scan.admittedCount;
+      }
+    }
+    return { admitted, byEntryType, unattributed: Math.max(0, admitted - attributed) };
   }
 
   async countConsumedByEntitlement(entitlementId: EntityId): Promise<number> {
