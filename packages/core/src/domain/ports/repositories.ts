@@ -73,6 +73,7 @@ import type {
   ScanLedgerCreateInput,
   ScanDenyReason,
 } from '../models/scan-ledger.js';
+import type { UserBan } from '../models/user-ban.js';
 import type { Venue, VenueSlot, SlotRequest } from '../models/venue.js';
 
 // ─── Phase 5: Scan Ledger, Event Code, Scanner Session, Door Sale, Cover Wallet ───────
@@ -126,6 +127,13 @@ export interface OrganizationRepository {
 export interface UserAccountRepository {
   /** Platform-wide user directory — global, not org-scoped. */
   listAll(query: PaginationQuery): Promise<Page<PlatformUser>>;
+  getById(userId: EntityId): Promise<PlatformUser | null>;
+}
+
+/** Ban state for platform users, one record per user, keyed by user id. */
+export interface UserBanRepository {
+  getByUserId(userId: EntityId): Promise<UserBan | null>;
+  save(ban: UserBan, tx?: TxContext | null): Promise<void>;
 }
 
 /**
@@ -240,6 +248,8 @@ export interface EventCatalogRepository {
   getPromoById(promoId: EntityId): Promise<PromoCode | null>;
   getPromoByCode(code: string, eventId: EntityId | null): Promise<PromoCode | null>;
   listPromos(eventId: EntityId, query: PaginationQuery): Promise<Page<PromoCode>>;
+  /** Platform-wide promo listing (admin read-only dashboard). */
+  listAllPromos(query: PaginationQuery): Promise<Page<PromoCode>>;
   savePromo(promo: PromoCode, tx?: TxContext | null): Promise<void>;
   // Table packages
   getTableById(tableId: EntityId): Promise<TablePackage | null>;
@@ -248,6 +258,8 @@ export interface EventCatalogRepository {
   // Promoter assignments
   getAssignmentById(assignmentId: EntityId): Promise<PromoterAssignment | null>;
   listAssignments(eventId: EntityId): Promise<PromoterAssignment[]>;
+  /** Platform-wide promoter-assignment listing (admin read-only dashboard). */
+  listAllAssignments(query: PaginationQuery): Promise<Page<PromoterAssignment>>;
   saveAssignment(assignment: PromoterAssignment, tx?: TxContext | null): Promise<void>;
 }
 
@@ -436,6 +448,8 @@ export interface OrderRepository {
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Order>>;
   /** Lists orders for an event. */
   listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<Order>>;
+  /** Lists all orders platform-wide (admin read-only dashboards). */
+  listAll(query: PaginationQuery): Promise<Page<Order>>;
   /** Saves (create or update). Version is checked for optimistic locking. */
   save(order: Order, tx?: TxContext | null): Promise<void>;
 }
@@ -454,6 +468,8 @@ export interface EntitlementRepository {
   listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<Entitlement>>;
   /** Fetches entitlements for an organization (partner/admin). */
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Entitlement>>;
+  /** Lists all entitlements platform-wide (admin read-only dashboards). */
+  listAll(query: PaginationQuery): Promise<Page<Entitlement>>;
   /** Saves (create or update — scan increments version). Version checked for optimistic locking. */
   save(entitlement: Entitlement, tx?: TxContext | null): Promise<void>;
   /** Bulk save for fulfilment (atomic with order creation). */

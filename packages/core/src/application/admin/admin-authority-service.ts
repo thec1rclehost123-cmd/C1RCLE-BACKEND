@@ -14,6 +14,7 @@ import {
   proposeAction,
   rejectProposal,
   requiresDualControl,
+  updatePlatformAdminRole,
 } from '../../domain/models/admin-authority.js';
 
 import type { EntityId } from '../../domain/identity.js';
@@ -273,6 +274,54 @@ export class AdminAuthorityService {
   }
 
   /**
+   * Changes an admin's role. TIER3, dual control, same execute-from-
+   * approved-proposal shape as `provisionAdminFromProposal`: the new role
+   * is read from the proposal payload, never from this call's arguments.
+   */
+  async updateAdminRoleFromProposal(
+    userId: EntityId,
+    proposalId: EntityId,
+  ): Promise<PlatformAdmin> {
+    const admin = await this.authorize(userId, 'ADMIN_ROLE_UPDATE');
+    const proposal = await this.requireProposal(proposalId);
+    if (proposal.action !== 'ADMIN_ROLE_UPDATE') {
+      throw new InvalidOperationError('This proposal does not update an admin role');
+    }
+    if (!isExecutable(proposal)) {
+      throw new ForbiddenError('This proposal has not been approved by a second admin');
+    }
+
+    const { targetUserId, role } = readRoleUpdatePayload(proposal.payload);
+    const target = await this.admins.getById(targetUserId);
+    if (!target) throw new InvalidOperationError(`No such admin: ${targetUserId}`);
+
+    // Demoting the last active `super` would leave nobody able to propose
+    // any future TIER3 action (all of them require `super` to propose) —
+    // an availability lockout, not a dual-control bypass, but the same
+    // "don't let the console lock itself out" reasoning `revokeAdmin`
+    // already applies to self-revoke.
+    if (target.role === 'super' && role !== 'super') {
+      const { items } = await this.admins.list({ limit: 1000, cursor: null });
+      const activeSupers = items.filter((a) => a.role === 'super' && a.isActive).length;
+      if (activeSupers <= 1) {
+        throw new InvalidOperationError('Cannot demote the last active super admin');
+      }
+    }
+
+    const updated = updatePlatformAdminRole(target, role, this.deps.config.clock.now());
+    if (updated !== target) await this.admins.save(updated);
+    await this.record(admin, {
+      action: 'ADMIN_ROLE_UPDATE',
+      targetType: 'platform_admin',
+      targetId: target.id,
+      before: { role: target.role },
+      after: { role: updated.role },
+      reason: proposal.reason,
+    });
+    return updated;
+  }
+
+  /**
    * Revoking authority is *not* dual-controlled, on purpose: making it hard to
    * take authority away is the wrong failure mode when an account is
    * compromised. Granting it is the dangerous direction.
@@ -333,4 +382,19 @@ function readProvisionPayload(payload: Record<string, unknown>): {
     throw new InvalidOperationError('Proposal payload is missing a valid `role`');
   }
   return { userId, email, role: role as AdminRole };
+}
+
+function readRoleUpdatePayload(payload: Record<string, unknown>): {
+  targetUserId: EntityId;
+  role: AdminRole;
+} {
+  const targetUserId = payload.targetUserId;
+  const role = payload.role;
+  if (typeof targetUserId !== 'string' || targetUserId.length === 0) {
+    throw new InvalidOperationError('Proposal payload is missing `targetUserId`');
+  }
+  if (typeof role !== 'string' || !ADMIN_ROLES.includes(role as AdminRole)) {
+    throw new InvalidOperationError('Proposal payload is missing a valid `role`');
+  }
+  return { targetUserId, role: role as AdminRole };
 }

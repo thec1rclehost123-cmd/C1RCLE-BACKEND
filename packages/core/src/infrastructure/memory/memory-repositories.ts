@@ -307,6 +307,10 @@ export class MemoryEventCatalogRepository implements EventCatalogRepository {
     return serializeSlice(all, query);
   }
 
+  async listAllPromos(query: PaginationQuery): Promise<Page<PromoCode>> {
+    return serializeSlice([...this.promos.values()], query);
+  }
+
   async savePromo(promo: PromoCode, _tx?: TxContext | null): Promise<void> {
     casSet(this.promos, promo);
   }
@@ -329,6 +333,10 @@ export class MemoryEventCatalogRepository implements EventCatalogRepository {
 
   async listAssignments(eventId: EntityId): Promise<PromoterAssignment[]> {
     return [...this.assignments.values()].filter((a) => a.eventId === eventId);
+  }
+
+  async listAllAssignments(query: PaginationQuery): Promise<Page<PromoterAssignment>> {
+    return serializeSlice([...this.assignments.values()], query);
   }
 
   async saveAssignment(assignment: PromoterAssignment, _tx?: TxContext | null): Promise<void> {
@@ -441,6 +449,10 @@ export class MemoryOrderRepository implements OrderRepository {
     return serializeSlice(all, query);
   }
 
+  async listAll(query: PaginationQuery): Promise<Page<Order>> {
+    return serializeSlice([...this.orders.values()], query);
+  }
+
   async save(order: Order, _tx?: TxContext | null): Promise<void> {
     casSet(this.orders, order);
     if (order.paymentId) this.byPaymentId.set(order.paymentId, order);
@@ -478,6 +490,10 @@ export class MemoryEntitlementRepository implements EntitlementRepository {
   ): Promise<Page<Entitlement>> {
     const all = [...this.entitlements.values()].filter((e) => e.organizationId === organizationId);
     return serializeSlice(all, query);
+  }
+
+  async listAll(query: PaginationQuery): Promise<Page<Entitlement>> {
+    return serializeSlice([...this.entitlements.values()], query);
   }
 
   async save(entitlement: Entitlement, _tx?: TxContext | null): Promise<void> {

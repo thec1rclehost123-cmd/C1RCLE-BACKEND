@@ -60,6 +60,11 @@ export class FirestoreEntitlementRepository implements EntitlementRepository {
     return paginateQuery(base, query, toEntitlement);
   }
 
+  async listAll(query: PaginationQuery): Promise<Page<Entitlement>> {
+    const base = this.collection.orderBy('createdAt', 'desc');
+    return paginateQuery(base, query, toEntitlement);
+  }
+
   async save(entitlement: Entitlement, _tx?: TxContext | null): Promise<void> {
     await compareAndSet(this.db, this.collection, entitlement, toDoc);
   }

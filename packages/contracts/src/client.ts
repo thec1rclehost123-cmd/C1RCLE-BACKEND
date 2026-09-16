@@ -177,6 +177,7 @@ export type {
   OnboardingDocumentLabel,
   DocumentUploadUrlRequest,
   DocumentUploadUrlDto,
+  DocumentReadUrlDto,
   VerifyDocumentRequest,
   VerificationResultDto,
   ReviewOnboardingRequest,
@@ -187,6 +188,8 @@ export type {
   ProposeActionRequest,
   ResolveProposalRequest,
   AdminAuditRecordDto,
+  AdminLookupResultItem,
+  AdminLookupResponse,
 } from './contracts/onboarding.js';
 
 export {
@@ -201,6 +204,7 @@ export {
   onboardingDocumentLabelSchema,
   documentUploadUrlRequestSchema,
   documentUploadUrlDtoSchema,
+  documentReadUrlDtoSchema,
   verifyDocumentSchema,
   verificationResultDtoSchema,
   reviewOnboardingSchema,
@@ -214,6 +218,8 @@ export {
   proposeActionSchema,
   resolveProposalSchema,
   adminAuditRecordDtoSchema,
+  adminLookupResultItemSchema,
+  adminLookupResponseSchema,
 } from './contracts/onboarding.js';
 
 // Checkout / Orders / Payments / Entitlements
@@ -349,6 +355,71 @@ export {
   adminUserDtoSchema,
   adminUserListResponseSchema,
 } from './contracts/admin.js';
+
+// Phase 7: Admin orders desk (platform-wide read-only order list)
+export type {
+  AdminOrderContactDto,
+  AdminOrderDto,
+  AdminOrderListResponse,
+} from './contracts/admin-orders.js';
+
+export {
+  adminOrderContactDtoSchema,
+  adminOrderDtoSchema,
+  adminOrderListResponseSchema,
+} from './contracts/admin-orders.js';
+
+// Phase 7: Admin analytics desk (platform-wide revenue/ticket/event summary)
+export type {
+  AdminAnalyticsTopOrgDto,
+  AdminAnalyticsSummaryDto,
+} from './contracts/admin-analytics.js';
+
+export {
+  adminAnalyticsTopOrgDtoSchema,
+  adminAnalyticsSummaryDtoSchema,
+} from './contracts/admin-analytics.js';
+
+// Phase 7: Admin tickets desk (platform-wide entitlement ledger)
+export type {
+  AdminTicketStatus,
+  AdminTicketDto,
+  AdminTicketListResponse,
+} from './contracts/admin-tickets.js';
+
+export {
+  adminTicketStatusSchema,
+  adminTicketDtoSchema,
+  adminTicketListResponseSchema,
+} from './contracts/admin-tickets.js';
+
+// Phase 7: Admin promotions desk (platform-wide, read-only promo code listing)
+export type {
+  AdminPromoType,
+  AdminPromoDiscountType,
+  AdminPromoDto,
+  AdminPromoListResponse,
+} from './contracts/admin-promotions.js';
+
+export {
+  adminPromoTypeSchema,
+  adminPromoDiscountTypeSchema,
+  adminPromoDtoSchema,
+  adminPromoListResponseSchema,
+} from './contracts/admin-promotions.js';
+
+// Phase 7: Admin promoters desk (platform-wide, read-only assignment listing)
+export type {
+  AdminPromoterAssignmentStatus,
+  AdminPromoterAssignmentDto,
+  AdminPromoterAssignmentListResponse,
+} from './contracts/admin-promoters.js';
+
+export {
+  adminPromoterAssignmentStatusSchema,
+  adminPromoterAssignmentDtoSchema,
+  adminPromoterAssignmentListResponseSchema,
+} from './contracts/admin-promoters.js';
 
 // Phase 6: Finance / Ledger / Payouts
 export type {

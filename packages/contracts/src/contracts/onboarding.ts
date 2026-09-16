@@ -138,6 +138,16 @@ export const documentUploadUrlDtoSchema = z
   .strict();
 export type DocumentUploadUrlDto = z.infer<typeof documentUploadUrlDtoSchema>;
 
+/** Admin-side signed GET for one uploaded KYC document. */
+export const documentReadUrlDtoSchema = z
+  .object({
+    readUrl: z.string().min(1),
+    /** Epoch ms — the URL is unusable after this. */
+    expiresAt: z.number().int().positive(),
+  })
+  .strict();
+export type DocumentReadUrlDto = z.infer<typeof documentReadUrlDtoSchema>;
+
 export const verifyDocumentSchema = z
   .object({
     documentType: z.string().min(1).max(40),
@@ -251,6 +261,8 @@ export type ApproveOnboardingResult = z.infer<typeof approveOnboardingResultSche
 export const adminRoleSchema = z.enum(['super', 'admin', 'ops', 'finance', 'support']);
 
 export const adminActionSchema = z.enum([
+  'EVENT_PAUSE',
+  'EVENT_RESUME',
   'ONBOARDING_APPROVE',
   'VENUE_SUSPEND',
   'VENUE_REINSTATE',
@@ -259,7 +271,10 @@ export const adminActionSchema = z.enum([
   'FINANCIAL_REFUND',
   'PAYOUT_BATCH_RUN',
   'DISPUTE_RESOLVE',
+  'USER_BAN',
+  'USER_UNBAN',
   'ADMIN_PROVISION',
+  'ADMIN_ROLE_UPDATE',
   'COMMISSION_ADJUST',
   'PAYOUT_FREEZE',
   'PAYOUT_RELEASE',
@@ -318,9 +333,28 @@ export const adminAuditRecordDtoSchema = z.object({
   action: z.string(),
   targetType: z.string(),
   targetId: opaqueIdSchema,
+  /** Live-resolved display name for the target; `null` when unresolvable. */
+  targetName: z.string().nullable(),
   before: z.record(z.string(), z.unknown()).nullable(),
   after: z.record(z.string(), z.unknown()).nullable(),
   reason: z.string().nullable(),
   occurredAt: z.number().int().nonnegative(),
 });
 export type AdminAuditRecordDto = z.infer<typeof adminAuditRecordDtoSchema>;
+
+/**
+ * Global entity lookup (the "omnibox") — O(1) parallel doc-id fetches
+ * across known collections rather than a scan, ported from v1's
+ * `lookup/route.js`. `type` names which collection matched.
+ */
+export const adminLookupResultItemSchema = z.object({
+  type: z.enum(['venue', 'event', 'organization', 'user']),
+  id: opaqueIdSchema,
+  label: z.string(),
+});
+export type AdminLookupResultItem = z.infer<typeof adminLookupResultItemSchema>;
+
+export const adminLookupResponseSchema = z.object({
+  items: z.array(adminLookupResultItemSchema),
+});
+export type AdminLookupResponse = z.infer<typeof adminLookupResponseSchema>;
