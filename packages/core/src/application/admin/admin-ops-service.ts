@@ -1,6 +1,6 @@
 import { InvalidOperationError, NotFoundError } from '../../domain/errors.js';
 import { isExecutable } from '../../domain/models/admin-authority.js';
-import { adminPauseEvent, adminResumeEvent } from '../../domain/models/event.js';
+import { adminPauseEvent, adminResumeEvent, isPublicStatus } from '../../domain/models/event.js';
 import {
   adjustPlatformFeePercent,
   reinstateOrganization,
@@ -21,6 +21,19 @@ import type { ServiceDeps } from '../context.js';
 
 /** The admin users view adds ban status; the domain model itself stays clean. */
 export type PlatformUserWithBanStatus = PlatformUser & { isBanned: boolean };
+
+/** Bound on the per-collection scan `getAnalyticsSummary` does — see its doc comment. */
+const ANALYTICS_SCAN_LIMIT = 1000;
+
+export interface AdminAnalyticsSummary {
+  totalRevenuePaise: number;
+  ticketsSold: number;
+  activeEventsCount: number;
+  topOrganizations: { organizationId: EntityId; name: string; revenuePaise: number }[];
+  /** How many orders/events were actually scanned — an honest bound, not a claim of exhaustiveness. */
+  scannedOrders: number;
+  scannedEvents: number;
+}
 
 /**
  * ─── Admin directory + operations (Phase 7 admin) ───────────────────────────
@@ -97,6 +110,67 @@ export class AdminOperationsService {
   async listOrders(adminUserId: EntityId, query: PaginationQuery): Promise<Page<Order>> {
     await this.authority.requireAdmin(adminUserId);
     return this.orders.listAll(query);
+  }
+
+  /**
+   * Platform-wide revenue/ticket/event summary for the admin analytics
+   * desk. Read-only, any admin. Aggregates over the most recent
+   * `ANALYTICS_SCAN_LIMIT` orders/events/organizations rather than the
+   * whole collection — same bounded-scan shape `exportUsers`/`exportAudit`
+   * already use, not a full-collection reduce triggered synchronously on
+   * every request (the exact anti-pattern v1's `computePlatformStats` was
+   * criticized for — see the V1 audit doc).
+   */
+  async getAnalyticsSummary(adminUserId: EntityId): Promise<AdminAnalyticsSummary> {
+    await this.authority.requireAdmin(adminUserId);
+
+    const [orderPage, eventPage, orgPage] = await Promise.all([
+      this.orders.listAll({ limit: ANALYTICS_SCAN_LIMIT, cursor: null }),
+      this.events.listAll({ limit: ANALYTICS_SCAN_LIMIT, cursor: null }),
+      this.organizations.listAll({ limit: ANALYTICS_SCAN_LIMIT, cursor: null }),
+    ]);
+
+    const orgNameById = new Map(orgPage.items.map((org) => [org.id, org.name]));
+    const revenueByOrg = new Map<EntityId, number>();
+    let totalRevenuePaise = 0;
+    let ticketsSold = 0;
+
+    for (const order of orderPage.items) {
+      // Money was actually captured for these three states; a still-open
+      // cart or a failed/expired/cancelled attempt never took a payment.
+      if (
+        order.status !== 'paid' &&
+        order.status !== 'refund_requested' &&
+        order.status !== 'refunded'
+      ) {
+        continue;
+      }
+      const netPaise = order.grandTotalPaise - order.refundedPaise;
+      totalRevenuePaise += netPaise;
+      ticketsSold += order.lines.reduce((sum, line) => sum + line.quantity, 0);
+      revenueByOrg.set(
+        order.organizationId,
+        (revenueByOrg.get(order.organizationId) ?? 0) + netPaise,
+      );
+    }
+
+    const topOrganizations = [...revenueByOrg.entries()]
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, 5)
+      .map(([organizationId, revenuePaise]) => ({
+        organizationId,
+        name: orgNameById.get(organizationId) ?? organizationId,
+        revenuePaise,
+      }));
+
+    return {
+      totalRevenuePaise,
+      ticketsSold,
+      activeEventsCount: eventPage.items.filter((event) => isPublicStatus(event.status)).length,
+      topOrganizations,
+      scannedOrders: orderPage.items.length,
+      scannedEvents: eventPage.items.length,
+    };
   }
 
   /** Bans a user. TIER2, direct command. Idempotent on repeat. */

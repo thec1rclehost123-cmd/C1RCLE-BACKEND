@@ -47,7 +47,7 @@
 |---|---|---|---|---|
 | **Orders/payments list** | `/payments` (1,152 LOC) | ✅ **DONE 2026-09-13** — `/orders` desk live (read-only list; see §1) | New `orders.ts` admin read-only route (`v2_orders` paginated via new `OrderRepository.listAll`) | `/orders` desk: table + status filters (order detail row = lower priority) |
 | **KYC review desk** | `/kyc-review` (692 LOC) | ✅ **DONE 2026-09-15** — `/kyc-review` card-layout view, always scoped to `submitted`+`changes_requested`, documents shown up front per applicant | No new backend; reuse `onboarding-review.ts` | `/kyc-review` filtered view of onboarding queue, doc-heavy layout |
-| **Analytics dashboard** | `/analytics` (1,317 LOC) | Revenue/event/user metrics for ops decisions | New `analytics.ts` aggregate queries (revenue totals, ticket stats, active events) | `/analytics` charts + summary cards |
+| **Analytics dashboard** | `/analytics` (1,317 LOC) | ✅ **DONE 2026-09-16** — `/analytics` desk live: net revenue, tickets sold, active events, top-5 hosts by revenue | `admin/analytics.ts` (`GET /admin/analytics`) — bounded scan (1000 orders/events/orgs) over `AdminOperationsService.getAnalyticsSummary`, not a full-collection reduce | `/analytics` stat cards + top-hosts table |
 
 ### Tier B: medium value, V1 has screens but deferred scope or blocked
 
@@ -101,9 +101,11 @@
 - Frontend-only: `/kyc-review` — card layout, always `submitted`+`changes_requested`, documents shown up front per applicant, same approve/reject/request-changes actions as `/onboarding`
 - No backend changes needed
 
-**Batch 4 — Analytics dashboard**
-- Backend: new `analytics-admin.ts` (aggregate queries: revenue totals, tickets sold, active events, top orgs)
-- Frontend: `/analytics` desk with summary cards + tables
+**Batch 4 — Analytics dashboard** (DONE 2026-09-16)
+- Backend: `admin/analytics.ts` (`GET /admin/analytics`) over `AdminOperationsService.getAnalyticsSummary` — bounded scan (limit 1000) across orders/events/organizations, net revenue = grandTotalPaise − refundedPaise summed over captured orders (paid/refund_requested/refunded), tickets summed across order lines, active events via `isPublicStatus`, top 5 hosts by revenue
+- Contracts: `admin-analytics.ts` (`AdminAnalyticsSummaryDto`, `AdminAnalyticsTopOrgDto`)
+- Frontend: `/analytics` desk — 3 stat cards + top-hosts table + nav entry
+- Note: `scannedOrders`/`scannedEvents` in the response report the real scan size honestly rather than claiming full-collection exhaustiveness (the Firestore pagination helper caps any internal `listAll` call at 100 regardless of the requested limit — same known constraint `exportUsers`/`exportAudit` already live with)
 
 **Batch 5+ — Tier B items (when intake paths are scoped)**
 - Support tickets: needs guest-portal intake + admin desk
@@ -119,4 +121,5 @@
 | 2026-09-13 | **Batch 1 DONE** — disputes desk E2E: `contract-types.ts` (DisputeStatus/Outcome), `format.tsx` (labels + tone), `admin-api.ts` (`listDisputes`/`resolveDispute`), `/disputes` page, nav entry. Gate: turbo lint/typecheck/test/build on admin-console 16/16. |
 | 2026-09-13 | **Batch 2 DONE** — orders desk E2E. Backend: `OrderRepository.listAll` (port + memory + firestore), `AdminOperationsService.listOrders`, `admin-orders.ts` contracts, `admin/orders.ts` route registered in manifest. Gates: `pnpm check` green (format/lint/typecheck/boundaries/391 tests/build), contract-parity 63/63. Frontend: contracts synced via export-contracts, `/orders` desk + `listOrders` + `ORDER_STATUSES` + nav entry. Gate: turbo 16/16 on admin-console. No new Firestore composite indexes. |
 | 2026-09-15 | **Batch 3 DONE** — KYC review desk: `/kyc-review` frontend-only, card layout scoped to `submitted`+`changes_requested`, documents shown up front. Nav entry added. Gate: turbo lint/typecheck/test/build 58/58 on full frontend monorepo. |
-| | Next: Batch 4 (analytics, backend + frontend). |
+| 2026-09-16 | **Batch 4 DONE** — analytics desk E2E. Backend: `AdminOperationsService.getAnalyticsSummary` (bounded scan, not a full-collection reduce — the exact v1 `computePlatformStats` anti-pattern avoided), `admin-analytics.ts` contracts, `admin/analytics.ts` route registered in manifest. Gate: `pnpm check` green (format/lint/typecheck/boundaries/394 tests/build), contract-parity 63/63. Frontend: `/analytics` desk (3 stat cards + top-5-hosts table) + `getAnalyticsSummary` + nav entry. Gate: turbo 58/58 on full frontend monorepo. |
+| | All four Tier-A batches done. Remaining: Tier B (support/safety — paused, no intake path; promotions/promoters/settings/health/tickets — scope TBD). |

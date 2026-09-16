@@ -4,6 +4,7 @@ import { getGatewayConfig, GatewayConfigError, type GatewayConfig } from '../../
 import { createV2Services } from '../../lib/v2-services.js';
 import authContextPlugin, { buildBetterAuth } from '../../plugins/auth.js';
 
+import adminAnalyticsRoutes from './admin/analytics.js';
 import adminDirectoryRoutes from './admin/directory.js';
 import adminDisputeRoutes from './admin/disputes.js';
 import adminEventActionRoutes from './admin/event-actions.js';
@@ -130,6 +131,7 @@ export async function registerV2Routes(
       await adminDisputeRoutes(v2);
       await adminDirectoryRoutes(v2);
       await adminOrderRoutes(v2);
+      await adminAnalyticsRoutes(v2);
       await adminVenueActionRoutes(v2);
       await adminOrganizationActionRoutes(v2);
       await adminEventActionRoutes(v2);

@@ -369,6 +369,17 @@ export {
   adminOrderListResponseSchema,
 } from './contracts/admin-orders.js';
 
+// Phase 7: Admin analytics desk (platform-wide revenue/ticket/event summary)
+export type {
+  AdminAnalyticsTopOrgDto,
+  AdminAnalyticsSummaryDto,
+} from './contracts/admin-analytics.js';
+
+export {
+  adminAnalyticsTopOrgDtoSchema,
+  adminAnalyticsSummaryDtoSchema,
+} from './contracts/admin-analytics.js';
+
 // Phase 6: Finance / Ledger / Payouts
 export type {
   LedgerEntryDto,
