@@ -484,6 +484,10 @@ export class MemoryEntitlementRepository implements EntitlementRepository {
     return serializeSlice(all, query);
   }
 
+  async listAll(query: PaginationQuery): Promise<Page<Entitlement>> {
+    return serializeSlice([...this.entitlements.values()], query);
+  }
+
   async save(entitlement: Entitlement, _tx?: TxContext | null): Promise<void> {
     casSet(this.entitlements, entitlement);
   }

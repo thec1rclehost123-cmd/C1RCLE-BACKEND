@@ -11,6 +11,7 @@ import { reinstateVenue, suspendVenue } from '../../domain/models/venue.js';
 
 import type { AdminAuthorityService } from './admin-authority-service.js';
 import type { EntityId } from '../../domain/identity.js';
+import type { Entitlement } from '../../domain/models/entitlement.js';
 import type { Event } from '../../domain/models/event.js';
 import type { Order } from '../../domain/models/order.js';
 import type { Organization } from '../../domain/models/organization.js';
@@ -76,6 +77,10 @@ export class AdminOperationsService {
     return this.deps.repositories.orders;
   }
 
+  private get entitlements() {
+    return this.deps.repositories.entitlements;
+  }
+
   async listVenues(adminUserId: EntityId, query: PaginationQuery): Promise<Page<Venue>> {
     await this.authority.requireAdmin(adminUserId);
     return this.venues.listAll(query);
@@ -110,6 +115,16 @@ export class AdminOperationsService {
   async listOrders(adminUserId: EntityId, query: PaginationQuery): Promise<Page<Order>> {
     await this.authority.requireAdmin(adminUserId);
     return this.orders.listAll(query);
+  }
+
+  /**
+   * Platform-wide ticket (entitlement) ledger for the admin tickets desk.
+   * Read-only, any admin. Distinct from the support-ticket desk — this is
+   * the thing a guest actually presents at the door (`entitlement.ts`).
+   */
+  async listTickets(adminUserId: EntityId, query: PaginationQuery): Promise<Page<Entitlement>> {
+    await this.authority.requireAdmin(adminUserId);
+    return this.entitlements.listAll(query);
   }
 
   /**

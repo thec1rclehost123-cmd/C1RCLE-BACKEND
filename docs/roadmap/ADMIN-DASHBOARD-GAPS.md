@@ -59,7 +59,7 @@
 | **Promoters management** | `/promoters` (3,879 LOC) | V2 models promoters as `Organization` members with capability flags — no separate promoter entity to manage. Scope TBD. |
 | **Settings** (admin profile, passwords) | `/settings` (1,525 LOC) | Admin profile = Better Auth; settings mostly dead code in V1 (password change via Auth UI). |
 | **Health / system status** | `/health` (676 LOC) | ✅ **DONE 2026-09-16** — `/health` desk live, frontend-only. Reuses the already-existing `GET /api/v2/internal/{readiness,version}` (unauthenticated ops-probe endpoints, unrelated to `@c1rcle/contracts`) rather than inventing a new admin-gated route. Shows exactly what `createReadinessChecks` checks (Firestore, storage, Redis, payment provider config) — no fabricated "Vision AI Node"/"CDN Edge" metrics like v1's version had (see the V1 audit doc's doc-vs-code mismatch table). |
-| **Tickets list** (guest ticket management) | `/tickets` (894 LOC) | Different from support tickets; this is the ticket ledger view. Could share route with orders desk. |
+| **Tickets list** (guest ticket management) | `/tickets` (894 LOC) | ✅ **DONE 2026-09-16** — `/tickets` desk live: platform-wide entitlement ledger, read-only. |
 
 ### Tier C: low value or not porting by design
 
@@ -124,4 +124,5 @@
 | 2026-09-16 | **Batch 4 DONE** — analytics desk E2E. Backend: `AdminOperationsService.getAnalyticsSummary` (bounded scan, not a full-collection reduce — the exact v1 `computePlatformStats` anti-pattern avoided), `admin-analytics.ts` contracts, `admin/analytics.ts` route registered in manifest. Gate: `pnpm check` green (format/lint/typecheck/boundaries/394 tests/build), contract-parity 63/63. Frontend: `/analytics` desk (3 stat cards + top-5-hosts table) + `getAnalyticsSummary` + nav entry. Gate: turbo 58/58 on full frontend monorepo. |
 | | All four Tier-A batches done. |
 | 2026-09-16 | **Health/system status DONE** — `/health` desk, frontend-only, no new backend route. Reuses the pre-existing `GET /api/v2/internal/{readiness,version}` ops-probe endpoints directly (real Firestore/storage/Redis/payment-provider checks, not a new admin route or fabricated metrics). Gate: turbo lint/typecheck/test/build 58/58. |
-| | Remaining Tier B: support/safety — paused, no intake path; promotions/promoters/settings/tickets-list — scope TBD, not started. |
+| 2026-09-16 | **Tickets list DONE** — `/tickets` desk: `EntitlementRepository.listAll` (memory+firestore), `AdminOperationsService.listTickets`, `admin-tickets.ts` contracts, `admin/tickets.ts` route registered in manifest. Gate: `pnpm check` green (396 tests), contract-parity 63/63. |
+| | Remaining Tier B: support/safety — paused, no intake path; promotions/promoters/settings — scope TBD, not started. User asked for all remaining Tier B items, working through in order: tickets list (done) → promotions → promoters → settings. |

@@ -380,6 +380,19 @@ export {
   adminAnalyticsSummaryDtoSchema,
 } from './contracts/admin-analytics.js';
 
+// Phase 7: Admin tickets desk (platform-wide entitlement ledger)
+export type {
+  AdminTicketStatus,
+  AdminTicketDto,
+  AdminTicketListResponse,
+} from './contracts/admin-tickets.js';
+
+export {
+  adminTicketStatusSchema,
+  adminTicketDtoSchema,
+  adminTicketListResponseSchema,
+} from './contracts/admin-tickets.js';
+
 // Phase 6: Finance / Ledger / Payouts
 export type {
   LedgerEntryDto,

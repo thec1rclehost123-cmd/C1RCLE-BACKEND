@@ -464,6 +464,8 @@ export interface EntitlementRepository {
   listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<Entitlement>>;
   /** Fetches entitlements for an organization (partner/admin). */
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Entitlement>>;
+  /** Lists all entitlements platform-wide (admin read-only dashboards). */
+  listAll(query: PaginationQuery): Promise<Page<Entitlement>>;
   /** Saves (create or update — scan increments version). Version checked for optimistic locking. */
   save(entitlement: Entitlement, tx?: TxContext | null): Promise<void>;
   /** Bulk save for fulfilment (atomic with order creation). */
