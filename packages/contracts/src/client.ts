@@ -150,6 +150,9 @@ export type {
   CreateReferralLinkRequest,
   PromoterConnectionDto,
   RequestConnectionRequest,
+  DiscoverPartnerDto,
+  DiscoverPartnerKind,
+  DiscoverPartnersQuery,
 } from './contracts/partner.js';
 
 export {
@@ -165,6 +168,9 @@ export {
   createReferralLinkSchema,
   promoterConnectionDtoSchema,
   requestConnectionSchema,
+  discoverPartnerKindSchema,
+  discoverPartnerDtoSchema,
+  discoverPartnersQuerySchema,
 } from './contracts/partner.js';
 
 // Onboarding / KYC / Admin Authority

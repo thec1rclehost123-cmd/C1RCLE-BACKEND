@@ -17,8 +17,24 @@ import { requireOrgAccess } from '../context.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type { Partnership, PartnershipInitiator } from '../../domain/models/partnership.js';
-import type { PaginationQuery } from '../../domain/ports/repositories.js';
+import type { Page, PaginationQuery } from '../../domain/ports/repositories.js';
 import type { ActorContext, ServiceDeps } from '../context.js';
+
+/**
+ * A partnership plus the public-safe display names the dashboard renders.
+ * Names are resolved server-side so the UI never fabricates them (and never
+ * falls back to `Host A1B2C3` ID labels when the data exists). A deleted
+ * counterparty reads as `null`, which the frontend already renders as an
+ * ID-derived label.
+ */
+export interface PartnershipWithNames {
+  partnership: Partnership;
+  hostName: string | null;
+  hostSlug: string | null;
+  venueName: string | null;
+  venueSlug: string | null;
+  venueCity: string | null;
+}
 
 /**
  * ─── Partnership service (Phase 1) ───────────────────────────────────────────
@@ -37,6 +53,12 @@ export interface RequestPartnershipCommand {
    * organization, never accepted from the client.
    */
   initiatedBy: PartnershipInitiator;
+  /**
+   * Required when `initiatedBy` is `'venue'`: the host organization being
+   * invited (a venueId alone cannot identify which host is wanted). Ignored
+   * for host-initiated requests, where the host is the actor's own org.
+   */
+  hostOrganizationId?: EntityId;
   message?: string;
 }
 
@@ -56,14 +78,16 @@ export class PartnershipService {
     const venue = await this.deps.repositories.venues.getById(command.venueId);
     if (!venue) throw new VenueNotFoundError(command.venueId);
 
-    const hostOrganizationId =
-      command.initiatedBy === 'host' ? actor.organizationId : venue.organizationId;
-    const venueOrganizationId = venue.organizationId;
-
-    // A venue-initiated request must come from the tenant that owns the venue.
+    // A venue-initiated request must come from the tenant that owns the venue,
+    // and must name the host being invited — without it the host side would
+    // default to the venue's own org and every venue invite would fail as
+    // "cannot partner with itself".
     if (command.initiatedBy === 'venue' && venue.organizationId !== actor.organizationId) {
       throw new ForbiddenError('Only the venue owner can invite a host to this venue');
     }
+    const hostOrganizationId =
+      command.initiatedBy === 'host' ? actor.organizationId : this.needHostOrganizationId(command);
+    const venueOrganizationId = venue.organizationId;
 
     const existing = await this.repo.findByPair(hostOrganizationId, command.venueId);
     if (existing && isLive(existing)) {
@@ -93,9 +117,55 @@ export class PartnershipService {
     return partnership;
   }
 
+  /**
+   * The host being invited for a venue-initiated request. A standalone guard
+   * so the missing-id case throws a domain error with no null assertion at
+   * the call site.
+   */
+  private needHostOrganizationId(command: RequestPartnershipCommand): EntityId {
+    const id = command.hostOrganizationId;
+    if (id === undefined) {
+      throw new InvalidOperationError(
+        'hostOrganizationId is required for a venue-initiated invite',
+      );
+    }
+    return id;
+  }
+
   async listForOrganization(actor: ActorContext, organizationId: EntityId, query: PaginationQuery) {
     requireOrgAccess(actor, organizationId);
     return this.repo.listForOrganization(organizationId, query);
+  }
+
+  /**
+   * Same page as `listForOrganization` with counterparty names resolved.
+   * One bounded fan-out per row (org + venue lookups, page size ≤ 100) —
+   * cheap enough for a dashboard list, and keeps fabrication out of the UI.
+   */
+  async listWithNames(
+    actor: ActorContext,
+    organizationId: EntityId,
+    query: PaginationQuery,
+  ): Promise<Page<PartnershipWithNames>> {
+    const page = await this.listForOrganization(actor, organizationId, query);
+    const items = await Promise.all(
+      page.items.map(async (partnership): Promise<PartnershipWithNames> => {
+        const [hostOrg, venue, venueOrg] = await Promise.all([
+          this.deps.repositories.organizations.getById(partnership.hostOrganizationId),
+          this.deps.repositories.venues.getById(partnership.venueId),
+          this.deps.repositories.organizations.getById(partnership.venueOrganizationId),
+        ]);
+        return {
+          partnership,
+          hostName: hostOrg?.name ?? null,
+          hostSlug: hostOrg?.slug ?? null,
+          venueName: venue?.public.name ?? venueOrg?.name ?? null,
+          venueSlug: venue?.public.slug ?? venueOrg?.slug ?? null,
+          venueCity: venue?.public.address?.city ?? null,
+        };
+      }),
+    );
+    return { ...page, items };
   }
 
   async approve(actor: ActorContext, partnershipId: EntityId): Promise<Partnership> {
