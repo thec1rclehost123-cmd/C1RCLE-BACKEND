@@ -1,4 +1,8 @@
-import { EventNotFoundError, VersionConflictError } from '../../domain/errors.js';
+import {
+  EventNotFoundError,
+  VersionConflictError,
+  InvalidOperationError,
+} from '../../domain/errors.js';
 import {
   createEvent,
   transitionEvent,
@@ -42,6 +46,21 @@ export interface UpdateEventCommand {
   };
 }
 
+/** Poster upload cap — mirrors the KYC image budget (5 MB). */
+const MAX_POSTER_BYTES = 5 * 1024 * 1024;
+/** Signed upload URL time-to-live — the client PUT must happen soon after mint. */
+const POSTER_UPLOAD_URL_TTL_MS = 15 * 60 * 1000;
+const ALLOWED_POSTER_CONTENT_TYPES: readonly string[] = ['image/jpeg', 'image/png', 'image/webp'];
+const CONTENT_TYPE_EXTENSION: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+};
+
+export interface IssuePosterUploadUrlCommand {
+  contentType: string;
+}
+
 export class EventService {
   constructor(private deps: ServiceDeps) {}
 
@@ -73,6 +92,49 @@ export class EventService {
 
   async get(actor: ActorContext, eventId: EntityId): Promise<Event> {
     return this.fetchOwned(actor, eventId);
+  }
+
+  /**
+   * Mints a short-lived, content-type-bound, size-bound URL the partner `PUT`s
+   * an event poster straight to — the gateway never sees the bytes. The caller
+   * stores the returned `publicUrl` as the event's `imageUrl` on create.
+   *
+   * Not idempotency-keyed: minting a fresh URL is safe to repeat, and every
+   * mint gets a fresh object key (`posters/<org>/<uuid>.<ext>`), so a re-upload
+   * never clobbers an existing poster.
+   */
+  async issuePosterUploadUrl(
+    actor: ActorContext,
+    command: IssuePosterUploadUrlCommand,
+  ): Promise<{
+    uploadUrl: string;
+    method: 'PUT';
+    headers: Readonly<Record<string, string>>;
+    storagePath: string;
+    publicUrl: string;
+    expiresAt: number;
+  }> {
+    requireOrgAccess(actor, actor.organizationId);
+    if (!ALLOWED_POSTER_CONTENT_TYPES.includes(command.contentType)) {
+      throw new InvalidOperationError('Poster must be a JPEG, PNG, or WebP image');
+    }
+    const extension = CONTENT_TYPE_EXTENSION[command.contentType];
+    const key = `posters/${actor.organizationId}/${this.deps.config.ids()}.${extension}`;
+    const expiresAt = this.deps.config.clock.now().getTime() + POSTER_UPLOAD_URL_TTL_MS;
+    const grant = await this.deps.objectStorage.issueUploadUrl({
+      key,
+      contentType: command.contentType,
+      maxBytes: MAX_POSTER_BYTES,
+      expiresAt,
+    });
+    this.deps.logger.info('events.poster_upload_url_issued', {
+      organizationId: actor.organizationId,
+      provider: this.deps.objectStorage.name,
+    });
+    return {
+      ...grant,
+      publicUrl: this.deps.objectStorage.toPublicUrl(grant.storagePath),
+    };
   }
 
   async list(actor: ActorContext, query: PaginationQuery) {

@@ -7,6 +7,7 @@ import {
   createVenue,
   updateVenue,
   createSlotRequest,
+  createVenueBlock,
   transitionSlotRequest,
   computeVenueAvailability,
   updateVenueMenu,
@@ -53,6 +54,13 @@ export interface CreateSlotRequestCommand {
   message?: string;
 }
 
+export interface CreateVenueBlockCommand {
+  venueId: EntityId;
+  label: string;
+  startTime: string;
+  endTime: string;
+}
+
 export class VenueService {
   constructor(private deps: ServiceDeps) {}
 
@@ -82,6 +90,10 @@ export class VenueService {
 
   async get(actor: ActorContext, venueId: EntityId): Promise<Venue> {
     return this.fetchOwned(actor, venueId);
+  }
+
+  async getSummary(actor: ActorContext, venueId: EntityId): Promise<Venue> {
+    return fetchVenueReadableByOwnerOrPartner(this.deps, actor, venueId);
   }
 
   async list(actor: ActorContext, query: PaginationQuery) {
@@ -168,6 +180,24 @@ export class VenueCalendarService {
     return this.deps.repositories.venueSlots.listSlots(venueId, from, to);
   }
 
+  async block(actor: ActorContext, command: CreateVenueBlockCommand) {
+    const venues = this.deps.repositories.venues;
+    const venue = await venues.getById(command.venueId);
+    if (!venue || venue.organizationId !== actor.organizationId) {
+      throw new VenueNotFoundError(command.venueId);
+    }
+    const block = createVenueBlock({
+      id: this.deps.config.ids(),
+      venueId: command.venueId,
+      label: command.label,
+      startTime: command.startTime,
+      endTime: command.endTime,
+      now: this.deps.config.clock.now(),
+    });
+    await this.deps.repositories.venueSlots.saveSlots([block]);
+    return block;
+  }
+
   /**
    * Derived availability for a window. Deliberately computed from the same
    * slots `getSlots` returns rather than stored separately — one source of
@@ -179,9 +209,42 @@ export class VenueCalendarService {
     from: string,
     to: string,
   ): Promise<VenueAvailability> {
-    const slots = await this.getSlots(actor, venueId, from, to);
-    return computeVenueAvailability({ venueId, from, to, slots });
+    const venue = await fetchVenueReadableByOwnerOrPartner(this.deps, actor, venueId);
+    const slots = await this.deps.repositories.venueSlots.listSlots(venueId, from, to);
+    const availability = computeVenueAvailability({ venueId, from, to, slots });
+    if (venue.organizationId === actor.organizationId) return availability;
+
+    return {
+      ...availability,
+      slots: availability.slots.map((slot) =>
+        slot.status === 'open' ? slot : { ...slot, label: 'Unavailable' },
+      ),
+    };
   }
+}
+
+/**
+ * A venue's compact DTO and derived availability are safe for either its
+ * owner or an active host partner. The raw calendar remains owner-only, and
+ * partner availability redacts labels on non-open slots.
+ */
+async function fetchVenueReadableByOwnerOrPartner(
+  deps: ServiceDeps,
+  actor: ActorContext,
+  venueId: EntityId,
+): Promise<Venue> {
+  const venue = await deps.repositories.venues.getById(venueId);
+  if (!venue) throw new VenueNotFoundError(venueId);
+  if (venue.organizationId === actor.organizationId) return venue;
+
+  const partnership = await deps.repositories.partnerships.findByPair(
+    actor.organizationId,
+    venueId,
+  );
+  if (partnership?.status !== 'active' || venue.status !== 'active') {
+    throw new VenueNotFoundError(venueId);
+  }
+  return venue;
 }
 
 export class VenueSlotRequestService {

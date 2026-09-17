@@ -39,6 +39,13 @@ export interface ObjectStoragePort {
   /** Recorded so a provider swap is visible in support history. */
   readonly name: string;
   issueUploadUrl(request: UploadUrlRequest): Promise<UploadUrlGrant>;
+  /**
+   * A long-lived public read URL for an uploaded object. Used for media that
+   * must be rendered by guests with no credential — e.g. event posters the
+   * client stores as `imageUrl`. The provider knows how to expose its bucket;
+   * on the memory driver it hands back a non-routable placeholder host.
+   */
+  toPublicUrl(storagePath: string): string;
 }
 
 /**
@@ -58,5 +65,11 @@ export class EchoObjectStorage implements ObjectStoragePort {
       storagePath: request.key,
       expiresAt: request.expiresAt,
     };
+  }
+
+  toPublicUrl(storagePath: string): string {
+    // Non-routable reserved host, but a valid URL for `z.url()` — matches the
+    // `memory://` upload URL convention of this dev provider.
+    return `https://uploads.invalid/${storagePath}`;
   }
 }

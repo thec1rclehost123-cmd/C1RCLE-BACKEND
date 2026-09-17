@@ -50,4 +50,11 @@ export class FirebaseObjectStorage implements ObjectStoragePort {
       expiresAt: request.expiresAt,
     };
   }
+
+  toPublicUrl(storagePath: string): string {
+    // Standard GCS public object URL — served without a credential when the
+    // object slides (public-read only available for non-prefixed, non-KYC
+    // media such as posters).
+    return `https://storage.googleapis.com/${this.bucketName}/${storagePath}`;
+  }
 }

@@ -17,7 +17,11 @@ export {
   VenueCalendarService,
   VenueSlotRequestService,
 } from './venues/venue-service.js';
-export type { CreateVenueCommand, UpdateVenueCommand } from './venues/venue-service.js';
+export type {
+  CreateVenueCommand,
+  UpdateVenueCommand,
+  CreateVenueBlockCommand,
+} from './venues/venue-service.js';
 export { EventService } from './events/event-service.js';
 export type { CreateEventCommand, UpdateEventCommand } from './events/event-service.js';
 export { EventCatalogService } from './event-catalog/event-catalog-service.js';
