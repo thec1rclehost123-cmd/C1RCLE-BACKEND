@@ -7,6 +7,8 @@ import {
   eventDtoSchema,
   updateEventSchema,
   cancelEventSchema,
+  posterUploadUrlRequestSchema,
+  posterUploadUrlDtoSchema,
   eventPreviewDtoSchema,
   paginatedSchema,
 } from '@c1rcle/contracts/client';
@@ -197,6 +199,37 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
       });
       if (result === undefined) return reply;
       return reply.status(result.statusCode).send(result.body);
+    },
+  );
+
+  // ── POSTER UPLOAD URL (mint a pre-signed PUT grant — the gateway never
+  // sees the bytes; the client stores the returned `publicUrl` as `imageUrl`
+  // on create) ──────────────────────────────────────────────────────────────
+  fastify.post(
+    '/organizations/:organizationId/poster/upload-url',
+    {
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({
+          params: orgIdParam,
+          body: posterUploadUrlRequestSchema,
+          headers: readHeaders,
+        }),
+        fastify.requirePermission('event.create'),
+      ],
+    },
+    async (request, reply) => {
+      const { organizationId } = request.params as z.infer<typeof orgIdParam>;
+      const body = request.body as z.infer<typeof posterUploadUrlRequestSchema>;
+      const actor = services.actor(request);
+      if (requirePathOrg(reply, request, actor, organizationId) === undefined) return reply;
+      const grant = await services.events
+        .issuePosterUploadUrl(actor, body)
+        .catch((error: unknown) => mapDomainError(reply, request, organizationId, error));
+      if (grant === undefined) return reply;
+      const validated = validateV2Response(reply, request, posterUploadUrlDtoSchema, grant);
+      if (validated === undefined) return reply;
+      return reply.send(validated);
     },
   );
 

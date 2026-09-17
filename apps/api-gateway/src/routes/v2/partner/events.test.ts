@@ -240,6 +240,52 @@ describe('V2 partners events slice — listing and update', () => {
   });
 });
 
+describe('V2 partners events slice — poster upload URLs', () => {
+  it('issues a bounded, time-limited PUT grant with a public read URL', async () => {
+    const server = await buildServer();
+    const response = await server.inject({
+      method: 'POST',
+      url: '/organizations/org_1/poster/upload-url',
+      headers: VALID_HEADERS,
+      payload: { contentType: 'image/jpeg' },
+    });
+    expect(response.statusCode).toBe(200);
+    const grant = response.json();
+    expect(grant.method).toBe('PUT');
+    expect(grant.uploadUrl).toEqual(expect.any(String));
+    expect(grant.headers['content-type']).toBe('image/jpeg');
+    expect(grant.storagePath).toMatch(/^posters\/org_1\/[0-9a-f-]+\.jpg$/);
+    expect(grant.publicUrl).toBe(`https://uploads.invalid/${grant.storagePath}`);
+    expect(grant.expiresAt).toBeGreaterThan(Date.now());
+    await server.close();
+  });
+
+  it('rejects a non-image content type with 422', async () => {
+    const server = await buildServer();
+    const response = await server.inject({
+      method: 'POST',
+      url: '/organizations/org_1/poster/upload-url',
+      headers: VALID_HEADERS,
+      payload: { contentType: 'application/pdf' },
+    });
+    expect(response.statusCode).toBe(422);
+    expect(response.json().fieldErrors).toHaveProperty('contentType');
+    await server.close();
+  });
+
+  it('returns 403 when the path organization does not match the actor', async () => {
+    const server = await buildServer();
+    const response = await server.inject({
+      method: 'POST',
+      url: '/organizations/org_999/poster/upload-url',
+      headers: VALID_HEADERS,
+      payload: { contentType: 'image/png' },
+    });
+    expect(response.statusCode).toBe(403);
+    await server.close();
+  });
+});
+
 describe('V2 partners events slice — previews and lifecycle', () => {
   it('returns the preview with the public visibility flag for a draft', async () => {
     const server = await buildServer();

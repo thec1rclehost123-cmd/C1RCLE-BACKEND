@@ -7,6 +7,7 @@ import {
   createVenueSchema,
   venueProfileDtoSchema,
   venueSlotDtoSchema,
+  createVenueBlockSchema,
   venueAvailabilityDtoSchema,
   venueMenuDtoSchema,
   updateVenueMenuSchema,
@@ -31,7 +32,9 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
  * ─── V2 partners venues slice ────────────────────────────────────────────────
  * Thin routes (T16): validate → actor → `VenueService` → serialize to the
  * canonical `venueDtoSchema` (public-facing only — no contact/business fields).
- * Venues are org-scoped server-side; cross-tenant fetches 404 (IDOR guard).
+ * Venue mutations and private reads are owner-scoped. The compact public DTO
+ * and derived availability also permit an active host partner; other
+ * cross-tenant reads remain 404 (IDOR guard).
  */
 
 const services = createV2Services();
@@ -209,7 +212,7 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
       const { venueId } = request.params as z.infer<typeof venueIdParam>;
       const actor = services.actor(request);
       const venue = await services.venues
-        .get(actor, venueId)
+        .getSummary(actor, venueId)
         .catch((error: unknown) =>
           mapDomainError(reply, request, venueId, error, { hideForbidden: true }),
         );
@@ -378,6 +381,49 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
       const validated = validateV2Response(reply, request, z.array(venueSlotDtoSchema), slots);
       if (validated === undefined) return reply;
       return reply.send(validated);
+    },
+  );
+
+  fastify.post(
+    '/venues/:venueId/calendar/blocks',
+    {
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({
+          params: venueIdParam,
+          body: createVenueBlockSchema,
+          headers: venueHeaders.extend({ 'idempotency-key': idempotencyKeySchema }),
+        }),
+        fastify.requirePermission('venue.manage'),
+      ],
+    },
+    async (request, reply) => {
+      const { venueId } = request.params as z.infer<typeof venueIdParam>;
+      const body = request.body as z.infer<typeof createVenueBlockSchema>;
+      const actor = services.actor(request);
+      const v2Headers = request.v2Headers ?? {};
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: actor.userId,
+        commandName: 'venue-calendar.block',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { venueId }, body },
+        run: async () => {
+          const block = await services.venueCalendar.block(actor, { venueId, ...body });
+          const validated = validateV2Response(reply, request, venueSlotDtoSchema, block);
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 201, body: validated };
+        },
+      }).catch((error: unknown) =>
+        isIdempotencyConflict(error)
+          ? mapDomainError(reply, request, venueId, error, {
+              conflictId: v2Headers['idempotency-key'],
+            })
+          : mapDomainError(reply, request, venueId, error),
+      );
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
     },
   );
 

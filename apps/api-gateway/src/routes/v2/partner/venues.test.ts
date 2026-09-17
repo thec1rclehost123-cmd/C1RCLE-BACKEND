@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 
+import partnerPartnershipRoutes from './partnerships.js';
 import partnerVenueRoutes from './venues.js';
 
-const buildServer = () => buildPartnerTestServer({ routes: [partnerVenueRoutes] });
+const buildServer = () =>
+  buildPartnerTestServer({ routes: [partnerVenueRoutes, partnerPartnershipRoutes] });
 
 const ORG = 'org_1';
 const READ_HEADERS = { 'x-organization-id': ORG };
@@ -35,6 +37,29 @@ async function createVenue(server: Awaited<ReturnType<typeof buildServer>>) {
   });
   expect(response.statusCode).toBe(201);
   return response.json();
+}
+
+async function activateHostPartnership(
+  server: Awaited<ReturnType<typeof buildServer>>,
+  venueId: string,
+  hostOrganizationId: string,
+) {
+  const requested = await server.inject({
+    method: 'POST',
+    url: '/partnerships',
+    headers: {
+      'x-organization-id': hostOrganizationId,
+      'idempotency-key': nextVenueKey(),
+    },
+    payload: { venueId, initiatedBy: 'host' },
+  });
+  expect(requested.statusCode).toBe(201);
+  const approved = await server.inject({
+    method: 'POST',
+    url: `/partnerships/${requested.json().id}/approve`,
+    headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
+  });
+  expect(approved.statusCode).toBe(200);
 }
 
 describe('V2 partners venues slice — validation layers', () => {
@@ -235,6 +260,40 @@ describe('V2 partners venues slice — venues CRUD', () => {
     await server.close();
   });
 
+  it('lets an active host partner read the public venue summary', async () => {
+    const server = await buildServer();
+    const { id } = await createVenue(server);
+    const hostOrganizationId = `org_host_summary_${String(venueSeq)}`;
+    await activateHostPartnership(server, id, hostOrganizationId);
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/venues/${id}`,
+      headers: { 'x-organization-id': hostOrganizationId },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ id, name: 'Aurora Hall' });
+    await server.close();
+  });
+
+  it('keeps the private venue profile hidden from an active host partner', async () => {
+    const server = await buildServer();
+    const { id } = await createVenue(server);
+    const hostOrganizationId = `org_host_private_${String(venueSeq)}`;
+    await activateHostPartnership(server, id, hostOrganizationId);
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/venues/${id}/profile`,
+      headers: { 'x-organization-id': hostOrganizationId },
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toMatchObject({ code: 'not_found' });
+    await server.close();
+  });
+
   it('patches the public profile with optimistic concurrency', async () => {
     const server = await buildServer();
     const { id } = await createVenue(server);
@@ -338,6 +397,40 @@ describe('V2 partners venues slice — profile, calendar, menu, availability', (
     await server.close();
   });
 
+  it('creates a blocked calendar slot and returns it from the calendar', async () => {
+    const server = await buildServer();
+    const { id } = await createVenue(server);
+    const response = await server.inject({
+      method: 'POST',
+      url: `/venues/${id}/calendar/blocks`,
+      headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
+      payload: {
+        label: 'Private event',
+        startTime: '2026-09-17T19:00:00.000Z',
+        endTime: '2026-09-17T23:00:00.000Z',
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      venueId: id,
+      label: 'Private event',
+      recurring: false,
+      status: 'blocked',
+    });
+
+    const calendar = await server.inject({
+      method: 'GET',
+      url: `/venues/${id}/calendar?from=2026-09-01T00:00:00Z&to=2026-09-30T00:00:00Z`,
+      headers: READ_HEADERS,
+    });
+    expect(calendar.statusCode).toBe(200);
+    expect(calendar.json()).toContainEqual(
+      expect.objectContaining({ id: response.json().id, status: 'blocked' }),
+    );
+    await server.close();
+  });
+
   it('gets the (empty) public menu', async () => {
     const server = await buildServer();
     const { id } = await createVenue(server);
@@ -421,6 +514,44 @@ describe('V2 partners venues slice — profile, calendar, menu, availability', (
       openMinutes: 0,
       fullyBooked: false,
     });
+    await server.close();
+  });
+
+  it('lets an active host partner read derived availability but not the raw calendar', async () => {
+    const server = await buildServer();
+    const { id } = await createVenue(server);
+    const blocked = await server.inject({
+      method: 'POST',
+      url: `/venues/${id}/calendar/blocks`,
+      headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
+      payload: {
+        label: 'Confidential maintenance',
+        startTime: '2026-09-17T19:00:00.000Z',
+        endTime: '2026-09-17T23:00:00.000Z',
+      },
+    });
+    expect(blocked.statusCode).toBe(201);
+    const hostOrganizationId = `org_host_calendar_${String(venueSeq)}`;
+    await activateHostPartnership(server, id, hostOrganizationId);
+    const query = 'from=2026-09-01T00:00:00Z&to=2026-09-30T00:00:00Z';
+
+    const availability = await server.inject({
+      method: 'GET',
+      url: `/venues/${id}/availability?${query}`,
+      headers: { 'x-organization-id': hostOrganizationId },
+    });
+    const calendar = await server.inject({
+      method: 'GET',
+      url: `/venues/${id}/calendar?${query}`,
+      headers: { 'x-organization-id': hostOrganizationId },
+    });
+
+    expect(availability.statusCode).toBe(200);
+    expect(availability.json()).toMatchObject({ venueId: id });
+    expect(availability.json().slots).toContainEqual(
+      expect.objectContaining({ id: blocked.json().id, label: 'Unavailable', status: 'blocked' }),
+    );
+    expect(calendar.statusCode).toBe(404);
     await server.close();
   });
 });
