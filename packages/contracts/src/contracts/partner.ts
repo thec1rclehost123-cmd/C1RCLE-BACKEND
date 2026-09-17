@@ -27,20 +27,40 @@ export const partnershipDtoSchema = z.object({
   version: z.number().int().positive(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
+  /** Public-safe display enrichment (real backend names, never fabricated). */
+  hostName: z.string().min(1).max(200).nullish(),
+  hostSlug: z.string().min(1).max(60).nullish(),
+  venueName: z.string().min(1).max(200).nullish(),
+  venueSlug: z.string().min(1).max(60).nullish(),
+  venueCity: z.string().max(100).nullish(),
 });
 export type PartnershipDto = z.infer<typeof partnershipDtoSchema>;
 
 /**
- * `initiatedBy` says which side the CALLER is; the counterparty organization
- * is resolved server-side from the venue, never accepted from the client.
+ * `initiatedBy` says which side the CALLER is.
+ * - host-initiated: the caller IS the host; the venue's owning org is resolved
+ *   server-side from `venueId`.
+ * - venue-initiated: the caller IS the venue owner; the counterparty host org
+ *   must be named explicitly via `hostOrganizationId` (a venueId alone cannot
+ *   identify which host is being invited).
  */
 export const requestPartnershipSchema = z
   .object({
     venueId: opaqueIdSchema,
     initiatedBy: z.enum(['host', 'venue']),
+    hostOrganizationId: opaqueIdSchema.optional(),
     message: z.string().max(1000).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.initiatedBy === 'venue' && !value.hostOrganizationId) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['hostOrganizationId'],
+        message: 'hostOrganizationId is required when initiatedBy is venue',
+      });
+    }
+  });
 export type RequestPartnershipRequest = z.infer<typeof requestPartnershipSchema>;
 
 export const resolvePartnershipSchema = z
@@ -194,6 +214,12 @@ export const promoterConnectionDtoSchema = z.object({
   version: z.number().int().positive(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
+  /** Public-safe display enrichment (real backend names, never fabricated). */
+  promoterName: z.string().min(1).max(200).nullish(),
+  promoterSlug: z.string().min(1).max(60).nullish(),
+  targetName: z.string().min(1).max(200).nullish(),
+  targetSlug: z.string().min(1).max(60).nullish(),
+  targetCity: z.string().max(100).nullish(),
 });
 export type PromoterConnectionDto = z.infer<typeof promoterConnectionDtoSchema>;
 
@@ -210,3 +236,38 @@ export const requestConnectionSchema = z
   })
   .strict();
 export type RequestConnectionRequest = z.infer<typeof requestConnectionSchema>;
+
+/* ─── Partner discovery (real backend browse, no dummy profiles) ─────────── */
+
+export const discoverPartnerKindSchema = z.enum(['host', 'venue', 'promoter']);
+export type DiscoverPartnerKind = z.infer<typeof discoverPartnerKindSchema>;
+
+/**
+ * A real discoverable partner. Every display field comes from stored
+ * organizations/venues/public events — the API never fabricates names.
+ * `requestTarget` carries exactly what the connection-request endpoints need:
+ * - host/venue partnership → `{ venueId }` (+ host org is the caller or
+ *   `hostOrganizationId` for venue-initiated invites)
+ * - promoter connection → `{ counterpartyId, targetType }`
+ */
+export const discoverPartnerDtoSchema = z.object({
+  id: opaqueIdSchema,
+  kind: discoverPartnerKindSchema,
+  name: z.string().min(1).max(200),
+  slug: z.string().min(1).max(60),
+  city: z.string().max(100).nullable(),
+  verified: z.boolean(),
+  /** Organization id behind a host/promoter candidate; venue's owning org for venues. */
+  organizationId: opaqueIdSchema.nullable(),
+  /** Venue id behind a venue candidate (the partnership request key). */
+  venueId: opaqueIdSchema.nullable(),
+});
+export type DiscoverPartnerDto = z.infer<typeof discoverPartnerDtoSchema>;
+
+export const discoverPartnersQuerySchema = z.object({
+  type: discoverPartnerKindSchema.optional(),
+  q: z.string().min(1).max(200).optional(),
+  cursor: z.string().min(1).max(256).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+export type DiscoverPartnersQuery = z.infer<typeof discoverPartnersQuerySchema>;

@@ -3,6 +3,7 @@ import {
   OrganizationService,
   VenueService,
   PartnershipService,
+  PartnerDiscoveryService,
   PublicService,
   ReferralLinkService,
   PromoterConnectionService,
@@ -93,6 +94,8 @@ export interface PartnerV2Services {
   organizations: OrganizationService;
   venues: VenueService;
   partnerships: PartnershipService;
+  /** Partner-network browse behind `GET /organizations/:id/discover-partners`. */
+  discovery: PartnerDiscoveryService;
   referralLinks: ReferralLinkService;
   promoterConnections: PromoterConnectionService;
   venueCalendar: VenueCalendarService;
@@ -382,6 +385,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     organizations: new OrganizationService(deps),
     venues: new VenueService(deps),
     partnerships: new PartnershipService(deps),
+    discovery: new PartnerDiscoveryService(deps),
     referralLinks: new ReferralLinkService(deps),
     promoterConnections: new PromoterConnectionService(deps),
     venueCalendar: new VenueCalendarService(deps),

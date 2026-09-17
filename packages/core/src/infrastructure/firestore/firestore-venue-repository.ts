@@ -43,6 +43,12 @@ export class FirestoreVenueRepository implements VenueRepository {
     return doc ? toVenue(doc.data()) : null;
   }
 
+  async listActive(limit: number): Promise<Venue[]> {
+    // Single-field equality: no composite index needed (see organization repo).
+    const snap = await this.collection.where('status', '==', 'active').limit(limit).get();
+    return snap.docs.map((doc) => toVenue(doc.data()));
+  }
+
   async listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Venue>> {
     const base = this.collection.where('organizationId', '==', organizationId);
     return paginateQuery(base, query, toVenue);

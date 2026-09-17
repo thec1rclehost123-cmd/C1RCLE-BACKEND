@@ -39,6 +39,13 @@ export class FirestoreOrganizationRepository implements OrganizationRepository {
     return doc ? toOrganization(doc.data()) : null;
   }
 
+  async listActive(limit: number): Promise<Organization[]> {
+    // Single-field equality: no composite index needed. Kind/search filtering
+    // happens in the discovery service over this bounded set.
+    const snap = await this.collection.where('status', '==', 'active').limit(limit).get();
+    return snap.docs.map((doc) => toOrganization(doc.data()));
+  }
+
   async listForMember(userId: EntityId, query: PaginationQuery): Promise<Page<Organization>> {
     const base = this.collection.where('memberIds', 'array-contains', userId);
     return paginateQuery(base, query, toOrganization);

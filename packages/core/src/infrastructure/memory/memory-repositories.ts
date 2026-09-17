@@ -139,6 +139,12 @@ export class MemoryOrganizationRepository implements OrganizationRepository {
     return null;
   }
 
+  async listActive(limit: number): Promise<Organization[]> {
+    return [...this.organizations.values()]
+      .filter((org) => org.status === 'active')
+      .slice(0, limit);
+  }
+
   async listForMember(userId: EntityId, query: PaginationQuery): Promise<Page<Organization>> {
     const all = [...this.organizations.values()].filter((org) =>
       org.members?.some((m) => m.userId === userId),
@@ -197,6 +203,10 @@ export class MemoryVenueRepository implements VenueRepository {
       if (venue.public.slug === slug) return venue;
     }
     return null;
+  }
+
+  async listActive(limit: number): Promise<Venue[]> {
+    return [...this.venues.values()].filter((v) => v.status === 'active').slice(0, limit);
   }
 
   async listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Venue>> {

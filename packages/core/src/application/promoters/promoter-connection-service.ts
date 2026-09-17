@@ -16,8 +16,22 @@ import type {
   ConnectionTargetType,
   PromoterConnection,
 } from '../../domain/models/promoter-connection.js';
-import type { PaginationQuery } from '../../domain/ports/repositories.js';
+import type { Page, PaginationQuery } from '../../domain/ports/repositories.js';
 import type { ActorContext, ServiceDeps } from '../context.js';
+
+/**
+ * A connection plus the public-safe display names the dashboard renders.
+ * Same rationale as `PartnershipWithNames`: resolved server-side, `null`
+ * when the counterparty is gone.
+ */
+export interface PromoterConnectionWithNames {
+  connection: PromoterConnection;
+  promoterName: string | null;
+  promoterSlug: string | null;
+  targetName: string | null;
+  targetSlug: string | null;
+  targetCity: string | null;
+}
 
 /**
  * ─── Promoter connection service (Phase 1) ───────────────────────────────────
@@ -78,6 +92,57 @@ export class PromoterConnectionService {
   async listForOrganization(actor: ActorContext, organizationId: EntityId, query: PaginationQuery) {
     requireOrgAccess(actor, organizationId);
     return this.repo.listForOrganization(organizationId, query);
+  }
+
+  /**
+   * Same page as `listForOrganization` with counterparty names resolved.
+   * For venue targets the venue's own name/city wins, falling back to the
+   * owning org's name when the venue row is gone.
+   */
+  async listWithNames(
+    actor: ActorContext,
+    organizationId: EntityId,
+    query: PaginationQuery,
+  ): Promise<Page<PromoterConnectionWithNames>> {
+    const page = await this.listForOrganization(actor, organizationId, query);
+    const items = await Promise.all(
+      page.items.map(async (connection): Promise<PromoterConnectionWithNames> => {
+        const promoterOrg = await this.deps.repositories.organizations.getById(
+          connection.promoterId,
+        );
+        if (connection.targetType === 'venue') {
+          const [venue, targetOrg] = await Promise.all([
+            this.deps.repositories.venues.getById(connection.targetId),
+            this.deps.repositories.organizations.getById(connection.targetId),
+          ]);
+          // NOTE: venue targets address the venue row; some older connections
+          // point `targetId` at the owning org instead. Prefer the venue when
+          // it resolves, otherwise fall back to the org row.
+          const targetOrgByVenue =
+            venue && !targetOrg
+              ? await this.deps.repositories.organizations.getById(venue.organizationId)
+              : targetOrg;
+          return {
+            connection,
+            promoterName: promoterOrg?.name ?? null,
+            promoterSlug: promoterOrg?.slug ?? null,
+            targetName: venue?.public.name ?? targetOrgByVenue?.name ?? null,
+            targetSlug: venue?.public.slug ?? targetOrgByVenue?.slug ?? null,
+            targetCity: venue?.public.address?.city ?? null,
+          };
+        }
+        const targetOrg = await this.deps.repositories.organizations.getById(connection.targetId);
+        return {
+          connection,
+          promoterName: promoterOrg?.name ?? null,
+          promoterSlug: promoterOrg?.slug ?? null,
+          targetName: targetOrg?.name ?? null,
+          targetSlug: targetOrg?.slug ?? null,
+          targetCity: null,
+        };
+      }),
+    );
+    return { ...page, items };
   }
 
   async approve(actor: ActorContext, connectionId: EntityId): Promise<PromoterConnection> {
