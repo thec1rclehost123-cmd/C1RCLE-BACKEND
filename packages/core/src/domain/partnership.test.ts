@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { InvalidOperationError, StateTransitionError } from './errors.js';
 import {
+  MAX_VENUE_SHARE_PERCENT,
   PROMOTER_COMMISSION_TIERS,
   approvePartnership,
   blockPartnership,
@@ -12,6 +13,7 @@ import {
   endPartnership,
   isLive,
   rejectPartnership,
+  setVenueShareRate,
 } from './models/partnership.js';
 
 /**
@@ -108,6 +110,93 @@ describe('partnership lifecycle', () => {
 
   it('cannot end something that was never active', () => {
     expect(() => endPartnership(request(), HOST, NOW)).toThrow(StateTransitionError);
+  });
+});
+
+describe('venue share rate', () => {
+  it('starts null (unnegotiated) unless proposed at request time', () => {
+    expect(request('host').venueShareRate).toBeNull();
+    expect(request('venue').venueShareRate).toBeNull();
+    expect(
+      createPartnership({
+        id: 'ptn_2',
+        hostOrganizationId: HOST,
+        venueOrganizationId: VENUE,
+        venueId: 'ven_1',
+        initiatedBy: 'host',
+        venueShareRate: 20,
+        now: NOW,
+      }).venueShareRate,
+    ).toBe(20);
+  });
+
+  it('rejects a rate outside the 0..MAX boundaries on creation', () => {
+    expect(() =>
+      createPartnership({
+        id: 'ptn_3',
+        hostOrganizationId: HOST,
+        venueOrganizationId: VENUE,
+        venueId: 'ven_1',
+        initiatedBy: 'host',
+        venueShareRate: -1,
+        now: NOW,
+      }),
+    ).toThrow(InvalidOperationError);
+    expect(() =>
+      createPartnership({
+        id: 'ptn_4',
+        hostOrganizationId: HOST,
+        venueOrganizationId: VENUE,
+        venueId: 'ven_1',
+        initiatedBy: 'host',
+        venueShareRate: MAX_VENUE_SHARE_PERCENT + 1,
+        now: NOW,
+      }),
+    ).toThrow(InvalidOperationError);
+  });
+
+  it('lets EITHER party set the rate on an active partnership', () => {
+    const active = approvePartnership(request(), VENUE, NOW);
+    const fromHost = setVenueShareRate(active, 20, HOST, NOW);
+    expect(fromHost.venueShareRate).toBe(20);
+    expect(fromHost.version).toBe(3);
+    // The venue side can adjust it too.
+    const fromVenue = setVenueShareRate(fromHost, 25, VENUE, NOW);
+    expect(fromVenue.venueShareRate).toBe(25);
+  });
+
+  it('clears the rate with null', () => {
+    const active = approvePartnership(request(), VENUE, NOW);
+    const rateSet = setVenueShareRate(active, 20, VENUE, NOW);
+    expect(setVenueShareRate(rateSet, null, HOST, NOW).venueShareRate).toBeNull();
+  });
+
+  it('refuses to set a rate on a non-active partnership', () => {
+    const pending = request();
+    expect(() => setVenueShareRate(pending, 20, VENUE, NOW)).toThrow(InvalidOperationError);
+    const blocked = blockPartnership(approvePartnership(request(), VENUE, NOW), HOST, undefined, NOW);
+    expect(() => setVenueShareRate(blocked, 20, VENUE, NOW)).toThrow(InvalidOperationError);
+  });
+
+  it('refuses a rate from an unrelated organization', () => {
+    const active = approvePartnership(request(), VENUE, NOW);
+    expect(() => setVenueShareRate(active, 20, 'org_stranger', NOW)).toThrow(
+      InvalidOperationError,
+    );
+  });
+
+  it('enforces the same 0..MAX bounds on the live partnership', () => {
+    const active = approvePartnership(request(), VENUE, NOW);
+    expect(() => setVenueShareRate(active, MAX_VENUE_SHARE_PERCENT + 1, VENUE, NOW)).toThrow(
+      InvalidOperationError,
+    );
+    expect(() => setVenueShareRate(active, -5, VENUE, NOW)).toThrow(InvalidOperationError);
+  });
+
+  it('setting the same rate is a no-op, not a version bump', () => {
+    const active = approvePartnership(request(), VENUE, NOW);
+    const rateSet = setVenueShareRate(active, 20, VENUE, NOW);
+    expect(setVenueShareRate(rateSet, 20, HOST, NOW)).toBe(rateSet);
   });
 });
 

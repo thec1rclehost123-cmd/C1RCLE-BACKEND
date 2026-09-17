@@ -38,6 +38,14 @@ const PARTNERSHIP_TRANSITIONS: Readonly<Record<PartnershipStatus, readonly Partn
 /** Which side asked. Determines who is allowed to answer. */
 export type PartnershipInitiator = 'host' | 'venue';
 
+/**
+ * Hard ceiling on the negotiated venue share of each ticket sale's gross
+ * (whole-number percent). Guards the settlement engine against a typo or a
+ * mis-negotiated rate moving real money in the wrong direction — anything
+ * above the cap must be deliberate and reviewed, not a one-character mistake.
+ */
+export const MAX_VENUE_SHARE_PERCENT = 50;
+
 export interface Partnership extends VersionedEntity {
   id: EntityId;
   /** The host organization. */
@@ -48,6 +56,14 @@ export interface Partnership extends VersionedEntity {
   initiatedBy: PartnershipInitiator;
   status: PartnershipStatus;
   message: string | null;
+  /**
+   * The venue's agreed split of each settlement's gross, as a whole-number
+   * percentage (v1's `venueCommissionRate` convention, NOT a 0..1 ratio).
+   * `null` = not yet negotiated — the story of `venueShareRate`'s long absence
+   * (see phase-06 "Known, honest limitation"): the settlement engine settles
+   * 0 to the venue until a real rate is set here, never fabricating one.
+   */
+  venueShareRate: number | null;
   /** Set when rejected or blocked, so the other party learns why. */
   resolutionReason: string | null;
   resolvedAt: string | null;
@@ -60,6 +76,8 @@ export interface CreatePartnershipInput {
   venueId: EntityId;
   initiatedBy: PartnershipInitiator;
   message?: string;
+  /** Optional at request time; both parties can set it later on the live deal. */
+  venueShareRate?: number;
   now?: Date;
 }
 
@@ -67,6 +85,9 @@ export function createPartnership(input: CreatePartnershipInput): Partnership {
   if (input.hostOrganizationId === input.venueOrganizationId) {
     // A tenant partnering with itself has no counterparty to approve it.
     throw new InvalidOperationError('An organization cannot partner with itself');
+  }
+  if (input.venueShareRate !== undefined) {
+    assertValidVenueShareRate(input.venueShareRate);
   }
   return {
     id: input.id,
@@ -76,9 +97,46 @@ export function createPartnership(input: CreatePartnershipInput): Partnership {
     initiatedBy: input.initiatedBy,
     status: 'pending',
     message: input.message ?? null,
+    venueShareRate: input.venueShareRate ?? null,
     resolutionReason: null,
     resolvedAt: null,
     ...newVersionedEntity(input.now ?? new Date()),
+  };
+}
+
+/** Same guard used by `createPartnership` and `setVenueShareRate`. */
+function assertValidVenueShareRate(rate: number): void {
+  if (!Number.isInteger(rate) || rate < 0 || rate > MAX_VENUE_SHARE_PERCENT) {
+    throw new InvalidOperationError(
+      `venueShareRate must be a whole-number percentage between 0 and ${MAX_VENUE_SHARE_PERCENT}`,
+    );
+  }
+}
+
+/**
+ * Negotiates (or clears) the venue share on a LIVE partnership. Only a party
+ * may set it, and only once the deal is `active` — a pending request has no
+ * agreed terms yet. `venueShareRate: null` clears the negotiated rate.
+ */
+export function setVenueShareRate(
+  partnership: Partnership,
+  venueShareRate: number | null,
+  settingOrganizationId: EntityId,
+  now?: Date,
+): Partnership {
+  if (!isPartyTo(partnership, settingOrganizationId)) {
+    throw new InvalidOperationError('Only a party to this partnership can set the venue share');
+  }
+  if (partnership.status !== 'active') {
+    throw new InvalidOperationError('The venue share can only be set on an active partnership');
+  }
+  if (venueShareRate !== null) {
+    assertValidVenueShareRate(venueShareRate);
+  }
+  if (partnership.venueShareRate === venueShareRate) return partnership;
+  return {
+    ...bumpVersion(partnership, now ?? new Date()),
+    venueShareRate,
   };
 }
 

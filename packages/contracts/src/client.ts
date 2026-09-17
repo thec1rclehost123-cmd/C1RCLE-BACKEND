@@ -143,6 +143,7 @@ export type {
   PartnershipDto,
   RequestPartnershipRequest,
   ResolvePartnershipRequest,
+  SetVenueShareRequest,
   PartnerAccessDto,
   OrganizationOverviewDto,
   EventAnalyticsDto,
