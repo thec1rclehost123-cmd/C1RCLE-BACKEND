@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { bumpVersion, newVersionedEntity } from '../identity.js';
 
 import type { EntityId, VersionedEntity } from '../identity.js';
@@ -13,9 +15,9 @@ import type { EntityId, VersionedEntity } from '../identity.js';
  * tonight and next Saturday, without hunting down whichever sessions happen
  * to be open. Unbinding here does that in one write.
  *
- * The id is `${organizationId}_${deviceId}`, so a device id is only ever
- * meaningful inside one tenant. The same handset walked across the street to
- * another club is a different, unbound device there — which is the correct
+ * The id is a hash of `organizationId` and `deviceId`, so a device id is only
+ * ever meaningful inside one tenant. The same handset walked across the street
+ * to another club is a different, unbound device there — which is the correct
  * answer, not an inconvenience.
  *
  * The device id itself is opaque and client-generated (the app mints one
@@ -29,7 +31,7 @@ import type { EntityId, VersionedEntity } from '../identity.js';
 export type ScannerDeviceStatus = 'active' | 'unbound';
 
 export interface ScannerDevice extends VersionedEntity {
-  /** `${organizationId}_${deviceId}` */
+  /** Hash of `organizationId` + `deviceId` — see `scannerDeviceId`. */
   id: EntityId;
   organizationId: EntityId;
   venueId: EntityId | null;
@@ -53,8 +55,25 @@ export interface ScannerDevice extends VersionedEntity {
   lastScanResult: string | null;
 }
 
+/**
+ * Deterministic — `findByDevice` reconstructs it rather than querying — and
+ * fixed-width, which is the part that matters.
+ *
+ * This was `${organizationId}_${deviceId}` and it overflowed the platform's
+ * 64-character opaque-id cap in production shapes: a UUID organization id is
+ * 36 characters and `deviceId` is allowed up to 128, so the composite reached
+ * ~165 and every `POST /door/devices` response failed schema validation with
+ * a 500. It passed every test because the fixtures used `org_1`.
+ *
+ * That is the third time this exact bug has appeared in this repo — see
+ * `entitlementId` and `scanLedgerId`, whose comments tell the same story. The
+ * shape of the mistake is always "readable composite id" meeting real UUIDs,
+ * and it is always invisible until someone uses a realistic id. Hashing is
+ * the fix, and `id-length.test.ts` now guards the whole family.
+ */
 export function scannerDeviceId(organizationId: EntityId, deviceId: string): EntityId {
-  return `${organizationId}_${deviceId}`;
+  const digest = createHash('sha256').update(`${organizationId}:${deviceId}`).digest('hex');
+  return `SDEV-${digest.slice(0, 32)}`;
 }
 
 export interface BindScannerDeviceInput {

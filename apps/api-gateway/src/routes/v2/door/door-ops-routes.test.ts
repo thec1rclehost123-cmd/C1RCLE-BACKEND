@@ -642,3 +642,50 @@ describe('device re-authorization', () => {
     expect(response.statusCode).toBe(403);
   });
 });
+
+describe('production-shaped ids survive the round trip', () => {
+  /**
+   * Reported by the front-end team: `POST /door/devices` and
+   * `POST /door/heartbeat` returned 500 against a real Firestore
+   * organization. The composite device id overflowed `opaqueIdSchema`'s
+   * 64-character cap, so the write succeeded and the *response* failed
+   * validation. Every existing test passed because the fixtures use `org_1`.
+   *
+   * These use a UUID organization and a maximum-length device id — the shapes
+   * production actually has.
+   */
+  const UUID_ORG = 'f47ac10b-58cc-4372-a567-0e02b2c3d479';
+  const MAX_DEVICE = 'scanner_'.padEnd(128, 'a');
+
+  beforeEach(() => {
+    currentActor = { ...SEED_ACTOR, organizationId: UUID_ORG };
+  });
+
+  it('registers a device and serializes it back', async () => {
+    const response = await server.inject({
+      method: 'POST',
+      url: '/door/devices',
+      headers: { 'x-organization-id': UUID_ORG },
+      payload: { deviceId: MAX_DEVICE, deviceName: 'Gate iPad' },
+    });
+    expect(response.statusCode, response.body).toBe(201);
+    expect(response.json().id.length).toBeLessThanOrEqual(64);
+    expect(response.json().deviceId).toBe(MAX_DEVICE);
+  });
+
+  it('lists it back without blowing the id cap', async () => {
+    await server.inject({
+      method: 'POST',
+      url: '/door/devices',
+      headers: { 'x-organization-id': UUID_ORG },
+      payload: { deviceId: MAX_DEVICE, deviceName: 'Gate iPad' },
+    });
+    const response = await server.inject({
+      method: 'GET',
+      url: '/door/devices',
+      headers: { 'x-organization-id': UUID_ORG },
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().items[0].deviceId).toBe(MAX_DEVICE);
+  });
+});

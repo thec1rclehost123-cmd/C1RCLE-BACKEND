@@ -1,3 +1,5 @@
+import { createHash, randomBytes } from 'node:crypto';
+
 import { InvalidOperationError } from '../errors.js';
 import { bumpVersion, newVersionedEntity } from '../identity.js';
 
@@ -184,7 +186,18 @@ export function createCoverWallet(input: CoverWalletCreateInput): CoverWallet {
   const _terminationTime = computeTerminationTime(now);
 
   return {
-    id: `CW-${input.eventId}-${input.userId}-${Date.now()}`,
+    // Hashed, not `CW-${eventId}-${userId}-${timestamp}`: with real UUIDs for
+    // the event and the user that composite reached ~90 characters and blew
+    // the 64-char opaque-id cap, so the wallet failed response validation the
+    // moment it was read back. Nothing reconstructs this id (lookups go
+    // through `findByEventAndUser`), so random bytes join the hash input to
+    // keep two wallets minted in the same millisecond distinct.
+    id: `CW-${createHash('sha256')
+      .update(
+        `${input.eventId}:${input.userId}:${String(now.getTime())}:${randomBytes(8).toString('hex')}`,
+      )
+      .digest('hex')
+      .slice(0, 32)}`,
     userId: input.userId,
     eventId: input.eventId,
     organizationId: input.organizationId,
