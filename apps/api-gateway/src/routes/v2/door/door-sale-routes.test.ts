@@ -71,13 +71,13 @@ async function seedEventWithTiers() {
     name: 'Dine-in',
     entryType: 'dinein',
     priceInPaise: 150000,
-    quantity: 50,
+    quantity: 100,
   });
   return { event, walkInTier, dineInTier };
 }
 
 describe('V2 door sales slice — walk-in / dine-in / sales list', () => {
-  it('creates a walk-in sale priced server-side, ignoring the client-sent tierId/quantity', async () => {
+  it('creates a walk-in sale priced server-side from the walk-in tier', async () => {
     const server = await buildServer();
     const { event, walkInTier } = await seedEventWithTiers();
 
@@ -90,20 +90,16 @@ describe('V2 door sales slice — walk-in / dine-in / sales list', () => {
         guestName: 'Ada Lovelace',
         totalGuests: 2,
         paymentMode: 'cash',
-        // Adversarial: a tierId that doesn't exist, and a quantity that
-        // would multiply the price under a naive "trust the client" model.
-        // DoorService.createWalkIn ignores both fields entirely — price
-        // always comes from catalog.findWalkInTier(eventId) server-side.
-        tierId: 'tier_does_not_exist',
-        quantity: 5,
         idempotencyKey: 'idem-walkin-1',
       },
     });
 
     expect(response.statusCode).toBe(201);
     const body = response.json();
+    // Priced from the event's walk-in tier, server-side. The wire contract
+    // carries no price, no tierId and no quantity — there is nothing a client
+    // could send that would change this number.
     expect(body.amountPaise).toBe(walkInTier.priceInPaise);
-    expect(body.amountPaise).not.toBe(walkInTier.priceInPaise * 5);
     expect(body).toMatchObject({
       eventId: event.id,
       category: 'walkin',
@@ -130,8 +126,6 @@ describe('V2 door sales slice — walk-in / dine-in / sales list', () => {
         totalGuests: 4,
         tableNumber: 'T-12',
         paymentMode: 'card',
-        tierId: 'tier_does_not_exist',
-        quantity: 1,
         idempotencyKey: 'idem-dinein-1',
       },
     });
@@ -163,8 +157,6 @@ describe('V2 door sales slice — walk-in / dine-in / sales list', () => {
         guestName: 'Walk-in Guest',
         totalGuests: 1,
         paymentMode: 'cash',
-        tierId: 'tier_does_not_exist',
-        quantity: 1,
         idempotencyKey: 'idem-walkin-list-1',
       },
     });
@@ -178,8 +170,6 @@ describe('V2 door sales slice — walk-in / dine-in / sales list', () => {
         totalGuests: 2,
         tableNumber: 'T-1',
         paymentMode: 'upi',
-        tierId: 'tier_does_not_exist',
-        quantity: 1,
         idempotencyKey: 'idem-dinein-list-1',
       },
     });
@@ -209,8 +199,6 @@ describe('V2 door sales slice — walk-in / dine-in / sales list', () => {
         guestName: 'Nobody',
         totalGuests: 1,
         paymentMode: 'cash',
-        tierId: 'tier_does_not_exist',
-        quantity: 1,
         idempotencyKey: 'idem-walkin-404',
       },
     });
@@ -229,7 +217,7 @@ describe('V2 door sales slice — walk-in / dine-in / sales list', () => {
 describe('door guest validation', () => {
   async function post(overrides: Record<string, unknown>) {
     const server = await buildServer();
-    const { event, walkInTier } = await seedEventWithTiers();
+    const { event } = await seedEventWithTiers();
     return server.inject({
       method: 'POST',
       url: '/door/walk-in',
@@ -239,8 +227,6 @@ describe('door guest validation', () => {
         guestName: 'Ada Lovelace',
         totalGuests: 1,
         paymentMode: 'cash',
-        tierId: walkInTier.id,
-        quantity: 1,
         idempotencyKey: `idem-val-${Math.random().toString(36).slice(2)}`,
         ...overrides,
       },
@@ -262,10 +248,53 @@ describe('door guest validation', () => {
 
   it('rejects free-text gender and a malformed email', async () => {
     expect((await post({ gender: 'whatever' })).statusCode).toBe(422);
-    expect((await post({ contact: 'not-an-email' })).statusCode).toBe(422);
+    expect((await post({ guestEmail: 'not-an-email' })).statusCode).toBe(422);
   });
 
   it('rejects a client-supplied price — the server owns the amount', async () => {
     expect((await post({ amountPaise: 1 })).statusCode).toBe(422);
+  });
+});
+
+describe('the walk-in contract carries nothing the server ignores', () => {
+  it('rejects a tierId — choosing a tier is what /door/ticket-sale is for', async () => {
+    const server = await buildServer();
+    const { event, walkInTier } = await seedEventWithTiers();
+    const response = await server.inject({
+      method: 'POST',
+      url: '/door/walk-in',
+      headers: HEADERS,
+      payload: {
+        eventId: event.id,
+        guestName: 'Ada Lovelace',
+        totalGuests: 1,
+        paymentMode: 'cash',
+        idempotencyKey: 'idem-walkin-tier',
+        // Used to be REQUIRED here and silently ignored, so a client sending a
+        // VIP tier was charged the walk-in price. Safe, but it reads like an
+        // exploit to anyone integrating. Now the field does not exist.
+        tierId: walkInTier.id,
+      },
+    });
+    expect(response.statusCode).toBe(422);
+  });
+
+  it('rejects a quantity — totalGuests is the headcount, and it is priced', async () => {
+    const server = await buildServer();
+    const { event } = await seedEventWithTiers();
+    const response = await server.inject({
+      method: 'POST',
+      url: '/door/walk-in',
+      headers: HEADERS,
+      payload: {
+        eventId: event.id,
+        guestName: 'Ada Lovelace',
+        totalGuests: 1,
+        paymentMode: 'cash',
+        idempotencyKey: 'idem-walkin-qty',
+        quantity: 5,
+      },
+    });
+    expect(response.statusCode).toBe(422);
   });
 });

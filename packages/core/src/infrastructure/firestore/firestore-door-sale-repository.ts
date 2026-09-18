@@ -226,7 +226,7 @@ function toDoc(sale: DoorSale): DocumentData {
     guestPhone: sale.guestPhone,
     guestAge: sale.guestAge,
     gender: sale.gender,
-    contact: sale.contact,
+    guestEmail: sale.guestEmail,
     totalGuests: sale.totalGuests,
     tableNumber: sale.tableNumber,
     gate: sale.gate,
@@ -261,7 +261,8 @@ function toSale(data: DocumentData): DoorSale {
     guestPhone: data.guestPhone as string | null,
     guestAge: data.guestAge as number | null,
     gender: data.gender as string | null,
-    contact: data.contact as string | null,
+    // Rows written before the rename carried this as `contact`.
+    guestEmail: ((data.guestEmail ?? data.contact) as string | null | undefined) ?? null,
     totalGuests: data.totalGuests as number,
     tableNumber: data.tableNumber as string | null,
     gate: data.gate as string | null,

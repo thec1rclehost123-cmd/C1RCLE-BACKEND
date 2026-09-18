@@ -372,13 +372,16 @@ export const doorWalkInRequestSchema = z
     /** Under-18s are a licensing problem, not a rounding one. */
     guestAge: z.number().int().min(18).max(120).optional().nullable(),
     gender: z.enum(['male', 'female', 'other', 'undisclosed']).optional().nullable(),
-    /** Optional email for the receipt. Validated so a typo fails loudly. */
-    contact: z.email().max(254).optional().nullable(),
+    /**
+     * Optional email for the receipt. Named `guestEmail` to match the paid
+     * walk-up sale — it was `contact`, which sat next to `guestPhone` and read
+     * as "some other way to reach them" rather than specifically an address.
+     */
+    guestEmail: z.email().max(254).optional().nullable(),
+    /** Party size. This is the headcount admitted, and what is priced. */
     totalGuests: z.number().int().min(1).max(100).default(1),
     gate: z.string().max(64).optional().nullable(),
     paymentMode: z.enum(['cash', 'card', 'upi', 'other']).default('cash'),
-    tierId: opaqueIdSchema,
-    quantity: z.number().int().min(1).max(100).default(1),
     idempotencyKey: idempotencyKeySchema,
   })
   .strict();

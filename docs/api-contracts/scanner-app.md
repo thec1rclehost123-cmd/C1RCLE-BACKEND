@@ -355,8 +355,33 @@ revenue in the finance ledger.
   guest again.**
 
 ### `POST /door/walk-in` and `POST /door/dine-in` · **+idem** — headcount entry
-For guests who aren't buying a ticket. Same guest fields as above, plus
-`totalGuests`, and `tableNumber` for dine-in. Returns `DoorSaleResponse`.
+For guests who aren't buying a ticket — a party walking up, or a table.
+
+```jsonc
+{ "eventId": "…",
+  "guestName": "Ada Lovelace",
+  "totalGuests": 2,                   // party size — this is what is priced
+  "paymentMode": "cash",
+  "guestPhone": "9876543210",         // optional, exactly 10 digits
+  "guestEmail": "…",                  // optional, valid address
+  "guestAge": 24,                     // optional, 18-120
+  "gender": "female",                 // optional, enum
+  "gate": "north",                    // optional
+  "tableNumber": "12",                // dine-in only, optional
+  "idempotencyKey": "<uuid>" }
+// → 201 DoorSaleResponse
+{ "id", "eventId", "category": "walkin" | "dinein",
+  "guestName", "totalGuests", "amountPaise",
+  "paymentMode", "status": "active", "createdAt" }
+```
+
+**There is no `tierId` and no `quantity` here, and sending either is a 422.**
+Walk-in and dine-in are headcount entries priced from the event's own walk-in
+/ dine-in tier; choosing a tier is what `POST /door/ticket-sale` is for. (Both
+fields used to exist on this schema — `tierId` even required — and the server
+ignored both. That has been removed rather than documented, because a client
+sending a VIP tier and being charged the walk-in price reads like an exploit
+even though it is safe.)
 
 ### `GET /door/sales?eventId=&category=walkin|dinein&…` · `AUTH_READ`
 Tonight's walk-ins / dine-ins. Filters: `category`, `status`, `gate`,
@@ -364,7 +389,8 @@ Tonight's walk-ins / dine-ins. Filters: `category`, `status`, `gate`,
 
 ### Client-side validation to mirror
 The server enforces all of this; matching it client-side just gives faster
-feedback. **10-digit phone**, **18+**, gender from the enum, a real email.
+feedback. **10-digit phone**, **18+**, gender from the enum, a real email (`guestEmail`
+— the same field name on walk-in, dine-in and ticket sale).
 A mismatch returns 422 with `fieldErrors` keyed by field name — map them
 straight onto the form.
 
