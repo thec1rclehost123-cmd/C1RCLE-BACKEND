@@ -1,6 +1,15 @@
 import { InvalidOperationError, NotFoundError } from '../../domain/errors.js';
 import { isExecutable } from '../../domain/models/admin-authority.js';
-import { adminPauseEvent, adminResumeEvent, isPublicStatus } from '../../domain/models/event.js';
+import {
+  reinstatePromoterAssignment,
+  suspendPromoterAssignment,
+} from '../../domain/models/event-catalog.js';
+import {
+  adminForceCompleteEvent,
+  adminPauseEvent,
+  adminResumeEvent,
+  isPublicStatus,
+} from '../../domain/models/event.js';
 import {
   adjustPlatformFeePercent,
   reinstateOrganization,
@@ -16,6 +25,10 @@ import type { PromoCode, PromoterAssignment } from '../../domain/models/event-ca
 import type { Event } from '../../domain/models/event.js';
 import type { Order } from '../../domain/models/order.js';
 import type { Organization } from '../../domain/models/organization.js';
+import type {
+  PlatformSettings,
+  PlatformSettingsInput,
+} from '../../domain/models/platform-settings.js';
 import type { PlatformUser } from '../../domain/models/platform-user.js';
 import type { Venue } from '../../domain/models/venue.js';
 import type { Page, PaginationQuery } from '../../domain/ports/repositories.js';
@@ -35,6 +48,8 @@ export interface AdminAnalyticsSummary {
   /** How many orders/events were actually scanned — an honest bound, not a claim of exhaustiveness. */
   scannedOrders: number;
   scannedEvents: number;
+  /** True when any scanned collection hit the bounded-scan limit — figures are lower bounds. */
+  truncated: boolean;
 }
 
 /**
@@ -157,6 +172,127 @@ export class AdminOperationsService {
   }
 
   /**
+   * Admin: bulk-suspend all active promoter assignments for the given
+   * promoter user. Returns the number of assignments actually transitioned
+   * (0 if none were active).
+   */
+  async suspendPromoter(
+    adminUserId: EntityId,
+    promoterId: EntityId,
+  ): Promise<{ affected: number; at: Date }> {
+    const admin = await this.authority.authorize(adminUserId, 'PROMOTER_SUSPEND');
+    const now = this.deps.config.clock.now();
+    const all = await this.catalog.listAssignmentsByPromoter(promoterId);
+    const before = all.map((a) => ({ id: a.id, status: a.status }));
+    let affected = 0;
+    for (const assignment of all) {
+      if (assignment.status === 'active') {
+        await this.catalog.saveAssignment(suspendPromoterAssignment(assignment, now));
+        affected += 1;
+      }
+    }
+    if (affected > 0) {
+      const after = (await this.catalog.listAssignmentsByPromoter(promoterId)).map((a) => ({
+        id: a.id,
+        status: a.status,
+      }));
+      await this.authority.record(admin, {
+        action: 'PROMOTER_SUSPEND',
+        targetType: 'promoter',
+        targetId: promoterId,
+        before: { assignments: before },
+        after: { assignments: after },
+        reason: null,
+      });
+    }
+    return { affected, at: now };
+  }
+
+  /**
+   * Admin: bulk-reinstate all suspended promoter assignments for the given
+   * promoter user. Returns the number of assignments actually transitioned
+   * (0 if none were suspended).
+   */
+  async reinstatePromoter(
+    adminUserId: EntityId,
+    promoterId: EntityId,
+  ): Promise<{ affected: number; at: Date }> {
+    const admin = await this.authority.authorize(adminUserId, 'PROMOTER_REINSTATE');
+    const now = this.deps.config.clock.now();
+    const all = await this.catalog.listAssignmentsByPromoter(promoterId);
+    const before = all.map((a) => ({ id: a.id, status: a.status }));
+    let affected = 0;
+    for (const assignment of all) {
+      if (assignment.status === 'suspended') {
+        await this.catalog.saveAssignment(reinstatePromoterAssignment(assignment, now));
+        affected += 1;
+      }
+    }
+    if (affected > 0) {
+      const after = (await this.catalog.listAssignmentsByPromoter(promoterId)).map((a) => ({
+        id: a.id,
+        status: a.status,
+      }));
+      await this.authority.record(admin, {
+        action: 'PROMOTER_REINSTATE',
+        targetType: 'promoter',
+        targetId: promoterId,
+        before: { assignments: before },
+        after: { assignments: after },
+        reason: null,
+      });
+    }
+    return { affected, at: now };
+  }
+
+  /**
+   * Admin: read the singleton platform settings doc. Returns defaults
+   * if the doc has never been written.
+   */
+  async getPlatformSettings(adminUserId: EntityId): Promise<PlatformSettings> {
+    await this.authority.requireAdmin(adminUserId);
+    return this.deps.repositories.platformSettings.get();
+  }
+
+  /**
+   * Admin: merge-update the singleton platform settings doc. Only supplied
+   * fields are overwritten; the rest are preserved from the current doc.
+   */
+  async updatePlatformSettings(
+    adminUserId: EntityId,
+    patch: PlatformSettingsInput,
+  ): Promise<PlatformSettings> {
+    const admin = await this.authority.requireAdmin(adminUserId);
+    const current = await this.deps.repositories.platformSettings.get();
+    const updated: PlatformSettings = {
+      ...current,
+      ...patch,
+      featureFlags: patch.featureFlags ?? current.featureFlags,
+      updatedAt: this.deps.config.clock.now().toISOString(),
+    };
+    await this.deps.repositories.platformSettings.save(updated);
+    await this.authority.record(admin, {
+      action: 'PLATFORM_SETTINGS_UPDATE',
+      targetType: 'platform_settings',
+      targetId: 'singleton',
+      before: {
+        platformFeeRate: current.platformFeeRate,
+        refundSingleApproverThresholdPaise: current.refundSingleApproverThresholdPaise,
+        refundDualApproverThresholdPaise: current.refundDualApproverThresholdPaise,
+        maintenanceMode: current.maintenanceMode,
+      },
+      after: {
+        platformFeeRate: updated.platformFeeRate,
+        refundSingleApproverThresholdPaise: updated.refundSingleApproverThresholdPaise,
+        refundDualApproverThresholdPaise: updated.refundDualApproverThresholdPaise,
+        maintenanceMode: updated.maintenanceMode,
+      },
+      reason: null,
+    });
+    return updated;
+  }
+
+  /**
    * Platform-wide revenue/ticket/event summary for the admin analytics
    * desk. Read-only, any admin. Aggregates over the most recent
    * `ANALYTICS_SCAN_LIMIT` orders/events/organizations rather than the
@@ -173,6 +309,11 @@ export class AdminOperationsService {
       this.events.listAll({ limit: ANALYTICS_SCAN_LIMIT, cursor: null }),
       this.organizations.listAll({ limit: ANALYTICS_SCAN_LIMIT, cursor: null }),
     ]);
+
+    const truncated =
+      orderPage.items.length >= ANALYTICS_SCAN_LIMIT ||
+      eventPage.items.length >= ANALYTICS_SCAN_LIMIT ||
+      orgPage.items.length >= ANALYTICS_SCAN_LIMIT;
 
     const orgNameById = new Map(orgPage.items.map((org) => [org.id, org.name]));
     const revenueByOrg = new Map<EntityId, number>();
@@ -214,6 +355,7 @@ export class AdminOperationsService {
       topOrganizations,
       scannedOrders: orderPage.items.length,
       scannedEvents: eventPage.items.length,
+      truncated,
     };
   }
 
@@ -465,7 +607,11 @@ export class AdminOperationsService {
    * Admin override pause. TIER1 — any admin may call it, the action is
    * merely logged (no role gate beyond being an active admin at all).
    */
-  async pauseEvent(adminUserId: EntityId, eventId: EntityId): Promise<Event> {
+  async pauseEvent(
+    adminUserId: EntityId,
+    eventId: EntityId,
+    meta?: { ipAddress?: string; userAgent?: string },
+  ): Promise<Event> {
     const admin = await this.authority.authorize(adminUserId, 'EVENT_PAUSE');
     const event = await this.requireEvent(eventId);
     const now = this.deps.config.clock.now();
@@ -479,12 +625,18 @@ export class AdminOperationsService {
       before: { status: event.status, adminOverride: event.adminOverride },
       after: { status: paused.status, adminOverride: paused.adminOverride },
       reason: null,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     return paused;
   }
 
   /** Admin override resume. TIER1, reverses `pauseEvent`. */
-  async resumeEvent(adminUserId: EntityId, eventId: EntityId): Promise<Event> {
+  async resumeEvent(
+    adminUserId: EntityId,
+    eventId: EntityId,
+    meta?: { ipAddress?: string; userAgent?: string },
+  ): Promise<Event> {
     const admin = await this.authority.authorize(adminUserId, 'EVENT_RESUME');
     const event = await this.requireEvent(eventId);
     const now = this.deps.config.clock.now();
@@ -498,8 +650,41 @@ export class AdminOperationsService {
       before: { status: event.status, adminOverride: event.adminOverride },
       after: { status: resumed.status, adminOverride: resumed.adminOverride },
       reason: null,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     return resumed;
+  }
+
+  /**
+   * Admin force-complete (`EVENT_FORCE_PAUSE`, TIER1). Sometimes a past event
+   * never leaves the FSM on its own — a sales window closed days ago but the
+   * status is still `published`, or a `started` event that never hit `ended`.
+   * This lets an admin force the FSM's admin-only terminal edge rather than
+   * leaving a zombie. Mirrors `pauseEvent`'s direct-command + audit-log shape.
+   */
+  async forceCompleteEvent(
+    adminUserId: EntityId,
+    eventId: EntityId,
+    meta?: { ipAddress?: string; userAgent?: string },
+  ): Promise<Event> {
+    const admin = await this.authority.authorize(adminUserId, 'EVENT_FORCE_PAUSE');
+    const event = await this.requireEvent(eventId);
+    const now = this.deps.config.clock.now();
+    const completed = adminForceCompleteEvent(event, now);
+    if (completed === event) return event;
+    await this.events.save(completed);
+    await this.authority.record(admin, {
+      action: 'EVENT_FORCE_PAUSE',
+      targetType: 'event',
+      targetId: event.id,
+      before: { status: event.status, adminOverride: event.adminOverride },
+      after: { status: completed.status, adminOverride: completed.adminOverride },
+      reason: null,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
+    });
+    return completed;
   }
 
   private async requireEvent(eventId: EntityId): Promise<Event> {

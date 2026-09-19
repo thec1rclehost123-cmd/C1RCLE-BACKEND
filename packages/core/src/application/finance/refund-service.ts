@@ -81,6 +81,11 @@ export class RefundService {
     const hasRedeemedEntitlement = orderEntitlements.some((e) => e.status === 'redeemed');
 
     const now = this.deps.config.clock.now();
+    const platformSettings = await this.deps.repositories.platformSettings.get();
+    const thresholds = {
+      singleApproverCeilingPaise: platformSettings.refundSingleApproverThresholdPaise,
+      dualApproverCeilingPaise: platformSettings.refundDualApproverThresholdPaise,
+    };
     const request = createRefundRequest({
       id: this.deps.config.ids(),
       orderId: order.id,
@@ -89,6 +94,7 @@ export class RefundService {
       requestedBy: admin.id,
       reason: command.reason,
       hasRedeemedEntitlement,
+      thresholds,
       now,
     });
 

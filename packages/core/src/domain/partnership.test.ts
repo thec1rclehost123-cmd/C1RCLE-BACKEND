@@ -174,15 +174,18 @@ describe('venue share rate', () => {
   it('refuses to set a rate on a non-active partnership', () => {
     const pending = request();
     expect(() => setVenueShareRate(pending, 20, VENUE, NOW)).toThrow(InvalidOperationError);
-    const blocked = blockPartnership(approvePartnership(request(), VENUE, NOW), HOST, undefined, NOW);
+    const blocked = blockPartnership(
+      approvePartnership(request(), VENUE, NOW),
+      HOST,
+      undefined,
+      NOW,
+    );
     expect(() => setVenueShareRate(blocked, 20, VENUE, NOW)).toThrow(InvalidOperationError);
   });
 
   it('refuses a rate from an unrelated organization', () => {
     const active = approvePartnership(request(), VENUE, NOW);
-    expect(() => setVenueShareRate(active, 20, 'org_stranger', NOW)).toThrow(
-      InvalidOperationError,
-    );
+    expect(() => setVenueShareRate(active, 20, 'org_stranger', NOW)).toThrow(InvalidOperationError);
   });
 
   it('enforces the same 0..MAX bounds on the live partnership', () => {

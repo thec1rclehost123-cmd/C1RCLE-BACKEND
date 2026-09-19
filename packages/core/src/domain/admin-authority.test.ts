@@ -58,6 +58,17 @@ describe('tiers', () => {
     expect(requiresDualControl('ADMIN_PROVISION')).toBe(true);
     expect(requiresDualControl('ONBOARDING_APPROVE')).toBe(false);
   });
+
+  it('ranks promoter suspension at TIER2 (not support-executable)', () => {
+    expect(tierOf('PROMOTER_SUSPEND')).toBe(2);
+    expect(tierOf('PROMOTER_REINSTATE')).toBe(2);
+    for (const role of ['super', 'admin', 'ops', 'finance'] as const) {
+      expect(canInitiate(role, 'PROMOTER_SUSPEND')).toBe(true);
+      expect(canInitiate(role, 'PROMOTER_REINSTATE')).toBe(true);
+    }
+    expect(canInitiate('support', 'PROMOTER_SUSPEND')).toBe(false);
+    expect(canInitiate('support', 'PROMOTER_REINSTATE')).toBe(false);
+  });
 });
 
 describe('proposing', () => {

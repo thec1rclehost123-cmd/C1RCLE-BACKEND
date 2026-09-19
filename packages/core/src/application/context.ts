@@ -52,6 +52,7 @@ import type {
   AdminRefundRequestRepository,
   UserAccountRepository,
   UserBanRepository,
+  PlatformSettingsRepository,
 } from '../domain/ports/repositories.js';
 import type { VerificationProvider } from '../domain/ports/verification.js';
 import type { Logger } from '../telemetry/logger.js';
@@ -136,6 +137,7 @@ export interface ServiceDeps {
     users: UserAccountRepository;
     /** Platform user ban state — Phase 7 trust & safety. */
     userBans: UserBanRepository;
+    platformSettings: PlatformSettingsRepository;
   };
 }
 

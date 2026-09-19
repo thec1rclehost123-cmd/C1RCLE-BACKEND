@@ -57,6 +57,10 @@ export interface AuditInput {
   before: Record<string, unknown> | null;
   after: Record<string, unknown> | null;
   reason?: string | null;
+  /** Caller IP (route-captured). */
+  ipAddress?: string;
+  /** Caller `User-Agent` (route-captured). */
+  userAgent?: string;
 }
 
 export class AdminAuthorityService {
@@ -104,6 +108,8 @@ export class AdminAuthorityService {
       before: input.before,
       after: input.after,
       reason: input.reason ?? null,
+      ipAddress: input.ipAddress,
+      userAgent: input.userAgent,
       occurredAt: this.deps.config.clock.now().getTime(),
     });
   }
