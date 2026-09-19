@@ -40,18 +40,24 @@ graph LR
     O[Auth rate limit zone<br/>5r/s burst=10]
   end
 
-  subgraph NotDeployed["🚫 Not on Render yet"]
-    P[Two-service topology<br/>Nginx + Fastify]
-    Q[Render private network<br/>service DNS]
-    R[Readiness allowlist<br/>real CIDRs]
+  subgraph Deployed["✅ Deployed on Render (sidecar interim)"]
+    P[Sidecar topology<br/>Nginx + Fastify, one container]
+    Q[Public listener :PORT → Fastify loopback<br/>per sidecar-deployment.md]
+    R[Readiness gating<br/>geo allowlist]
+  end
+
+  subgraph NotDeployed["🎯 Second step: two-service (needs paid Render plan)"]
+    S[Split containers<br/>Nginx public + Fastify private service DNS]
+    T[Render private network<br/>service DNS]
+    U[Readiness allowlist<br/>real CIDRs]
   end
 
   subgraph Deferred["⏳ Deliberately deferred"]
-    S[Load balancing<br/>proxy_next_upstream off]
-    T[URL hiding / path rewrite<br/>no rewrite directives]
-    U[WebSocket proxying<br/>snippet inactive]
-    V[Nginx response caching<br/>proxy_cache off]
-    W[HTTP/3 or QUIC<br/>not configured]
+    V[Load balancing<br/>proxy_next_upstream off]
+    W[URL hiding / path rewrite<br/>no rewrite directives]
+    X[WebSocket proxying<br/>snippet inactive]
+    Y[Nginx response caching<br/>proxy_cache off]
+    Z[HTTP/3 or QUIC<br/>not configured]
   end
 ```
 
@@ -59,19 +65,19 @@ graph LR
 
 ```mermaid
 graph TD
-  subgraph Current["Current Live Render (single-service, no nginx)"]
+  subgraph Current["Current Live Render (sidecar interim — nginx + Fastify, one container)"]
     direction LR
     Browser1[Browser / Client] -->|HTTPS| RenderEdge1[Render TLS termination]
-    RenderEdge1 -->|HTTP :8080| Fastify1[Fastify single container]
+    RenderEdge1 -->|HTTP :PORT| Nginx1["Nginx edge (same container)<br/>public 0.0.0.0:$PORT"]
+    Nginx1 -->|"loopback only"| Fastify1["Fastify (same container)<br/>127.0.0.1:8081"]
     Fastify1 --> Firebase1[Firebase / Firestore]
   end
 
-  subgraph Interim["Interim plan (sidecar, budget tier — see sidecar-deployment.md)"]
+  subgraph Prior["Pre-2026-09 (single-service, no nginx)"]
     direction LR
-    Browser3[Browser / Client] -->|HTTPS| RenderEdge3[Render TLS termination]
-    RenderEdge3 -->|HTTP :PORT| Nginx3["Nginx (same container)<br/>public 0.0.0.0:$PORT"]
-    Nginx3 -->|"loopback only"| Fastify3["Fastify (same container)<br/>127.0.0.1:8081"]
-    Fastify3 --> Firebase3[Firebase / Firestore]
+    Browser0[Browser / Client] -->|HTTPS| RenderEdge0[Render TLS termination]
+    RenderEdge0 -->|HTTP :8080| Fastify0[Fastify single container]
+    Fastify0 --> Firebase0[Firebase / Firestore]
   end
 
   subgraph Target["Target (two-service, needs paid Render plan, local-validated)"]
@@ -82,9 +88,9 @@ graph TD
     Fastify2 --> Firebase2[Firebase / Firestore]
   end
 
-  style Current fill:#fee,stroke:#f66
-  style Interim fill:#fff0e0,stroke:#c90
-  style Target fill:#efe,stroke:#6a6
+  style Current fill:#efe,stroke:#6a6
+  style Prior fill:#fee,stroke:#f66
+  style Target fill:#fff0e0,stroke:#c90
 ```
 
 ## Request Flow Through Nginx

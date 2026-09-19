@@ -239,4 +239,11 @@ New: `v2_support_tickets`, `v2_safety_reports`, `v2_platform_announcements`.
 
 ## Session Log
 
-(none yet)
+| Date | What happened |
+| --- | --- |
+| 2026-09-13 | Initial V1→V2 gap audit + Batch 1 (disputes desk) started. Full batch-by-batch log lives in `ADMIN-DASHBOARD-GAPS.md` §5 — this Session Log only records items that changed this phase's status. |
+| 2026-09-16 | **Batch 4 + 5–9 progression** — analytics, health, tickets, promotions, promoters, and settings desks all shipped E2E. The "promoters read-only" and "settings read-only" rows in `ADMIN-DASHBOARD-GAPS.md` were the last two partial desks; both closed this day (see the two rows below). |
+| 2026-09-16 | **Part D2 — promoter lifecycle verbs.** `PROMOTER_SUSPEND`/`PROMOTER_REINSTATE` (TIER2) with `PromoterAssignmentStatus` gaining `suspended` + `suspendedAt`; `suspendPromoterAssignment`/`reinstatePromoterAssignment` FSM (`active↔suspended`, `ended` terminal); `EventCatalogRepository.listAssignmentsByPromoter` (port+memory+firestore); routes `POST /admin/promoters/:promoterId/{suspend,reinstate}` (idempotent, `runIdempotent`); contracts + parity extended. Gate: `pnpm check` (core 504, api-gateway 418), parity 118/118. |
+| 2026-09-16 | **Part D3 — platform settings singleton + refund-threshold wiring.** New `PlatformSettings` domain model (fee rate, single/dual refund ceilings 50K/500K paise, maintenanceMode, featureFlags); `PlatformSettingsRepository` port + memory + firestore (`v2_platform_settings/singleton`); `RefundService.requestRefund` now fetches live thresholds and threads them into `approversRequiredFor` (defaults = old constants, no behavior change without an admin edit). `AdminOperationsService.getPlatformSettings`/`updatePlatformSettings` (merge-update, requireAdmin). Routes GET+PUT `/admin/settings/platform` (PUT idempotent, `SENSITIVE_COMMAND`). Contracts `admin-settings.ts` `.strict()` schemas, parity-checked. `/settings` admin desk gains an editable platform settings card on the frontend; `format.tsx` fixed for the new D2 labels/status. Gate: backend `pnpm check` (core 504, api-gateway 426), parity 125/125; frontend admin-console lint/typecheck/test/build green. |
+
+Phase D now reads DONE (invite-by-email still deferred as documented above); Phase C remains PAUSED on intake-path grounds (unchanged).

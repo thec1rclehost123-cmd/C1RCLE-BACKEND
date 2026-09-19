@@ -1,12 +1,17 @@
-> **Point-in-time gap analysis, audited HEAD `2a9a4b3` (backend) / `df73e9b` (frontend),
-> 2026-08-31.** Moved here 2026-09-05 from `docs/reference/Untitled document.md`, where it
-> sat unindexed and undiscovered despite being the most detailed implementation-vs-design
-> audit in the repo (target architecture, 25 non-negotiable rules, a 15-item contradiction
-> log between the planning docs, per-domain LIVE/NO-BACKEND status table, the complete
-> 501 list with file:line). Route/test/lint-failure counts below are exact **as of that
-> commit** — re-verify against current `git log` / `pnpm check` before citing a number as
-> today's truth; a later session (`ff32861`, CI pipeline + Phase-5 bugfixes) claims some of
-> the §5 "Quality debt" failures fixed, not independently re-verified here.
+> **SUPERSEDED — historical audit, not current status.** For today's phase-by-phase
+> truth read `docs/roadmap/ROADMAP.md` (master status table) + its `phase-*.md`
+> files first; `docs/architecture/README.md` carries a built/pending status ledger.
+> This document is kept as the point-in-time gap analysis it was, audited HEAD `2a9a4b3`
+> (backend) / `df73e9b` (frontend), 2026-08-31. Moved here 2026-09-05 from
+> `docs/reference/Untitled document.md`, where it sat unindexed and undiscovered
+> despite being the most detailed implementation-vs-design audit in the repo
+> (target architecture, 25 non-negotiable rules, a 15-item contradiction log
+> between the planning docs, per-domain LIVE/NO-BACKEND status table, the complete
+> 501 list with file:line). Route/test/lint-failure counts below are exact **as of
+> that commit** — re-verify against current `git log` / `pnpm check` before citing
+> a number as today's truth; a later session (`ff32861`, CI pipeline + Phase-5
+> bugfixes) claims some of the §5 "Quality debt" failures fixed, not independently
+> re-verified here.
 
 Legend for citations (all paths absolute):
 
