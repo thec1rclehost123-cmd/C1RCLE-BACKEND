@@ -18,11 +18,7 @@ export const partnershipStatusSchema = z.enum([
  * Whole-number percent, matching v1's `venueCommissionRate` convention (NOT a
  * 0..1 ratio). `null` = not yet negotiated. Capped at 50 by the domain.
  */
-const venueShareRateSchema = z
-  .number()
-  .int()
-  .min(0)
-  .max(50);
+const venueShareRateSchema = z.number().int().min(0).max(50);
 
 export const partnershipDtoSchema = z.object({
   id: opaqueIdSchema,

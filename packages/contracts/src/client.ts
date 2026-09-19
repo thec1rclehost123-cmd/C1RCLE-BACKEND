@@ -158,6 +158,7 @@ export {
   partnershipDtoSchema,
   requestPartnershipSchema,
   resolvePartnershipSchema,
+  setVenueShareRequestSchema,
   partnerPermissionSchema,
   partnerAccessDtoSchema,
   organizationOverviewDtoSchema,
@@ -414,13 +415,28 @@ export type {
   AdminPromoterAssignmentStatus,
   AdminPromoterAssignmentDto,
   AdminPromoterAssignmentListResponse,
+  AdminPromoterSuspendRequest,
+  AdminPromoterActionResponse,
 } from './contracts/admin-promoters.js';
 
 export {
   adminPromoterAssignmentStatusSchema,
   adminPromoterAssignmentDtoSchema,
   adminPromoterAssignmentListResponseSchema,
+  adminPromoterSuspendRequestSchema,
+  adminPromoterActionResponseSchema,
 } from './contracts/admin-promoters.js';
+
+// Phase 7: Admin platform settings
+export type {
+  PlatformSettingsDto,
+  PlatformSettingsUpdateRequest,
+} from './contracts/admin-settings.js';
+
+export {
+  platformSettingsDtoSchema,
+  platformSettingsUpdateRequestSchema,
+} from './contracts/admin-settings.js';
 
 // Phase 6: Finance / Ledger / Payouts
 export type {

@@ -23,5 +23,6 @@ export const adminAnalyticsSummaryDtoSchema = z.object({
   topOrganizations: z.array(adminAnalyticsTopOrgDtoSchema),
   scannedOrders: z.number().int().nonnegative(),
   scannedEvents: z.number().int().nonnegative(),
+  truncated: z.boolean(),
 });
 export type AdminAnalyticsSummaryDto = z.infer<typeof adminAnalyticsSummaryDtoSchema>;

@@ -117,6 +117,10 @@ export class FirestoreEventCatalogRepository implements EventCatalogRepository {
     const snap = await this.db.collection(ASSIGNMENTS).where('eventId', '==', eventId).get();
     return snap.docs.map((doc) => doc.data() as unknown as PromoterAssignment);
   }
+  async listAssignmentsByPromoter(promoterId: EntityId): Promise<PromoterAssignment[]> {
+    const snap = await this.db.collection(ASSIGNMENTS).where('promoterId', '==', promoterId).get();
+    return snap.docs.map((doc) => doc.data() as unknown as PromoterAssignment);
+  }
   async listAllAssignments(query: PaginationQuery): Promise<Page<PromoterAssignment>> {
     const base = this.db.collection(ASSIGNMENTS);
     return paginateQuery(

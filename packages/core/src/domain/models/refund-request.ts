@@ -62,19 +62,32 @@ export interface CreateAdminRefundRequestInput {
   reason: string;
   /** Whether any entitlement on this order has already been scanned. */
   hasRedeemedEntitlement: boolean;
+  /** Platform-wide refund thresholds (fetched from PlatformSettings). */
+  thresholds?: RefundThresholds;
   now?: Date;
 }
 
 /** v1's exact thresholds, in paise: under ₹500, under ₹5,000, at or above. */
-const AUTO_APPROVE_CEILING_PAISE = 50_000;
-const SINGLE_APPROVER_CEILING_PAISE = 500_000;
+export const AUTO_APPROVE_CEILING_PAISE = 50_000;
+export const SINGLE_APPROVER_CEILING_PAISE = 500_000;
 
-export function approversRequiredFor(amountPaise: number, hasRedeemedEntitlement: boolean): number {
-  if (amountPaise < AUTO_APPROVE_CEILING_PAISE) {
+export interface RefundThresholds {
+  singleApproverCeilingPaise: number;
+  dualApproverCeilingPaise: number;
+}
+
+export function approversRequiredFor(
+  amountPaise: number,
+  hasRedeemedEntitlement: boolean,
+  thresholds?: RefundThresholds,
+): number {
+  const singleCeiling = thresholds?.singleApproverCeilingPaise ?? AUTO_APPROVE_CEILING_PAISE;
+  const dualCeiling = thresholds?.dualApproverCeilingPaise ?? SINGLE_APPROVER_CEILING_PAISE;
+  if (amountPaise < singleCeiling) {
     // A checked-in ticket can never auto-settle, regardless of amount.
     return hasRedeemedEntitlement ? 1 : 0;
   }
-  if (amountPaise < SINGLE_APPROVER_CEILING_PAISE) return 1;
+  if (amountPaise < dualCeiling) return 1;
   return 2;
 }
 
@@ -85,7 +98,11 @@ export function createRefundRequest(input: CreateAdminRefundRequestInput): Admin
   if (input.reason.trim().length === 0) {
     throw new InvalidOperationError('A refund request requires a reason');
   }
-  const approversRequired = approversRequiredFor(input.amountPaise, input.hasRedeemedEntitlement);
+  const approversRequired = approversRequiredFor(
+    input.amountPaise,
+    input.hasRedeemedEntitlement,
+    input.thresholds,
+  );
 
   return {
     id: input.id,

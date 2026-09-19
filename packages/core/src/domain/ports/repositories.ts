@@ -63,6 +63,7 @@ import type {
 } from '../models/organization.js';
 import type { Partnership } from '../models/partnership.js';
 import type { Payout, PayoutStatus } from '../models/payout.js';
+import type { PlatformSettings } from '../models/platform-settings.js';
 import type { PlatformUser } from '../models/platform-user.js';
 import type { PromoterConnection } from '../models/promoter-connection.js';
 import type { ReferralLink } from '../models/referral-link.js';
@@ -258,6 +259,8 @@ export interface EventCatalogRepository {
   // Promoter assignments
   getAssignmentById(assignmentId: EntityId): Promise<PromoterAssignment | null>;
   listAssignments(eventId: EntityId): Promise<PromoterAssignment[]>;
+  /** All assignments for a given promoter user (admin lifecycle queries). */
+  listAssignmentsByPromoter(promoterId: EntityId): Promise<PromoterAssignment[]>;
   /** Platform-wide promoter-assignment listing (admin read-only dashboard). */
   listAllAssignments(query: PaginationQuery): Promise<Page<PromoterAssignment>>;
   saveAssignment(assignment: PromoterAssignment, tx?: TxContext | null): Promise<void>;
@@ -797,6 +800,17 @@ export interface EmailOtpRepository {
   delete(recipient: EntityId): Promise<void>;
 }
 
+// ─── Platform settings (singleton doc) ──────────────────────────────────────
+
+/**
+ * Singleton read/write for the platform-wide settings doc.
+ * Backed by `v2_platform_settings/singleton` in Firestore.
+ */
+export interface PlatformSettingsRepository {
+  get(): Promise<PlatformSettings>;
+  save(settings: PlatformSettings): Promise<void>;
+}
+
 export type {
   LedgerEntry,
   LedgerEntryType,
@@ -809,4 +823,5 @@ export type {
   LeaderboardBucket,
   LeaderboardPeriodType,
   EmailOtp,
+  PlatformSettings,
 };

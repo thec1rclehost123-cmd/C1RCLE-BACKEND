@@ -234,6 +234,35 @@ export function adminResumeEvent(event: Event, now?: Date): Event {
   return transitionEvent(event, 'published', now);
 }
 
+/**
+ * Sources an admin may force-complete from. This is the one *admin-only* FSM
+ * edge — it is deliberately NOT in the public `EVENT_TRANSITIONS` table, which
+ * only allows `started → ended` automatically. A partner must never force-end
+ * their own event; only a platform admin may, so the edge is enforced here by
+ * this explicit guard (same pattern as the `PAUSABLE_STATUSES` guard above
+ * rather than a duplicated public-edge entry).
+ */
+const FORCE_COMPLETABLE_STATUSES: readonly EventStatus[] = ['published', 'sales_paused', 'started'];
+
+/**
+ * Admin force-complete (`EVENT_FORCE_PAUSE`, TIER1 — any admin, merely
+ * logged). The admin-only FSM edge that force-ends a past event whose
+ * lifecycle never transitioned on its own (a sales window that closed days
+ * ago but is still `published`, a `started` event that never hit `ended`,
+ * etc.). Stamps `adminOverride` so the admin trail records the end was forced,
+ * and clears `isPublic` exactly like a natural `ended`.
+ */
+export function adminForceCompleteEvent(event: Event, now?: Date): Event {
+  if (event.status === 'ended') return event;
+  if (!FORCE_COMPLETABLE_STATUSES.includes(event.status)) {
+    throw new InvalidOperationError(
+      'Cannot force-complete a draft, review, scheduled, completed, archived, or cancelled event',
+    );
+  }
+  const stamped = bumpVersion(event, now ?? new Date());
+  return { ...stamped, status: 'ended', isPublic: false, adminOverride: true };
+}
+
 function computeIsPublic(status: EventStatus): boolean {
   return status === 'published' || status === 'sales_paused' || status === 'started';
 }

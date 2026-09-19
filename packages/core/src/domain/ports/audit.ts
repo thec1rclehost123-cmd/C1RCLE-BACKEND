@@ -53,6 +53,10 @@ export interface AdminAuditRecord {
   after?: Record<string, unknown> | null;
   /** Operator-supplied justification, when the action required one. */
   reason?: string | null;
+  /** Caller IP (route-captured), for investigative context. */
+  ipAddress?: string;
+  /** Caller `User-Agent` (route-captured), for investigative context. */
+  userAgent?: string;
   /** Epoch ms. */
   occurredAt?: number;
 }

@@ -1,10 +1,11 @@
-import { VersionConflictError } from '../../domain/errors.js';
-
 /**
  * ─── In-memory repository implementations (Core domains for tests) ──────────────
  * Minimal implementations for the compare-and-set tests and the memory
  * storage driver (`buildRepositories` in `infrastructure/utils.ts`).
  */
+
+import { VersionConflictError } from '../../domain/errors.js';
+import { DEFAULT_PLATFORM_SETTINGS } from '../../domain/models/platform-settings.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type { CartReservation } from '../../domain/models/cart-reservation.js';
@@ -18,6 +19,7 @@ import type {
 import type { Event } from '../../domain/models/event.js';
 import type { Order } from '../../domain/models/order.js';
 import type { Organization, OrganizationMember } from '../../domain/models/organization.js';
+import type { PlatformSettings } from '../../domain/models/platform-settings.js';
 import type { Venue, VenueSlot, SlotRequest } from '../../domain/models/venue.js';
 import type {
   EventRepository,
@@ -36,6 +38,7 @@ import type {
   Page,
   PaginationQuery,
   TxContext,
+  PlatformSettingsRepository,
 } from '../../domain/ports/repositories.js';
 
 /**
@@ -335,12 +338,29 @@ export class MemoryEventCatalogRepository implements EventCatalogRepository {
     return [...this.assignments.values()].filter((a) => a.eventId === eventId);
   }
 
+  async listAssignmentsByPromoter(promoterId: EntityId): Promise<PromoterAssignment[]> {
+    return [...this.assignments.values()].filter((a) => a.promoterId === promoterId);
+  }
+
   async listAllAssignments(query: PaginationQuery): Promise<Page<PromoterAssignment>> {
     return serializeSlice([...this.assignments.values()], query);
   }
 
   async saveAssignment(assignment: PromoterAssignment, _tx?: TxContext | null): Promise<void> {
     casSet(this.assignments, assignment);
+  }
+}
+
+/** In-memory singleton for `PlatformSettingsRepository`. */
+export class MemoryPlatformSettingsRepository implements PlatformSettingsRepository {
+  settings: PlatformSettings = { ...DEFAULT_PLATFORM_SETTINGS };
+
+  async get(): Promise<PlatformSettings> {
+    return { ...this.settings };
+  }
+
+  async save(settings: PlatformSettings): Promise<void> {
+    this.settings = { ...settings };
   }
 }
 
