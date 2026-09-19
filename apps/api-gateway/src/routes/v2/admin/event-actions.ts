@@ -28,6 +28,17 @@ const services = createV2Services();
 const eventIdParam = z.object({ eventId: opaqueIdSchema });
 const commandHeaders = z.looseObject({ 'idempotency-key': idempotencyKeySchema });
 
+function requestMeta(request: {
+  ip?: string;
+  headers?: Record<string, string | string[] | undefined>;
+}) {
+  const ua = request.headers?.['user-agent'];
+  return {
+    ipAddress: request.ip,
+    userAgent: typeof ua === 'string' ? ua : undefined,
+  };
+}
+
 function eventToDto(event: Event) {
   return {
     id: event.id,
@@ -70,7 +81,7 @@ export default async function adminEventActionRoutes(fastify: FastifyInstance) {
         idempotencyKey: v2Headers['idempotency-key'],
         context: { path: { eventId }, body: {} },
         run: async () => {
-          const event = await services.adminOps.pauseEvent(userId, eventId);
+          const event = await services.adminOps.pauseEvent(userId, eventId, requestMeta(request));
           const validated = validateV2Response(
             reply,
             request,
@@ -114,7 +125,55 @@ export default async function adminEventActionRoutes(fastify: FastifyInstance) {
         idempotencyKey: v2Headers['idempotency-key'],
         context: { path: { eventId }, body: {} },
         run: async () => {
-          const event = await services.adminOps.resumeEvent(userId, eventId);
+          const event = await services.adminOps.resumeEvent(userId, eventId, requestMeta(request));
+          const validated = validateV2Response(
+            reply,
+            request,
+            adminEventDtoSchema,
+            eventToDto(event),
+          );
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
+        },
+      }).catch((error: unknown) =>
+        isIdempotencyConflict(error)
+          ? mapDomainError(reply, request, eventId, error, {
+              conflictId: v2Headers['idempotency-key'],
+            })
+          : mapDomainError(reply, request, eventId, error),
+      );
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
+
+  fastify.post(
+    '/admin/events/:eventId/force-complete',
+    {
+      preHandler: [
+        fastify.rateLimit('SENSITIVE_COMMAND'),
+        fastify.validateV2({ params: eventIdParam, headers: commandHeaders }),
+      ],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+      const { eventId } = request.params as z.infer<typeof eventIdParam>;
+      const v2Headers = request.v2Headers ?? {};
+
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: userId,
+        commandName: 'admin.event.force_complete',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { eventId }, body: {} },
+        run: async () => {
+          const event = await services.adminOps.forceCompleteEvent(
+            userId,
+            eventId,
+            requestMeta(request),
+          );
           const validated = validateV2Response(
             reply,
             request,

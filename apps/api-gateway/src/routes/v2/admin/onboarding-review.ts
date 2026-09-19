@@ -450,20 +450,35 @@ export default async function adminRoutes(fastify: FastifyInstance) {
       const userId = requireUserId(request, reply);
       if (userId === undefined) return reply;
       const { adminId } = request.params as z.infer<typeof adminIdParam>;
+      const v2Headers = request.v2Headers ?? {};
 
-      const revoked = await services.adminAuthority
-        .revokeAdmin(userId, adminId)
-        .catch((error: unknown) => mapDomainError(reply, request, adminId, error));
-      if (revoked === undefined) return reply;
-
-      const validated = validateV2Response(
-        reply,
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
         request,
-        platformAdminDtoSchema,
-        adminToDto(revoked),
+        actorId: userId,
+        commandName: 'admin.revoke',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { adminId }, body: undefined },
+        run: async () => {
+          const revoked = await services.adminAuthority.revokeAdmin(userId, adminId);
+          const validated = validateV2Response(
+            reply,
+            request,
+            platformAdminDtoSchema,
+            adminToDto(revoked),
+          );
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
+        },
+      }).catch((error: unknown) =>
+        isIdempotencyConflict(error)
+          ? mapDomainError(reply, request, adminId, error, {
+              conflictId: v2Headers['idempotency-key'],
+            })
+          : mapDomainError(reply, request, adminId, error),
       );
-      if (validated === undefined) return reply;
-      return reply.send(validated);
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
     },
   );
 

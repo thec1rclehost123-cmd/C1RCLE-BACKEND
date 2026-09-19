@@ -149,3 +149,106 @@ describe('EVENT_PAUSE / EVENT_RESUME (TIER1, any admin)', () => {
     expect(executed.statusCode).toBe(404);
   });
 });
+
+describe('EVENT_FORCE_PAUSE (force-complete, TIER1, any admin)', () => {
+  it('force-completes a published event (admin-only FSM edge)', async () => {
+    await seedAdmin('admin_a', 'support');
+    const event = await seedPublishedEvent();
+
+    const executed = await server.inject({
+      method: 'POST',
+      url: `/admin/events/${event.id}/force-complete`,
+      headers: asUser('admin_a'),
+    });
+    expect(executed.statusCode).toBe(200);
+    expect(executed.json()).toMatchObject({
+      id: event.id,
+      status: 'ended',
+      isPublic: false,
+      adminOverride: true,
+    });
+
+    const audit = await server.inject({
+      method: 'GET',
+      url: '/admin/audit?limit=10',
+      headers: { 'x-user-id': 'admin_a' },
+    });
+    const records = audit.json().items as { action: string }[];
+    expect(records.some((record) => record.action === 'EVENT_FORCE_PAUSE')).toBe(true);
+  });
+
+  it('force-completes a started event', async () => {
+    await seedAdmin('admin_a', 'support');
+    const event = await seedPublishedEvent();
+    await services
+      .repos()
+      .events.save({ ...event, status: 'started', isPublic: true, version: event.version + 1 });
+
+    const executed = await server.inject({
+      method: 'POST',
+      url: `/admin/events/${event.id}/force-complete`,
+      headers: asUser('admin_a'),
+    });
+    expect(executed.statusCode).toBe(200);
+    expect(executed.json()).toMatchObject({ status: 'ended', adminOverride: true });
+  });
+
+  it('is idempotent on an already-ended event (200, no new audit)', async () => {
+    await seedAdmin('admin_a', 'support');
+    const event = await seedPublishedEvent();
+    await services.repos().events.save({
+      ...event,
+      status: 'ended',
+      isPublic: false,
+      adminOverride: true,
+      version: event.version + 1,
+    });
+
+    const executed = await server.inject({
+      method: 'POST',
+      url: `/admin/events/${event.id}/force-complete`,
+      headers: asUser('admin_a'),
+    });
+    expect(executed.statusCode).toBe(200);
+    expect(executed.json()).toMatchObject({ status: 'ended' });
+  });
+
+  it('refuses to force-complete a draft event -> 400', async () => {
+    await seedAdmin('admin_a', 'support');
+    const draft = createEvent({
+      id: `event_${++keySeq}`,
+      organizationId: 'org_any',
+      venueId: 'venue_1',
+      title: 'Draft event',
+      startAt: '2026-10-01T18:00:00Z',
+    });
+    await services.repos().events.save(draft);
+
+    const executed = await server.inject({
+      method: 'POST',
+      url: `/admin/events/${draft.id}/force-complete`,
+      headers: asUser('admin_a'),
+    });
+    expect(executed.statusCode).toBe(400);
+  });
+
+  it('non-admin is refused -> 401', async () => {
+    const event = await seedPublishedEvent();
+    const executed = await server.inject({
+      method: 'POST',
+      url: `/admin/events/${event.id}/force-complete`,
+      headers: asUser('not_an_admin'),
+    });
+    expect(executed.statusCode).toBe(401);
+  });
+
+  it('unknown event id -> 404 not_found', async () => {
+    await seedAdmin('admin_a', 'support');
+    const executed = await server.inject({
+      method: 'POST',
+      url: '/admin/events/event_missing/force-complete',
+      headers: asUser('admin_a'),
+    });
+    expect(executed.statusCode).toBe(404);
+  });
+});

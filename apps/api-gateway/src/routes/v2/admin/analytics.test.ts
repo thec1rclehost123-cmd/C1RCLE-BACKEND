@@ -178,6 +178,7 @@ describe('GET /admin/analytics', () => {
     // 2 tickets per captured order * 2 captured orders
     expect(body.ticketsSold).toBe(4);
     expect(body.activeEventsCount).toBe(1);
+    expect(body.truncated).toBe(false);
     expect(body.topOrganizations).toEqual([
       { organizationId: orgId, name: 'Blue Room', revenuePaise: 250_00 },
     ]);

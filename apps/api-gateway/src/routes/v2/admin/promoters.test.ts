@@ -26,7 +26,7 @@ async function seedAdmin(userId: string, role: AdminRole) {
 }
 
 function asUser(userId: string) {
-  return { 'x-user-id': userId };
+  return { 'x-user-id': userId, 'idempotency-key': `key-${++keySeq}` };
 }
 
 function assignment(overrides: Partial<PromoterAssignment>): PromoterAssignment {
@@ -41,6 +41,7 @@ function assignment(overrides: Partial<PromoterAssignment>): PromoterAssignment 
     createdAt: now,
     updatedAt: now,
     endedAt: null,
+    suspendedAt: null,
     ...overrides,
   };
 }
@@ -51,6 +52,7 @@ beforeEach(async () => {
   const repos = services.repos();
   (repos.platformAdmins as unknown as { admins: Map<string, unknown> }).admins.clear();
   (repos.catalog as unknown as { assignments: Map<string, unknown> }).assignments.clear();
+  (services.adminAudits() as unknown as { records: unknown[] }).records.length = 0;
 
   server = await buildPartnerTestServer({ routes: [adminPromotersRoutes] });
 });
@@ -80,5 +82,59 @@ describe('GET /admin/promoters', () => {
     expect(body.items[0].ratePercent).toBe(15);
     expect(body.items[0].flatPaise).toBe(0);
     expect(body.items[0].status).toBe('active');
+  });
+});
+
+describe('POST /admin/promoters/:promoterId/suspend', () => {
+  it('refuses a support-tier admin (TIER2 action, F1/F2 regression)', async () => {
+    await seedAdmin('admin_support', 'support');
+    await services.repos().catalog.saveAssignment(assignment({}));
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/admin/promoters/user_promoter/suspend',
+      headers: asUser('admin_support'),
+    });
+    expect(response.statusCode).toBe(403);
+  });
+
+  it('suspends as an ops admin and writes an audit record (F3)', async () => {
+    await seedAdmin('admin_a', 'ops');
+    await services.repos().catalog.saveAssignment(assignment({}));
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/admin/promoters/user_promoter/suspend',
+      headers: asUser('admin_a'),
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.action).toBe('suspended');
+    expect(body.affectedAssignments).toBe(1);
+
+    const audit = await services.adminAudits().listForTarget('user_promoter', 10);
+    expect(audit.some((r) => r.action === 'PROMOTER_SUSPEND')).toBe(true);
+  });
+
+  it('replay of the same audit-free idempotency key does not double-log', async () => {
+    await seedAdmin('admin_a', 'ops');
+    await services.repos().catalog.saveAssignment(assignment({}));
+
+    const headers = asUser('admin_a');
+    const first = await server.inject({
+      method: 'POST',
+      url: '/admin/promoters/user_promoter/suspend',
+      headers,
+    });
+    const second = await server.inject({
+      method: 'POST',
+      url: '/admin/promoters/user_promoter/suspend',
+      headers,
+    });
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+
+    const audit = await services.adminAudits().listForTarget('user_promoter', 10);
+    expect(audit.filter((r) => r.action === 'PROMOTER_SUSPEND')).toHaveLength(1);
   });
 });

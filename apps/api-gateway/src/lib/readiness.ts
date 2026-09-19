@@ -9,7 +9,7 @@ export const DEFAULT_READINESS_TIMEOUT_MS = 2_000;
 export interface ReadinessOptions {
   /** Provide this only when an active Redis client owns the connection. */
   redisCheck?: ReadinessCheck;
-  /** Payment routes are disabled today; activate this when those routes go live. */
+  /** Gates the Razorpay provider probe — payment/checkout/webhook routes are live now, so the gateway enables this check in its config. */
   paymentProviderActive?: boolean;
   timeoutMs?: number;
 }

@@ -505,6 +505,74 @@ agree(
   false,
 );
 
+/* ── partnership DTO + venue-share negotiation ────────────────────────────── */
+const VALID_PARTNERSHIP = {
+  id: 'partner_1',
+  hostOrganizationId: 'org_host',
+  venueOrganizationId: 'org_venue',
+  venueId: 'venue_1',
+  initiatedBy: 'host',
+  status: 'active',
+  message: null,
+  venueShareRate: 20,
+  resolutionReason: null,
+  resolvedAt: null,
+  version: 3,
+  createdAt: '2026-09-01T10:00:00.000Z',
+  updatedAt: '2026-09-02T10:00:00.000Z',
+};
+agree(
+  'partnershipDtoSchema',
+  'accepts an active partnership with a negotiated rate',
+  VALID_PARTNERSHIP,
+  true,
+);
+agree(
+  'partnershipDtoSchema',
+  'accepts a partnership with a null venue share (not yet negotiated)',
+  { ...VALID_PARTNERSHIP, venueShareRate: null },
+  true,
+);
+agree(
+  'partnershipDtoSchema',
+  'rejects a partnership whose venue share exceeds the 50 cap',
+  { ...VALID_PARTNERSHIP, venueShareRate: 51 },
+  false,
+);
+agree(
+  'partnershipDtoSchema',
+  'rejects a fractional venue share',
+  { ...VALID_PARTNERSHIP, venueShareRate: 20.5 },
+  false,
+);
+agree(
+  'requestPartnershipSchema',
+  'accepts a request without a proposed rate',
+  { venueId: 'venue_1', initiatedBy: 'host' },
+  true,
+);
+agree(
+  'requestPartnershipSchema',
+  'accepts a request with a proposed rate',
+  { venueId: 'venue_1', initiatedBy: 'host', venueShareRate: 20 },
+  true,
+);
+agree(
+  'requestPartnershipSchema',
+  'rejects a request with an over-cap proposed rate',
+  { venueId: 'venue_1', initiatedBy: 'host', venueShareRate: 51 },
+  false,
+);
+agree('setVenueShareRequestSchema', 'accepts a rate', { venueShareRate: 20 }, true);
+agree('setVenueShareRequestSchema', 'accepts clearing the rate', { venueShareRate: null }, true);
+agree('setVenueShareRequestSchema', 'rejects an over-cap rate', { venueShareRate: 51 }, false);
+agree(
+  'setVenueShareRequestSchema',
+  'rejects a rate outside the schema (450 as landing on garbage)',
+  { venueShareRate: 450 },
+  false,
+);
+
 /* ── error envelope: status → code map ────────────────────────────────────── */
 for (const status of [400, 401, 403, 404, 409, 422, 429, 500, 502, 503, 418]) {
   const front = frontendErrors.statusToErrorCode(status);
@@ -516,6 +584,276 @@ for (const status of [400, 401, 403, 404, 409, 422, 429, 500, 502, 503, 418]) {
     failures.push(`DRIFT status→code for ${status}: frontend "${front}", backend "${back}"`);
   }
 }
+
+/* ── admin role schema ──────────────────────────────────────────────────── */
+const VALID_ADMIN_ROLES = ['super', 'admin', 'ops', 'finance', 'support'];
+for (const role of VALID_ADMIN_ROLES) {
+  agree('adminRoleSchema', `accepts admin role "${role}"`, role, true);
+}
+agree('adminRoleSchema', 'rejects V1-only "content" role (dropped in V2)', 'content', false);
+agree('adminRoleSchema', 'rejects V1-only "readonly" role (dropped in V2)', 'readonly', false);
+agree('adminRoleSchema', 'rejects a non-string', 123, false);
+
+/* ── admin action schema ────────────────────────────────────────────────── */
+const ADMIN_ACTIONS = [
+  'EVENT_PAUSE',
+  'EVENT_RESUME',
+  'ONBOARDING_APPROVE',
+  'VENUE_SUSPEND',
+  'VENUE_REINSTATE',
+  'ORGANIZATION_SUSPEND',
+  'ORGANIZATION_REINSTATE',
+  'FINANCIAL_REFUND',
+  'PAYOUT_BATCH_RUN',
+  'DISPUTE_RESOLVE',
+  'USER_BAN',
+  'USER_UNBAN',
+  'ADMIN_PROVISION',
+  'ADMIN_ROLE_UPDATE',
+  'COMMISSION_ADJUST',
+  'PAYOUT_FREEZE',
+  'PAYOUT_RELEASE',
+  'PROMOTER_SUSPEND',
+  'PROMOTER_REINSTATE',
+];
+for (const action of ADMIN_ACTIONS) {
+  agree('adminActionSchema', `accepts action "${action}"`, action, true);
+}
+agree('adminActionSchema', 'rejects an unknown action', 'FORCE_EVENT_COMPLETE', false);
+agree('adminActionSchema', 'rejects a non-string', null, false);
+
+/* ── admin promoter assignment status schema ────────────────────────────── */
+for (const status of ['active', 'ended', 'suspended']) {
+  agree('adminPromoterAssignmentStatusSchema', `accepts status "${status}"`, status, true);
+}
+agree('adminPromoterAssignmentStatusSchema', 'rejects an unknown status', 'pending', false);
+agree('adminPromoterAssignmentStatusSchema', 'rejects a non-string', 123, false);
+
+/* ── admin promoter assignment DTO shape ────────────────────────────────── */
+const VALID_ADMIN_PROMOTER_ASSIGNMENT = {
+  id: 'pmt_0001',
+  eventId: 'evt_0001',
+  promoterId: 'usr_0001',
+  status: 'active',
+  ratePercent: 5,
+  flatPaise: 0,
+  createdAt: '2026-08-01T00:00:00.000Z',
+  endedAt: null,
+  suspendedAt: null,
+};
+agree(
+  'adminPromoterAssignmentDtoSchema',
+  'accepts a canonical assignment',
+  VALID_ADMIN_PROMOTER_ASSIGNMENT,
+  true,
+);
+agree(
+  'adminPromoterAssignmentDtoSchema',
+  'rejects when id is missing',
+  { ...VALID_ADMIN_PROMOTER_ASSIGNMENT, id: undefined },
+  false,
+);
+agree(
+  'adminPromoterAssignmentDtoSchema',
+  'rejects when status is invalid',
+  { ...VALID_ADMIN_PROMOTER_ASSIGNMENT, status: 'deleted' },
+  false,
+);
+
+/* ── admin promoter action response ─────────────────────────────────────── */
+agree(
+  'adminPromoterActionResponseSchema',
+  'accepts a valid suspend result',
+  {
+    promoterId: 'usr_0001',
+    action: 'suspended',
+    affectedAssignments: 3,
+    at: '2026-08-15T00:00:00.000Z',
+  },
+  true,
+);
+agree(
+  'adminPromoterActionResponseSchema',
+  'rejects an invalid action',
+  {
+    promoterId: 'usr_0001',
+    action: 'unknown',
+    affectedAssignments: 0,
+    at: '2026-08-15T00:00:00.000Z',
+  },
+  false,
+);
+
+/* ── admin platform settings DTO ─────────────────────────────────────────── */
+const VALID_PLATFORM_SETTINGS = {
+  platformFeeRate: 0.15,
+  refundSingleApproverThresholdPaise: 50000,
+  refundDualApproverThresholdPaise: 500000,
+  maintenanceMode: false,
+  featureFlags: { enableSpins: true },
+  updatedAt: ISO,
+};
+agree('platformSettingsDtoSchema', 'accepts canonical settings', VALID_PLATFORM_SETTINGS, true);
+agree(
+  'platformSettingsDtoSchema',
+  'accepts maintenance mode + empty flags',
+  {
+    ...VALID_PLATFORM_SETTINGS,
+    maintenanceMode: true,
+    featureFlags: {},
+  },
+  true,
+);
+agree(
+  'platformSettingsDtoSchema',
+  'rejects fee outside [0,1]',
+  { ...VALID_PLATFORM_SETTINGS, platformFeeRate: 1.5 },
+  false,
+);
+agree(
+  'platformSettingsDtoSchema',
+  'rejects a negative threshold',
+  { ...VALID_PLATFORM_SETTINGS, refundSingleApproverThresholdPaise: -1 },
+  false,
+);
+agree(
+  'platformSettingsUpdateRequestSchema',
+  'accepts a partial patch',
+  {
+    refundSingleApproverThresholdPaise: 75000,
+  },
+  true,
+);
+agree(
+  'platformSettingsUpdateRequestSchema',
+  'accepts nested featureFlags patch',
+  {
+    featureFlags: { spins: true, merch: false },
+  },
+  true,
+);
+agree('platformSettingsUpdateRequestSchema', 'rejects unknown field', { bogus: 1 }, false);
+
+/* ── admin order DTO ────────────────────────────────────────────────────── */
+const VALID_ADMIN_ORDER = {
+  id: 'ord_1',
+  eventId: 'evt_1',
+  organizationId: 'org_1',
+  userId: 'usr_1',
+  status: 'paid',
+  ticketCount: 2,
+  grandTotalPaise: 2000,
+  refundedPaise: 0,
+  contact: { name: 'Test', email: 't@example.com', phone: '+910000000000' },
+  paymentId: 'pay_1',
+  paidAt: ISO,
+  createdAt: ISO,
+};
+agree('adminOrderDtoSchema', 'accepts a canonical paid order', VALID_ADMIN_ORDER, true);
+agree(
+  'adminOrderDtoSchema',
+  'accepts nullable userId',
+  { ...VALID_ADMIN_ORDER, userId: null },
+  true,
+);
+agree(
+  'adminOrderDtoSchema',
+  'accepts nullable paymentId',
+  { ...VALID_ADMIN_ORDER, paymentId: null },
+  true,
+);
+agree(
+  'adminOrderDtoSchema',
+  'rejects an unknown status',
+  { ...VALID_ADMIN_ORDER, status: 'in_progress' },
+  false,
+);
+
+/* ── admin venue DTO ────────────────────────────────────────────────────── */
+const VALID_ADMIN_VENUE = {
+  id: 'ven_1',
+  organizationId: 'org_1',
+  name: 'Neon Room',
+  slug: 'neon-room',
+  city: 'Mumbai',
+  status: 'active',
+  capacity: 300,
+  createdAt: ISO,
+  updatedAt: ISO,
+};
+agree('adminVenueDtoSchema', 'accepts a canonical venue', VALID_ADMIN_VENUE, true);
+agree(
+  'adminVenueDtoSchema',
+  'accepts a suspended venue with null city',
+  { ...VALID_ADMIN_VENUE, status: 'suspended', city: null },
+  true,
+);
+agree(
+  'adminVenueDtoSchema',
+  'rejects an out-of-enum status',
+  { ...VALID_ADMIN_VENUE, status: 'flagged' },
+  false,
+);
+
+/* ── admin ticket DTO ───────────────────────────────────────────────────── */
+const VALID_ADMIN_TICKET = {
+  id: 'ent_1',
+  orderId: 'ord_1',
+  eventId: 'evt_1',
+  organizationId: 'org_1',
+  tierName: 'General',
+  userId: null,
+  holderName: 'Guest',
+  status: 'valid',
+  scanCountAllowed: 1,
+  scanCount: 0,
+  lastScannedAt: null,
+  createdAt: ISO,
+};
+agree('adminTicketDtoSchema', 'accepts a canonical valid ticket', VALID_ADMIN_TICKET, true);
+agree(
+  'adminTicketDtoSchema',
+  'accepts a redeemed ticket with a scan timestamp',
+  { ...VALID_ADMIN_TICKET, status: 'redeemed', scanCount: 1, lastScannedAt: ISO },
+  true,
+);
+agree(
+  'adminTicketDtoSchema',
+  'rejects an unknown status',
+  { ...VALID_ADMIN_TICKET, status: 'used' },
+  false,
+);
+
+/* ── admin promo DTO ────────────────────────────────────────────────────── */
+const VALID_ADMIN_PROMO = {
+  id: 'promo_1',
+  eventId: 'evt_1',
+  organizationId: 'org_1',
+  code: 'EARLYBIRD',
+  name: 'Early Bird',
+  type: 'public',
+  discountType: 'percent',
+  discountValue: 10,
+  maxRedemptions: 100,
+  redemptionCount: 5,
+  startsAt: null,
+  endsAt: null,
+  isActive: true,
+  createdAt: ISO,
+};
+agree('adminPromoDtoSchema', 'accepts a canonical promo code', VALID_ADMIN_PROMO, true);
+agree(
+  'adminPromoDtoSchema',
+  'rejects an unknown promo type',
+  { ...VALID_ADMIN_PROMO, type: 'unlimited' },
+  false,
+);
+
+/* ── admin dispute status ───────────────────────────────────────────────── */
+agree('adminDisputeStatusSchema', 'accepts "open"', 'open', true);
+agree('adminDisputeStatusSchema', 'accepts "under_review"', 'under_review', true);
+agree('adminDisputeStatusSchema', 'accepts "resolved"', 'resolved', true);
+agree('adminDisputeStatusSchema', 'rejects an unknown status', 'resolved_upheld', false);
 
 /* ── error codes: the closed union must match exactly ─────────────────────── */
 {
