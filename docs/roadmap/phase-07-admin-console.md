@@ -3,7 +3,7 @@
 **Status:** Phase A DONE (2026-09-12) · Phase B DONE (2026-09-13) ·
 Phase C PAUSED (user ban done 2026-09-13; safety-reports/support-desk
 deferred, no intake path exists — see below) · Phase D DONE except
-admin invite-by-email (deferred, needs Better Auth API verification —
+admin invite-by-email (deferred, API surface verified 2026-09-20 —
 see below) · Depends on:
 Phase 2 (onboarding approvals), Phase 6 (financial actions)
 
@@ -211,16 +211,23 @@ via live Firestore-emulator browser click-through (not just unit tests).
       account (a deliberate, safer v2 simplification — promotion, not
       account creation) — porting v1's invite-a-brand-new-person flow on
       top would require calling Better Auth's server-side account-creation
-      + password-reset-link-minting API, which this session did not
-      verify against the actual `better-auth` package version in use
-      (`apps/api-gateway/src/plugins/auth.ts`). Guessing that API surface
-      risks shipping code that looks complete but doesn't work — exactly
-      the failure mode this whole gap-closure effort has been avoiding.
-      An `EmailSender` port already exists (`email-sender.ts`, Resend-
-      backed) and would need one new method for a generic invite email.
-      Next step for whoever picks this up: read `better-auth`'s actual
-      server API (`auth.api.*`) for admin-initiated user creation and
-      password-reset-link generation before writing any code.
+      + password-reset-link-minting API.
+      **API surface verified 2026-09-20 against `better-auth@1.6.26`
+      (the installed version):** `auth.api.createUser` (admin plugin)
+      supports passwordless account creation and, called server-side with
+      no headers, skips its own role check — the route's `requireAdmin`
+      gate stays the authority. Two blockers keep this deferred:
+      1. The admin plugin declares its own `user.fields.role` which
+         collides with our custom `additionalFields: { role }` in
+         `apps/api-gateway/src/plugins/auth.ts` (both write that field) —
+         a schema-merge decision, not a drop-in enable.
+      2. No synchronous invite-token return: `requestPasswordReset` /
+         magic-link only deliver the link via an email-send callback
+         (without `emailAndPassword.sendResetPassword` it throws
+         `RESET_PASSWORD_DISABLED`) and respond `{ status: true }`.
+         `EmailSender` (`packages/core/src/domain/ports/email-sender.ts`)
+         currently has only `sendOtpEmail`; a `sendInviteEmail` method +
+         wiring into `buildBetterAuth` is the build path.
 
 ## v1 proven logic to port (`thec1rcle`, `apps/admin-console/lib/server/adminStore.js`)
 
@@ -245,5 +252,7 @@ New: `v2_support_tickets`, `v2_safety_reports`, `v2_platform_announcements`.
 | 2026-09-16 | **Batch 4 + 5–9 progression** — analytics, health, tickets, promotions, promoters, and settings desks all shipped E2E. The "promoters read-only" and "settings read-only" rows in `ADMIN-DASHBOARD-GAPS.md` were the last two partial desks; both closed this day (see the two rows below). |
 | 2026-09-16 | **Part D2 — promoter lifecycle verbs.** `PROMOTER_SUSPEND`/`PROMOTER_REINSTATE` (TIER2) with `PromoterAssignmentStatus` gaining `suspended` + `suspendedAt`; `suspendPromoterAssignment`/`reinstatePromoterAssignment` FSM (`active↔suspended`, `ended` terminal); `EventCatalogRepository.listAssignmentsByPromoter` (port+memory+firestore); routes `POST /admin/promoters/:promoterId/{suspend,reinstate}` (idempotent, `runIdempotent`); contracts + parity extended. Gate: `pnpm check` (core 504, api-gateway 418), parity 118/118. |
 | 2026-09-16 | **Part D3 — platform settings singleton + refund-threshold wiring.** New `PlatformSettings` domain model (fee rate, single/dual refund ceilings 50K/500K paise, maintenanceMode, featureFlags); `PlatformSettingsRepository` port + memory + firestore (`v2_platform_settings/singleton`); `RefundService.requestRefund` now fetches live thresholds and threads them into `approversRequiredFor` (defaults = old constants, no behavior change without an admin edit). `AdminOperationsService.getPlatformSettings`/`updatePlatformSettings` (merge-update, requireAdmin). Routes GET+PUT `/admin/settings/platform` (PUT idempotent, `SENSITIVE_COMMAND`). Contracts `admin-settings.ts` `.strict()` schemas, parity-checked. `/settings` admin desk gains an editable platform settings card on the frontend; `format.tsx` fixed for the new D2 labels/status. Gate: backend `pnpm check` (core 504, api-gateway 426), parity 125/125; frontend admin-console lint/typecheck/test/build green. |
+| 2026-09-20 | **IP/UA audit sweep complete (Commit 5).** `AuditRequestMeta { ipAddress?, userAgent? }` added to `domain/ports/audit.ts`; `AdminRequestMeta` in admin-ops is now an alias. Threaded trailing `meta?` through AdminOperations (12 methods), AdminAuthority (propose/approve/reject/cancel/resolve/provision/role-update/revoke), AdminPayout (freeze/release/runBatch), AdminDispute (resolve), Refund (request/approve/reject/settle) and Onboarding (approve/reject/request-changes) services. All 10 admin route files pass `requestMeta(request)` from the new `apps/api-gateway/src/lib/v2-request-meta.ts`. Audit DTO contract unchanged (still omits ip/user-agent); `directory.test.ts` VENUE_SUSPEND asserts raw-record capture. Gate: `pnpm check` green (contracts 13, core 523, api-gateway 434). |
+| 2026-09-20 | **Admin invite-by-email API surface verified** against `better-auth@1.6.26` (details in the Phase D section above): passwordless `auth.api.createUser` works, but enabling the admin plugin collides with our custom `role` additionalField, and the reset-link APIs only deliver the token via an email-send callback (never synchronously). `EmailSender` port has only `sendOtpEmail`. Deferral now evidence-based, not a guess; build path documented. |
 
-Phase D now reads DONE (invite-by-email still deferred as documented above); Phase C remains PAUSED on intake-path grounds (unchanged).
+Phase D now reads DONE (admin invite-by-email still deferred — API surface verified 2026-09-20, see above); Phase C remains PAUSED on intake-path grounds (unchanged).
