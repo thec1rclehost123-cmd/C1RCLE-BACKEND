@@ -25,6 +25,7 @@ import type {
   ProposalStatus,
   ProposedAction,
 } from '../../domain/models/admin-authority.js';
+import type { AuditRequestMeta } from '../../domain/ports/audit.js';
 import type { PaginationQuery } from '../../domain/ports/repositories.js';
 import type { ServiceDeps } from '../context.js';
 
@@ -126,7 +127,11 @@ export class AdminAuthorityService {
 
   /* ─── Dual control ───────────────────────────────────────────────────────── */
 
-  async propose(userId: EntityId, command: ProposeCommand): Promise<ProposedAction> {
+  async propose(
+    userId: EntityId,
+    command: ProposeCommand,
+    meta?: AuditRequestMeta,
+  ): Promise<ProposedAction> {
     const admin = await this.requireAdmin(userId);
     const proposal = proposeAction({
       id: this.deps.config.ids(),
@@ -145,6 +150,8 @@ export class AdminAuthorityService {
       before: null,
       after: { action: proposal.action, status: proposal.status },
       reason: proposal.reason,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     this.deps.logger.info('admin.proposal_raised', {
       proposalId: proposal.id,
@@ -153,15 +160,29 @@ export class AdminAuthorityService {
     return proposal;
   }
 
-  async approve(userId: EntityId, proposalId: EntityId, reason?: string): Promise<ProposedAction> {
-    return this.resolve(userId, proposalId, reason, approveProposal);
+  async approve(
+    userId: EntityId,
+    proposalId: EntityId,
+    reason?: string,
+    meta?: AuditRequestMeta,
+  ): Promise<ProposedAction> {
+    return this.resolve(userId, proposalId, reason, approveProposal, meta);
   }
 
-  async reject(userId: EntityId, proposalId: EntityId, reason?: string): Promise<ProposedAction> {
-    return this.resolve(userId, proposalId, reason, rejectProposal);
+  async reject(
+    userId: EntityId,
+    proposalId: EntityId,
+    reason?: string,
+    meta?: AuditRequestMeta,
+  ): Promise<ProposedAction> {
+    return this.resolve(userId, proposalId, reason, rejectProposal, meta);
   }
 
-  async cancel(userId: EntityId, proposalId: EntityId): Promise<ProposedAction> {
+  async cancel(
+    userId: EntityId,
+    proposalId: EntityId,
+    meta?: AuditRequestMeta,
+  ): Promise<ProposedAction> {
     const admin = await this.requireAdmin(userId);
     const proposal = await this.requireProposal(proposalId);
     const cancelled = cancelProposal(proposal, admin.id, this.deps.config.clock.now());
@@ -173,6 +194,8 @@ export class AdminAuthorityService {
       before: { status: proposal.status },
       after: { status: cancelled.status },
       reason: null,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     return cancelled;
   }
@@ -195,6 +218,7 @@ export class AdminAuthorityService {
       proposal: ProposedAction,
       input: { resolvedBy: EntityId; resolverRole: AdminRole; reason?: string; now?: Date },
     ) => ProposedAction,
+    meta?: AuditRequestMeta,
   ): Promise<ProposedAction> {
     const admin = await this.requireAdmin(userId);
     const proposal = await this.requireProposal(proposalId);
@@ -213,6 +237,8 @@ export class AdminAuthorityService {
       before: { status: proposal.status },
       after: { status: resolved.status },
       reason: resolved.resolutionReason,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     this.deps.logger.info('admin.proposal_resolved', {
       proposalId: proposal.id,
@@ -242,7 +268,11 @@ export class AdminAuthorityService {
    * otherwise the executing admin could approve one thing and provision
    * something else.
    */
-  async provisionAdminFromProposal(userId: EntityId, proposalId: EntityId): Promise<PlatformAdmin> {
+  async provisionAdminFromProposal(
+    userId: EntityId,
+    proposalId: EntityId,
+    meta?: AuditRequestMeta,
+  ): Promise<PlatformAdmin> {
     const admin = await this.authorize(userId, 'ADMIN_PROVISION');
     const proposal = await this.requireProposal(proposalId);
     if (proposal.action !== 'ADMIN_PROVISION') {
@@ -275,6 +305,8 @@ export class AdminAuthorityService {
       before: existing ? { role: existing.role, isActive: existing.isActive } : null,
       after: { role: next.role, isActive: next.isActive },
       reason: proposal.reason,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     return next;
   }
@@ -287,6 +319,7 @@ export class AdminAuthorityService {
   async updateAdminRoleFromProposal(
     userId: EntityId,
     proposalId: EntityId,
+    meta?: AuditRequestMeta,
   ): Promise<PlatformAdmin> {
     const admin = await this.authorize(userId, 'ADMIN_ROLE_UPDATE');
     const proposal = await this.requireProposal(proposalId);
@@ -323,6 +356,8 @@ export class AdminAuthorityService {
       before: { role: target.role },
       after: { role: updated.role },
       reason: proposal.reason,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     return updated;
   }
@@ -332,7 +367,11 @@ export class AdminAuthorityService {
    * take authority away is the wrong failure mode when an account is
    * compromised. Granting it is the dangerous direction.
    */
-  async revokeAdmin(userId: EntityId, targetUserId: EntityId): Promise<PlatformAdmin> {
+  async revokeAdmin(
+    userId: EntityId,
+    targetUserId: EntityId,
+    meta?: AuditRequestMeta,
+  ): Promise<PlatformAdmin> {
     const admin = await this.requireAdmin(userId);
     if (admin.role !== 'super') {
       throw new ForbiddenError('Only a super admin can revoke platform authority');
@@ -353,6 +392,8 @@ export class AdminAuthorityService {
       before: { isActive: target.isActive },
       after: { isActive: revoked.isActive },
       reason: null,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     return revoked;
   }

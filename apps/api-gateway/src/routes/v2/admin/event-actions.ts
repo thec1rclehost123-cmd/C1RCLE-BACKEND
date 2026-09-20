@@ -8,6 +8,7 @@ import { z } from 'zod';
 import type { Event } from '@c1rcle/core/domain';
 
 import { isIdempotencyConflict, runIdempotent } from '../../../lib/v2-idempotency.js';
+import { requestMeta } from '../../../lib/v2-request-meta.js';
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
 import { requireUserId } from '../onboarding.js';
@@ -27,17 +28,6 @@ const services = createV2Services();
 
 const eventIdParam = z.object({ eventId: opaqueIdSchema });
 const commandHeaders = z.looseObject({ 'idempotency-key': idempotencyKeySchema });
-
-function requestMeta(request: {
-  ip?: string;
-  headers?: Record<string, string | string[] | undefined>;
-}) {
-  const ua = request.headers?.['user-agent'];
-  return {
-    ipAddress: request.ip,
-    userAgent: typeof ua === 'string' ? ua : undefined,
-  };
-}
 
 function eventToDto(event: Event) {
   return {

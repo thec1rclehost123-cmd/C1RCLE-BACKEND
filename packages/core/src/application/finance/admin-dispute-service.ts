@@ -4,6 +4,7 @@ import { createLedgerEntry } from '../../domain/models/ledger.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type { Dispute, DisputeResolutionOutcome } from '../../domain/models/dispute.js';
+import type { AuditRequestMeta } from '../../domain/ports/audit.js';
 import type { PaginationQuery } from '../../domain/ports/repositories.js';
 import type { AdminAuthorityService } from '../admin/admin-authority-service.js';
 import type { ServiceDeps } from '../context.js';
@@ -42,6 +43,7 @@ export class AdminDisputeService {
     disputeId: EntityId,
     outcome: DisputeResolutionOutcome,
     resolutionNote: string,
+    meta?: AuditRequestMeta,
   ): Promise<Dispute> {
     const admin = await this.authority.authorize(adminUserId, 'DISPUTE_RESOLVE');
     const dispute = await this.requireDispute(disputeId);
@@ -76,6 +78,8 @@ export class AdminDisputeService {
       before: { status: dispute.status },
       after: { status: resolved.status, resolution: resolved.resolution },
       reason: resolutionNote,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     return resolved;
   }

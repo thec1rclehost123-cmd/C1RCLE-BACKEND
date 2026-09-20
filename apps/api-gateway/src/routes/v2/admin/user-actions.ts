@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { PlatformUser } from '@c1rcle/core/domain';
 
 import { isIdempotencyConflict, runIdempotent } from '../../../lib/v2-idempotency.js';
+import { requestMeta } from '../../../lib/v2-request-meta.js';
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
 import { requireUserId } from '../onboarding.js';
@@ -68,7 +69,12 @@ export default async function adminUserActionRoutes(fastify: FastifyInstance) {
         idempotencyKey: v2Headers['idempotency-key'],
         context: { path: { userId }, body: {} },
         run: async () => {
-          const user = await services.adminOps.banUser(adminUserId, userId, body.reason);
+          const user = await services.adminOps.banUser(
+            adminUserId,
+            userId,
+            body.reason,
+            requestMeta(request),
+          );
           const validated = validateV2Response(reply, request, adminUserDtoSchema, userToDto(user));
           if (validated === undefined) throw new Error('v2 response validation failed');
           return { statusCode: 200, body: validated };
@@ -107,7 +113,7 @@ export default async function adminUserActionRoutes(fastify: FastifyInstance) {
         idempotencyKey: v2Headers['idempotency-key'],
         context: { path: { userId }, body: {} },
         run: async () => {
-          const user = await services.adminOps.unbanUser(adminUserId, userId);
+          const user = await services.adminOps.unbanUser(adminUserId, userId, requestMeta(request));
           const validated = validateV2Response(reply, request, adminUserDtoSchema, userToDto(user));
           if (validated === undefined) throw new Error('v2 response validation failed');
           return { statusCode: 200, body: validated };

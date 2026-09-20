@@ -13,6 +13,7 @@ import { z } from 'zod';
 import type { Payout } from '@c1rcle/core/domain';
 
 import { isIdempotencyConflict, runIdempotent } from '../../../lib/v2-idempotency.js';
+import { requestMeta } from '../../../lib/v2-request-meta.js';
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
 import { requireUserId } from '../onboarding.js';
@@ -83,7 +84,11 @@ export default async function adminPayoutRoutes(fastify: FastifyInstance) {
         idempotencyKey: v2Headers['idempotency-key'],
         context: { path: { proposalId }, body: {} },
         run: async () => {
-          const payout = await services.adminPayout.freezePayoutFromProposal(userId, proposalId);
+          const payout = await services.adminPayout.freezePayoutFromProposal(
+            userId,
+            proposalId,
+            requestMeta(request),
+          );
           const validated = validateV2Response(
             reply,
             request,
@@ -127,7 +132,11 @@ export default async function adminPayoutRoutes(fastify: FastifyInstance) {
         idempotencyKey: v2Headers['idempotency-key'],
         context: { path: { proposalId }, body: {} },
         run: async () => {
-          const payout = await services.adminPayout.releasePayoutFromProposal(userId, proposalId);
+          const payout = await services.adminPayout.releasePayoutFromProposal(
+            userId,
+            proposalId,
+            requestMeta(request),
+          );
           const validated = validateV2Response(
             reply,
             request,
@@ -173,7 +182,11 @@ export default async function adminPayoutRoutes(fastify: FastifyInstance) {
         idempotencyKey: v2Headers['idempotency-key'],
         context: { path: {}, body },
         run: async () => {
-          const outcome = await services.adminPayout.runBatch(userId, body.payoutIds);
+          const outcome = await services.adminPayout.runBatch(
+            userId,
+            body.payoutIds,
+            requestMeta(request),
+          );
           const validated = validateV2Response(reply, request, payoutBatchResultSchema, {
             processed: outcome.processed.map(payoutToDto),
             skipped: outcome.skipped,

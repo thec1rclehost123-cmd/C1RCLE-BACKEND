@@ -4,6 +4,7 @@ import { beginProcessing, freezePayout, releasePayout } from '../../domain/model
 
 import type { EntityId } from '../../domain/identity.js';
 import type { Payout } from '../../domain/models/payout.js';
+import type { AuditRequestMeta } from '../../domain/ports/audit.js';
 import type { PaginationQuery } from '../../domain/ports/repositories.js';
 import type { AdminAuthorityService } from '../admin/admin-authority-service.js';
 import type { ServiceDeps } from '../context.js';
@@ -34,7 +35,11 @@ export class AdminPayoutService {
     return this.deps.repositories.payouts;
   }
 
-  async freezePayoutFromProposal(adminUserId: EntityId, proposalId: EntityId): Promise<Payout> {
+  async freezePayoutFromProposal(
+    adminUserId: EntityId,
+    proposalId: EntityId,
+    meta?: AuditRequestMeta,
+  ): Promise<Payout> {
     const admin = await this.authority.authorize(adminUserId, 'PAYOUT_FREEZE');
     const proposal = await this.authority.getProposal(adminUserId, proposalId);
     if (proposal.action !== 'PAYOUT_FREEZE') {
@@ -55,11 +60,17 @@ export class AdminPayoutService {
       before: { status: payout.status },
       after: { status: frozen.status, previousStatus: frozen.previousStatus },
       reason: proposal.reason,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     return frozen;
   }
 
-  async releasePayoutFromProposal(adminUserId: EntityId, proposalId: EntityId): Promise<Payout> {
+  async releasePayoutFromProposal(
+    adminUserId: EntityId,
+    proposalId: EntityId,
+    meta?: AuditRequestMeta,
+  ): Promise<Payout> {
     const admin = await this.authority.authorize(adminUserId, 'PAYOUT_RELEASE');
     const proposal = await this.authority.getProposal(adminUserId, proposalId);
     if (proposal.action !== 'PAYOUT_RELEASE') {
@@ -80,6 +91,8 @@ export class AdminPayoutService {
       before: { status: payout.status },
       after: { status: released.status },
       reason: proposal.reason,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     return released;
   }
@@ -88,6 +101,7 @@ export class AdminPayoutService {
   async runBatch(
     adminUserId: EntityId,
     payoutIds: EntityId[],
+    meta?: AuditRequestMeta,
   ): Promise<{ processed: Payout[]; skipped: { id: EntityId; reason: string }[] }> {
     const admin = await this.authority.authorize(adminUserId, 'PAYOUT_BATCH_RUN');
     const now = this.deps.config.clock.now();
@@ -116,6 +130,8 @@ export class AdminPayoutService {
       before: { requested: payoutIds.length },
       after: { processed: processed.length, skipped: skipped.length },
       reason: null,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     return { processed, skipped };
   }

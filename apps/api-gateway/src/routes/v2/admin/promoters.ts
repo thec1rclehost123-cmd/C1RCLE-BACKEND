@@ -10,6 +10,7 @@ import { z } from 'zod';
 import type { PromoterAssignment } from '@c1rcle/core/domain';
 
 import { isIdempotencyConflict, runIdempotent } from '../../../lib/v2-idempotency.js';
+import { requestMeta } from '../../../lib/v2-request-meta.js';
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
 import { requireUserId } from '../onboarding.js';
@@ -115,7 +116,11 @@ export default async function adminPromotersRoutes(fastify: FastifyInstance) {
         idempotencyKey: v2Headers['idempotency-key'],
         context: { path: { promoterId }, body: {} },
         run: async () => {
-          const outcome = await services.adminOps.suspendPromoter(userId, promoterId);
+          const outcome = await services.adminOps.suspendPromoter(
+            userId,
+            promoterId,
+            requestMeta(request),
+          );
           const validated = validateV2Response(reply, request, adminPromoterActionResponseSchema, {
             promoterId,
             action: 'suspended',
@@ -159,7 +164,11 @@ export default async function adminPromotersRoutes(fastify: FastifyInstance) {
         idempotencyKey: v2Headers['idempotency-key'],
         context: { path: { promoterId }, body: {} },
         run: async () => {
-          const outcome = await services.adminOps.reinstatePromoter(userId, promoterId);
+          const outcome = await services.adminOps.reinstatePromoter(
+            userId,
+            promoterId,
+            requestMeta(request),
+          );
           const validated = validateV2Response(reply, request, adminPromoterActionResponseSchema, {
             promoterId,
             action: 'reinstated',

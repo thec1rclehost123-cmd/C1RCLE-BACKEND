@@ -18,6 +18,7 @@ import type { EntityId } from '../../domain/identity.js';
 import type { PlatformAdmin } from '../../domain/models/admin-authority.js';
 import type { Order } from '../../domain/models/order.js';
 import type { AdminRefundRequest } from '../../domain/models/refund-request.js';
+import type { AuditRequestMeta } from '../../domain/ports/audit.js';
 import type { PaginationQuery } from '../../domain/ports/repositories.js';
 import type { AdminAuthorityService } from '../admin/admin-authority-service.js';
 import type { ServiceDeps } from '../context.js';
@@ -64,6 +65,7 @@ export class RefundService {
   async requestRefund(
     adminUserId: EntityId,
     command: RequestRefundCommand,
+    meta?: AuditRequestMeta,
   ): Promise<{ request: AdminRefundRequest; order: Order }> {
     const admin = await this.authority.authorize(adminUserId, 'FINANCIAL_REFUND');
     const order = await this.requireOrder(command.orderId);
@@ -108,6 +110,8 @@ export class RefundService {
       before: { orderStatus: order.status },
       after: { orderStatus: lockedOrder.status, requestStatus: request.status },
       reason: request.reason,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     this.deps.logger.info('refund.requested', {
       requestId: request.id,
@@ -118,7 +122,7 @@ export class RefundService {
 
     if (isFullyApproved(request)) {
       // Zero-approver tier — settle immediately, same call.
-      return this.settle(admin, request, lockedOrder);
+      return this.settle(admin, request, lockedOrder, meta);
     }
     return { request, order: lockedOrder };
   }
@@ -126,6 +130,7 @@ export class RefundService {
   async approveRefund(
     adminUserId: EntityId,
     refundRequestId: EntityId,
+    meta?: AuditRequestMeta,
   ): Promise<{ request: AdminRefundRequest; order: Order }> {
     const admin = await this.authority.authorize(adminUserId, 'FINANCIAL_REFUND');
     const request = await this.requireRefundRequest(refundRequestId);
@@ -139,6 +144,8 @@ export class RefundService {
       before: { status: request.status, approvals: request.approvals.length },
       after: { status: approved.status, approvals: approved.approvals.length },
       reason: null,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
 
     if (!isFullyApproved(approved)) {
@@ -146,13 +153,14 @@ export class RefundService {
       return { request: approved, order };
     }
     const order = await this.requireOrder(request.orderId);
-    return this.settle(admin, approved, order);
+    return this.settle(admin, approved, order, meta);
   }
 
   async rejectRefund(
     adminUserId: EntityId,
     refundRequestId: EntityId,
     reason: string,
+    meta?: AuditRequestMeta,
   ): Promise<{ request: AdminRefundRequest; order: Order }> {
     const admin = await this.authority.authorize(adminUserId, 'FINANCIAL_REFUND');
     const request = await this.requireRefundRequest(refundRequestId);
@@ -174,6 +182,8 @@ export class RefundService {
       before: { status: request.status, orderStatus: order.status },
       after: { status: rejected.status, orderStatus: restored.status },
       reason,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     this.deps.logger.info('refund.rejected', { requestId: request.id, orderId: order.id });
     return { request: rejected, order: restored };
@@ -202,6 +212,7 @@ export class RefundService {
     admin: PlatformAdmin,
     request: AdminRefundRequest,
     order: Order,
+    meta?: AuditRequestMeta,
   ): Promise<{ request: AdminRefundRequest; order: Order }> {
     if (!order.paymentId) {
       throw new InvalidOperationError(`Order ${order.id} has no payment id to refund`);
@@ -227,6 +238,8 @@ export class RefundService {
         before: { orderStatus: order.status },
         after: { orderStatus: refundedOrder.status, providerRefundId: providerResponse.id },
         reason: null,
+        ipAddress: meta?.ipAddress,
+        userAgent: meta?.userAgent,
       });
       this.deps.logger.info('refund.settled', {
         requestId: request.id,
@@ -247,6 +260,8 @@ export class RefundService {
         before: { orderStatus: order.status },
         after: { orderStatus: restored.status, failureReason: message },
         reason: message,
+        ipAddress: meta?.ipAddress,
+        userAgent: meta?.userAgent,
       });
       this.deps.logger.error('refund.settle_failed', { requestId: request.id, error: message });
       return { request: failed, order: restored };

@@ -10,6 +10,7 @@ import { z } from 'zod';
 
 import type { Event, Organization, PlatformUser, Venue } from '@c1rcle/core/domain';
 
+import { requestMeta } from '../../../lib/v2-request-meta.js';
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
 import { requireUserId } from '../onboarding.js';
@@ -273,7 +274,7 @@ export default async function adminDirectoryRoutes(fastify: FastifyInstance) {
       if (userId === undefined) return reply;
 
       const result = await services.adminOps
-        .exportUsers(userId)
+        .exportUsers(userId, requestMeta(request))
         .catch((error: unknown) => mapDomainError(reply, request, userId, error));
       if (result === undefined) return reply;
 
@@ -308,7 +309,7 @@ export default async function adminDirectoryRoutes(fastify: FastifyInstance) {
       if (userId === undefined) return reply;
 
       const rows = await services.adminOps
-        .exportAudit(userId, 1000)
+        .exportAudit(userId, 1000, requestMeta(request))
         .catch((error: unknown) => mapDomainError(reply, request, userId, error));
       if (rows === undefined) return reply;
 

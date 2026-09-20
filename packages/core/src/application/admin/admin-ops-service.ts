@@ -31,11 +31,15 @@ import type {
 } from '../../domain/models/platform-settings.js';
 import type { PlatformUser } from '../../domain/models/platform-user.js';
 import type { Venue } from '../../domain/models/venue.js';
+import type { AuditRequestMeta } from '../../domain/ports/audit.js';
 import type { Page, PaginationQuery } from '../../domain/ports/repositories.js';
 import type { ServiceDeps } from '../context.js';
 
 /** The admin users view adds ban status; the domain model itself stays clean. */
 export type PlatformUserWithBanStatus = PlatformUser & { isBanned: boolean };
+
+/** Caller context (IP / User-Agent) captured at the route and forwarded into the audit record. */
+export type AdminRequestMeta = AuditRequestMeta;
 
 /** Bound on the per-collection scan `getAnalyticsSummary` does — see its doc comment. */
 const ANALYTICS_SCAN_LIMIT = 1000;
@@ -179,6 +183,7 @@ export class AdminOperationsService {
   async suspendPromoter(
     adminUserId: EntityId,
     promoterId: EntityId,
+    meta?: AdminRequestMeta,
   ): Promise<{ affected: number; at: Date }> {
     const admin = await this.authority.authorize(adminUserId, 'PROMOTER_SUSPEND');
     const now = this.deps.config.clock.now();
@@ -203,6 +208,8 @@ export class AdminOperationsService {
         before: { assignments: before },
         after: { assignments: after },
         reason: null,
+        ipAddress: meta?.ipAddress,
+        userAgent: meta?.userAgent,
       });
     }
     return { affected, at: now };
@@ -216,6 +223,7 @@ export class AdminOperationsService {
   async reinstatePromoter(
     adminUserId: EntityId,
     promoterId: EntityId,
+    meta?: AdminRequestMeta,
   ): Promise<{ affected: number; at: Date }> {
     const admin = await this.authority.authorize(adminUserId, 'PROMOTER_REINSTATE');
     const now = this.deps.config.clock.now();
@@ -240,6 +248,8 @@ export class AdminOperationsService {
         before: { assignments: before },
         after: { assignments: after },
         reason: null,
+        ipAddress: meta?.ipAddress,
+        userAgent: meta?.userAgent,
       });
     }
     return { affected, at: now };
@@ -261,6 +271,7 @@ export class AdminOperationsService {
   async updatePlatformSettings(
     adminUserId: EntityId,
     patch: PlatformSettingsInput,
+    meta?: AdminRequestMeta,
   ): Promise<PlatformSettings> {
     const admin = await this.authority.requireAdmin(adminUserId);
     const current = await this.deps.repositories.platformSettings.get();
@@ -288,6 +299,8 @@ export class AdminOperationsService {
         maintenanceMode: updated.maintenanceMode,
       },
       reason: null,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     return updated;
   }
@@ -364,6 +377,7 @@ export class AdminOperationsService {
     adminUserId: EntityId,
     targetUserId: EntityId,
     reason?: string,
+    meta?: AdminRequestMeta,
   ): Promise<PlatformUserWithBanStatus> {
     const admin = await this.authority.authorize(adminUserId, 'USER_BAN');
     const existing = await this.userBans.getByUserId(targetUserId);
@@ -377,6 +391,8 @@ export class AdminOperationsService {
         before: { isBanned: existing?.isBanned ?? false },
         after: { isBanned: banned.isBanned },
         reason: banned.banReason,
+        ipAddress: meta?.ipAddress,
+        userAgent: meta?.userAgent,
       });
     }
     return this.withBanStatus(targetUserId, banned.isBanned);
@@ -386,6 +402,7 @@ export class AdminOperationsService {
   async unbanUser(
     adminUserId: EntityId,
     targetUserId: EntityId,
+    meta?: AdminRequestMeta,
   ): Promise<PlatformUserWithBanStatus> {
     const admin = await this.authority.authorize(adminUserId, 'USER_UNBAN');
     const existing = await this.userBans.getByUserId(targetUserId);
@@ -400,6 +417,8 @@ export class AdminOperationsService {
         before: { isBanned: existing.isBanned },
         after: { isBanned: unbanned.isBanned },
         reason: null,
+        ipAddress: meta?.ipAddress,
+        userAgent: meta?.userAgent,
       });
     }
     return this.withBanStatus(targetUserId, unbanned.isBanned);
@@ -438,7 +457,10 @@ export class AdminOperationsService {
    * every other role gets it redacted, matching v1's rule verbatim. The
    * export itself is audited with the row count, same as `exportAudit`.
    */
-  async exportUsers(adminUserId: EntityId): Promise<{
+  async exportUsers(
+    adminUserId: EntityId,
+    meta?: AdminRequestMeta,
+  ): Promise<{
     rows: PlatformUserWithBanStatus[];
     redactEmail: boolean;
   }> {
@@ -452,12 +474,14 @@ export class AdminOperationsService {
       before: null,
       after: { rows: page.items.length },
       reason: null,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     return { rows: page.items, redactEmail };
   }
 
   /** CSV export of the admin audit trail; a matching audit row is recorded. */
-  async exportAudit(adminUserId: EntityId, limit: number) {
+  async exportAudit(adminUserId: EntityId, limit: number, meta?: AdminRequestMeta) {
     const admin = await this.authority.requireAdmin(adminUserId);
     const rows = await this.authority.listAudit(adminUserId, limit);
     await this.authority.record(admin, {
@@ -467,6 +491,8 @@ export class AdminOperationsService {
       before: null,
       after: { limit, rows: rows.length },
       reason: null,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     return rows;
   }
@@ -477,7 +503,11 @@ export class AdminOperationsService {
    * TIER3 actions route through dual control; `proposeAction` refuses lower
    * tiers outright). Audits before/after; idempotent on repeat.
    */
-  async suspendVenue(adminUserId: EntityId, venueId: EntityId): Promise<Venue> {
+  async suspendVenue(
+    adminUserId: EntityId,
+    venueId: EntityId,
+    meta?: AdminRequestMeta,
+  ): Promise<Venue> {
     const admin = await this.authority.authorize(adminUserId, 'VENUE_SUSPEND');
     const venue = await this.requireVenue(venueId);
     const now = this.deps.config.clock.now();
@@ -491,6 +521,8 @@ export class AdminOperationsService {
       before: { status: venue.status },
       after: { status: suspended.status },
       reason: null,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     return suspended;
   }
@@ -505,6 +537,7 @@ export class AdminOperationsService {
   async adjustCommissionFromProposal(
     adminUserId: EntityId,
     proposalId: EntityId,
+    meta?: AdminRequestMeta,
   ): Promise<Organization> {
     const admin = await this.authority.authorize(adminUserId, 'COMMISSION_ADJUST');
     const proposal = await this.authority.getProposal(adminUserId, proposalId);
@@ -531,12 +564,18 @@ export class AdminOperationsService {
       before: { platformFeePercent: org.platformFeePercent },
       after: { platformFeePercent: adjusted.platformFeePercent },
       reason: proposal.reason,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     return adjusted;
   }
 
   /** Reinstates a suspended venue. TIER2, direct command, mirrors `suspendVenue`. */
-  async reinstateVenue(adminUserId: EntityId, venueId: EntityId): Promise<Venue> {
+  async reinstateVenue(
+    adminUserId: EntityId,
+    venueId: EntityId,
+    meta?: AdminRequestMeta,
+  ): Promise<Venue> {
     const admin = await this.authority.authorize(adminUserId, 'VENUE_REINSTATE');
     const venue = await this.requireVenue(venueId);
     const now = this.deps.config.clock.now();
@@ -550,6 +589,8 @@ export class AdminOperationsService {
       before: { status: venue.status },
       after: { status: reinstated.status },
       reason: null,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     return reinstated;
   }
@@ -563,6 +604,7 @@ export class AdminOperationsService {
   async suspendOrganization(
     adminUserId: EntityId,
     organizationId: EntityId,
+    meta?: AdminRequestMeta,
   ): Promise<Organization> {
     const admin = await this.authority.authorize(adminUserId, 'ORGANIZATION_SUSPEND');
     const org = await this.requireOrganization(organizationId);
@@ -577,6 +619,8 @@ export class AdminOperationsService {
       before: { status: org.status },
       after: { status: suspended.status },
       reason: null,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     return suspended;
   }
@@ -585,6 +629,7 @@ export class AdminOperationsService {
   async reinstateOrganization(
     adminUserId: EntityId,
     organizationId: EntityId,
+    meta?: AdminRequestMeta,
   ): Promise<Organization> {
     const admin = await this.authority.authorize(adminUserId, 'ORGANIZATION_REINSTATE');
     const org = await this.requireOrganization(organizationId);
@@ -599,6 +644,8 @@ export class AdminOperationsService {
       before: { status: org.status },
       after: { status: reinstated.status },
       reason: null,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     return reinstated;
   }
@@ -610,7 +657,7 @@ export class AdminOperationsService {
   async pauseEvent(
     adminUserId: EntityId,
     eventId: EntityId,
-    meta?: { ipAddress?: string; userAgent?: string },
+    meta?: AdminRequestMeta,
   ): Promise<Event> {
     const admin = await this.authority.authorize(adminUserId, 'EVENT_PAUSE');
     const event = await this.requireEvent(eventId);
@@ -635,7 +682,7 @@ export class AdminOperationsService {
   async resumeEvent(
     adminUserId: EntityId,
     eventId: EntityId,
-    meta?: { ipAddress?: string; userAgent?: string },
+    meta?: AdminRequestMeta,
   ): Promise<Event> {
     const admin = await this.authority.authorize(adminUserId, 'EVENT_RESUME');
     const event = await this.requireEvent(eventId);
@@ -666,7 +713,7 @@ export class AdminOperationsService {
   async forceCompleteEvent(
     adminUserId: EntityId,
     eventId: EntityId,
-    meta?: { ipAddress?: string; userAgent?: string },
+    meta?: AdminRequestMeta,
   ): Promise<Event> {
     const admin = await this.authority.authorize(adminUserId, 'EVENT_FORCE_PAUSE');
     const event = await this.requireEvent(eventId);

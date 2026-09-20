@@ -29,6 +29,7 @@ import type {
   PartnerEntityType,
 } from '../../domain/models/onboarding.js';
 import type { Capability, Organization } from '../../domain/models/organization.js';
+import type { AuditRequestMeta } from '../../domain/ports/audit.js';
 import type { UploadUrlGrant } from '../../domain/ports/object-storage.js';
 import type { PaginationQuery } from '../../domain/ports/repositories.js';
 import type { VerificationResult } from '../../domain/ports/verification.js';
@@ -333,6 +334,7 @@ export class OnboardingService {
   async approve(
     adminUserId: EntityId,
     command: ReviewCommand,
+    meta?: AuditRequestMeta,
   ): Promise<{ request: OnboardingRequest; organization: Organization }> {
     const admin = await this.authority.authorize(adminUserId, 'ONBOARDING_APPROVE');
     const request = await this.requireRequest(command.requestId);
@@ -370,6 +372,8 @@ export class OnboardingService {
       before: { status: request.status },
       after: { status: approved.status, organizationId: organization.id },
       reason: command.note ?? null,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     this.deps.logger.info('onboarding.approved', {
       requestId: request.id,
@@ -378,15 +382,33 @@ export class OnboardingService {
     return { request: approved, organization };
   }
 
-  async reject(adminUserId: EntityId, command: ReviewCommand): Promise<OnboardingRequest> {
-    return this.review(adminUserId, command, 'onboarding.reject', (request, admin, now) =>
-      rejectOnboardingRequest(request, { reviewedBy: admin.id, note: command.note, now }),
+  async reject(
+    adminUserId: EntityId,
+    command: ReviewCommand,
+    meta?: AuditRequestMeta,
+  ): Promise<OnboardingRequest> {
+    return this.review(
+      adminUserId,
+      command,
+      'onboarding.reject',
+      (request, admin, now) =>
+        rejectOnboardingRequest(request, { reviewedBy: admin.id, note: command.note, now }),
+      meta,
     );
   }
 
-  async requestChanges(adminUserId: EntityId, command: ReviewCommand): Promise<OnboardingRequest> {
-    return this.review(adminUserId, command, 'onboarding.request_changes', (request, admin, now) =>
-      requestOnboardingChanges(request, { reviewedBy: admin.id, note: command.note, now }),
+  async requestChanges(
+    adminUserId: EntityId,
+    command: ReviewCommand,
+    meta?: AuditRequestMeta,
+  ): Promise<OnboardingRequest> {
+    return this.review(
+      adminUserId,
+      command,
+      'onboarding.request_changes',
+      (request, admin, now) =>
+        requestOnboardingChanges(request, { reviewedBy: admin.id, note: command.note, now }),
+      meta,
     );
   }
 
@@ -395,6 +417,7 @@ export class OnboardingService {
     command: ReviewCommand,
     auditAction: string,
     apply: (request: OnboardingRequest, admin: PlatformAdmin, now: Date) => OnboardingRequest,
+    meta?: AuditRequestMeta,
   ): Promise<OnboardingRequest> {
     // Rejecting and asking for changes are TIER2 as well: both determine
     // whether a business gets onto the platform.
@@ -409,6 +432,8 @@ export class OnboardingService {
       before: { status: request.status },
       after: { status: updated.status },
       reason: command.note ?? null,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     return updated;
   }

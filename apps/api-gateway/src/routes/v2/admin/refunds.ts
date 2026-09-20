@@ -14,6 +14,7 @@ import { z } from 'zod';
 import type { AdminRefundRequest, Order } from '@c1rcle/core/domain';
 
 import { isIdempotencyConflict, runIdempotent } from '../../../lib/v2-idempotency.js';
+import { requestMeta } from '../../../lib/v2-request-meta.js';
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
 import { requireUserId } from '../onboarding.js';
@@ -103,11 +104,15 @@ export default async function adminRefundRoutes(fastify: FastifyInstance) {
         idempotencyKey: v2Headers['idempotency-key'],
         context: { path: {}, body },
         run: async () => {
-          const outcome = await services.refund.requestRefund(userId, {
-            orderId: body.orderId,
-            amountPaise: body.amountPaise,
-            reason: body.reason,
-          });
+          const outcome = await services.refund.requestRefund(
+            userId,
+            {
+              orderId: body.orderId,
+              amountPaise: body.amountPaise,
+              reason: body.reason,
+            },
+            requestMeta(request),
+          );
           const validated = validateV2Response(
             reply,
             request,
@@ -153,7 +158,11 @@ export default async function adminRefundRoutes(fastify: FastifyInstance) {
         idempotencyKey: v2Headers['idempotency-key'],
         context: { path: { refundRequestId }, body: {} },
         run: async () => {
-          const outcome = await services.refund.approveRefund(userId, refundRequestId);
+          const outcome = await services.refund.approveRefund(
+            userId,
+            refundRequestId,
+            requestMeta(request),
+          );
           const validated = validateV2Response(
             reply,
             request,
@@ -202,7 +211,12 @@ export default async function adminRefundRoutes(fastify: FastifyInstance) {
         idempotencyKey: v2Headers['idempotency-key'],
         context: { path: { refundRequestId }, body },
         run: async () => {
-          const outcome = await services.refund.rejectRefund(userId, refundRequestId, body.reason);
+          const outcome = await services.refund.rejectRefund(
+            userId,
+            refundRequestId,
+            body.reason,
+            requestMeta(request),
+          );
           const validated = validateV2Response(
             reply,
             request,

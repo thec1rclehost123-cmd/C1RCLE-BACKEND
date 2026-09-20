@@ -242,11 +242,21 @@ describe('VENUE_SUSPEND (TIER2, direct command)', () => {
     const executed = await server.inject({
       method: 'POST',
       url: `/admin/venues/${venue.id}/suspend`,
-      headers: asUser('admin_a'),
+      headers: {
+        ...asUser('admin_a'),
+        'user-agent': 'opencode-console-test/1.0',
+      },
     });
 
     expect(executed.statusCode).toBe(200);
     expect(executed.json()).toMatchObject({ id: venue.id, status: 'suspended' });
+
+    // The raw audit record carries the caller context the route captured
+    // (the DTO intentionally omits it). This proves the requestMeta sweep.
+    const raw = await services.adminAudits().listForTarget(venue.id, 10);
+    const rawRow = raw.find((record) => record.action === 'VENUE_SUSPEND');
+    expect(rawRow?.ipAddress).toBe('127.0.0.1');
+    expect(rawRow?.userAgent).toBe('opencode-console-test/1.0');
 
     const audit = await server.inject({
       method: 'GET',

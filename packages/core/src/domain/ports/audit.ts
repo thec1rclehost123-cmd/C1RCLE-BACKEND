@@ -61,6 +61,16 @@ export interface AdminAuditRecord {
   occurredAt?: number;
 }
 
+/**
+ * Caller context a route captures and forwards into an admin audit record —
+ * the actor's IP and `User-Agent`. Best-effort; both stay optional because
+ * a proxy may rewrite `request.ip` and the header may be absent.
+ */
+export interface AuditRequestMeta {
+  ipAddress?: string;
+  userAgent?: string;
+}
+
 export interface AdminAuditRepository {
   append(record: AdminAuditRecord): Promise<void>;
   /** Alias for append — used by application services. */
