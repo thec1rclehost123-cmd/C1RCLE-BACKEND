@@ -74,6 +74,12 @@ import type {
   ScanLedgerCreateInput,
   ScanDenyReason,
 } from '../models/scan-ledger.js';
+import type {
+  SupportTicket,
+  SupportTicketCategory,
+  SupportTicketPriority,
+  SupportTicketStatus,
+} from '../models/support-ticket.js';
 import type { UserBan } from '../models/user-ban.js';
 import type { Venue, VenueSlot, SlotRequest } from '../models/venue.js';
 
@@ -764,6 +770,37 @@ export interface AdminRefundRequestRepository {
     query: PaginationQuery,
   ): Promise<Page<AdminRefundRequest>>;
   save(request: AdminRefundRequest, tx?: TxContext | null): Promise<void>;
+}
+
+/**
+ * Platform support tickets (Phase 7). Version-checked saves — the ticket is a
+ * single versioned aggregate (messages, internal notes and timeline live on
+ * it), so every mutation bumps `version` and a concurrent write loses.
+ * `softDeleted` tickets are never returned by `list` unless explicitly
+ * requested, matching the "soft delete with attribution, always recoverable"
+ * rule; they remain addressable by `getById` so restore is a pure save.
+ */
+export interface SupportTicketQuery {
+  status?: SupportTicketStatus;
+  priority?: SupportTicketPriority;
+  category?: SupportTicketCategory;
+  assigneeUserId?: EntityId;
+  requesterUserId?: EntityId;
+  /** Case-insensitive substring over subject + description. */
+  search?: string;
+  includeDeleted?: boolean;
+}
+
+export interface SupportTicketRepository {
+  getById(id: EntityId, opts?: { includeDeleted?: boolean }): Promise<SupportTicket | null>;
+  /** The ticket a client points at via `mergedInto`. */
+  listByMergedInto(ticketId: EntityId): Promise<SupportTicket[]>;
+  list(query: SupportTicketQuery, pagination: PaginationQuery): Promise<Page<SupportTicket>>;
+  listByRequester(
+    requesterUserId: EntityId,
+    pagination: PaginationQuery,
+  ): Promise<Page<SupportTicket>>;
+  save(ticket: SupportTicket): Promise<void>;
 }
 
 /**

@@ -30,5 +30,6 @@ export * from './memory-payout-repository.js';
 export * from './memory-bank-account-repository.js';
 export * from './memory-dispute-repository.js';
 export * from './memory-refund-request-repository.js';
+export * from './memory-support-ticket-repository.js';
 export * from './memory-leaderboard-repository.js';
 export * from './memory-email-otp-repository.js';

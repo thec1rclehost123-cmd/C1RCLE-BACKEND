@@ -496,6 +496,53 @@ export {
   adminRefundRequestListResponseSchema,
 } from './contracts/phase6.js';
 
+// Phase 7: Trust & safety + admin desks
+export type {
+  SupportTicketStatus,
+  SupportTicketPriority,
+  SupportTicketCategory,
+  SupportTicketMessageDto,
+  SupportInternalNoteDto,
+  SupportTimelineEventDto,
+  SupportTicketLinksDto,
+  SupportSlaDto,
+  SupportTicketRequesterDto,
+  SupportTicketDto,
+  SubmitSupportTicketInput,
+  SupportTicketMessageInput,
+  AssignSupportTicketInput,
+  ChangeSupportTicketPriorityInput,
+  SupportTicketLinkInput,
+  ResolveSupportTicketInput,
+  MergeSupportTicketInput,
+  SupportTicketQuery,
+  SupportTicketIdParam,
+} from './contracts/phase7.js';
+
+export {
+  supportTicketStatusSchema,
+  supportTicketPrioritySchema,
+  supportTicketCategorySchema,
+  supportTicketMessageDtoSchema,
+  supportInternalNoteDtoSchema,
+  supportTimelineEventDtoSchema,
+  supportTicketLinksDtoSchema,
+  supportSlaDtoSchema,
+  supportTicketRequesterDtoSchema,
+  supportTicketAssigneeDtoSchema,
+  supportTicketDtoSchema,
+  supportTicketListResponseSchema,
+  submitSupportTicketSchema,
+  supportTicketMessageSchema,
+  assignSupportTicketSchema,
+  changeSupportTicketPrioritySchema,
+  supportTicketLinkSchema,
+  resolveSupportTicketSchema,
+  mergeSupportTicketSchema,
+  supportTicketQuerySchema,
+  supportTicketIdParamSchema,
+} from './contracts/phase7.js';
+
 // Public / discovery (Phase 4 PR1)
 export type {
   HostPublicDto,

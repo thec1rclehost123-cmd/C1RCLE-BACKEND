@@ -34,6 +34,8 @@ import {
   createDisputeService,
   AdminDisputeService,
   RefundService,
+  SupportService,
+  AdminSupportService,
   createLeaderboardService,
   createEmailOtpService,
   type ScannerService,
@@ -161,6 +163,10 @@ export interface PartnerV2Services {
   adminDispute: AdminDisputeService;
   /** Phase 6 admin: amount-tiered refund approval over an order's payment. */
   refund: RefundService;
+  /** Phase 7 support: guest/requester intake + follow-ups on your own tickets. */
+  support: SupportService;
+  /** Phase 7 support: admin desk over the same ticket aggregate. */
+  adminSupport: AdminSupportService;
   /** Phase 6: promoter leaderboard. */
   leaderboard: LeaderboardService;
   /** Email OTP (signup verification). */
@@ -383,6 +389,8 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   const adminPayout = new AdminPayoutService(deps, adminAuthority);
   const adminDispute = new AdminDisputeService(deps, adminAuthority);
   const adminOps = new AdminOperationsService(deps, adminAuthority);
+  const support = new SupportService(deps);
+  const adminSupport = new AdminSupportService(deps, adminAuthority);
 
   const leaderboard = createLeaderboardService({
     leaderboard: repositories.leaderboard,
@@ -436,6 +444,8 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     refund,
     adminPayout,
     adminDispute,
+    support,
+    adminSupport,
     leaderboard,
     emailOtp,
   };

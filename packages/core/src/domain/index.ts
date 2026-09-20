@@ -25,6 +25,7 @@ export * from './models/payout.js';
 export * from './models/bank-account.js';
 export * from './models/dispute.js';
 export * from './models/refund-request.js';
+export * from './models/support-ticket.js';
 export * from './models/leaderboard.js';
 export * from './models/email-otp.js';
 export * from './models/platform-settings.js';
