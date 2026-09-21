@@ -25,3 +25,6 @@ coverage/
 firebase-debug.log
 firestore-debug.log
 ui-debug.log
+
+# Local env backups — same secret class as .env.local (EMAIL_OTP_SECRET etc.). Never commit.
+apps/api-gateway/.env.local.emulator.bak

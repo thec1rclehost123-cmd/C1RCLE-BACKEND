@@ -26,6 +26,7 @@ export * from './firestore-bank-account-repository.js';
 export * from './firestore-dispute-repository.js';
 export * from './firestore-refund-request-repository.js';
 export * from './firestore-support-ticket-repository.js';
+export * from './firestore-safety-report-repository.js';
 export * from './firestore-user-account-repository.js';
 export * from './firestore-user-ban-repository.js';
 export * from './firestore-leaderboard-repository.js';

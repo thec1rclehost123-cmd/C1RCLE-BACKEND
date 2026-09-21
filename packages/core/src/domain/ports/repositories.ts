@@ -69,6 +69,13 @@ import type { PromoterConnection } from '../models/promoter-connection.js';
 import type { ReferralLink } from '../models/referral-link.js';
 import type { AdminRefundRequest, AdminRefundRequestStatus } from '../models/refund-request.js';
 import type {
+  SafetyReport,
+  SafetyReportCategory,
+  SafetyReportPriority,
+  SafetyReportStatus,
+  SafetyReportTargetType,
+} from '../models/safety-report.js';
+import type {
   ScanLedger,
   ScanLedgerStatus,
   ScanLedgerCreateInput,
@@ -770,6 +777,43 @@ export interface AdminRefundRequestRepository {
     query: PaginationQuery,
   ): Promise<Page<AdminRefundRequest>>;
   save(request: AdminRefundRequest, tx?: TxContext | null): Promise<void>;
+}
+
+/**
+ * Platform safety reports (Phase 7). Version-checked saves — the report is a
+ * single versioned aggregate, so a concurrent resolution write loses. Soft
+ * deletion follows the same "always recoverable" rule as support tickets.
+ */
+export interface SafetyReportQuery {
+  status?: SafetyReportStatus;
+  category?: SafetyReportCategory;
+  priority?: SafetyReportPriority;
+  targetType?: SafetyReportTargetType;
+  reporterUserId?: EntityId;
+  /** Case-insensitive substring over details. */
+  search?: string;
+  includeDeleted?: boolean;
+}
+
+/** Desk stat counters — the real safety metric (no v1-style fabricated rating). */
+export interface SafetyReportStats {
+  open: number;
+  dismissed: number;
+  actioned: number;
+  total: number;
+  /** All reports in the critical bucket (category `safety`). */
+  critical: number;
+}
+
+export interface SafetyReportRepository {
+  getById(id: EntityId, opts?: { includeDeleted?: boolean }): Promise<SafetyReport | null>;
+  list(query: SafetyReportQuery, pagination: PaginationQuery): Promise<Page<SafetyReport>>;
+  listByReporter(
+    reporterUserId: EntityId,
+    pagination: PaginationQuery,
+  ): Promise<Page<SafetyReport>>;
+  stats(): Promise<SafetyReportStats>;
+  save(report: SafetyReport): Promise<void>;
 }
 
 /**

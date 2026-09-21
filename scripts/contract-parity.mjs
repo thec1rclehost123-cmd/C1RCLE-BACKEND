@@ -855,6 +855,176 @@ agree('adminDisputeStatusSchema', 'accepts "under_review"', 'under_review', true
 agree('adminDisputeStatusSchema', 'accepts "resolved"', 'resolved', true);
 agree('adminDisputeStatusSchema', 'rejects an unknown status', 'resolved_upheld', false);
 
+/* ── support ticket status / priority / category enums ─────────────────── */
+for (const status of [
+  'open',
+  'in_progress',
+  'waiting_on_customer',
+  'escalated',
+  'resolved',
+  'closed',
+]) {
+  agree('supportTicketStatusSchema', `accepts status "${status}"`, status, true);
+}
+agree('supportTicketStatusSchema', 'rejects an unknown status', 'snoozed', false);
+
+for (const priority of ['low', 'medium', 'high', 'urgent']) {
+  agree('supportTicketPrioritySchema', `accepts priority "${priority}"`, priority, true);
+}
+agree('supportTicketPrioritySchema', 'rejects an unknown priority', 'critical', false);
+
+for (const category of ['account', 'billing', 'order', 'event', 'technical', 'other']) {
+  agree('supportTicketCategorySchema', `accepts category "${category}"`, category, true);
+}
+agree('supportTicketCategorySchema', 'rejects an unknown category', 'safety', false);
+
+/* ── support ticket DTO ────────────────────────────────────────────────── */
+const VALID_SUPPORT_TICKET = {
+  id: 'tkt_1',
+  subject: 'Ticket not delivered',
+  description: 'My ticket QR has not arrived in email.',
+  category: 'order',
+  status: 'open',
+  priority: 'medium',
+  requester: { userId: 'usr_1', email: 'guest@example.com', organizationId: null },
+  assignee: null,
+  messages: [],
+  internalNotes: [],
+  timeline: [],
+  links: { venueId: null, eventId: null, orderId: null, organizationId: null, userId: null },
+  sla: {
+    responseDueAt: ISO,
+    resolutionDueAt: ISO,
+    responseBreachedAt: null,
+    resolutionBreachedAt: null,
+  },
+  mergedInto: null,
+  mergedFrom: [],
+  resolvedAt: null,
+  resolvedBy: null,
+  closedAt: null,
+  closedBy: null,
+  deletedAt: null,
+  deletedBy: null,
+  createdAt: ISO,
+  updatedAt: ISO,
+};
+agree('supportTicketDtoSchema', 'accepts a canonical open ticket', VALID_SUPPORT_TICKET, true);
+agree(
+  'supportTicketDtoSchema',
+  'accepts an escalated ticket with an assignee + message',
+  {
+    ...VALID_SUPPORT_TICKET,
+    status: 'escalated',
+    assignee: { userId: 'usr_2', name: 'Ops Admin' },
+    messages: [
+      {
+        id: 'msg_1',
+        senderRole: 'customer',
+        senderId: 'usr_1',
+        senderName: 'Guest',
+        content: 'Still waiting.',
+        createdAt: ISO,
+      },
+    ],
+  },
+  true,
+);
+agree(
+  'supportTicketDtoSchema',
+  'rejects an unknown status',
+  { ...VALID_SUPPORT_TICKET, status: 'deleted' },
+  false,
+);
+
+/* ── guest intake command bodies ───────────────────────────────────────── */
+agree(
+  'submitSupportTicketSchema',
+  'accepts a canonical intake submission',
+  {
+    subject: 'Broken checkout',
+    description: 'Payment failed twice on checkout.',
+    category: 'billing',
+    priority: 'high',
+  },
+  true,
+);
+agree(
+  'submitSupportTicketSchema',
+  'applies the default priority when omitted',
+  { subject: 'Help', description: 'How do I transfer my ticket?', category: 'order' },
+  true,
+);
+agree(
+  'submitSupportTicketSchema',
+  'rejects a too-short description',
+  { subject: 'Help', description: 'short', category: 'order' },
+  false,
+);
+agree(
+  'submitSupportTicketSchema',
+  'rejects an unknown field',
+  { subject: 'Help', description: 'How do I transfer my ticket?', category: 'order', sneaky: 1 },
+  false,
+);
+
+/* ── admin desk command bodies ─────────────────────────────────────────── */
+agree(
+  'supportTicketMessageSchema',
+  'accepts a message body',
+  { content: 'We are on it — checking the QR.' },
+  true,
+);
+agree('supportTicketMessageSchema', 'rejects an empty message', { content: '' }, false);
+agree('supportTicketMessageSchema', 'rejects an unknown field', { content: 'ok', to: 'x' }, false);
+
+agree(
+  'assignSupportTicketSchema',
+  'accepts an assignment',
+  { userId: 'usr_2', name: 'Ops Admin' },
+  true,
+);
+agree('assignSupportTicketSchema', 'rejects a missing name', { userId: 'usr_2' }, false);
+
+agree(
+  'changeSupportTicketPrioritySchema',
+  'accepts a priority change',
+  { priority: 'urgent' },
+  true,
+);
+agree(
+  'changeSupportTicketPrioritySchema',
+  'rejects an unknown priority',
+  { priority: 'severe' },
+  false,
+);
+
+agree('supportTicketLinkSchema', 'accepts an empty link set', {}, true);
+agree(
+  'supportTicketLinkSchema',
+  'accepts a full link set',
+  {
+    venueId: 'ven_1',
+    eventId: 'evt_1',
+    orderId: 'ord_1',
+    organizationId: 'org_1',
+    userId: 'usr_1',
+  },
+  true,
+);
+agree('supportTicketLinkSchema', 'rejects an unknown field', { orderId: 'ord_1', bogus: 1 }, false);
+
+agree(
+  'resolveSupportTicketSchema',
+  'accepts a resolve reason',
+  { reason: 'Refunded the guest.' },
+  true,
+);
+agree('resolveSupportTicketSchema', 'rejects a missing reason', {}, false);
+
+agree('mergeSupportTicketSchema', 'accepts a merge target', { duplicateTicketId: 'tkt_9' }, true);
+agree('mergeSupportTicketSchema', 'rejects a missing duplicate target', {}, false);
+
 /* ── error codes: the closed union must match exactly ─────────────────────── */
 {
   const FRONTEND_CODES = [
