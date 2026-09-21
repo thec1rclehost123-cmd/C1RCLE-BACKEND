@@ -20,10 +20,12 @@ import type { FastifyInstance } from 'fastify';
  * ─── Admin refunds over HTTP (Phase 6 admin) ─────────────────────────────────
  * Seeds a fully paid order through the real checkout/payment routes (not a
  * repository backdoor, matching `orders-routes.test.ts`'s convention), then
- * exercises the amount-tiered approval ladder end to end: auto-settle under
- * ₹500, single-approver under ₹5,000, and the two guards that matter most —
- * the requester cannot approve their own request, and a rejected request
- * restores the order to `paid` rather than any hardcoded status.
+ * exercises the amount-tiered approval ladder end to end: zero-approver
+ * auto-approval under ₹500 (approved, never settled — settlement is
+ * deliberately unbuilt), single-approver under ₹5,000, and the two guards
+ * that matter most — the requester cannot approve their own request, and a
+ * rejected request restores the order to `paid` rather than any hardcoded
+ * status.
  */
 
 const services = createV2Services();
@@ -139,7 +141,7 @@ beforeEach(async () => {
 });
 
 describe('POST /admin/refunds — amount tiers', () => {
-  it('settles immediately under ₹500 (0 approvers)', async () => {
+  it('auto-approves under ₹500 (0 approvers) but does not settle', async () => {
     await seedAdmin('admin_a', 'finance');
     const { orderId } = await seedPaidOrder(server);
 
@@ -152,10 +154,11 @@ describe('POST /admin/refunds — amount tiers', () => {
 
     expect(response.statusCode).toBe(201);
     const body = response.json();
-    expect(body.request.status).toBe('settled');
+    expect(body.request.status).toBe('approved');
     expect(body.request.approversRequired).toBe(0);
-    expect(body.order.status).toBe('paid'); // partial — order total is larger
-    expect(body.order.refundedPaise).toBe(40_000);
+    // Approval alone never settles — order stays locked, nothing refunded yet.
+    expect(body.order.status).toBe('refund_requested');
+    expect(body.order.refundedPaise).toBe(0);
   });
 
   it('needs one approver from ₹500 up to ₹5,000, and stays locked until approved', async () => {
@@ -220,7 +223,7 @@ describe('POST /admin/refunds — amount tiers', () => {
 });
 
 describe('approving and rejecting a pending refund', () => {
-  it('settles once a distinct second admin approves', async () => {
+  it('reaches approved once a distinct second admin approves, but does not settle', async () => {
     await seedAdmin('admin_a', 'finance');
     await seedAdmin('admin_b', 'ops');
     const { orderId, grandTotalPaise } = await seedPaidOrder(server, 150_000);
@@ -241,9 +244,10 @@ describe('approving and rejecting a pending refund', () => {
 
     expect(approved.statusCode).toBe(200);
     const body = approved.json();
-    expect(body.request.status).toBe('settled');
-    expect(body.order.status).toBe('refunded'); // full amount exhausted the balance
-    expect(body.order.refundedPaise).toBe(grandTotalPaise);
+    expect(body.request.status).toBe('approved');
+    // Approval alone never settles — order stays locked, nothing refunded yet.
+    expect(body.order.status).toBe('refund_requested');
+    expect(body.order.refundedPaise).toBe(0);
   });
 
   it('refuses the requester approving their own request', async () => {

@@ -10,6 +10,7 @@ import { z } from 'zod';
 
 import type { Event, Organization, PlatformUser, Venue } from '@c1rcle/core/domain';
 
+import { csvEscape } from '../../../lib/csv.js';
 import { requestMeta } from '../../../lib/v2-request-meta.js';
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
@@ -108,12 +109,6 @@ function userToDto(user: PlatformUser & { isBanned: boolean }) {
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
   };
-}
-
-function csvEscape(value: string | number | null | undefined): string {
-  if (value === null || value === undefined) return '';
-  const s = String(value);
-  return `"${s.replace(/"/g, '""')}"`;
 }
 
 export default async function adminDirectoryRoutes(fastify: FastifyInstance) {
@@ -260,6 +255,155 @@ export default async function adminDirectoryRoutes(fastify: FastifyInstance) {
   );
 
   /**
+   * Venues/events/hosts CSV exports — same desk data as their `GET
+   * /admin/*` list routes, capped at 1000 rows. Unlike users/audit these
+   * carry no PII redaction concern and aren't independently audited (the
+   * underlying `listX` call is already covered by ordinary read access).
+   */
+  fastify.get(
+    '/admin/venues/export.csv',
+    {
+      preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({})],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+
+      const page = await services.adminOps
+        .listVenues(userId, { limit: 1000, cursor: null })
+        .catch((error: unknown) => mapDomainError(reply, request, userId, error));
+      if (page === undefined) return reply;
+
+      const header = [
+        'id',
+        'organizationId',
+        'name',
+        'slug',
+        'city',
+        'status',
+        'capacity',
+        'createdAt',
+      ];
+      const lines = page.items.map((venue) => {
+        const dto = venueToDto(venue);
+        return [
+          csvEscape(dto.id),
+          csvEscape(dto.organizationId),
+          csvEscape(dto.name),
+          csvEscape(dto.slug),
+          csvEscape(dto.city),
+          csvEscape(dto.status),
+          csvEscape(dto.capacity),
+          csvEscape(new Date(dto.createdAt).toISOString()),
+        ].join(',');
+      });
+      const csv = [header.map(csvEscape).join(','), ...lines].join('\n');
+      return reply
+        .type('text/csv')
+        .header('Content-Disposition', 'attachment; filename="venues.csv"')
+        .send(csv);
+    },
+  );
+
+  fastify.get(
+    '/admin/events/export.csv',
+    {
+      preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({})],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+
+      const page = await services.adminOps
+        .listEvents(userId, { limit: 1000, cursor: null })
+        .catch((error: unknown) => mapDomainError(reply, request, userId, error));
+      if (page === undefined) return reply;
+
+      const header = [
+        'id',
+        'organizationId',
+        'venueId',
+        'slug',
+        'title',
+        'status',
+        'isPublic',
+        'startAt',
+        'endAt',
+        'startingPricePaise',
+        'isFree',
+        'createdAt',
+      ];
+      const lines = page.items.map((event) => {
+        const dto = eventToDto(event);
+        return [
+          csvEscape(dto.id),
+          csvEscape(dto.organizationId),
+          csvEscape(dto.venueId),
+          csvEscape(dto.slug),
+          csvEscape(dto.title),
+          csvEscape(dto.status),
+          csvEscape(dto.isPublic ? 'true' : 'false'),
+          csvEscape(dto.startAt),
+          csvEscape(dto.endAt),
+          csvEscape(dto.startingPricePaise),
+          csvEscape(dto.isFree ? 'true' : 'false'),
+          csvEscape(new Date(dto.createdAt).toISOString()),
+        ].join(',');
+      });
+      const csv = [header.map(csvEscape).join(','), ...lines].join('\n');
+      return reply
+        .type('text/csv')
+        .header('Content-Disposition', 'attachment; filename="events.csv"')
+        .send(csv);
+    },
+  );
+
+  fastify.get(
+    '/admin/hosts/export.csv',
+    {
+      preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({})],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+
+      const page = await services.adminOps
+        .listHosts(userId, { limit: 1000, cursor: null })
+        .catch((error: unknown) => mapDomainError(reply, request, userId, error));
+      if (page === undefined) return reply;
+
+      const header = [
+        'id',
+        'ownerId',
+        'name',
+        'slug',
+        'status',
+        'platformFeePercent',
+        'memberCount',
+        'createdAt',
+      ];
+      const lines = page.items.map((org) => {
+        const dto = hostToDto(org);
+        return [
+          csvEscape(dto.id),
+          csvEscape(dto.ownerId),
+          csvEscape(dto.name),
+          csvEscape(dto.slug),
+          csvEscape(dto.status),
+          csvEscape(dto.platformFeePercent),
+          csvEscape(dto.memberCount),
+          csvEscape(new Date(dto.createdAt).toISOString()),
+        ].join(',');
+      });
+      const csv = [header.map(csvEscape).join(','), ...lines].join('\n');
+      return reply
+        .type('text/csv')
+        .header('Content-Disposition', 'attachment; filename="hosts.csv"')
+        .send(csv);
+    },
+  );
+
+  /**
    * User directory CSV export, PII-redacted — ported from v1's
    * `exports/route.js`. Only `super`/`finance` see a real email; every
    * other role gets it redacted. Audited with the row count.
@@ -344,5 +488,3 @@ export default async function adminDirectoryRoutes(fastify: FastifyInstance) {
     },
   );
 }
-
-export { csvEscape };

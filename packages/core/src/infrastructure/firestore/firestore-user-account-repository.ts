@@ -49,6 +49,12 @@ export class FirestoreUserAccountRepository implements UserAccountRepository {
     const data = doc.data();
     return data ? toPlatformUser(doc.id, data) : null;
   }
+
+  async getByEmail(email: string): Promise<PlatformUser | null> {
+    const snap = await this.collection.where('email', '==', email).limit(1).get();
+    const doc = snap.docs[0];
+    return doc ? toPlatformUser(doc.id, doc.data()) : null;
+  }
 }
 
 function toPlatformUser(id: EntityId, data: DocumentData): PlatformUser {

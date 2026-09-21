@@ -9,6 +9,7 @@ import { z } from 'zod';
 
 import type { PromoterAssignment } from '@c1rcle/core/domain';
 
+import { csvEscape } from '../../../lib/csv.js';
 import { isIdempotencyConflict, runIdempotent } from '../../../lib/v2-idempotency.js';
 import { requestMeta } from '../../../lib/v2-request-meta.js';
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
@@ -91,6 +92,49 @@ export default async function adminPromotersRoutes(fastify: FastifyInstance) {
       );
       if (validated === undefined) return reply;
       return reply.send(validated);
+    },
+  );
+
+  fastify.get(
+    '/admin/promoters/export.csv',
+    {
+      preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({})],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+
+      const page = await services.adminOps
+        .listPromoterAssignments(userId, { limit: 1000, cursor: null })
+        .catch((error: unknown) => mapDomainError(reply, request, userId, error));
+      if (page === undefined) return reply;
+
+      const header = [
+        'id',
+        'promoterId',
+        'eventId',
+        'status',
+        'ratePercent',
+        'flatPaise',
+        'createdAt',
+      ];
+      const lines = page.items.map((assignment) => {
+        const dto = assignmentToDto(assignment);
+        return [
+          csvEscape(dto.id),
+          csvEscape(dto.promoterId),
+          csvEscape(dto.eventId),
+          csvEscape(dto.status),
+          csvEscape(dto.ratePercent),
+          csvEscape(dto.flatPaise),
+          csvEscape(new Date(dto.createdAt).toISOString()),
+        ].join(',');
+      });
+      const csv = [header.map(csvEscape).join(','), ...lines].join('\n');
+      return reply
+        .type('text/csv')
+        .header('Content-Disposition', 'attachment; filename="promoters.csv"')
+        .send(csv);
     },
   );
 

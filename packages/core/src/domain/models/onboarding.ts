@@ -74,12 +74,28 @@ export interface OnboardingProfile {
   entityType?: string;
 }
 
+/**
+ * A single document's verification state, distinct from the application's
+ * own `OnboardingStatus`: KYC is "is this document legitimate", onboarding
+ * is "should this applicant become a partner" — approving the application
+ * requires every required document to be `verified` first (see
+ * `approveOnboardingRequest`), but the two decisions are made separately,
+ * by different desks, and are never the same button.
+ */
+export type OnboardingDocumentStatus = 'pending' | 'verified' | 'rejected';
+
 /** A KYC document the applicant has uploaded. */
 export interface OnboardingDocument {
   /** v1 label vocabulary: id_front, id_back, selfie, cheque, registration_certificate… */
   label: string;
   storagePath: string;
   uploadedAt: string;
+  status: OnboardingDocumentStatus;
+  /** Which admin verified or rejected this document, if any. */
+  reviewedBy: EntityId | null;
+  reviewedAt: string | null;
+  /** Required when `status` is `rejected`. */
+  rejectionReason: string | null;
 }
 
 export interface OnboardingRequest extends VersionedEntity {
@@ -148,7 +164,7 @@ export function updateOnboardingProfile(
 
 export function addOnboardingDocument(
   request: OnboardingRequest,
-  document: Omit<OnboardingDocument, 'uploadedAt'>,
+  document: { label: string; storagePath: string },
   now?: Date,
 ): OnboardingRequest {
   if (request.status === 'approved' || request.status === 'rejected') {
@@ -157,11 +173,91 @@ export function addOnboardingDocument(
   const at = now ?? new Date();
   // Re-uploading a label replaces it: the newest copy of an ID is the one an
   // admin should review, and keeping both invites approving the stale one.
+  // A fresh upload always resets verification — a previously verified ID
+  // photo says nothing about the new file that just overwrote it.
   const documents = request.documents.filter((existing) => existing.label !== document.label);
   return {
     ...bumpVersion(request, at),
-    documents: [...documents, { ...document, uploadedAt: at.toISOString() }],
+    documents: [
+      ...documents,
+      {
+        ...document,
+        uploadedAt: at.toISOString(),
+        status: 'pending',
+        reviewedBy: null,
+        reviewedAt: null,
+        rejectionReason: null,
+      },
+    ],
   };
+}
+
+/**
+ * Admin marks one uploaded document as legitimate. Purely a KYC decision —
+ * does not touch `OnboardingRequest.status`, and carries no authority over
+ * whether the application itself gets approved.
+ */
+export function verifyOnboardingDocument(
+  request: OnboardingRequest,
+  label: string,
+  adminId: EntityId,
+  now?: Date,
+): OnboardingRequest {
+  return reviewDocument(request, label, adminId, 'verified', null, now);
+}
+
+/** Admin marks one uploaded document as illegitimate/unreadable — requires a reason. */
+export function rejectOnboardingDocument(
+  request: OnboardingRequest,
+  label: string,
+  adminId: EntityId,
+  reason: string,
+  now?: Date,
+): OnboardingRequest {
+  if (reason.trim().length === 0) {
+    throw new InvalidOperationError('Rejecting a document requires a reason');
+  }
+  return reviewDocument(request, label, adminId, 'rejected', reason.trim(), now);
+}
+
+function reviewDocument(
+  request: OnboardingRequest,
+  label: string,
+  adminId: EntityId,
+  status: 'verified' | 'rejected',
+  rejectionReason: string | null,
+  now?: Date,
+): OnboardingRequest {
+  const existing = request.documents.find((document) => document.label === label);
+  if (existing === undefined) {
+    throw new InvalidOperationError(`No document with label "${label}" has been uploaded`);
+  }
+  const at = now ?? new Date();
+  const documents = request.documents.map((document) =>
+    document.label === label
+      ? { ...existing, status, reviewedBy: adminId, reviewedAt: at.toISOString(), rejectionReason }
+      : document,
+  );
+  return { ...bumpVersion(request, at), documents };
+}
+
+/**
+ * Every REQUIRED document (see `missingDocuments`) is present and
+ * `verified` — the gate `approveOnboardingRequest` checks. A document that
+ * is merely uploaded (`pending`) or was `rejected` does not count: KYC
+ * review must have actively signed off on each one.
+ */
+export function allRequiredDocumentsVerified(request: OnboardingRequest): boolean {
+  if (missingDocuments(request).length > 0) return false;
+  const required =
+    request.profile.entityType === 'business'
+      ? REQUIRED_DOCUMENT_LABELS_BUSINESS
+      : REQUIRED_DOCUMENT_LABELS;
+  return required.every((label) =>
+    request.documents.some(
+      (document) => document.label === label && document.status === 'verified',
+    ),
+  );
 }
 
 /** Individual-applicant document labels, kept as the default set. */
@@ -229,11 +325,26 @@ export function rejectOnboardingRequest(
  * Approval records WHO decided and which organization was provisioned. The
  * organization is created by the service in the same unit of work; this model
  * only records the link so the decision stays auditable.
+ *
+ * Refuses unless every required document has been actively `verified` by
+ * KYC review (not just uploaded) — approving an applicant whose ID photos
+ * were never checked is exactly the gap that motivated splitting KYC review
+ * from this decision in the first place.
  */
 export function approveOnboardingRequest(
   request: OnboardingRequest,
   input: ReviewOnboardingInput & { provisionedOrganizationId: EntityId },
 ): OnboardingRequest {
+  // Validate the state transition itself first (throws StateTransitionError
+  // for an already-decided or never-submitted request) before the KYC gate
+  // below — a request that couldn't be approved anyway shouldn't surface a
+  // misleading "documents unverified" message.
+  transitionStatus(request.status, 'approved', ONBOARDING_TRANSITIONS);
+  if (!allRequiredDocumentsVerified(request)) {
+    throw new InvalidOperationError(
+      'All required documents must be verified on the KYC desk before this application can be approved',
+    );
+  }
   const reviewed = review(request, 'approved', input);
   return { ...reviewed, provisionedOrganizationId: input.provisionedOrganizationId };
 }
