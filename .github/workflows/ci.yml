@@ -33,7 +33,6 @@ permissions:
 
 env:
   PRODUCTION_URL: https://circle-v2-backend.onrender.com
-  STAGING_URL: https://circle-v2-backend.onrender.com
 
 jobs:
   # ── What changed? ──────────────────────────────────────────────────────────
@@ -555,8 +554,11 @@ jobs:
     permissions:
       contents: read
       issues: write # file an incident if smoke fails
+    # Both branches currently resolve to the same URL (see comment above) —
+    # `env` context isn't available inside `jobs.<id>.env` itself, so this is
+    # inlined rather than referencing the workflow-level PRODUCTION_URL.
     env:
-      DEPLOY_URL: ${{ github.ref == 'refs/heads/main' && env.PRODUCTION_URL || env.STAGING_URL }}
+      DEPLOY_URL: https://circle-v2-backend.onrender.com
       DEPLOY_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
