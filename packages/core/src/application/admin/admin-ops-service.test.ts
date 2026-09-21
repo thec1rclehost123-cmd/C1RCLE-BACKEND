@@ -21,6 +21,7 @@ import type {
   EventCatalogRepository,
   PlatformAdminRepository,
 } from '../../domain/ports/repositories.js';
+import type { MemoryUserAccountRepository } from '../../infrastructure/memory/memory-user-account-repository.js';
 import type { ServiceDeps } from '../context.js';
 
 /**
@@ -181,5 +182,29 @@ describe('AdminOperationsService — promoter & settings authority', () => {
     expect(records[0]?.targetType).toBe('platform_settings');
     expect(records[0]?.before).toBeDefined();
     expect(records[0]?.after).toMatchObject({ maintenanceMode: true });
+  });
+
+  it('globalLookup finds a user by email, not just by id', async () => {
+    const { deps, repositories } = makeDeps();
+    await seedAdmin(repositories.platformAdmins, 'admin_ops', 'ops');
+    (repositories.users as MemoryUserAccountRepository).save({
+      id: 'user_1',
+      email: 'guest@c1rcle.test',
+      name: 'Guest One',
+      image: null,
+      emailVerified: true,
+      role: 'guest',
+      createdAt: 0,
+      updatedAt: 0,
+    });
+
+    const authority = new AdminAuthorityService(deps);
+    const ops = new AdminOperationsService(deps, authority);
+
+    const byId = await ops.globalLookup('admin_ops', 'user_1');
+    expect(byId).toContainEqual({ type: 'user', id: 'user_1', label: 'guest@c1rcle.test' });
+
+    const byEmail = await ops.globalLookup('admin_ops', 'guest@c1rcle.test');
+    expect(byEmail).toContainEqual({ type: 'user', id: 'user_1', label: 'guest@c1rcle.test' });
   });
 });

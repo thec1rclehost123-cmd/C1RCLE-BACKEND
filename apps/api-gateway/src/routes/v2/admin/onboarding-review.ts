@@ -13,6 +13,7 @@ import {
   proposalStatusSchema,
   proposedActionDtoSchema,
   proposeActionSchema,
+  rejectKycDocumentSchema,
   resolveProposalSchema,
   reviewOnboardingSchema,
 } from '@c1rcle/contracts/client';
@@ -161,6 +162,116 @@ export default async function adminRoutes(fastify: FastifyInstance) {
       const validated = validateV2Response(reply, request, documentReadUrlDtoSchema, grant);
       if (validated === undefined) return reply;
       return reply.send(validated);
+    },
+  );
+
+  /**
+   * KYC desk: marks one uploaded document legitimate. Distinct from the
+   * approve/reject/request-changes routes below — this never changes
+   * `OnboardingRequest.status`, only a single document's own review state.
+   */
+  fastify.post(
+    '/admin/onboarding/applications/:requestId/documents/:label/verify',
+    {
+      preHandler: [
+        fastify.rateLimit('SENSITIVE_COMMAND'),
+        fastify.validateV2({ params: requestDocumentParam, headers: commandHeaders }),
+      ],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+      const { requestId, label } = request.params as z.infer<typeof requestDocumentParam>;
+      const v2Headers = request.v2Headers ?? {};
+
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: userId,
+        commandName: 'admin.onboarding.document.verify',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { requestId, label }, body: {} },
+        run: async () => {
+          const updated = await services.onboarding.verifyKycDocument(
+            userId,
+            requestId,
+            label,
+            requestMeta(request),
+          );
+          const validated = validateV2Response(
+            reply,
+            request,
+            onboardingRequestDtoSchema,
+            toDto(updated),
+          );
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
+        },
+      }).catch((error: unknown) =>
+        isIdempotencyConflict(error)
+          ? mapDomainError(reply, request, requestId, error, {
+              conflictId: v2Headers['idempotency-key'],
+            })
+          : mapDomainError(reply, request, requestId, error),
+      );
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
+
+  /** KYC desk: marks one uploaded document illegitimate/unreadable — reason required. */
+  fastify.post(
+    '/admin/onboarding/applications/:requestId/documents/:label/reject',
+    {
+      preHandler: [
+        fastify.rateLimit('SENSITIVE_COMMAND'),
+        fastify.validateV2({
+          params: requestDocumentParam,
+          headers: commandHeaders,
+          body: rejectKycDocumentSchema,
+        }),
+      ],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+      const { requestId, label } = request.params as z.infer<typeof requestDocumentParam>;
+      const body = request.body as z.infer<typeof rejectKycDocumentSchema>;
+      const v2Headers = request.v2Headers ?? {};
+
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: userId,
+        commandName: 'admin.onboarding.document.reject',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { requestId, label }, body },
+        run: async () => {
+          const updated = await services.onboarding.rejectKycDocument(
+            userId,
+            requestId,
+            label,
+            body.reason,
+            requestMeta(request),
+          );
+          const validated = validateV2Response(
+            reply,
+            request,
+            onboardingRequestDtoSchema,
+            toDto(updated),
+          );
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
+        },
+      }).catch((error: unknown) =>
+        isIdempotencyConflict(error)
+          ? mapDomainError(reply, request, requestId, error, {
+              conflictId: v2Headers['idempotency-key'],
+            })
+          : mapDomainError(reply, request, requestId, error),
+      );
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
     },
   );
 

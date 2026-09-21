@@ -2,6 +2,7 @@ import { adminTicketListResponseSchema, paginationQuerySchema } from '@c1rcle/co
 
 import type { Entitlement } from '@c1rcle/core/domain';
 
+import { csvEscape } from '../../../lib/csv.js';
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
 import { requireUserId } from '../onboarding.js';
@@ -79,6 +80,57 @@ export default async function adminTicketsRoutes(fastify: FastifyInstance) {
       );
       if (validated === undefined) return reply;
       return reply.send(validated);
+    },
+  );
+
+  fastify.get(
+    '/admin/tickets/export.csv',
+    {
+      preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({})],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+
+      const page = await services.adminOps
+        .listTickets(userId, { limit: 1000, cursor: null })
+        .catch((error: unknown) => mapDomainError(reply, request, userId, error));
+      if (page === undefined) return reply;
+
+      const header = [
+        'id',
+        'orderId',
+        'eventId',
+        'organizationId',
+        'tierName',
+        'userId',
+        'holderName',
+        'status',
+        'scanCount',
+        'scanCountAllowed',
+        'createdAt',
+      ];
+      const lines = page.items.map((ticket) => {
+        const dto = ticketToDto(ticket);
+        return [
+          csvEscape(dto.id),
+          csvEscape(dto.orderId),
+          csvEscape(dto.eventId),
+          csvEscape(dto.organizationId),
+          csvEscape(dto.tierName),
+          csvEscape(dto.userId),
+          csvEscape(dto.holderName),
+          csvEscape(dto.status),
+          csvEscape(dto.scanCount),
+          csvEscape(dto.scanCountAllowed),
+          csvEscape(new Date(dto.createdAt).toISOString()),
+        ].join(',');
+      });
+      const csv = [header.map(csvEscape).join(','), ...lines].join('\n');
+      return reply
+        .type('text/csv')
+        .header('Content-Disposition', 'attachment; filename="tickets.csv"')
+        .send(csv);
     },
   );
 }

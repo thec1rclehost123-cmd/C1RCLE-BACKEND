@@ -808,12 +808,17 @@ export class AdminOperationsService {
     const q = query.trim();
     if (q.length < 3) return [];
 
-    const [venue, event, organization, user] = await Promise.all([
+    // An email can never collide with an opaque entity id, so both lookups
+    // run unconditionally rather than branching on `q`'s shape — cheap
+    // (single-field-indexed) and matches v1's parallel by-id + by-email search.
+    const [venue, event, organization, userById, userByEmail] = await Promise.all([
       this.venues.getById(q),
       this.events.getById(q),
       this.organizations.getById(q),
       this.users.getById(q),
+      this.users.getByEmail(q),
     ]);
+    const user = userById ?? userByEmail;
 
     const results: {
       type: 'venue' | 'event' | 'organization' | 'user';

@@ -221,6 +221,18 @@ export default tseslint.config(
       '@typescript-eslint/no-non-null-assertion': 'off',
     },
   },
+  // One-off read-only connection to the OLD v1 project (`thec1rcle-india`)
+  // for a sample migration script — not the v2 repository-port
+  // architecture the global `.collection(`/`.doc(` ban protects. v1 has no
+  // v2 domain model or repository port to route through; same rationale as
+  // the `**/*.integration.test.ts` exemption above (real, out-of-band
+  // access by design).
+  {
+    files: ['**/api-gateway/src/lib/v1-read-only-client.ts'],
+    rules: {
+      'no-restricted-syntax': 'off',
+    },
+  },
   // Gateway lib layer may import from @c1rcle/core public export paths
   // (domain/ports, config, etc.) — these are the published package API,
   // not "deep imports" into private src/. The global pattern catches them

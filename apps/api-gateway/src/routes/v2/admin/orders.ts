@@ -2,6 +2,7 @@ import { adminOrderListResponseSchema, paginationQuerySchema } from '@c1rcle/con
 
 import type { Order } from '@c1rcle/core/domain';
 
+import { csvEscape } from '../../../lib/csv.js';
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
 import { requireUserId } from '../onboarding.js';
@@ -82,6 +83,55 @@ export default async function adminOrdersRoutes(fastify: FastifyInstance) {
       );
       if (validated === undefined) return reply;
       return reply.send(validated);
+    },
+  );
+
+  fastify.get(
+    '/admin/orders/export.csv',
+    {
+      preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({})],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+
+      const page = await services.adminOps
+        .listOrders(userId, { limit: 1000, cursor: null })
+        .catch((error: unknown) => mapDomainError(reply, request, userId, error));
+      if (page === undefined) return reply;
+
+      const header = [
+        'id',
+        'eventId',
+        'organizationId',
+        'userId',
+        'status',
+        'ticketCount',
+        'grandTotalPaise',
+        'refundedPaise',
+        'paymentId',
+        'createdAt',
+      ];
+      const lines = page.items.map((order) => {
+        const dto = orderToDto(order);
+        return [
+          csvEscape(dto.id),
+          csvEscape(dto.eventId),
+          csvEscape(dto.organizationId),
+          csvEscape(dto.userId),
+          csvEscape(dto.status),
+          csvEscape(dto.ticketCount),
+          csvEscape(dto.grandTotalPaise),
+          csvEscape(dto.refundedPaise),
+          csvEscape(dto.paymentId),
+          csvEscape(new Date(dto.createdAt).toISOString()),
+        ].join(',');
+      });
+      const csv = [header.map(csvEscape).join(','), ...lines].join('\n');
+      return reply
+        .type('text/csv')
+        .header('Content-Disposition', 'attachment; filename="orders.csv"')
+        .send(csv);
     },
   );
 }

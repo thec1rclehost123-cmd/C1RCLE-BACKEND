@@ -142,6 +142,8 @@ export interface UserAccountRepository {
   /** Platform-wide user directory — global, not org-scoped. */
   listAll(query: PaginationQuery): Promise<Page<PlatformUser>>;
   getById(userId: EntityId): Promise<PlatformUser | null>;
+  /** Exact-match lookup by email — the admin global-lookup's second key besides id. */
+  getByEmail(email: string): Promise<PlatformUser | null>;
 }
 
 /** Ban state for platform users, one record per user, keyed by user id. */

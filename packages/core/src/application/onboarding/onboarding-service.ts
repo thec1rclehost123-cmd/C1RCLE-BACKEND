@@ -10,12 +10,14 @@ import {
   createOnboardingRequest,
   missingDocuments,
   platformFeePercentFor,
+  rejectOnboardingDocument,
   rejectOnboardingRequest,
   requestOnboardingChanges,
   REQUIRED_DOCUMENT_LABELS,
   sanitizeApplicantProfile,
   submitOnboardingRequest,
   updateOnboardingProfile,
+  verifyOnboardingDocument,
 } from '../../domain/models/onboarding.js';
 import { createOrganization } from '../../domain/models/organization.js';
 
@@ -317,6 +319,74 @@ export class OnboardingService {
       expiresAt,
     });
     return { readUrl: grant.readUrl, expiresAt: grant.expiresAt };
+  }
+
+  /**
+   * KYC review desk: marks one uploaded document legitimate. Never touches
+   * `OnboardingRequest.status` — that decision belongs to `approve`/
+   * `reject`/`requestChanges` below, on the Onboarding desk, not here.
+   * Same TIER2 gate as the application decisions (`ONBOARDING_APPROVE`):
+   * this codebase doesn't carry a separate KYC-only admin action yet, and
+   * document legitimacy is exactly the kind of call `support` shouldn't
+   * make unsupervised either.
+   */
+  async verifyKycDocument(
+    adminUserId: EntityId,
+    requestId: EntityId,
+    label: string,
+    meta?: AuditRequestMeta,
+  ): Promise<OnboardingRequest> {
+    const admin = await this.authority.authorize(adminUserId, 'ONBOARDING_APPROVE');
+    const request = await this.requireRequest(requestId);
+    const updated = verifyOnboardingDocument(
+      request,
+      label,
+      admin.id,
+      this.deps.config.clock.now(),
+    );
+    await this.repo.save(updated);
+    await this.authority.record(admin, {
+      action: 'onboarding.document.verify',
+      targetType: 'onboarding_request',
+      targetId: request.id,
+      before: { label, status: 'pending' },
+      after: { label, status: 'verified' },
+      reason: null,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
+    });
+    return updated;
+  }
+
+  /** KYC review desk: marks one uploaded document illegitimate/unreadable. */
+  async rejectKycDocument(
+    adminUserId: EntityId,
+    requestId: EntityId,
+    label: string,
+    reason: string,
+    meta?: AuditRequestMeta,
+  ): Promise<OnboardingRequest> {
+    const admin = await this.authority.authorize(adminUserId, 'ONBOARDING_APPROVE');
+    const request = await this.requireRequest(requestId);
+    const updated = rejectOnboardingDocument(
+      request,
+      label,
+      admin.id,
+      reason,
+      this.deps.config.clock.now(),
+    );
+    await this.repo.save(updated);
+    await this.authority.record(admin, {
+      action: 'onboarding.document.reject',
+      targetType: 'onboarding_request',
+      targetId: request.id,
+      before: { label },
+      after: { label, status: 'rejected' },
+      reason,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
+    });
+    return updated;
   }
 
   /**

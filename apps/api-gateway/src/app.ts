@@ -130,5 +130,32 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     readinessChecks,
   });
 
+  // v1 relied on Firebase Cloud Functions (`sweepExpiredCoverWallets`,
+  // `cleanupReservations`) to physically clear expired cart holds and
+  // scanner-session tokens. v2 has no Cloud Functions runtime, and both
+  // repositories' `cleanupExpired` methods (explicitly documented as
+  // "called by a worker") had no caller anywhere — correctness never
+  // depended on it (every reader filters by `expiresAt`), but the documents
+  // never got swept, so this restores the hygiene v1 had. Firestore-only:
+  // the memory driver (tests) never spawns a timer.
+  if (config.STORAGE_DRIVER === 'firestore') {
+    const repos = v2Services.repos();
+    const sweepIntervalMs = 5 * 60 * 1000;
+    const sweepTimer = setInterval(() => {
+      const now = new Date();
+      void repos.cartReservations.cleanupExpired(now).catch((error: unknown) => {
+        logger.error('cart reservation sweep failed', { error });
+      });
+      void repos.scannerSessions.cleanupExpired().catch((error: unknown) => {
+        logger.error('scanner session sweep failed', { error });
+      });
+    }, sweepIntervalMs);
+    sweepTimer.unref();
+    app.addHook('onClose', (_instance, done) => {
+      clearInterval(sweepTimer);
+      done();
+    });
+  }
+
   return app;
 }

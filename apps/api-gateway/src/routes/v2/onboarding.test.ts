@@ -269,6 +269,18 @@ describe('applicant onboarding', () => {
 });
 
 describe('admin review', () => {
+  /** Verifies the three labels `uploadRequiredDocuments` uploaded — the KYC-desk gate `approve` now enforces. */
+  async function verifyRequiredDocuments(adminUserId: string, requestId: string) {
+    for (const label of ['id_front', 'id_back', 'selfie']) {
+      const response = await server.inject({
+        method: 'POST',
+        url: `/admin/onboarding/applications/${requestId}/documents/${label}/verify`,
+        headers: asUser(adminUserId),
+      });
+      expect(response.statusCode).toBe(200);
+    }
+  }
+
   async function submittedApplication(
     plan: 'basic' | 'silver' | 'diamond' = 'basic',
   ): Promise<string> {
@@ -279,6 +291,8 @@ describe('admin review', () => {
       url: `/onboarding/applications/${created.id}/submit`,
       headers: asUser('user_a'),
     });
+    await seedAdmin('admin_kyc', 'ops');
+    await verifyRequiredDocuments('admin_kyc', created.id);
     return created.id;
   }
 
@@ -300,6 +314,78 @@ describe('admin review', () => {
       headers: asUser('admin_support'),
     });
     expect(response.statusCode).toBe(403);
+  });
+
+  it('refuses approval while a required document is still unverified — the KYC gate', async () => {
+    const created = await startApplication('user_a');
+    await uploadRequiredDocuments('user_a', created.id);
+    await server.inject({
+      method: 'POST',
+      url: `/onboarding/applications/${created.id}/submit`,
+      headers: asUser('user_a'),
+    });
+    await seedAdmin('admin_ops', 'ops');
+
+    const response = await server.inject({
+      method: 'POST',
+      url: `/admin/onboarding/applications/${created.id}/approve`,
+      headers: asUser('admin_ops'),
+    });
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('KYC desk verify/reject never changes the application status', async () => {
+    const created = await startApplication('user_a');
+    await uploadRequiredDocuments('user_a', created.id);
+    await server.inject({
+      method: 'POST',
+      url: `/onboarding/applications/${created.id}/submit`,
+      headers: asUser('user_a'),
+    });
+    await seedAdmin('admin_kyc', 'ops');
+
+    const verified = await server.inject({
+      method: 'POST',
+      url: `/admin/onboarding/applications/${created.id}/documents/id_front/verify`,
+      headers: asUser('admin_kyc'),
+    });
+    expect(verified.statusCode).toBe(200);
+    const verifiedBody = verified.json<{
+      status: string;
+      documents: { label: string; status: string }[];
+    }>();
+    expect(verifiedBody.status).toBe('submitted');
+    expect(verifiedBody.documents.find((d) => d.label === 'id_front')?.status).toBe('verified');
+
+    const rejected = await server.inject({
+      method: 'POST',
+      url: `/admin/onboarding/applications/${created.id}/documents/id_back/reject`,
+      headers: asUser('admin_kyc'),
+      payload: { reason: 'Blurry photo' },
+    });
+    expect(rejected.statusCode).toBe(200);
+    const rejectedBody = rejected.json<{
+      status: string;
+      documents: { label: string; status: string; rejectionReason: string | null }[];
+    }>();
+    expect(rejectedBody.status).toBe('submitted');
+    const idBack = rejectedBody.documents.find((d) => d.label === 'id_back');
+    expect(idBack?.status).toBe('rejected');
+    expect(idBack?.rejectionReason).toBe('Blurry photo');
+  });
+
+  it('rejecting a document without a reason is refused', async () => {
+    const created = await startApplication('user_a');
+    await uploadRequiredDocuments('user_a', created.id);
+    await seedAdmin('admin_kyc', 'ops');
+
+    const response = await server.inject({
+      method: 'POST',
+      url: `/admin/onboarding/applications/${created.id}/documents/id_front/reject`,
+      headers: asUser('admin_kyc'),
+      payload: {},
+    });
+    expect(response.statusCode).toBe(422);
   });
 
   it('provisions an organization carrying the plan platform fee', async () => {
