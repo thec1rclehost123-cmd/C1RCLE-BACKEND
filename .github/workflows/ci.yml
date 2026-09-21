@@ -33,6 +33,7 @@ permissions:
 
 env:
   PRODUCTION_URL: https://circle-v2-backend.onrender.com
+  STAGING_URL: https://circle-v2-backend.onrender.com
 
 jobs:
   # ── What changed? ──────────────────────────────────────────────────────────
@@ -90,7 +91,10 @@ jobs:
   static:
     name: Static analysis
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    # PR-gate only. A push to main/staging is always a merge of a PR that
+    # already ran this — re-running it on the merge commit is the exact
+    # duplication this workflow used to have (same job, same diff, twice).
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -154,7 +158,11 @@ jobs:
   test:
     name: Build, test & coverage
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    # PR-gate for every branch, but a push (merge) only re-runs on main —
+    # that's the one branch whose coverage baseline this job records below,
+    # so it can't simply be skipped there. A push to staging is always an
+    # already-tested PR merge, so it's skipped like the other gates.
+    if: needs.changes.outputs.code == 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -231,20 +239,20 @@ jobs:
           path: .coverage-baseline
           key: coverage-baseline-${{ github.event.repository.default_branch }}-${{ github.sha }}
 
-  # ── End-to-end scenario suite (main only) ─────────────────────────────────
+  # ── End-to-end scenario suite (merge only) ────────────────────────────────
   # The two `/api/v2` business journeys (host lifecycle; guest purchase → door
   # → check-in → finance settlement) run over the FULL wired `buildApp()` on
   # the memory driver. This is the trunk-merge safety net. It lives in
   # `apps/api-gateway/scenarios/` — OUTSIDE `src/` so the unit `test` task never
-  # runs it by accident — and is gated to pushes on `main` only: the branch that
-  # deploys to production, where a regression here becomes an incident. Running
-  # it on every PR/staging commit would roughly double CI wall time for little
-  # added signal; staging reuses the fast unit gates until a merge approaches.
-  # `ci-ok` treats this as `skipped` (a pass) on non-main runs.
+  # runs it by accident — and is gated to pushes on `main`/`staging` only:
+  # branches that deploy, where a regression here becomes an incident. Running
+  # it on every PR would roughly double CI wall time for little added signal;
+  # PRs reuse the fast unit gates until a merge lands.
+  # `ci-ok` treats this as `skipped` (a pass) on PR runs.
   scenario:
-    name: Scenario suite (main only)
+    name: Scenario suite (merge only)
     needs: changes
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.code == 'true'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging') && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -263,7 +271,8 @@ jobs:
   docker:
     name: Docker build & scan
     needs: changes
-    if: needs.changes.outputs.docker == 'true' && !inputs.skip_docker
+    # PR-gate only — see `static`'s comment above for why push is excluded.
+    if: needs.changes.outputs.docker == 'true' && !inputs.skip_docker && github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
@@ -410,7 +419,8 @@ jobs:
   contract-parity:
     name: Contract parity (frontend)
     needs: changes
-    if: vars.CONTRACT_PARITY_ENABLED == 'true' && needs.changes.outputs.contracts == 'true'
+    # PR-gate only — see `static`'s comment above for why push is excluded.
+    if: vars.CONTRACT_PARITY_ENABLED == 'true' && needs.changes.outputs.contracts == 'true' && github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -525,21 +535,29 @@ jobs:
           fi
           echo "All gates green."
 
-  # ── Post-deploy verification (main only) ───────────────────────────────────
-  # Render auto-deploys on push. This waits for THAT deploy to go live, proves
-  # it works, and rolls it back if it does not.
+  # ── Post-deploy verification (merge only) ──────────────────────────────────
+  # Render auto-deploys on push, to either environment. This waits for THAT
+  # deploy to go live, proves it works, and rolls it back if it does not.
+  # Runs on both main (production) and staging — the target URL and Render
+  # service id are picked per branch so the same job verifies either deploy.
   verify-deploy:
-    name: Verify production deploy
+    name: Verify deploy
     needs: ci-ok
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging')
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Both branches currently deploy to the one live v2 service
+    # (circle-v2-backend, tracking `staging`) — there is no separate
+    # `main`-tracking Render service yet. Update this URL when one exists.
     environment:
-      name: production
+      name: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
       url: https://circle-v2-backend.onrender.com
     permissions:
       contents: read
       issues: write # file an incident if smoke fails
+    env:
+      DEPLOY_URL: ${{ github.ref == 'refs/heads/main' && env.PRODUCTION_URL || env.STAGING_URL }}
+      DEPLOY_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -549,48 +567,49 @@ jobs:
         id: render
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
-          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+          RENDER_SERVICE_ID: ${{ github.ref == 'refs/heads/main' && secrets.RENDER_SERVICE_ID || secrets.RENDER_STAGING_SERVICE_ID }}
         run: |
           if [ -n "$RENDER_API_KEY" ] && [ -n "$RENDER_SERVICE_ID" ]; then
             echo "rollback=true" >> "$GITHUB_OUTPUT"
           else
             echo "rollback=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::RENDER_API_KEY / RENDER_SERVICE_ID are not set — automatic rollback is disabled."
+            echo "::notice::Render API credentials for $DEPLOY_ENV are not set — automatic rollback is disabled."
           fi
 
       - name: Wait for Render to serve this commit
         run: |
           node scripts/ci/wait-for-deploy.mjs \
-            --url "$PRODUCTION_URL" \
+            --url "$DEPLOY_URL" \
             --sha "$GITHUB_SHA" \
             --timeout 900 \
             --interval 15
 
-      - name: Smoke test production
+      - name: Smoke test deploy
         id: smoke
-        run: node scripts/ci/smoke.mjs --url "$PRODUCTION_URL"
+        run: node scripts/ci/smoke.mjs --url "$DEPLOY_URL"
 
       - name: Roll back the failed deploy
         if: failure() && steps.smoke.outcome == 'failure' && steps.render.outputs.rollback == 'true'
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
-          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+          RENDER_SERVICE_ID: ${{ github.ref == 'refs/heads/main' && secrets.RENDER_SERVICE_ID || secrets.RENDER_STAGING_SERVICE_ID }}
         run: node scripts/ci/render-rollback.mjs
 
-      - name: File a production incident
+      - name: File a deploy incident
         if: failure()
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           ROLLBACK_ATTEMPTED: ${{ steps.render.outputs.rollback }}
         with:
           script: |
-            const title = `Production smoke tests failed for ${context.sha.slice(0, 7)}`;
+            const env = process.env.DEPLOY_ENV;
+            const title = `${env} smoke tests failed for ${context.sha.slice(0, 7)}`;
             const body = [
-              'Post-deploy verification failed on `main`.',
+              `Post-deploy verification failed on \`${context.ref.replace('refs/heads/', '')}\` (${env}).`,
               '',
               `- Commit: ${context.sha}`,
               `- Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-              '- Target: https://circle-v2-backend.onrender.com',
+              `- Target: ${process.env.DEPLOY_URL}`,
               `- Automatic rollback attempted: ${process.env.ROLLBACK_ATTEMPTED}`,
               '',
               "Check the run's job summary for which smoke assertions failed.",
