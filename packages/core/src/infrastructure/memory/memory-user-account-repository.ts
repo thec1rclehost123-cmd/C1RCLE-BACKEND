@@ -29,4 +29,15 @@ export class MemoryUserAccountRepository implements UserAccountRepository {
   async listAll(query: PaginationQuery): Promise<Page<PlatformUser>> {
     return serializeSlice([...this.users.values()], query);
   }
+
+  async getById(userId: EntityId): Promise<PlatformUser | null> {
+    return this.users.get(userId) ?? null;
+  }
+
+  async getByEmail(email: string): Promise<PlatformUser | null> {
+    for (const user of this.users.values()) {
+      if (user.email === email) return user;
+    }
+    return null;
+  }
 }

@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { Organization } from '@c1rcle/core/domain';
 
 import { isIdempotencyConflict, runIdempotent } from '../../../lib/v2-idempotency.js';
+import { requestMeta } from '../../../lib/v2-request-meta.js';
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
 import { requireUserId } from '../onboarding.js';
@@ -64,7 +65,11 @@ export default async function adminOrganizationActionRoutes(fastify: FastifyInst
         idempotencyKey: v2Headers['idempotency-key'],
         context: { path: { proposalId }, body: {} },
         run: async () => {
-          const org = await services.adminOps.adjustCommissionFromProposal(userId, proposalId);
+          const org = await services.adminOps.adjustCommissionFromProposal(
+            userId,
+            proposalId,
+            requestMeta(request),
+          );
           const validated = validateV2Response(reply, request, adminHostDtoSchema, hostToDto(org));
           if (validated === undefined) throw new Error('v2 response validation failed');
           return { statusCode: 200, body: validated };
@@ -103,7 +108,11 @@ export default async function adminOrganizationActionRoutes(fastify: FastifyInst
         idempotencyKey: v2Headers['idempotency-key'],
         context: { path: { organizationId }, body: {} },
         run: async () => {
-          const org = await services.adminOps.suspendOrganization(userId, organizationId);
+          const org = await services.adminOps.suspendOrganization(
+            userId,
+            organizationId,
+            requestMeta(request),
+          );
           const validated = validateV2Response(reply, request, adminHostDtoSchema, hostToDto(org));
           if (validated === undefined) throw new Error('v2 response validation failed');
           return { statusCode: 200, body: validated };
@@ -142,7 +151,11 @@ export default async function adminOrganizationActionRoutes(fastify: FastifyInst
         idempotencyKey: v2Headers['idempotency-key'],
         context: { path: { organizationId }, body: {} },
         run: async () => {
-          const org = await services.adminOps.reinstateOrganization(userId, organizationId);
+          const org = await services.adminOps.reinstateOrganization(
+            userId,
+            organizationId,
+            requestMeta(request),
+          );
           const validated = validateV2Response(reply, request, adminHostDtoSchema, hostToDto(org));
           if (validated === undefined) throw new Error('v2 response validation failed');
           return { statusCode: 200, body: validated };

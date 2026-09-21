@@ -90,6 +90,7 @@ function toEvent(data: DocumentData): Event {
     startingPricePaise: (data.startingPricePaise as number | null) ?? null,
     isFree: data.isFree as boolean,
     cancellationReason: (data.cancellationReason as string | null) ?? null,
+    adminOverride: (data.adminOverride as boolean | undefined) ?? false,
     version: data.version as number,
     createdAt: data.createdAt as string,
     updatedAt: data.updatedAt as string,

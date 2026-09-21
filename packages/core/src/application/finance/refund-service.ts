@@ -1,6 +1,5 @@
 import { InvalidOperationError, NotFoundError } from '../../domain/errors.js';
 import {
-  applyOrderRefund,
   lockOrderForRefund,
   refundableBalance,
   restoreOrderAfterRefundFailure,
@@ -8,16 +7,13 @@ import {
 import {
   approveRefundRequest,
   createRefundRequest,
-  isFullyApproved,
-  markRefundFailed,
-  markRefundSettled,
   rejectRefundRequest,
 } from '../../domain/models/refund-request.js';
 
 import type { EntityId } from '../../domain/identity.js';
-import type { PlatformAdmin } from '../../domain/models/admin-authority.js';
 import type { Order } from '../../domain/models/order.js';
 import type { AdminRefundRequest } from '../../domain/models/refund-request.js';
+import type { AuditRequestMeta } from '../../domain/ports/audit.js';
 import type { PaginationQuery } from '../../domain/ports/repositories.js';
 import type { AdminAuthorityService } from '../admin/admin-authority-service.js';
 import type { ServiceDeps } from '../context.js';
@@ -30,11 +26,18 @@ import type { ServiceDeps } from '../context.js';
  *
  * This service, not `admin-authority`'s propose→resolve, owns the
  * N-approver accumulator: `AdminRefundRequest.approversRequired` is fixed
- * from the amount tier at creation, and `approveRefund` settles the moment
- * enough distinct admins have signed off. `FINANCIAL_REFUND` is TIER2 in
+ * from the amount tier at creation. `FINANCIAL_REFUND` is TIER2 in
  * `admin-authority` purely as the *initiation* gate (who may request or
  * approve a refund at all) — it is never proposed/resolved as a TIER3
  * dual-control action.
+ *
+ * Nothing here settles automatically. A request reaching `approved` (whether
+ * via the zero-approver tier or the last required sign-off) is as far as
+ * this service goes — no payment-provider call, no order mutation beyond
+ * the lock taken at request time. Actual settlement is a deliberately
+ * separate, not-yet-built step (product decision pending); wiring it back
+ * in means adding an explicit settle action, not restoring the old
+ * auto-settle branches below.
  */
 
 export interface RequestRefundCommand {
@@ -64,6 +67,7 @@ export class RefundService {
   async requestRefund(
     adminUserId: EntityId,
     command: RequestRefundCommand,
+    meta?: AuditRequestMeta,
   ): Promise<{ request: AdminRefundRequest; order: Order }> {
     const admin = await this.authority.authorize(adminUserId, 'FINANCIAL_REFUND');
     const order = await this.requireOrder(command.orderId);
@@ -81,6 +85,11 @@ export class RefundService {
     const hasRedeemedEntitlement = orderEntitlements.some((e) => e.status === 'redeemed');
 
     const now = this.deps.config.clock.now();
+    const platformSettings = await this.deps.repositories.platformSettings.get();
+    const thresholds = {
+      singleApproverCeilingPaise: platformSettings.refundSingleApproverThresholdPaise,
+      dualApproverCeilingPaise: platformSettings.refundDualApproverThresholdPaise,
+    };
     const request = createRefundRequest({
       id: this.deps.config.ids(),
       orderId: order.id,
@@ -89,6 +98,7 @@ export class RefundService {
       requestedBy: admin.id,
       reason: command.reason,
       hasRedeemedEntitlement,
+      thresholds,
       now,
     });
 
@@ -102,6 +112,8 @@ export class RefundService {
       before: { orderStatus: order.status },
       after: { orderStatus: lockedOrder.status, requestStatus: request.status },
       reason: request.reason,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     this.deps.logger.info('refund.requested', {
       requestId: request.id,
@@ -110,16 +122,13 @@ export class RefundService {
       approversRequired: request.approversRequired,
     });
 
-    if (isFullyApproved(request)) {
-      // Zero-approver tier — settle immediately, same call.
-      return this.settle(admin, request, lockedOrder);
-    }
     return { request, order: lockedOrder };
   }
 
   async approveRefund(
     adminUserId: EntityId,
     refundRequestId: EntityId,
+    meta?: AuditRequestMeta,
   ): Promise<{ request: AdminRefundRequest; order: Order }> {
     const admin = await this.authority.authorize(adminUserId, 'FINANCIAL_REFUND');
     const request = await this.requireRefundRequest(refundRequestId);
@@ -133,20 +142,19 @@ export class RefundService {
       before: { status: request.status, approvals: request.approvals.length },
       after: { status: approved.status, approvals: approved.approvals.length },
       reason: null,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
 
-    if (!isFullyApproved(approved)) {
-      const order = await this.requireOrder(request.orderId);
-      return { request: approved, order };
-    }
     const order = await this.requireOrder(request.orderId);
-    return this.settle(admin, approved, order);
+    return { request: approved, order };
   }
 
   async rejectRefund(
     adminUserId: EntityId,
     refundRequestId: EntityId,
     reason: string,
+    meta?: AuditRequestMeta,
   ): Promise<{ request: AdminRefundRequest; order: Order }> {
     const admin = await this.authority.authorize(adminUserId, 'FINANCIAL_REFUND');
     const request = await this.requireRefundRequest(refundRequestId);
@@ -168,6 +176,8 @@ export class RefundService {
       before: { status: request.status, orderStatus: order.status },
       after: { status: rejected.status, orderStatus: restored.status },
       reason,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     this.deps.logger.info('refund.rejected', { requestId: request.id, orderId: order.id });
     return { request: rejected, order: restored };
@@ -185,66 +195,6 @@ export class RefundService {
   async getRefund(adminUserId: EntityId, refundRequestId: EntityId): Promise<AdminRefundRequest> {
     await this.authority.requireAdmin(adminUserId);
     return this.requireRefundRequest(refundRequestId);
-  }
-
-  /**
-   * Settles a fully-approved request with the payment provider. On failure,
-   * restores the order and marks the request failed rather than leaving
-   * either half-mutated — a human can see exactly what happened and retry.
-   */
-  private async settle(
-    admin: PlatformAdmin,
-    request: AdminRefundRequest,
-    order: Order,
-  ): Promise<{ request: AdminRefundRequest; order: Order }> {
-    if (!order.paymentId) {
-      throw new InvalidOperationError(`Order ${order.id} has no payment id to refund`);
-    }
-    const now = this.deps.config.clock.now();
-    try {
-      const providerResponse = await this.deps.paymentProvider.refundPayment({
-        paymentId: order.paymentId,
-        amountPaise: request.amountPaise,
-        // Stable per request, not per attempt — a retried settle call must
-        // not trigger a second refund at the provider.
-        idempotencyKey: request.id,
-      });
-
-      const refundedOrder = applyOrderRefund(order, request.amountPaise, now);
-      await this.orders.save(refundedOrder);
-      const settled = markRefundSettled(request, providerResponse.id, now);
-      await this.refundRequests.save(settled);
-      await this.authority.record(admin, {
-        action: 'FINANCIAL_REFUND.settle',
-        targetType: 'refund_request',
-        targetId: request.id,
-        before: { orderStatus: order.status },
-        after: { orderStatus: refundedOrder.status, providerRefundId: providerResponse.id },
-        reason: null,
-      });
-      this.deps.logger.info('refund.settled', {
-        requestId: request.id,
-        orderId: order.id,
-        providerRefundId: providerResponse.id,
-      });
-      return { request: settled, order: refundedOrder };
-    } catch (error) {
-      const restored = restoreOrderAfterRefundFailure(order, now);
-      await this.orders.save(restored);
-      const message = error instanceof Error ? error.message : 'Refund settlement failed';
-      const failed = markRefundFailed(request, message, now);
-      await this.refundRequests.save(failed);
-      await this.authority.record(admin, {
-        action: 'FINANCIAL_REFUND.settle_failed',
-        targetType: 'refund_request',
-        targetId: request.id,
-        before: { orderStatus: order.status },
-        after: { orderStatus: restored.status, failureReason: message },
-        reason: message,
-      });
-      this.deps.logger.error('refund.settle_failed', { requestId: request.id, error: message });
-      return { request: failed, order: restored };
-    }
   }
 
   private async requireOrder(orderId: EntityId): Promise<Order> {

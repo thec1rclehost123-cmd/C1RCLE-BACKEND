@@ -92,7 +92,7 @@ describe('event analytics', () => {
     await server.close();
   });
 
-  it('reports not-found while an event has no read model yet', async () => {
+  it('computes event analytics on request when no read model exists yet', async () => {
     const server = await buildServer();
     const org = await seedOrganization(server);
 
@@ -120,9 +120,10 @@ describe('event analytics', () => {
       headers: read(org),
     });
 
-    // The projection has not run: honest 404 rather than fabricated zeroes,
-    // which would read as "this event sold nothing" instead of "no data yet".
-    expect(response.statusCode).toBe(404);
+    // The projection has not run, so the read model is absent — the service
+    // falls back to a bounded compute-on-request instead of a fabricated 404.
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ eventId, totalRevenuePaise: 0, ticketsSold: 0 });
     await server.close();
   });
 });

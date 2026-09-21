@@ -8,6 +8,7 @@ import { z } from 'zod';
 import type { Venue } from '@c1rcle/core/domain';
 
 import { isIdempotencyConflict, runIdempotent } from '../../../lib/v2-idempotency.js';
+import { requestMeta } from '../../../lib/v2-request-meta.js';
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
 import { requireUserId } from '../onboarding.js';
@@ -68,7 +69,7 @@ export default async function adminVenueActionRoutes(fastify: FastifyInstance) {
         idempotencyKey: v2Headers['idempotency-key'],
         context: { path: { venueId }, body: {} },
         run: async () => {
-          const venue = await services.adminOps.suspendVenue(userId, venueId);
+          const venue = await services.adminOps.suspendVenue(userId, venueId, requestMeta(request));
           const validated = validateV2Response(
             reply,
             request,
@@ -112,7 +113,11 @@ export default async function adminVenueActionRoutes(fastify: FastifyInstance) {
         idempotencyKey: v2Headers['idempotency-key'],
         context: { path: { venueId }, body: {} },
         run: async () => {
-          const venue = await services.adminOps.reinstateVenue(userId, venueId);
+          const venue = await services.adminOps.reinstateVenue(
+            userId,
+            venueId,
+            requestMeta(request),
+          );
           const validated = validateV2Response(
             reply,
             request,
