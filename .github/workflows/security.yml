@@ -57,7 +57,10 @@ jobs:
   # Skip if no code changes (docs-only PRs).
   codeql:
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    # PR-gate only. A push to main/staging is always a merge of a PR that
+    # already ran this — re-scanning the merge commit is a duplicate scan of
+    # the same diff, not new signal.
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'push'
     name: CodeQL
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -121,7 +124,8 @@ jobs:
   scan:
     name: Dependency, secret & config scan
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    # PR-gate only — see `codeql`'s comment above for why push is excluded.
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
