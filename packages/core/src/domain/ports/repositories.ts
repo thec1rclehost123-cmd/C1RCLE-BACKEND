@@ -103,6 +103,14 @@ export interface PaginationQuery {
 
 export interface OrganizationRepository {
   getById(organizationId: EntityId): Promise<Organization | null>;
+  /**
+   * Batched id lookup. Replaces the per-row `getById` fan-out in list-style
+   * reads (partnership/connection name resolution) so a 100-row page costs
+   * one call, not 100. Missing ids are simply absent from the result: the
+   * batched resolver's job is to resolve *names*, and a vanished row resolves
+   * to `null`-safe fields, never an error.
+   */
+  getByIds(organizationIds: EntityId[]): Promise<Organization[]>;
   /** Public host-profile lookup — global (not org-scoped): a guest reaches an
    * organization by its slug alone, with no tenant context of their own. */
   getBySlug(slug: string): Promise<Organization | null>;
@@ -182,6 +190,12 @@ export interface InvitationRepository {
 
 export interface VenueRepository {
   getById(venueId: EntityId): Promise<Venue | null>;
+  /**
+   * Batched id lookup for list-style reads (partnership/connection name
+   * resolution) — same one-call-per-page contract as
+   * `OrganizationRepository.getByIds`.
+   */
+  getByIds(venueIds: EntityId[]): Promise<Venue[]>;
   getBySlug(slug: string, organizationId: EntityId): Promise<Venue | null>;
   /** Public venue-profile lookup — global (not org-scoped): the guest surface
    * addresses a venue by slug alone, with no tenant context of its own. */
@@ -214,6 +228,16 @@ export interface VenueSlotRepository {
    * `listSlots`, so no composite Firestore index is required.
    */
   listOverlappingSlots(venueId: EntityId, startTime: string, endTime: string): Promise<VenueSlot[]>;
+  /**
+   * Atomic block creation (closes the read-check-write TOCTOU on the overlap
+   * guard). The overlap check and the insert run inside one storage
+   * transaction, so two concurrent block requests for the same minutes can't
+   * both pass the guard. Throws the same `InvalidOperationError` as domain
+   * `assertSlotRangeFree` when the range is taken; returns the stored slot on
+   * success. The memory driver performs the check synchronously (no `await`
+   * between guard and write), which is atomic within a single event-loop turn.
+   */
+  createBlockIfFree(block: VenueSlot): Promise<VenueSlot>;
 }
 
 // ─── Events ──────────────────────────────────────────────────────────────────
@@ -424,6 +448,18 @@ export interface CartReservationRepository {
    * `InventoryService.getAvailableQuantity` — never a public route response.
    */
   listActiveByEvent(eventId: EntityId, now: Date): Promise<CartReservation[]>;
+  /**
+   * Sum of `quantity` across a user's live holds for `(tierId, eventId)` —
+   * `status: 'active'` and not yet past `now`. Drives per-user ticket-caps
+   * (`tier.maxPerUser`) at hold creation. Bounded by one user's active cart
+   * holdings; never a public route response.
+   */
+  countActiveQuantity(
+    userId: EntityId,
+    eventId: EntityId,
+    tierId: EntityId,
+    now: Date,
+  ): Promise<number>;
 }
 
 /** Order repository — the commerce aggregate. */
@@ -440,6 +476,18 @@ export interface OrderRepository {
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Order>>;
   /** Lists orders for an event. */
   listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<Order>>;
+  /**
+   * Sum of `quantity` across a user's *paid* orders for `(tierId, eventId)`.
+   * Drives per-user ticket-caps (`tier.maxPerUser`) at hold creation: only
+   * money- captured orders count — `pending`/`failed`/`cancelled`/`refunded`
+   * never consume the cap. Bounded by one user's order history; never a
+   * public route response.
+   */
+  countPaidQuantityByUserAndEvent(
+    userId: EntityId,
+    eventId: EntityId,
+    tierId: EntityId,
+  ): Promise<number>;
   /** Saves (create or update). Version is checked for optimistic locking. */
   save(order: Order, tx?: TxContext | null): Promise<void>;
 }

@@ -131,6 +131,10 @@ export class EventService {
       contentType: command.contentType,
       maxBytes: MAX_POSTER_BYTES,
       expiresAt,
+      // Posters must render on the guest surface with no credential, so the
+      // signed PUT sets the object ACL to public-read. KYC stays private by
+      // default — see object-storage port.
+      visibility: 'public',
     });
     this.deps.logger.info('events.poster_upload_url_issued', {
       organizationId: actor.organizationId,
