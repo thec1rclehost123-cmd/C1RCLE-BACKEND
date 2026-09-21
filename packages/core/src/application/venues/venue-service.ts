@@ -9,7 +9,6 @@ import {
   updateVenue,
   createSlotRequest,
   createVenueBlock,
-  assertSlotRangeFree,
   cancelVenueBlock,
   transitionSlotRequest,
   computeVenueAvailability,
@@ -192,14 +191,6 @@ export class VenueCalendarService {
     if (!venue || venue.organizationId !== actor.organizationId) {
       throw new VenueNotFoundError(command.venueId);
     }
-    // Single-track timeline: a new block must not touch any live slot —
-    // this also covers overnight ranges, which compare as plain datetimes.
-    const overlapping = await this.deps.repositories.venueSlots.listOverlappingSlots(
-      command.venueId,
-      command.startTime,
-      command.endTime,
-    );
-    assertSlotRangeFree(overlapping, command.startTime, command.endTime);
     const block = createVenueBlock({
       id: this.deps.config.ids(),
       venueId: command.venueId,
@@ -208,8 +199,12 @@ export class VenueCalendarService {
       endTime: command.endTime,
       now: this.deps.config.clock.now(),
     });
-    await this.deps.repositories.venueSlots.saveSlots([block]);
-    return block;
+    // Single-track timeline: a new block must not touch any live slot — this
+    // also covers overnight ranges, which compare as plain datetimes. The
+    // overlap guard and the insert share one storage transaction (see the
+    // `createBlockIfFree` contract), so two simultaneous block requests for
+    // the same minutes can't both win.
+    return this.deps.repositories.venueSlots.createBlockIfFree(block);
   }
 
   async unblock(actor: ActorContext, venueId: EntityId, blockId: EntityId) {

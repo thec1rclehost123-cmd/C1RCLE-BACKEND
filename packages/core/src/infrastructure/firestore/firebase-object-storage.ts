@@ -28,24 +28,33 @@ export class FirebaseObjectStorage implements ObjectStoragePort {
   async issueUploadUrl(request: UploadUrlRequest): Promise<UploadUrlGrant> {
     const contentLengthRange = `0,${String(request.maxBytes)}`;
 
-    const [uploadUrl] = await this.storage
-      .bucket(this.bucketName)
-      .file(request.key)
-      .getSignedUrl({
-        version: 'v4',
-        action: 'write',
-        expires: request.expiresAt,
-        contentType: request.contentType,
-        extensionHeaders: { 'x-goog-content-length-range': contentLengthRange },
-      });
+    // `x-goog-acl` is signed into the URL so the browser's PUT *sets* the
+    // object's ACL on upload. Only a `'public'` request carries it (event
+    // posters); the default `'private'` KYC path stays credential-only.
+    const extensionHeaders: Record<string, string> = {
+      'x-goog-content-length-range': contentLengthRange,
+    };
+    const putHeaders: Record<string, string> = {
+      'content-type': request.contentType,
+      'x-goog-content-length-range': contentLengthRange,
+    };
+    if (request.visibility === 'public') {
+      extensionHeaders['x-goog-acl'] = 'public-read';
+      putHeaders['x-goog-acl'] = 'public-read';
+    }
+
+    const [uploadUrl] = await this.storage.bucket(this.bucketName).file(request.key).getSignedUrl({
+      version: 'v4',
+      action: 'write',
+      expires: request.expiresAt,
+      contentType: request.contentType,
+      extensionHeaders,
+    });
 
     return {
       uploadUrl,
       method: 'PUT',
-      headers: {
-        'content-type': request.contentType,
-        'x-goog-content-length-range': contentLengthRange,
-      },
+      headers: putHeaders,
       storagePath: request.key,
       expiresAt: request.expiresAt,
     };
@@ -53,8 +62,9 @@ export class FirebaseObjectStorage implements ObjectStoragePort {
 
   toPublicUrl(storagePath: string): string {
     // Standard GCS public object URL — served without a credential when the
-    // object slides (public-read only available for non-prefixed, non-KYC
-    // media such as posters).
+    // object was uploaded with `visibility: 'public'` (posters): the signed
+    // PUT sets *that object's* ACL to public-read while the bucket and every
+    // KYC/private object stay credential-only.
     return `https://storage.googleapis.com/${this.bucketName}/${storagePath}`;
   }
 }

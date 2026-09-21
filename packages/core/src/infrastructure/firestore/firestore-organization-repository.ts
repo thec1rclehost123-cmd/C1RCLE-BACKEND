@@ -33,6 +33,24 @@ export class FirestoreOrganizationRepository implements OrganizationRepository {
     return data ? toOrganization(data) : null;
   }
 
+  async getByIds(organizationIds: EntityId[]): Promise<Organization[]> {
+    const unique = [...new Set(organizationIds)];
+    // `getAll` caps at 30 refs per call outside a transaction — chunk so a
+    // 100-row page of unique ids never trips the cap.
+    const CHUNK = 30;
+    const found: Organization[] = [];
+    for (let i = 0; i < unique.length; i += CHUNK) {
+      const snaps = await this.db.getAll(
+        ...unique.slice(i, i + CHUNK).map((id) => this.collection.doc(id)),
+      );
+      for (const snap of snaps) {
+        const data = snap.data();
+        if (snap.exists && data) found.push(toOrganization(data));
+      }
+    }
+    return found;
+  }
+
   async getBySlug(slug: string): Promise<Organization | null> {
     const snap = await this.collection.where('slug', '==', slug).limit(1).get();
     const doc = snap.docs[0];

@@ -254,6 +254,10 @@ describe('V2 partners events slice — poster upload URLs', () => {
     expect(grant.method).toBe('PUT');
     expect(grant.uploadUrl).toEqual(expect.any(String));
     expect(grant.headers['content-type']).toBe('image/jpeg');
+    // The signed PUT must set the *object's* ACL to public-read so the
+    // returned `publicUrl` actually resolves on the guest surface (the bucket
+    // and every KYC/private object stay credential-only).
+    expect(grant.headers['x-goog-acl']).toBe('public-read');
     expect(grant.storagePath).toMatch(/^posters\/org_1\/[0-9a-f-]+\.jpg$/);
     expect(grant.publicUrl).toBe(`https://uploads.invalid/${grant.storagePath}`);
     expect(grant.expiresAt).toBeGreaterThan(Date.now());
