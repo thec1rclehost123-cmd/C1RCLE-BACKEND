@@ -4,12 +4,21 @@ import { getGatewayConfig, GatewayConfigError, type GatewayConfig } from '../../
 import { createV2Services } from '../../lib/v2-services.js';
 import authContextPlugin, { buildBetterAuth } from '../../plugins/auth.js';
 
+import adminAnalyticsRoutes from './admin/analytics.js';
 import adminDirectoryRoutes from './admin/directory.js';
 import adminDisputeRoutes from './admin/disputes.js';
+import adminEventActionRoutes from './admin/event-actions.js';
 import adminRoutes from './admin/onboarding-review.js';
+import adminOrderRoutes from './admin/orders.js';
 import adminOrganizationActionRoutes from './admin/organization-actions.js';
 import adminPayoutRoutes from './admin/payouts.js';
+import adminPromotersRoutes from './admin/promoters.js';
+import adminPromotionsRoutes from './admin/promotions.js';
 import adminRefundRoutes from './admin/refunds.js';
+import adminSettingsRoutes from './admin/settings.js';
+import adminSupportRoutes from './admin/support.js';
+import adminTicketRoutes from './admin/tickets.js';
+import adminUserActionRoutes from './admin/user-actions.js';
 import adminVenueActionRoutes from './admin/venue-actions.js';
 import authRoutes from './auth/index.js';
 import otpRoutes from './auth/otp-routes.js';
@@ -34,6 +43,7 @@ import partnerReferralLinkRoutes from './partner/referral-links.js';
 import partnerVenueRoutes from './partner/venues.js';
 import phase5Routes from './phase5-routes.js';
 import publicDiscoveryRoutes from './public/discovery.js';
+import supportIntakeRoutes from './support/intake-routes.js';
 import ticketRoutes from './tickets/ticket-routes.js';
 import walletRoutes from './wallet/wallet-routes.js';
 
@@ -126,8 +136,18 @@ export async function registerV2Routes(
       await adminPayoutRoutes(v2);
       await adminDisputeRoutes(v2);
       await adminDirectoryRoutes(v2);
+      // Phase 7: support desk over the ticket aggregate.
+      await adminSupportRoutes(v2);
+      await adminOrderRoutes(v2);
+      await adminAnalyticsRoutes(v2);
+      await adminTicketRoutes(v2);
+      await adminPromotionsRoutes(v2);
+      await adminPromotersRoutes(v2);
       await adminVenueActionRoutes(v2);
       await adminOrganizationActionRoutes(v2);
+      await adminEventActionRoutes(v2);
+      await adminUserActionRoutes(v2);
+      await adminSettingsRoutes(v2);
       // Phase 4 PR2: guest checkout + payments + Razorpay webhook.
       await checkoutRoutes(v2);
       await paymentRoutes(v2);
@@ -144,6 +164,8 @@ export async function registerV2Routes(
       // Phase 6: Finance / Ledger / Payouts
       await financeRoutes(v2);
       await leaderboardRoutes(v2);
+      // Phase 7: support intake for the guest/requester.
+      await supportIntakeRoutes(v2);
     },
     { prefix: '/api/v2' },
   );

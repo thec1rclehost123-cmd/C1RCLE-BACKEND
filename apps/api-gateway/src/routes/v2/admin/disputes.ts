@@ -12,6 +12,7 @@ import { z } from 'zod';
 import type { Dispute } from '@c1rcle/core/domain';
 
 import { isIdempotencyConflict, runIdempotent } from '../../../lib/v2-idempotency.js';
+import { requestMeta } from '../../../lib/v2-request-meta.js';
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
 import { requireUserId } from '../onboarding.js';
@@ -90,6 +91,7 @@ export default async function adminDisputeRoutes(fastify: FastifyInstance) {
             disputeId,
             body.outcome,
             body.resolutionNote,
+            requestMeta(request),
           );
           const validated = validateV2Response(
             reply,

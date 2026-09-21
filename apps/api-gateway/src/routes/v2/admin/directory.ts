@@ -1,20 +1,22 @@
 import {
   adminEventListResponseSchema,
   adminHostListResponseSchema,
+  adminLookupResponseSchema,
   adminUserListResponseSchema,
   adminVenueListResponseSchema,
   paginationQuerySchema,
 } from '@c1rcle/contracts/client';
+import { z } from 'zod';
 
 import type { Event, Organization, PlatformUser, Venue } from '@c1rcle/core/domain';
 
+import { requestMeta } from '../../../lib/v2-request-meta.js';
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
 import { requireUserId } from '../onboarding.js';
 import { mapDomainError } from '../partner/events.js';
 
 import type { FastifyInstance } from 'fastify';
-import type { z } from 'zod';
 
 /**
  * ─── Admin directory (Phase 7 admin) ─────────────────────────────────────────
@@ -33,6 +35,7 @@ import type { z } from 'zod';
 const services = createV2Services();
 
 const directoryQuerySchema = paginationQuerySchema;
+const lookupQuerySchema = z.object({ q: z.string().min(1).max(200) });
 
 function listResponse<T>(items: T[], total: number, limit: number, nextCursor: string | null) {
   return {
@@ -69,6 +72,7 @@ function eventToDto(event: Event) {
     title: event.title,
     status: event.status,
     isPublic: event.isPublic,
+    adminOverride: event.adminOverride,
     startAt: event.startAt,
     endAt: event.endAt,
     startingPricePaise: event.startingPricePaise,
@@ -92,7 +96,7 @@ function hostToDto(org: Organization) {
   };
 }
 
-function userToDto(user: PlatformUser) {
+function userToDto(user: PlatformUser & { isBanned: boolean }) {
   return {
     id: user.id,
     email: user.email,
@@ -100,6 +104,7 @@ function userToDto(user: PlatformUser) {
     image: user.image,
     emailVerified: user.emailVerified,
     role: user.role,
+    isBanned: user.isBanned,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
   };
@@ -231,6 +236,70 @@ export default async function adminDirectoryRoutes(fastify: FastifyInstance) {
   );
 
   fastify.get(
+    '/admin/lookup',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({ querystring: lookupQuerySchema }),
+      ],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+      const query = request.query as z.infer<typeof lookupQuerySchema>;
+
+      const items = await services.adminOps
+        .globalLookup(userId, query.q)
+        .catch((error: unknown) => mapDomainError(reply, request, userId, error));
+      if (items === undefined) return reply;
+
+      const validated = validateV2Response(reply, request, adminLookupResponseSchema, { items });
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  /**
+   * User directory CSV export, PII-redacted — ported from v1's
+   * `exports/route.js`. Only `super`/`finance` see a real email; every
+   * other role gets it redacted. Audited with the row count.
+   */
+  fastify.get(
+    '/admin/users/export.csv',
+    {
+      preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({})],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+
+      const result = await services.adminOps
+        .exportUsers(userId, requestMeta(request))
+        .catch((error: unknown) => mapDomainError(reply, request, userId, error));
+      if (result === undefined) return reply;
+
+      const header = ['id', 'name', 'email', 'role', 'emailVerified', 'isBanned', 'createdAt'];
+      const lines = result.rows.map((row) =>
+        [
+          csvEscape(row.id),
+          csvEscape(row.name),
+          csvEscape(result.redactEmail ? '[redacted]' : row.email),
+          csvEscape(row.role),
+          csvEscape(row.emailVerified ? 'true' : 'false'),
+          csvEscape(row.isBanned ? 'true' : 'false'),
+          csvEscape(new Date(row.createdAt).toISOString()),
+        ].join(','),
+      );
+      const csv = [header.join(','), ...lines].join('\n');
+
+      return reply
+        .header('content-type', 'text/csv; charset=utf-8')
+        .header('content-disposition', 'attachment; filename="users.csv"')
+        .send(csv);
+    },
+  );
+
+  fastify.get(
     '/admin/audit/export.csv',
     {
       preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({})],
@@ -240,16 +309,18 @@ export default async function adminDirectoryRoutes(fastify: FastifyInstance) {
       if (userId === undefined) return reply;
 
       const rows = await services.adminOps
-        .exportAudit(userId, 1000)
+        .exportAudit(userId, 1000, requestMeta(request))
         .catch((error: unknown) => mapDomainError(reply, request, userId, error));
       if (rows === undefined) return reply;
 
+      const names = await services.adminOps.resolveTargetNames(userId, rows);
       const header = [
         'adminId',
         'adminRole',
         'action',
         'targetType',
         'targetId',
+        'targetName',
         'reason',
         'occurredAt',
       ];
@@ -260,6 +331,7 @@ export default async function adminDirectoryRoutes(fastify: FastifyInstance) {
           csvEscape(row.action),
           csvEscape(row.targetType),
           csvEscape(row.targetId),
+          csvEscape(names.get(`${row.targetType ?? ''}:${row.targetId ?? ''}`) ?? null),
           csvEscape(row.reason ?? null),
           csvEscape(new Date(row.occurredAt ?? Date.now()).toISOString()),
         ].join(','),

@@ -1,7 +1,9 @@
 import {
   adminAuditRecordDtoSchema,
   approveOnboardingResultSchema,
+  documentReadUrlDtoSchema,
   idempotencyKeySchema,
+  onboardingDocumentLabelSchema,
   onboardingRequestDtoSchema,
   onboardingStatusSchema,
   opaqueIdSchema,
@@ -19,11 +21,13 @@ import { z } from 'zod';
 import type { AdminAuditRecord, PlatformAdmin, ProposedAction } from '@c1rcle/core/domain';
 
 import { isIdempotencyConflict, runIdempotent } from '../../../lib/v2-idempotency.js';
+import { requestMeta } from '../../../lib/v2-request-meta.js';
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
 import { requireUserId, toDto } from '../onboarding.js';
 import { mapDomainError } from '../partner/events.js';
 
+import type { V2RequestMeta } from '../../../lib/v2-request-meta.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 /**
@@ -42,6 +46,10 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 const services = createV2Services();
 
 const requestIdParam = z.object({ requestId: opaqueIdSchema });
+const requestDocumentParam = z.object({
+  requestId: opaqueIdSchema,
+  label: onboardingDocumentLabelSchema,
+});
 const proposalIdParam = z.object({ proposalId: opaqueIdSchema });
 const adminIdParam = z.object({ adminId: opaqueIdSchema });
 const commandHeaders = z.looseObject({ 'idempotency-key': idempotencyKeySchema });
@@ -127,6 +135,36 @@ export default async function adminRoutes(fastify: FastifyInstance) {
   );
 
   /**
+   * Admin-side signed read for one uploaded KYC image — lets an admin
+   * actually view a document before approving/rejecting. Not
+   * idempotency-keyed: minting a fresh short-lived URL per view has no
+   * side effect worth de-duplicating.
+   */
+  fastify.get(
+    '/admin/onboarding/applications/:requestId/documents/:label/read-url',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({ params: requestDocumentParam }),
+      ],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+      const { requestId, label } = request.params as z.infer<typeof requestDocumentParam>;
+
+      const grant = await services.onboarding
+        .issueDocumentReadUrl(userId, requestId, label)
+        .catch((error: unknown) => mapDomainError(reply, request, requestId, error));
+      if (grant === undefined) return reply;
+
+      const validated = validateV2Response(reply, request, documentReadUrlDtoSchema, grant);
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  /**
    * Approval. The only route in the app that creates an organization on
    * someone else's behalf, so it is idempotency-keyed: a retried approval must
    * not provision a second organization for the same partner.
@@ -158,10 +196,14 @@ export default async function adminRoutes(fastify: FastifyInstance) {
         idempotencyKey: v2Headers['idempotency-key'],
         context: { path: { requestId }, body },
         run: async () => {
-          const outcome = await services.onboarding.approve(userId, {
-            requestId,
-            note: body.note,
-          });
+          const outcome = await services.onboarding.approve(
+            userId,
+            {
+              requestId,
+              note: body.note,
+            },
+            requestMeta(request),
+          );
           const validated = validateV2Response(reply, request, approveOnboardingResultSchema, {
             request: toDto(outcome.request),
             organization: {
@@ -249,7 +291,7 @@ export default async function adminRoutes(fastify: FastifyInstance) {
       const body = request.body as z.infer<typeof proposeActionSchema>;
 
       return proposalCommand(request, reply, userId, 'admin.proposals.raise', { body }, 201, () =>
-        services.adminAuthority.propose(userId, body),
+        services.adminAuthority.propose(userId, body, requestMeta(request)),
       );
     },
   );
@@ -329,6 +371,7 @@ export default async function adminRoutes(fastify: FastifyInstance) {
           const admin = await services.adminAuthority.provisionAdminFromProposal(
             userId,
             proposalId,
+            requestMeta(request),
           );
           const validated = validateV2Response(
             reply,
@@ -338,6 +381,58 @@ export default async function adminRoutes(fastify: FastifyInstance) {
           );
           if (validated === undefined) throw new Error('v2 response validation failed');
           return { statusCode: 201, body: validated };
+        },
+      }).catch((error: unknown) =>
+        isIdempotencyConflict(error)
+          ? mapDomainError(reply, request, proposalId, error, {
+              conflictId: v2Headers['idempotency-key'],
+            })
+          : mapDomainError(reply, request, proposalId, error),
+      );
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
+
+  /**
+   * Execute an approved ADMIN_ROLE_UPDATE proposal. Same idempotency and
+   * proposal-payload-not-caller-args shape as provision-admin above.
+   */
+  fastify.post(
+    '/admin/proposals/:proposalId/update-admin-role',
+    {
+      preHandler: [
+        fastify.rateLimit('SENSITIVE_COMMAND'),
+        fastify.validateV2({ params: proposalIdParam, headers: commandHeaders }),
+      ],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+      const { proposalId } = request.params as z.infer<typeof proposalIdParam>;
+      const v2Headers = request.v2Headers ?? {};
+
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: userId,
+        commandName: 'admin.role_update',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { proposalId }, body: undefined },
+        run: async () => {
+          const admin = await services.adminAuthority.updateAdminRoleFromProposal(
+            userId,
+            proposalId,
+            requestMeta(request),
+          );
+          const validated = validateV2Response(
+            reply,
+            request,
+            platformAdminDtoSchema,
+            adminToDto(admin),
+          );
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
         },
       }).catch((error: unknown) =>
         isIdempotencyConflict(error)
@@ -363,20 +458,39 @@ export default async function adminRoutes(fastify: FastifyInstance) {
       const userId = requireUserId(request, reply);
       if (userId === undefined) return reply;
       const { adminId } = request.params as z.infer<typeof adminIdParam>;
+      const v2Headers = request.v2Headers ?? {};
 
-      const revoked = await services.adminAuthority
-        .revokeAdmin(userId, adminId)
-        .catch((error: unknown) => mapDomainError(reply, request, adminId, error));
-      if (revoked === undefined) return reply;
-
-      const validated = validateV2Response(
-        reply,
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
         request,
-        platformAdminDtoSchema,
-        adminToDto(revoked),
+        actorId: userId,
+        commandName: 'admin.revoke',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { adminId }, body: undefined },
+        run: async () => {
+          const revoked = await services.adminAuthority.revokeAdmin(
+            userId,
+            adminId,
+            requestMeta(request),
+          );
+          const validated = validateV2Response(
+            reply,
+            request,
+            platformAdminDtoSchema,
+            adminToDto(revoked),
+          );
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
+        },
+      }).catch((error: unknown) =>
+        isIdempotencyConflict(error)
+          ? mapDomainError(reply, request, adminId, error, {
+              conflictId: v2Headers['idempotency-key'],
+            })
+          : mapDomainError(reply, request, adminId, error),
       );
-      if (validated === undefined) return reply;
-      return reply.send(validated);
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
     },
   );
 
@@ -402,8 +516,9 @@ export default async function adminRoutes(fastify: FastifyInstance) {
       ).catch((error: unknown) => mapDomainError(reply, request, userId, error));
       if (records === undefined) return reply;
 
+      const names = await services.adminOps.resolveTargetNames(userId, records);
       const validated = validateV2Response(reply, request, auditListSchema, {
-        items: records.map(auditToDto),
+        items: records.map((record) => auditToDto(record, names)),
       });
       if (validated === undefined) return reply;
       return reply.send(validated);
@@ -414,7 +529,12 @@ export default async function adminRoutes(fastify: FastifyInstance) {
 function registerReview(
   fastify: FastifyInstance,
   action: 'reject' | 'request-changes',
-  run: (userId: string, requestId: string, note?: string) => Promise<Parameters<typeof toDto>[0]>,
+  run: (
+    userId: string,
+    requestId: string,
+    note?: string,
+    meta?: V2RequestMeta,
+  ) => Promise<Parameters<typeof toDto>[0]>,
 ): void {
   fastify.post(
     `/admin/onboarding/applications/:requestId/${action}`,
@@ -443,7 +563,7 @@ function registerReview(
         idempotencyKey: v2Headers['idempotency-key'],
         context: { path: { requestId }, body },
         run: async () => {
-          const updated = await run(userId, requestId, body.note);
+          const updated = await run(userId, requestId, body.note, requestMeta(request));
           const validated = validateV2Response(
             reply,
             request,
@@ -469,7 +589,12 @@ function registerReview(
 function registerProposalAction(
   fastify: FastifyInstance,
   action: 'approve' | 'reject' | 'cancel',
-  run: (userId: string, proposalId: string, reason?: string) => Promise<ProposedAction>,
+  run: (
+    userId: string,
+    proposalId: string,
+    reason?: string,
+    meta?: V2RequestMeta,
+  ) => Promise<ProposedAction>,
 ): void {
   fastify.post(
     `/admin/proposals/:proposalId/${action}`,
@@ -496,7 +621,7 @@ function registerProposalAction(
         `admin.proposals.${action}`,
         { path: { proposalId }, body },
         200,
-        () => run(userId, proposalId, body.reason),
+        () => run(userId, proposalId, body.reason, requestMeta(request)),
       );
     },
   );
@@ -568,7 +693,7 @@ function adminToDto(admin: PlatformAdmin) {
   };
 }
 
-function auditToDto(record: AdminAuditRecord) {
+function auditToDto(record: AdminAuditRecord, names: Map<string, string | null>) {
   return {
     id: record.id,
     adminId: record.adminId,
@@ -576,6 +701,7 @@ function auditToDto(record: AdminAuditRecord) {
     action: record.action,
     targetType: record.targetType,
     targetId: record.targetId,
+    targetName: names.get(`${record.targetType ?? ''}:${record.targetId ?? ''}`) ?? null,
     before: record.before,
     after: record.after,
     reason: record.reason,

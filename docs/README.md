@@ -27,7 +27,8 @@ status is tracked — don't duplicate a "what's done" list anywhere else.
 - Phase 4 (Guest checkout & tickets) — **done** (verified 2026-09-07).
 - Phase 5 (Door/Scanner/Cover-wallet) — **done** (verified 2026-09-07); 2 honest 501s remain.
 - Phase 6 (Finance/Ledger/Payouts) — **in progress** (started 2026-09-07).
-- Phases 7–8 (Admin console, Social/notifications) — not started.
+- Phase 7 (Admin console backend) — **done** (2026-09-16); Phase C deferrals in `roadmap/ADMIN-DASHBOARD-GAPS.md`.
+- Phase 8 (Social/notifications) — not started.
 
 ## `docs/architecture/` — how the system is built, and why
 
