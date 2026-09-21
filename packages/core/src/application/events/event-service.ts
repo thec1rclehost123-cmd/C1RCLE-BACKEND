@@ -11,6 +11,7 @@ import {
   isPublicStatus,
   type EventStatus,
   type Event,
+  type EventCompensation,
 } from '../../domain/models/event.js';
 import { requireOrgAccess, emit } from '../context.js';
 
@@ -27,6 +28,7 @@ export interface CreateEventCommand {
   startAt: string;
   endAt?: string | null;
   tags?: string[];
+  compensation?: EventCompensation | null;
 }
 
 export interface UpdateEventCommand {
@@ -43,6 +45,7 @@ export interface UpdateEventCommand {
     tags?: string[];
     startingPricePaise?: number;
     isFree?: boolean;
+    compensation?: EventCompensation | null;
   };
 }
 
@@ -69,6 +72,7 @@ export class EventService {
   }
 
   async create(actor: ActorContext, command: CreateEventCommand): Promise<Event> {
+    await this.assertVenueAccess(actor, command.venueId);
     const event = createEvent({
       id: this.deps.config.ids(),
       organizationId: actor.organizationId,
@@ -80,6 +84,7 @@ export class EventService {
       startAt: command.startAt,
       endAt: command.endAt ?? null,
       tags: command.tags ?? [],
+      compensation: command.compensation ?? null,
       now: this.deps.config.clock.now(),
     });
     await this.repo.save(event);
@@ -175,14 +180,29 @@ export class EventService {
    */
   async publish(actor: ActorContext, eventId: EntityId): Promise<Event> {
     const event = await this.fetchOwned(actor, eventId);
+    const tiers = await this.deps.repositories.catalog.listTiers(event.id);
+    validateCompensationForPublish(
+      event.compensation ?? null,
+      tiers.map((tier) => tier.id),
+    );
     const now = this.deps.config.clock.now();
+    // Ticket pricing is the source of truth. The create endpoint cannot know
+    // the final catalog yet, so refresh these denormalized discovery fields at
+    // the publish boundary before the event becomes guest-visible.
+    const startingPricePaise = tiers.length
+      ? Math.min(...tiers.map((tier) => tier.priceInPaise))
+      : 0;
+    const isFree = tiers.length === 0 || tiers.every((tier) => tier.priceInPaise === 0);
+    const withCatalogSummary = { ...event, startingPricePaise, isFree };
     // The `scheduled` step is transient: only the final `published` state is
     // persisted, so the version bump happens once. Walking two live bumps
     // (review→scheduled→published) and saving only the last would write
     // version N+2 against a store at version N — rejected by the repository
     // compare-and-set on every driver.
     const scheduled =
-      event.status === 'review' ? { ...event, status: 'scheduled' as const } : event;
+      withCatalogSummary.status === 'review'
+        ? { ...withCatalogSummary, status: 'scheduled' as const }
+        : withCatalogSummary;
     const updated = transitionEvent(scheduled, 'published', now);
     await this.repo.save(updated);
     await emit(this.deps, actor, updated.id, 'event.published', {
@@ -268,5 +288,65 @@ export class EventService {
       throw new EventNotFoundError(eventId);
     }
     return event;
+  }
+
+  /**
+   * A venue event may be created by its owner or by a host with an active
+   * venue partnership. Keep the missing-resource response deliberately
+   * indistinguishable from an inaccessible venue to avoid an IDOR oracle.
+   *
+   * Some legacy callers create a draft before the venue aggregate is seeded;
+   * those drafts are preserved for backwards compatibility. Once a venue is
+   * present, cross-tenant and suspended-venue writes are rejected here.
+   */
+  private async assertVenueAccess(actor: ActorContext, venueId: EntityId): Promise<void> {
+    const venue = await this.deps.repositories.venues.getById(venueId);
+    if (!venue) return;
+    if (venue.status !== 'active') throw new EventNotFoundError(venueId);
+    if (venue.organizationId === actor.organizationId) return;
+    const partnership = await this.deps.repositories.partnerships.findByPair(
+      actor.organizationId,
+      venueId,
+    );
+    if (partnership?.status !== 'active') throw new EventNotFoundError(venueId);
+  }
+}
+
+function validateCompensationForPublish(
+  compensation: EventCompensation | null,
+  tierIds: readonly string[],
+): void {
+  if (!compensation) return;
+  if (compensation.model === 'standard') {
+    if (
+      compensation.globalRatePercent === null ||
+      compensation.globalRatePercent < 0 ||
+      compensation.globalRatePercent > 100
+    ) {
+      throw new InvalidOperationError('Global commission must be between 0 and 100 percent');
+    }
+    return;
+  }
+  if (compensation.model === 'salary') {
+    if (
+      compensation.salaryAmountPaise === null ||
+      !Number.isInteger(compensation.salaryAmountPaise) ||
+      compensation.salaryAmountPaise <= 0
+    ) {
+      throw new InvalidOperationError('Salary amount must be greater than zero');
+    }
+    if (compensation.salaryPeriod === null) {
+      throw new InvalidOperationError('Salary period is required');
+    }
+    return;
+  }
+  for (const tierId of tierIds) {
+    const rate = compensation.tierRates[tierId];
+    if (rate === undefined)
+      throw new InvalidOperationError('Every ticket tier needs a commission before publishing');
+    if (!Number.isInteger(rate) || rate < 0 || rate > 100)
+      throw new InvalidOperationError(
+        'Ticket commissions must be whole numbers between 0 and 100 percent',
+      );
   }
 }

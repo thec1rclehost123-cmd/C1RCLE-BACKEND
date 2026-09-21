@@ -13,6 +13,17 @@ import type { EntityId, VersionedEntity } from '../identity.js';
 // ─── Ticket tiers ────────────────────────────────────────────────────────────
 
 export type TicketTierStatus = 'active' | 'paused' | 'sold_out';
+export type TicketAccessType = 'ENTRY' | 'VIP' | 'VVIP' | 'TABLE' | 'PACKAGE' | 'RSVP';
+export type TicketAudienceType = 'GENERAL' | 'MALE' | 'FEMALE' | 'COUPLE' | 'GROUP';
+
+export interface TicketPricingPhase {
+  id: string;
+  name: string;
+  priceInPaise: number;
+  startsAt: string;
+  endsAt: string;
+  quantity: number | null;
+}
 
 export interface TicketTier extends VersionedEntity {
   id: EntityId;
@@ -31,9 +42,25 @@ export interface TicketTier extends VersionedEntity {
   status: TicketTierStatus;
   salesStartAt: string | null;
   salesEndAt: string | null;
-  /** Per-order purchase bounds (V1 `minPerOrder`/`maxPerOrder`). */
-  minPerOrder: number | null;
+  /** Maximum tickets that can be purchased per order. */
   maxPerOrder: number | null;
+  accessType?: TicketAccessType;
+  audienceType?: TicketAudienceType;
+  guestCount?: number;
+  pricingPhases?: TicketPricingPhase[];
+  doorPriceInPaise?: number | null;
+  benefits?: string[];
+  minAge?: number | null;
+  maxAge?: number | null;
+  minPerOrder?: number | null;
+  maxPerUser?: number | null;
+  tableConfig?: {
+    capacity: number;
+    minimumSpendPaise: number;
+    redeemableAmountPaise: number;
+    tableCount: number;
+  } | null;
+  commissionEligible?: boolean;
 }
 
 export interface CreateTicketTierInput {
@@ -48,8 +75,19 @@ export interface CreateTicketTierInput {
   quantity: number;
   salesStartAt?: string | null;
   salesEndAt?: string | null;
-  minPerOrder?: number | null;
   maxPerOrder?: number | null;
+  accessType?: TicketAccessType;
+  audienceType?: TicketAudienceType;
+  guestCount?: number;
+  pricingPhases?: TicketPricingPhase[];
+  doorPriceInPaise?: number | null;
+  benefits?: string[];
+  minAge?: number | null;
+  maxAge?: number | null;
+  minPerOrder?: number | null;
+  maxPerUser?: number | null;
+  tableConfig?: TicketTier['tableConfig'];
+  commissionEligible?: boolean;
   now?: Date;
 }
 
@@ -58,15 +96,49 @@ export function createTicketTier(input: CreateTicketTierInput): TicketTier {
     throw new InvalidOperationError('Ticket tier quantity cannot be negative');
   if (input.priceInPaise < 0)
     throw new InvalidOperationError('Ticket tier price cannot be negative');
+  const guestCount = input.guestCount ?? 1;
+  if (!Number.isInteger(guestCount) || guestCount < 1)
+    throw new InvalidOperationError('Guest count must be at least 1');
+  if (input.minPerOrder !== null && input.minPerOrder !== undefined && input.minPerOrder < 1)
+    throw new InvalidOperationError('Minimum tickets per order must be positive');
+  if (input.maxPerUser !== null && input.maxPerUser !== undefined && input.maxPerUser < 1)
+    throw new InvalidOperationError('Maximum tickets per user must be positive');
+  if (input.minPerOrder && input.maxPerOrder && input.minPerOrder > input.maxPerOrder)
+    throw new InvalidOperationError('Minimum tickets per order cannot exceed maximum');
+  if ((input.accessType ?? 'ENTRY') === 'RSVP' && input.priceInPaise !== 0)
+    throw new InvalidOperationError('RSVP tickets must be free');
   if (
-    input.minPerOrder !== undefined &&
-    input.maxPerOrder !== undefined &&
-    input.minPerOrder !== null &&
-    input.maxPerOrder !== null &&
-    input.minPerOrder > input.maxPerOrder
-  ) {
-    throw new InvalidOperationError('minPerOrder cannot exceed maxPerOrder');
+    input.salesStartAt &&
+    input.salesEndAt &&
+    Date.parse(input.salesStartAt) >= Date.parse(input.salesEndAt)
+  )
+    throw new InvalidOperationError('Ticket sales must start before they end');
+  for (const phase of input.pricingPhases ?? []) {
+    if (phase.priceInPaise < 0 || (phase.quantity !== null && phase.quantity < 0))
+      throw new InvalidOperationError('Pricing phase values cannot be negative');
+    if (Date.parse(phase.startsAt) >= Date.parse(phase.endsAt))
+      throw new InvalidOperationError('Pricing phase must start before it ends');
   }
+  const phases = [...(input.pricingPhases ?? [])].sort(
+    (a, b) => Date.parse(a.startsAt) - Date.parse(b.startsAt),
+  );
+  for (let index = 1; index < phases.length; index += 1) {
+    const prevPhase = phases[index - 1];
+    const currPhase = phases[index];
+    if (prevPhase && currPhase && Date.parse(prevPhase.endsAt) > Date.parse(currPhase.startsAt))
+      throw new InvalidOperationError('Pricing phases cannot overlap');
+  }
+  const accessType = input.accessType ?? 'ENTRY';
+  if (accessType === 'TABLE' && !input.tableConfig)
+    throw new InvalidOperationError('Table tickets require table configuration');
+  if (
+    input.tableConfig &&
+    (input.tableConfig.capacity < 1 ||
+      input.tableConfig.tableCount < 1 ||
+      input.tableConfig.minimumSpendPaise < 0 ||
+      input.tableConfig.redeemableAmountPaise < 0)
+  )
+    throw new InvalidOperationError('Invalid table configuration');
   return {
     id: input.id,
     eventId: input.eventId,
@@ -80,8 +152,20 @@ export function createTicketTier(input: CreateTicketTierInput): TicketTier {
     status: 'active',
     salesStartAt: input.salesStartAt ?? null,
     salesEndAt: input.salesEndAt ?? null,
-    minPerOrder: input.minPerOrder ?? null,
     maxPerOrder: input.maxPerOrder ?? null,
+    accessType,
+    audienceType: input.audienceType ?? 'GENERAL',
+    guestCount,
+    pricingPhases: input.pricingPhases ?? [],
+    doorPriceInPaise: input.doorPriceInPaise ?? null,
+    benefits: input.benefits ?? [],
+    minAge: input.minAge ?? null,
+    maxAge: input.maxAge ?? null,
+    minPerOrder: input.minPerOrder ?? null,
+    maxPerUser: input.maxPerUser ?? null,
+    tableConfig: input.tableConfig ?? null,
+    commissionEligible:
+      input.commissionEligible ?? (accessType !== 'RSVP' && input.priceInPaise > 0),
     ...newVersionedEntity(input.now ?? new Date()),
   };
 }
@@ -99,7 +183,6 @@ export function updateTicketTier(
       | 'quantity'
       | 'salesStartAt'
       | 'salesEndAt'
-      | 'minPerOrder'
       | 'maxPerOrder'
     >
   >,
@@ -257,6 +340,7 @@ export interface CommissionTerms {
   ratePercent: number;
   /** Optional fixed fee (paise). */
   flatPaise: number;
+  tierRates?: Record<string, { ratePercent: number; flatPaise: number }>;
 }
 
 export interface PromoterAssignment extends VersionedEntity {
@@ -287,6 +371,13 @@ export function createPromoterAssignment(input: CreatePromoterAssignmentInput): 
   }
   if (input.terms.flatPaise < 0)
     throw new InvalidOperationError('Commission fee cannot be negative');
+  for (const rate of Object.values(input.terms.tierRates ?? {})) {
+    if (rate.ratePercent < 0 || rate.ratePercent > 100) {
+      throw new InvalidOperationError('Tier commission rate must be between 0 and 100');
+    }
+    if (rate.flatPaise < 0)
+      throw new InvalidOperationError('Tier commission fee cannot be negative');
+  }
   if (input.terms.version < 1)
     throw new InvalidOperationError('Commission terms version must be >= 1');
   return {

@@ -101,11 +101,6 @@ export function calculatePricing(input: CalculatePricingInput): PricingBreakdown
       // Summing paise across currencies produces a number that means nothing.
       throw new InvalidOperationError('All lines in an order must share one currency');
     }
-    if (tier.minPerOrder !== null && quantity < tier.minPerOrder) {
-      throw new InvalidOperationError(
-        `${tier.name} has a minimum of ${tier.minPerOrder} per order`,
-      );
-    }
     if (tier.maxPerOrder !== null && quantity > tier.maxPerOrder) {
       throw new InvalidOperationError(
         `${tier.name} has a maximum of ${tier.maxPerOrder} per order`,
