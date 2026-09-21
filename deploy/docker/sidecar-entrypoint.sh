@@ -38,8 +38,15 @@ echo "[sidecar] starting Fastify on 127.0.0.1:${sidecar_fastify_port} (internal 
 fastify_pid=$!
 
 echo "[sidecar] waiting for Fastify to become healthy..."
+# 90s, not 30s: Render's free-tier hibernation wake-up alone can take 30s+
+# before Fastify even logs its first plugin-init line (observed: a cold
+# boot from hibernation took ~34s end to end, past the old 30s budget —
+# not an application bug, just a slow container wake racing a tight
+# timeout). This is a budget-tier constraint, not a health-check
+# relaxation — /health itself still requires a real listening server.
+health_check_budget_s="${SIDECAR_HEALTH_CHECK_BUDGET_S:-90}"
 ready=0
-for _ in $(seq 1 30); do
+for _ in $(seq 1 "$health_check_budget_s"); do
     if wget -qO- "http://127.0.0.1:${sidecar_fastify_port}/api/v2/internal/health" >/dev/null 2>&1; then
         ready=1
         break
@@ -52,7 +59,7 @@ for _ in $(seq 1 30); do
 done
 
 if [ "$ready" != "1" ]; then
-    echo "[sidecar] Fastify did not become healthy within 30s" >&2
+    echo "[sidecar] Fastify did not become healthy within ${health_check_budget_s}s" >&2
     kill -TERM "$fastify_pid" 2>/dev/null || true
     exit 1
 fi
