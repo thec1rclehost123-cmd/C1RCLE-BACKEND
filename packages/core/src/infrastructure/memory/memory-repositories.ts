@@ -1,4 +1,5 @@
 import { VersionConflictError } from '../../domain/errors.js';
+import { doSlotRangesOverlap } from '../../domain/models/venue.js';
 
 /**
  * ─── In-memory repository implementations (Core domains for tests) ──────────────
@@ -252,6 +253,24 @@ export class MemoryVenueSlotRepository implements VenueSlotRepository {
     const byId = new Map(existing.map((s) => [s.id, s] as const));
     for (const slot of slots) byId.set(slot.id, slot);
     this.slots.set(first.venueId, [...byId.values()]);
+  }
+
+  async getSlotById(slotId: EntityId): Promise<VenueSlot | null> {
+    for (const venueSlots of this.slots.values()) {
+      const found = venueSlots.find((slot) => slot.id === slotId);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  async listOverlappingSlots(
+    venueId: EntityId,
+    startTime: string,
+    endTime: string,
+  ): Promise<VenueSlot[]> {
+    return (this.slots.get(venueId) ?? []).filter((slot) =>
+      doSlotRangesOverlap(slot.startTime, slot.endTime, startTime, endTime),
+    );
   }
 }
 

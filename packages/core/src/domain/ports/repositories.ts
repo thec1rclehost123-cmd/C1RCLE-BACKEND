@@ -205,6 +205,15 @@ export interface SlotRequestRepository {
 export interface VenueSlotRepository {
   listSlots(venueId: EntityId, from: string, to: string): Promise<VenueSlot[]>;
   saveSlots(slots: VenueSlot[], tx?: TxContext | null): Promise<void>;
+  /** Single-slot read for unblock (ownership + status checks). Null when missing. */
+  getSlotById(slotId: EntityId): Promise<VenueSlot | null>;
+  /**
+   * Every slot of the venue whose range touches `[startTime, endTime)` —
+   * regardless of status (the caller ignores `cancelled` tombstones).
+   * Filtered in application code after a single equality query, like
+   * `listSlots`, so no composite Firestore index is required.
+   */
+  listOverlappingSlots(venueId: EntityId, startTime: string, endTime: string): Promise<VenueSlot[]>;
 }
 
 // ─── Events ──────────────────────────────────────────────────────────────────
