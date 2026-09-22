@@ -378,3 +378,7 @@ export {
 // Public / discovery (Phase 4 PR1)
 export type { HostPublicDto, DiscoveryFeedDto } from './contracts/public.js';
 export { hostPublicDtoSchema, discoveryFeedDtoSchema } from './contracts/public.js';
+
+// Guest profile (guest-portal signup onboarding)
+export type { GuestProfileDto, UpsertGuestProfileRequest } from './contracts/guest-profile.js';
+export { guestProfileDtoSchema, upsertGuestProfileSchema } from './contracts/guest-profile.js';

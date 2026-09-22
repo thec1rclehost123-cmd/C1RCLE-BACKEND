@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   eventDtoSchema,
+  guestProfileDtoSchema,
   idempotencyKeySchema,
   noContentSchema,
   opaqueIdSchema,
@@ -11,6 +12,7 @@ import {
   paginationQuerySchema,
   roleSchema,
   sessionSchema,
+  upsertGuestProfileSchema,
   userSchema,
   venueDtoSchema,
   versionHeaderSchema,
@@ -140,6 +142,29 @@ describe('client schemas — canonical fixtures', () => {
 
   it('rejects an unknown event status', () => {
     expect(eventDtoSchema.safeParse({ status: 'live' }).success).toBe(false);
+  });
+
+  it('parses a guest profile upsert and dto, rejecting short tastes', () => {
+    const body = {
+      displayName: 'Aayush',
+      dateOfBirth: '2000-01-01',
+      city: 'Pune',
+      tastes: ['Rooftops', 'Live music', 'Art & culture'],
+      intents: ['Find events'],
+    };
+    expect(upsertGuestProfileSchema.parse(body)).toEqual(body);
+    expect(
+      guestProfileDtoSchema.parse({
+        ...body,
+        userId: 'user_1',
+        createdAt: '2026-09-08T00:00:00.000Z',
+        updatedAt: '2026-09-08T00:00:00.000Z',
+      }).userId,
+    ).toBe('user_1');
+    expect(upsertGuestProfileSchema.safeParse({ ...body, tastes: ['Rooftops'] }).success).toBe(
+      false,
+    );
+    expect(upsertGuestProfileSchema.safeParse({ ...body, extra: 1 }).success).toBe(false);
   });
 });
 

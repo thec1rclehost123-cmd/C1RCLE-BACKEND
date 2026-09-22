@@ -79,11 +79,37 @@ export class PublicService {
     return venue;
   }
 
+  /**
+   * Venue public profile by id — for guests resolving an event's `venueId`
+   * (events carry the id, not the slug). Same active-only rule as `getVenue`,
+   * so a suspended venue's events show a venue-TBA fallback, never its name.
+   */
+  async getVenueById(venueId: EntityId): Promise<Venue> {
+    const venue = await this.venues.getById(venueId);
+    if (!venue || venue.status !== 'active') {
+      throw new VenueNotFoundError(venueId);
+    }
+    return venue;
+  }
+
   /** Host/organization public profile by slug. Only an active tenant is public. */
   async getHost(slug: string): Promise<Organization> {
     const org = await this.organizations.getBySlug(slug);
     if (!org || org.status !== 'active') {
       throw new OrganizationNotFoundError(slug);
+    }
+    return org;
+  }
+
+  /**
+   * Host public profile by id — for guests resolving an event's
+   * `organizationId` (events carry the id, not the slug). Same active-only
+   * rule as `getHost`.
+   */
+  async getHostById(organizationId: EntityId): Promise<Organization> {
+    const org = await this.organizations.getById(organizationId);
+    if (!org || org.status !== 'active') {
+      throw new OrganizationNotFoundError(organizationId);
     }
     return org;
   }

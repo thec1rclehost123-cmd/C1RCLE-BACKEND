@@ -28,6 +28,7 @@ import promoterConnectionRoutes from './partner/promoter-connections.js';
 import partnerReferralLinkRoutes from './partner/referral-links.js';
 import partnerVenueRoutes from './partner/venues.js';
 import phase5Routes from './phase5-routes.js';
+import guestProfileRoutes from './profile.js';
 import publicDiscoveryRoutes from './public/discovery.js';
 import ticketRoutes from './tickets/ticket-routes.js';
 import walletRoutes from './wallet/wallet-routes.js';
@@ -100,6 +101,8 @@ export async function registerV2Routes(app: FastifyInstance): Promise<void> {
       // Phase 2: not org-scoped — an applicant has no organization yet, and a
       // platform admin acts across all of them.
       await onboardingRoutes(v2);
+      // Guest profile: session-scoped like onboarding — a guest belongs to no org.
+      await guestProfileRoutes(v2);
       await adminRoutes(v2);
       // Phase 4 PR2: guest checkout + payments + Razorpay webhook.
       await checkoutRoutes(v2);
