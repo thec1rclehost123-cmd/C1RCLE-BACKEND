@@ -103,9 +103,22 @@ export interface PaginationQuery {
 
 export interface OrganizationRepository {
   getById(organizationId: EntityId): Promise<Organization | null>;
+  /**
+   * Batched fetch for name resolution (e.g. partnerships listing). Missing
+   * ids simply don't come back — batch lookup is not an existence check.
+   * Firestore caps `getAll` at 30 refs per call; the adapter chunks.
+   */
+  getByIds(organizationIds: EntityId[]): Promise<Organization[]>;
   /** Public host-profile lookup — global (not org-scoped): a guest reaches an
    * organization by its slug alone, with no tenant context of their own. */
   getBySlug(slug: string): Promise<Organization | null>;
+  /**
+   * Bounded global browse of active organizations for partner discovery.
+   * Returns at most `limit` rows in an unspecified order; kind/search
+   * filtering happens in the discovery service so neither driver needs new
+   * composite indexes.
+   */
+  listActive(limit: number): Promise<Organization[]>;
   /** All orgs a user id belongs to as a member. */
   listForMember(userId: EntityId, query: PaginationQuery): Promise<Page<Organization>>;
   listMembers(organizationId: EntityId, query: PaginationQuery): Promise<Page<OrganizationMember>>;
@@ -175,10 +188,18 @@ export interface InvitationRepository {
 
 export interface VenueRepository {
   getById(venueId: EntityId): Promise<Venue | null>;
+  /** Batched fetch for name resolution; missing ids simply don't come back. */
+  getByIds(venueIds: EntityId[]): Promise<Venue[]>;
   getBySlug(slug: string, organizationId: EntityId): Promise<Venue | null>;
   /** Public venue-profile lookup — global (not org-scoped): the guest surface
    * addresses a venue by slug alone, with no tenant context of its own. */
   getBySlugGlobal(slug: string): Promise<Venue | null>;
+  /**
+   * Bounded global browse of active venues for partner discovery. Same
+   * contract as `OrganizationRepository.listActive`: at most `limit` rows,
+   * filtering in the service.
+   */
+  listActive(limit: number): Promise<Venue[]>;
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Venue>>;
   save(venue: Venue, tx?: TxContext | null): Promise<void>;
 }

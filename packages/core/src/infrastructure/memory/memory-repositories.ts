@@ -132,11 +132,24 @@ export class MemoryOrganizationRepository implements OrganizationRepository {
     return this.organizations.get(organizationId) ?? null;
   }
 
+  async getByIds(organizationIds: EntityId[]): Promise<Organization[]> {
+    const unique = [...new Set(organizationIds)];
+    return unique
+      .map((id) => this.organizations.get(id))
+      .filter((org): org is Organization => org !== undefined);
+  }
+
   async getBySlug(slug: string): Promise<Organization | null> {
     for (const org of this.organizations.values()) {
       if (org.slug === slug) return org;
     }
     return null;
+  }
+
+  async listActive(limit: number): Promise<Organization[]> {
+    return [...this.organizations.values()]
+      .filter((org) => org.status === 'active')
+      .slice(0, limit);
   }
 
   async listForMember(userId: EntityId, query: PaginationQuery): Promise<Page<Organization>> {
@@ -185,6 +198,13 @@ export class MemoryVenueRepository implements VenueRepository {
     return this.venues.get(venueId) ?? null;
   }
 
+  async getByIds(venueIds: EntityId[]): Promise<Venue[]> {
+    const unique = [...new Set(venueIds)];
+    return unique
+      .map((id) => this.venues.get(id))
+      .filter((venue): venue is Venue => venue !== undefined);
+  }
+
   async getBySlug(slug: string, organizationId: EntityId): Promise<Venue | null> {
     for (const venue of this.venues.values()) {
       if (venue.public.slug === slug && venue.organizationId === organizationId) return venue;
@@ -197,6 +217,10 @@ export class MemoryVenueRepository implements VenueRepository {
       if (venue.public.slug === slug) return venue;
     }
     return null;
+  }
+
+  async listActive(limit: number): Promise<Venue[]> {
+    return [...this.venues.values()].filter((v) => v.status === 'active').slice(0, limit);
   }
 
   async listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Venue>> {

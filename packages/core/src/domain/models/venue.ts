@@ -195,6 +195,30 @@ export interface VenueSlot extends VersionedEntity {
 
 export type VenueSlotStatus = 'open' | 'booked' | 'blocked' | 'cancelled';
 
+export function createVenueBlock(input: {
+  id: EntityId;
+  venueId: EntityId;
+  label: string;
+  startTime: string;
+  endTime: string;
+  now?: Date;
+}): VenueSlot {
+  if (new Date(input.endTime) <= new Date(input.startTime)) {
+    throw new InvalidOperationError('Block end time must be after its start time');
+  }
+  return {
+    id: input.id,
+    venueId: input.venueId,
+    label: input.label,
+    startTime: input.startTime,
+    endTime: input.endTime,
+    recurring: false,
+    status: 'blocked',
+    capacityFor: null,
+    ...newVersionedEntity(input.now ?? new Date()),
+  };
+}
+
 /**
  * ─── Slot requests ────────────────────────────────────────────────────────────
  * A host asks for a slot; the venue accepts/rejects. FSM:

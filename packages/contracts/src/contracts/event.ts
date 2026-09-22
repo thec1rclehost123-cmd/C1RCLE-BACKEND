@@ -64,6 +64,41 @@ export const createEventSchema = z.object({
 });
 export type CreateEventInput = z.infer<typeof createEventSchema>;
 
+export const posterContentTypeSchema = z.enum(['image/jpeg', 'image/png', 'image/webp']);
+export type PosterContentType = z.infer<typeof posterContentTypeSchema>;
+
+/**
+ * Ask for a pre-signed upload URL for an event poster. The partner `PUT`s the
+ * file to the returned `uploadUrl` with the returned `headers`, then sends the
+ * returned `publicUrl` as the event's `imageUrl` on create. Not
+ * idempotency-keyed: minting a fresh URL is safe to repeat, and every mint
+ * yields a fresh object key so re-uploads never clobber an existing poster.
+ */
+export const posterUploadUrlRequestSchema = z
+  .object({
+    contentType: posterContentTypeSchema,
+  })
+  .strict();
+export type PosterUploadUrlRequest = z.infer<typeof posterUploadUrlRequestSchema>;
+
+export const posterUploadUrlDtoSchema = z
+  .object({
+    uploadUrl: z.string().min(1),
+    method: z.literal('PUT'),
+    /** Headers the client must send on the PUT, verbatim. */
+    headers: z.record(z.string(), z.string()),
+    storagePath: z.string().min(1).max(500),
+    /**
+     * Long-lived public read URL — this is what gets stored as the event's
+     * `imageUrl` so guests can render the poster.
+     */
+    publicUrl: z.url(),
+    /** Epoch ms — the upload URL is unusable after this. */
+    expiresAt: z.number().int().positive(),
+  })
+  .strict();
+export type PosterUploadUrlDto = z.infer<typeof posterUploadUrlDtoSchema>;
+
 export const updateEventSchema = z
   .object({
     title: z.string().min(1).max(200).optional(),

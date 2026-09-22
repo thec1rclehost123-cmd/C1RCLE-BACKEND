@@ -150,6 +150,19 @@ export const venueSlotDtoSchema = z.object({
 });
 export type VenueSlotDto = z.infer<typeof venueSlotDtoSchema>;
 
+export const createVenueBlockSchema = z
+  .object({
+    label: z.string().min(1).max(200),
+    startTime: z.iso.datetime(),
+    endTime: z.iso.datetime(),
+  })
+  .strict()
+  .refine((value) => new Date(value.endTime) > new Date(value.startTime), {
+    message: 'End time must be after start time',
+    path: ['endTime'],
+  });
+export type CreateVenueBlockInput = z.infer<typeof createVenueBlockSchema>;
+
 export const slotRequestDtoSchema = z.object({
   id: opaqueIdSchema,
   venueId: opaqueIdSchema,

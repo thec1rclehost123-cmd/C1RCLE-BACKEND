@@ -19,6 +19,7 @@ import { internalRoutes } from './internal/index.js';
 import onboardingRoutes from './onboarding.js';
 import orderRoutes from './orders/orders-routes.js';
 import partnerAnalyticsRoutes from './partner/analytics.js';
+import partnerDiscoveryRoutes from './partner/discover.js';
 import partnerEventCatalogRoutes from './partner/event-catalog.js';
 import partnerEventRoutes from './partner/events.js';
 import partnerOrganizationRoutes from './partner/organizations.js';
@@ -92,6 +93,7 @@ export async function registerV2Routes(app: FastifyInstance): Promise<void> {
       await partnerEventRoutes(v2);
       await partnerEventCatalogRoutes(v2);
       await partnerPartnershipRoutes(v2);
+      await partnerDiscoveryRoutes(v2);
       await partnerAnalyticsRoutes(v2);
       await partnerReferralLinkRoutes(v2);
       await promoterConnectionRoutes(v2);
