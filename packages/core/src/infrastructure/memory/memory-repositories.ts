@@ -132,6 +132,13 @@ export class MemoryOrganizationRepository implements OrganizationRepository {
     return this.organizations.get(organizationId) ?? null;
   }
 
+  async getByIds(organizationIds: EntityId[]): Promise<Organization[]> {
+    const unique = [...new Set(organizationIds)];
+    return unique
+      .map((id) => this.organizations.get(id))
+      .filter((org): org is Organization => org !== undefined);
+  }
+
   async getBySlug(slug: string): Promise<Organization | null> {
     for (const org of this.organizations.values()) {
       if (org.slug === slug) return org;
@@ -189,6 +196,13 @@ export class MemoryVenueRepository implements VenueRepository {
 
   async getById(venueId: EntityId): Promise<Venue | null> {
     return this.venues.get(venueId) ?? null;
+  }
+
+  async getByIds(venueIds: EntityId[]): Promise<Venue[]> {
+    const unique = [...new Set(venueIds)];
+    return unique
+      .map((id) => this.venues.get(id))
+      .filter((venue): venue is Venue => venue !== undefined);
   }
 
   async getBySlug(slug: string, organizationId: EntityId): Promise<Venue | null> {

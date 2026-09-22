@@ -103,6 +103,12 @@ export interface PaginationQuery {
 
 export interface OrganizationRepository {
   getById(organizationId: EntityId): Promise<Organization | null>;
+  /**
+   * Batched fetch for name resolution (e.g. partnerships listing). Missing
+   * ids simply don't come back — batch lookup is not an existence check.
+   * Firestore caps `getAll` at 30 refs per call; the adapter chunks.
+   */
+  getByIds(organizationIds: EntityId[]): Promise<Organization[]>;
   /** Public host-profile lookup — global (not org-scoped): a guest reaches an
    * organization by its slug alone, with no tenant context of their own. */
   getBySlug(slug: string): Promise<Organization | null>;
@@ -182,6 +188,8 @@ export interface InvitationRepository {
 
 export interface VenueRepository {
   getById(venueId: EntityId): Promise<Venue | null>;
+  /** Batched fetch for name resolution; missing ids simply don't come back. */
+  getByIds(venueIds: EntityId[]): Promise<Venue[]>;
   getBySlug(slug: string, organizationId: EntityId): Promise<Venue | null>;
   /** Public venue-profile lookup — global (not org-scoped): the guest surface
    * addresses a venue by slug alone, with no tenant context of its own. */

@@ -96,6 +96,9 @@ export class PromoterConnectionService {
 
   /**
    * Same page as `listForOrganization` with counterparty names resolved.
+   * A constant number of batched lookups (promoter orgs + venue targets in
+   * parallel, then the expanded org set once venues resolve) — never a
+   * per-row fan-out, so a 100-row page costs 3 reads, not 300.
    * For venue targets the venue's own name/city wins, falling back to the
    * owning org's name when the venue row is gone.
    */
@@ -105,43 +108,56 @@ export class PromoterConnectionService {
     query: PaginationQuery,
   ): Promise<Page<PromoterConnectionWithNames>> {
     const page = await this.listForOrganization(actor, organizationId, query);
-    const items = await Promise.all(
-      page.items.map(async (connection): Promise<PromoterConnectionWithNames> => {
-        const promoterOrg = await this.deps.repositories.organizations.getById(
-          connection.promoterId,
-        );
-        if (connection.targetType === 'venue') {
-          const [venue, targetOrg] = await Promise.all([
-            this.deps.repositories.venues.getById(connection.targetId),
-            this.deps.repositories.organizations.getById(connection.targetId),
-          ]);
-          // NOTE: venue targets address the venue row; some older connections
-          // point `targetId` at the owning org instead. Prefer the venue when
-          // it resolves, otherwise fall back to the org row.
-          const targetOrgByVenue =
-            venue && !targetOrg
-              ? await this.deps.repositories.organizations.getById(venue.organizationId)
-              : targetOrg;
-          return {
-            connection,
-            promoterName: promoterOrg?.name ?? null,
-            promoterSlug: promoterOrg?.slug ?? null,
-            targetName: venue?.public.name ?? targetOrgByVenue?.name ?? null,
-            targetSlug: venue?.public.slug ?? targetOrgByVenue?.slug ?? null,
-            targetCity: venue?.public.address?.city ?? null,
-          };
-        }
-        const targetOrg = await this.deps.repositories.organizations.getById(connection.targetId);
+
+    const venueTargetIds = page.items
+      .filter((connection) => connection.targetType === 'venue')
+      .map((connection) => connection.targetId);
+    const [promoterOrgs, venueTargets] = await Promise.all([
+      this.deps.repositories.organizations.getByIds(
+        page.items.map((connection) => connection.promoterId),
+      ),
+      this.deps.repositories.venues.getByIds(venueTargetIds),
+    ]);
+
+    // Org ids the page can reference: every `targetId` (some venue targets
+    // point `targetId` at the owning org instead of the venue) plus every
+    // resolved venue's owner org, so the fallback chain below never misses.
+    const venueOwnerIds = venueTargets.map((venue) => venue.organizationId);
+    const orgIds = [...new Set([...page.items.map((c) => c.targetId), ...venueOwnerIds])];
+    const targetOrgs = await this.deps.repositories.organizations.getByIds(orgIds);
+
+    const promoterByName = new Map(promoterOrgs.map((org) => [org.id, org] as const));
+    const targetOrgByName = new Map(targetOrgs.map((org) => [org.id, org] as const));
+    const venueByName = new Map(venueTargets.map((venue) => [venue.id, venue] as const));
+
+    const items = page.items.map((connection): PromoterConnectionWithNames => {
+      const promoterOrg = promoterByName.get(connection.promoterId);
+      if (connection.targetType === 'venue') {
+        const venue = venueByName.get(connection.targetId);
+        // Prefer the venue row; fall back to the org addressed by `targetId`,
+        // then to the venue's owning org (parity with the old per-row logic).
+        const fallbackOrg =
+          targetOrgByName.get(connection.targetId) ??
+          (venue ? targetOrgByName.get(venue.organizationId) : undefined);
         return {
           connection,
           promoterName: promoterOrg?.name ?? null,
           promoterSlug: promoterOrg?.slug ?? null,
-          targetName: targetOrg?.name ?? null,
-          targetSlug: targetOrg?.slug ?? null,
-          targetCity: null,
+          targetName: venue?.public.name ?? fallbackOrg?.name ?? null,
+          targetSlug: venue?.public.slug ?? fallbackOrg?.slug ?? null,
+          targetCity: venue?.public.address?.city ?? null,
         };
-      }),
-    );
+      }
+      const targetOrg = targetOrgByName.get(connection.targetId);
+      return {
+        connection,
+        promoterName: promoterOrg?.name ?? null,
+        promoterSlug: promoterOrg?.slug ?? null,
+        targetName: targetOrg?.name ?? null,
+        targetSlug: targetOrg?.slug ?? null,
+        targetCity: null,
+      };
+    });
     return { ...page, items };
   }
 
