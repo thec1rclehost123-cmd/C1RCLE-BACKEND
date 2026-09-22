@@ -147,3 +147,8 @@ export type { LeaderboardService, LeaderboardServiceDeps } from './finance/leade
 export { createLeaderboardService } from './finance/leaderboard-service.js';
 export type { EmailOtpService, EmailOtpServiceDeps } from './auth/email-otp-service.js';
 export { createEmailOtpService } from './auth/email-otp-service.js';
+export type {
+  GuestProfileService,
+  GuestProfileServiceDeps,
+} from './guest-profile/guest-profile-service.js';
+export { createGuestProfileService } from './guest-profile/guest-profile-service.js';

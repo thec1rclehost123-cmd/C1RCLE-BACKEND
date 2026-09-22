@@ -48,6 +48,7 @@ import type {
   ScannerSessionCreateInput,
 } from '../models/event-code.js';
 import type { Event } from '../models/event.js';
+import type { GuestProfile } from '../models/guest-profile.js';
 import type {
   LeaderboardBucket,
   LeaderboardPeriodType,
@@ -760,6 +761,16 @@ export interface EmailOtpRepository {
   delete(recipient: EntityId): Promise<void>;
 }
 
+/**
+ * One doc per session user id, fully replaced on each save — no
+ * optimistic-lock version (matches `EmailOtpRepository`'s `docRef.set`
+ * semantics; a `PUT` with the same body converges, so retries are safe).
+ */
+export interface GuestProfileRepository {
+  getByUserId(userId: EntityId): Promise<GuestProfile | null>;
+  save(profile: GuestProfile): Promise<void>;
+}
+
 export type {
   LedgerEntry,
   LedgerEntryType,
@@ -772,4 +783,5 @@ export type {
   LeaderboardBucket,
   LeaderboardPeriodType,
   EmailOtp,
+  GuestProfile,
 };
