@@ -538,6 +538,12 @@ export interface ScanLedgerRepository {
    */
   getAdmissionStats(eventId: EntityId, tierNames: readonly string[]): Promise<ScanAdmissionStats>;
   countConsumedByEntitlement(entitlementId: EntityId): Promise<number>;
+  /**
+   * Offline backlog for an event's sync replay (scans recorded before `before`).
+   * Bounded: returns at most `MAX_SYNC_SCANS` rows, no ordering promise — a
+   * backlog larger than that needs another sync pass once the queue drains, so
+   * callers must loop rather than assume they got everything.
+   */
   findOfflineScans(eventId: EntityId, before: Date): Promise<ScanLedger[]>;
 }
 

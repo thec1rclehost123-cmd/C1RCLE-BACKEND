@@ -354,6 +354,10 @@ export default async function phase5ScannerRoutes(fastify: FastifyInstance) {
   // Replays a device's offline backlog through the same server-side decision
   // every online scan takes. Entries the server refuses come back as
   // `conflicts` — the operator's list of who got in on a bad ticket.
+  // PII note: the body (per-scan QR payload captures, ≤512 chars) is persisted
+  // in the idempotency ledger for replay protection. Those captures are
+  // HMAC-signed ticket references only — never guest names — and the ledger is
+  // never logged, so storing them is safe (see scanner-threat-model.md §3.6).
   fastify.post(
     '/door/offline-sync',
     {

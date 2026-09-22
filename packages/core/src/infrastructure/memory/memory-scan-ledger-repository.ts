@@ -171,8 +171,11 @@ export class MemoryScanLedgerRepository implements ScanLedgerRepository {
   }
 
   async findOfflineScans(eventId: EntityId, before: Date): Promise<ScanLedger[]> {
-    return [...this.scans.values()].filter(
-      (s) => s.eventId === eventId && s.isOffline && new Date(s.scannedAt) < before,
-    );
+    // Same bound as the Firestore adapter (`offlineSyncRequestSchema` cap) so
+    // both drivers honour the same contract — a caller must loop for more.
+    const MAX_SYNC_SCANS = 500;
+    return [...this.scans.values()]
+      .filter((s) => s.eventId === eventId && s.isOffline && new Date(s.scannedAt) < before)
+      .slice(0, MAX_SYNC_SCANS);
   }
 }

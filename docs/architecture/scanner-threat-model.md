@@ -162,6 +162,27 @@ to confirm that something exists.
 | Door code in an audit record | Deliberately omitted — audit records are read by more people than may open a door |
 | A bartender seeing a guest's full identity | The charge view is **first name only**, and balance display is a venue setting |
 | Another tenant's guest name on a denial | `wrong_event` attaches no entitlement data |
+| Offline-sync request bodies persisted for replay | Per-scan payloads are bounded QR captures (≤512 chars, HMAC-signed, no names) stored only in the idempotency ledger, which is never logged |
+
+### 3.7 Firestore composite indexes (deployment checklist)
+
+These scan-ledger queries need explicit composite indexes (single-field
+indexes do not cover multi-`where`/`orderBy` reads; the emulator surfaces the
+missing-index error at request time, not deploy time). Add them to the
+Firestore index config (`firestore.indexes.json` / `firebase.json` per
+`docs/reference/task.md` §T18) and verify with the emulator before relying on
+the count/door dashboards:
+
+| Query | Index |
+|---|---|
+| `findOfflineScans` (`eventId ==`, `isOffline ==`, `scannedAt <`) | `eventId ↑, isOffline ↑, scannedAt ↑` |
+| `findByEventAndEntitlement` (`eventId ==`, `entitlementId ==`) | `eventId ↑, entitlementId ↑` |
+| `findByEvent` (`eventId ==`, `orderBy scannedAt desc`) | `eventId ↑, scannedAt ↓` |
+| `findByOrganization` (`organizationId ==`, `orderBy scannedAt desc`) | `organizationId ↑, scannedAt ↓` |
+| `findByDevice` (`deviceId ==`, `orderBy scannedAt desc`) | `deviceId ↑, scannedAt ↓` |
+| `findByOperator` (`operatorUid ==`, `orderBy scannedAt desc`) | `operatorUid ↑, scannedAt ↓` |
+| `countByEventAndStatus` (`eventId ==`, `status ==`) | `eventId ↑, status ↑` (`count()` requires an index) |
+| `countConsumedByEntitlement` (`entitlementId ==`, `status ==`) | `entitlementId ↑, status ↑` |
 
 ---
 

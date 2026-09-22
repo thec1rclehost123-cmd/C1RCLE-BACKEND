@@ -28,6 +28,18 @@ export class FirestoreScanLedgerRepository implements ScanLedgerRepository {
     return this.db.collection(COLLECTION);
   }
 
+  /**
+   * Appends an audit row. The id comes from `createScanLedger` — random, not
+   * deterministic — so this `set` is always a fresh create and never clobbers
+   * an earlier attempt.
+   *
+   * Duplicate-*admission* prevention is deliberately NOT this method's job:
+   * two concurrent scans of one ticket each record their own row (both may
+   * still fail the real guard, `EntitlementRepository.claimAdmission`), because
+   * the ledger must capture every attempt — successful or denied — as an
+   * append-only trail. Callers that need "did this ticket already scan?" use
+   * `findByEventAndEntitlement` as a hint, never as a lock.
+   */
   async create(input: ScanLedgerCreateInput): Promise<ScanLedger> {
     const scan = createScanLedger(input);
     await this.collection.doc(scan.id).set(toDoc(scan));
@@ -201,10 +213,17 @@ export class FirestoreScanLedgerRepository implements ScanLedgerRepository {
   }
 
   async findOfflineScans(eventId: EntityId, before: Date): Promise<ScanLedger[]> {
+    // Bounded to the offline-sync schema's per-request cap (offlineSyncRequest
+    // `.max(500)`): a backlog larger than this needs another sync pass, and a
+    // bare `.get()` here would let one shift's backlog balloon into a huge
+    // in-memory read. Requires composite index: eventId ↑, isOffline ↑,
+    // scannedAt ↑ (see the deployment checklist in scanner-threat-model.md).
+    const MAX_SYNC_SCANS = 500;
     const snap = await this.collection
       .where('eventId', '==', eventId)
       .where('isOffline', '==', true)
       .where('scannedAt', '<', before.toISOString())
+      .limit(MAX_SYNC_SCANS)
       .get();
     return snap.docs.map((doc) => toScanLedger(doc.data()));
   }
