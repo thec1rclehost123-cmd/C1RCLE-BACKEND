@@ -52,7 +52,7 @@ export const eventDtoSchema = z.object({
   startingPricePaise: z.number().int().nonnegative().nullable(),
   isFree: z.boolean(),
   cancellationReason: z.string().max(1000).nullable(),
-  compensation: eventCompensationSchema.nullable(),
+  compensation: eventCompensationSchema.nullable().optional(),
   version: z.number().int().positive(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
@@ -155,8 +155,16 @@ export const createTicketPricingPhaseSchema = z.object({
   id: z.string().min(1).max(64),
   name: z.string().min(1).max(80),
   priceInPaise: z.number().int().positive(),
-  startDate: z.string().regex(/^\d{2}-\d{2}$/),
-  endDate: z.string().regex(/^\d{2}-\d{2}$/),
+  startDate: z
+    .string()
+    .regex(/^\d{2}-\d{2}$/)
+    .optional(),
+  endDate: z
+    .string()
+    .regex(/^\d{2}-\d{2}$/)
+    .optional(),
+  startsAt: z.iso.datetime().optional(),
+  endsAt: z.iso.datetime().optional(),
   quantity: z.number().int().nonnegative().nullable(),
 });
 
