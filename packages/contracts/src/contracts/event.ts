@@ -150,23 +150,25 @@ export const ticketPricingPhaseSchema = z.object({
   quantity: z.number().int().nonnegative().nullable(),
 });
 
-/** Create input deliberately has no year; the gateway resolves it server-side. */
-export const createTicketPricingPhaseSchema = z.object({
-  id: z.string().min(1).max(64),
-  name: z.string().min(1).max(80),
-  priceInPaise: z.number().int().positive(),
-  startDate: z
-    .string()
-    .regex(/^\d{2}-\d{2}$/)
-    .optional(),
-  endDate: z
-    .string()
-    .regex(/^\d{2}-\d{2}$/)
-    .optional(),
-  startsAt: z.iso.datetime().optional(),
-  endsAt: z.iso.datetime().optional(),
-  quantity: z.number().int().nonnegative().nullable(),
-});
+/** Create input accepts either MM-DD partial dates (resolved server-side) or full ISO datetimes. */
+export const createTicketPricingPhaseSchema = z.union([
+  z.object({
+    id: z.string().min(1).max(64),
+    name: z.string().min(1).max(80),
+    priceInPaise: z.number().int().positive(),
+    startDate: z.string().regex(/^\d{2}-\d{2}$/),
+    endDate: z.string().regex(/^\d{2}-\d{2}$/),
+    quantity: z.number().int().nonnegative().nullable(),
+  }),
+  z.object({
+    id: z.string().min(1).max(64),
+    name: z.string().min(1).max(80),
+    priceInPaise: z.number().int().positive(),
+    startsAt: z.iso.datetime(),
+    endsAt: z.iso.datetime(),
+    quantity: z.number().int().nonnegative().nullable(),
+  }),
+]);
 
 export const ticketTierDtoSchema = z.object({
   id: opaqueIdSchema,
