@@ -68,10 +68,12 @@ export class CheckoutService {
 
     const pricingLines = lines.map((l) => ({ tierId: l.tierId, quantity: l.quantity }));
 
-    // Build referral attribution if code provided. Previously computed and
-    // then discarded (dead `_attribution` local) — `createHold` needs this to
-    // freeze attribution onto the hold/order, so it must actually be
-    // returned to the caller rather than thrown away here.
+    const pricing = await this.deps.pricing.calculate({
+      eventId,
+      lines: pricingLines,
+      promoCode,
+    });
+
     let attribution: CheckoutAttribution | null = null;
     if (referralCode) {
       const signed = await new ReferralLinkService(this.deps).resolveAttribution(
@@ -79,6 +81,12 @@ export class CheckoutService {
         referralCode,
       );
       if (signed) {
+        const promoterCommissionPaise = commissionForLines(pricing.lines, signed.terms);
+        if (promoterCommissionPaise > pricing.grandTotalPaise - pricing.platformFeePaise) {
+          throw new InvalidOperationError(
+            'The assigned promoter commission exceeds this order’s distributable total',
+          );
+        }
         attribution = {
           referralLinkId: signed.referralLinkId,
           promoterId: signed.promoterId,
@@ -87,27 +95,9 @@ export class CheckoutService {
           assignmentVersion: signed.assignmentVersion,
           termsSnapshot: signed.terms,
           attributionSignature: signPromoterAttribution(signed, this.deps.config.magicTicketSecret),
+          promoterCommissionPaise,
         };
       }
-    }
-
-    const pricing = await this.deps.pricing.calculate({
-      eventId,
-      lines: pricingLines,
-      promoCode,
-    });
-
-    if (attribution) {
-      const promoterCommissionPaise = commissionForLines(pricing.lines, attribution.termsSnapshot);
-      if (promoterCommissionPaise > pricing.grandTotalPaise - pricing.platformFeePaise) {
-        throw new InvalidOperationError(
-          'The assigned promoter commission exceeds this order’s distributable total',
-        );
-      }
-      attribution = {
-        ...attribution,
-        promoterCommissionPaise,
-      };
     }
 
     return { pricing, attribution };
