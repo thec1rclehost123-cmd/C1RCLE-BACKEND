@@ -136,6 +136,9 @@ export class CheckoutService {
       await this.deps.repositories.cartReservations.getByIdempotencyKey(idempotencyKey);
     if (existing) return existing;
 
+    const now = new Date();
+    const buyerId = userId ?? input.actor.userId;
+
     // Check inventory availability
     for (const line of lines) {
       const available = await this.deps.inventory.getAvailableQuantity(eventId, line.tierId);
@@ -144,15 +147,42 @@ export class CheckoutService {
       }
     }
 
+    // Per-user ticket caps (`tier.maxPerUser`): count what this user already
+    // holds (live carts) and owns (paid orders) for each capped tier, so the
+    // knob binds across orders, not just within one basket. Guests without
+    // any identity (`buyerId` null) fall through — there is no stable key to
+    // count against, and v1 never enforced a per-user tier cap either.
+    if (buyerId) {
+      for (const line of lines) {
+        const tier = await this.deps.repositories.catalog.getTierById(line.tierId);
+        if (!tier?.maxPerUser) continue;
+        const alreadyHeld = await this.deps.repositories.cartReservations.countActiveQuantity(
+          buyerId,
+          eventId,
+          line.tierId,
+          now,
+        );
+        const alreadyBought = await this.deps.repositories.orders.countPaidQuantityByUserAndEvent(
+          buyerId,
+          eventId,
+          line.tierId,
+        );
+        if (alreadyHeld + alreadyBought + line.quantity > tier.maxPerUser) {
+          throw new InvalidOperationError(
+            `${tier.name} has a maximum of ${tier.maxPerUser} per user`,
+          );
+        }
+      }
+    }
+
     const holdId = `HOLD-${idempotencyKey}`;
-    const now = new Date();
     const ttl = reservationTtlMs ?? 10 * 60 * 1000;
 
     const hold: CartReservation = {
       id: holdId,
       eventId,
       organizationId,
-      userId: userId ?? input.actor.userId,
+      userId: buyerId,
       lines: lines.map((l) => ({ ...l })),
       pricing,
       appliedPromoCode,

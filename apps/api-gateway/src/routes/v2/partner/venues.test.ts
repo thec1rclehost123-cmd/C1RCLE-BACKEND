@@ -547,6 +547,39 @@ describe('V2 partners venues slice — profile, calendar, menu, availability', (
     await server.close();
   });
 
+  it('two concurrent blocks for the same minutes — exactly one wins (TOCTOU closed)', async () => {
+    const server = await buildServer();
+    const { id } = await createVenue(server);
+    const payload = {
+      label: 'Race hold',
+      startTime: '2026-09-20T19:00:00.000Z',
+      endTime: '2026-09-20T23:00:00.000Z',
+    };
+
+    // Fired together: both pass the venue-ownership read before either writes.
+    const [first, second] = await Promise.all([
+      server.inject({
+        method: 'POST',
+        url: `/venues/${id}/calendar/blocks`,
+        headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
+        payload,
+      }),
+      server.inject({
+        method: 'POST',
+        url: `/venues/${id}/calendar/blocks`,
+        headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
+        payload,
+      }),
+    ]);
+
+    // The overlap guard and the insert share one storage transaction
+    // (`createBlockIfFree`), so the loser sees the winner's slot and gets a
+    // 400 instead of both landing.
+    const statuses = [first.statusCode, second.statusCode].sort();
+    expect(statuses).toEqual([201, 400]);
+    await server.close();
+  });
+
   it('returns 404 when unblocking an unknown block or a foreign venue', async () => {
     const server = await buildServer();
     const { id } = await createVenue(server);

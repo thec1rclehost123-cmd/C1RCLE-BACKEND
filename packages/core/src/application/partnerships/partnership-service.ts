@@ -160,8 +160,9 @@ export class PartnershipService {
 
   /**
    * Same page as `listForOrganization` with counterparty names resolved.
-   * One bounded fan-out per row (org + venue lookups, page size ≤ 100) —
-   * cheap enough for a dashboard list, and keeps fabrication out of the UI.
+   * Exactly three batched lookups per page (pad host orgs, venues, venue orgs
+   * via `getByIds`) regardless of page size — the old per-row fan-out scaled
+   * linearly (up to 3 × 100 reads per page); this is a constant 3.
    */
   async listWithNames(
     actor: ActorContext,
@@ -169,23 +170,31 @@ export class PartnershipService {
     query: PaginationQuery,
   ): Promise<Page<PartnershipWithNames>> {
     const page = await this.listForOrganization(actor, organizationId, query);
-    const items = await Promise.all(
-      page.items.map(async (partnership): Promise<PartnershipWithNames> => {
-        const [hostOrg, venue, venueOrg] = await Promise.all([
-          this.deps.repositories.organizations.getById(partnership.hostOrganizationId),
-          this.deps.repositories.venues.getById(partnership.venueId),
-          this.deps.repositories.organizations.getById(partnership.venueOrganizationId),
-        ]);
-        return {
-          partnership,
-          hostName: hostOrg?.name ?? null,
-          hostSlug: hostOrg?.slug ?? null,
-          venueName: venue?.public.name ?? venueOrg?.name ?? null,
-          venueSlug: venue?.public.slug ?? venueOrg?.slug ?? null,
-          venueCity: venue?.public.address?.city ?? null,
-        };
-      }),
-    );
+    const [hostOrgs, venues, venueOrgs] = await Promise.all([
+      this.deps.repositories.organizations.getByIds(
+        page.items.map((partnership) => partnership.hostOrganizationId),
+      ),
+      this.deps.repositories.venues.getByIds(page.items.map((partnership) => partnership.venueId)),
+      this.deps.repositories.organizations.getByIds(
+        page.items.map((partnership) => partnership.venueOrganizationId),
+      ),
+    ]);
+    const hostByName = new Map(hostOrgs.map((org) => [org.id, org] as const));
+    const venueByName = new Map(venues.map((venue) => [venue.id, venue] as const));
+    const venueOrgByName = new Map(venueOrgs.map((org) => [org.id, org] as const));
+    const items = page.items.map((partnership): PartnershipWithNames => {
+      const hostOrg = hostByName.get(partnership.hostOrganizationId);
+      const venue = venueByName.get(partnership.venueId);
+      const venueOrg = venueOrgByName.get(partnership.venueOrganizationId);
+      return {
+        partnership,
+        hostName: hostOrg?.name ?? null,
+        hostSlug: hostOrg?.slug ?? null,
+        venueName: venue?.public.name ?? venueOrg?.name ?? null,
+        venueSlug: venue?.public.slug ?? venueOrg?.slug ?? null,
+        venueCity: venue?.public.address?.city ?? null,
+      };
+    });
     return { ...page, items };
   }
 

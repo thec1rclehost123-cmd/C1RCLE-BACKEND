@@ -1,5 +1,5 @@
 import { VersionConflictError } from '../../domain/errors.js';
-import { doSlotRangesOverlap } from '../../domain/models/venue.js';
+import { doSlotRangesOverlap, assertSlotRangeFree } from '../../domain/models/venue.js';
 
 /**
  * ─── In-memory repository implementations (Core domains for tests) ──────────────
@@ -140,6 +140,13 @@ export class MemoryOrganizationRepository implements OrganizationRepository {
     return this.organizations.get(organizationId) ?? null;
   }
 
+  async getByIds(organizationIds: EntityId[]): Promise<Organization[]> {
+    return organizationIds
+      .filter((id, index, all) => all.indexOf(id) === index) // dedupe
+      .map((id) => this.organizations.get(id))
+      .filter((org): org is Organization => org !== undefined);
+  }
+
   async getBySlug(slug: string): Promise<Organization | null> {
     for (const org of this.organizations.values()) {
       if (org.slug === slug) return org;
@@ -197,6 +204,13 @@ export class MemoryVenueRepository implements VenueRepository {
 
   async getById(venueId: EntityId): Promise<Venue | null> {
     return this.venues.get(venueId) ?? null;
+  }
+
+  async getByIds(venueIds: EntityId[]): Promise<Venue[]> {
+    return venueIds
+      .filter((id, index, all) => all.indexOf(id) === index) // dedupe
+      .map((id) => this.venues.get(id))
+      .filter((venue): venue is Venue => venue !== undefined);
   }
 
   async getBySlug(slug: string, organizationId: EntityId): Promise<Venue | null> {
@@ -278,6 +292,16 @@ export class MemoryVenueSlotRepository implements VenueSlotRepository {
     return (this.slots.get(venueId) ?? []).filter((slot) =>
       doSlotRangesOverlap(slot.startTime, slot.endTime, startTime, endTime),
     );
+  }
+
+  async createBlockIfFree(block: VenueSlot): Promise<VenueSlot> {
+    // Read-check-write with no `await` between the guard and the push: within
+    // one synchronous turn no concurrent caller can interleave, which is the
+    // memory driver's analogue of the Firestore transaction (TOCTOU-closed).
+    const existing = this.slots.get(block.venueId) ?? [];
+    assertSlotRangeFree(existing, block.startTime, block.endTime);
+    this.slots.set(block.venueId, [...existing, block]);
+    return block;
   }
 }
 
@@ -433,6 +457,19 @@ export class MemoryCartReservationRepository implements CartReservationRepositor
         r.eventId === eventId && r.status === 'active' && Date.parse(r.expiresAt) > now.getTime(),
     );
   }
+
+  async countActiveQuantity(
+    userId: EntityId,
+    eventId: EntityId,
+    tierId: EntityId,
+    now: Date,
+  ): Promise<number> {
+    return [...this.reservations.values()].reduce((sum, r) => {
+      if (r.eventId !== eventId || r.userId !== userId) return sum;
+      if (r.status !== 'active' || Date.parse(r.expiresAt) <= now.getTime()) return sum;
+      return sum + r.lines.reduce((s, line) => s + (line.tierId === tierId ? line.quantity : 0), 0);
+    }, 0);
+  }
 }
 
 export class MemoryOrderRepository implements OrderRepository {
@@ -467,6 +504,22 @@ export class MemoryOrderRepository implements OrderRepository {
   async listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<Order>> {
     const all = [...this.orders.values()].filter((o) => o.eventId === eventId);
     return serializeSlice(all, query);
+  }
+
+  async countPaidQuantityByUserAndEvent(
+    userId: EntityId,
+    eventId: EntityId,
+    tierId: EntityId,
+  ): Promise<number> {
+    return [...this.orders.values()].reduce((sum, order) => {
+      // Only money-captured orders consume the per-user cap.
+      if (order.eventId !== eventId || order.userId !== userId || order.status !== 'paid') {
+        return sum;
+      }
+      return (
+        sum + order.lines.reduce((s, line) => s + (line.tierId === tierId ? line.quantity : 0), 0)
+      );
+    }, 0);
   }
 
   async save(order: Order, _tx?: TxContext | null): Promise<void> {
