@@ -17,7 +17,11 @@ export {
   VenueCalendarService,
   VenueSlotRequestService,
 } from './venues/venue-service.js';
-export type { CreateVenueCommand, UpdateVenueCommand } from './venues/venue-service.js';
+export type {
+  CreateVenueCommand,
+  UpdateVenueCommand,
+  CreateVenueBlockCommand,
+} from './venues/venue-service.js';
 export { EventService } from './events/event-service.js';
 export type { CreateEventCommand, UpdateEventCommand } from './events/event-service.js';
 export { EventCatalogService } from './event-catalog/event-catalog-service.js';
@@ -29,11 +33,24 @@ export type {
   CommissionTerms,
 } from './event-catalog/event-catalog-service.js';
 export { PromoterConnectionService } from './promoters/promoter-connection-service.js';
-export type { RequestConnectionCommand } from './promoters/promoter-connection-service.js';
+export type {
+  PromoterConnectionWithNames,
+  RequestConnectionCommand,
+} from './promoters/promoter-connection-service.js';
 export { ReferralLinkService } from './promoters/referral-link-service.js';
 export type { CreateReferralLinkCommand } from './promoters/referral-link-service.js';
 export { PartnershipService } from './partnerships/partnership-service.js';
-export type { RequestPartnershipCommand } from './partnerships/partnership-service.js';
+export type {
+  PartnershipWithNames,
+  RequestPartnershipCommand,
+} from './partnerships/partnership-service.js';
+export { PartnerDiscoveryService } from './partnerships/partner-discovery-service.js';
+export type {
+  DiscoverPartnerKind,
+  DiscoveredPartner,
+  DiscoverPartnersPage,
+  DiscoverPartnersQuery,
+} from './partnerships/partner-discovery-service.js';
 export { PublicService } from './public/public-service.js';
 export { AdminAuthorityService } from './admin/admin-authority-service.js';
 export type { ProposeCommand, AuditInput } from './admin/admin-authority-service.js';

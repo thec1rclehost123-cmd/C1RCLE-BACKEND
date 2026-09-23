@@ -41,7 +41,6 @@ function tier(overrides: Partial<TicketTier> = {}): TicketTier {
     status: 'active',
     salesStartAt: null,
     salesEndAt: null,
-    minPerOrder: null,
     maxPerOrder: null,
     version: 1,
     createdAt: T0.toISOString(),

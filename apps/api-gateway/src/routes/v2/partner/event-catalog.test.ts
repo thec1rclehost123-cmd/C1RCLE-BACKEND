@@ -92,6 +92,119 @@ describe('ticket tiers', () => {
     await server.close();
   });
 
+  it('round-trips independent access, audience, phase, benefit, and table fields', async () => {
+    const server = await buildServer();
+    const { org, eventId } = await seed(server);
+    const response = await server.inject({
+      method: 'POST',
+      url: '/events/' + eventId + '/ticket-tiers',
+      headers: write(org),
+      payload: {
+        name: 'VIP Table',
+        priceInPaise: 2_500_000,
+        quantity: 10,
+        accessType: 'TABLE',
+        audienceType: 'GENERAL',
+        guestCount: 6,
+        pricingPhases: [
+          {
+            id: 'phase-1',
+            name: 'Early Bird',
+            priceInPaise: 2_000_000,
+            startsAt: '2026-01-01T00:00:00.000Z',
+            endsAt: '2026-02-01T00:00:00.000Z',
+            quantity: 5,
+          },
+        ],
+        benefits: ['Entry', 'Bottle'],
+        doorPriceInPaise: 3_000_000,
+        minAge: 21,
+        maxPerUser: 2,
+        tableConfig: {
+          capacity: 6,
+          minimumSpendPaise: 1_000_000,
+          redeemableAmountPaise: 500_000,
+          tableCount: 10,
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      accessType: 'TABLE',
+      audienceType: 'GENERAL',
+      guestCount: 6,
+      doorPriceInPaise: 3_000_000,
+      benefits: ['Entry', 'Bottle'],
+      tableConfig: { capacity: 6, tableCount: 10 },
+    });
+    await server.close();
+  });
+
+  it('rejects a paid RSVP at the domain boundary', async () => {
+    const server = await buildServer();
+    const { org, eventId } = await seed(server);
+    const response = await server.inject({
+      method: 'POST',
+      url: '/events/' + eventId + '/ticket-tiers',
+      headers: write(org),
+      payload: { name: 'RSVP', priceInPaise: 1, quantity: 10, accessType: 'RSVP' },
+    });
+
+    expect(response.statusCode).toBe(400);
+    await server.close();
+  });
+
+  it('rejects a table ticket without table configuration', async () => {
+    const server = await buildServer();
+    const { org, eventId } = await seed(server);
+    const response = await server.inject({
+      method: 'POST',
+      url: '/events/' + eventId + '/ticket-tiers',
+      headers: write(org),
+      payload: { name: 'Table', priceInPaise: 1_000, quantity: 2, accessType: 'TABLE' },
+    });
+
+    expect(response.statusCode).toBe(400);
+    await server.close();
+  });
+
+  it('rejects overlapping pricing phases', async () => {
+    const server = await buildServer();
+    const { org, eventId } = await seed(server);
+    const response = await server.inject({
+      method: 'POST',
+      url: '/events/' + eventId + '/ticket-tiers',
+      headers: write(org),
+      payload: {
+        name: 'Phased',
+        priceInPaise: 1_000,
+        quantity: 2,
+        pricingPhases: [
+          {
+            id: 'phase-1',
+            name: 'One',
+            priceInPaise: 1_000,
+            startsAt: '2026-01-01T00:00:00.000Z',
+            endsAt: '2026-01-10T00:00:00.000Z',
+            quantity: null,
+          },
+          {
+            id: 'phase-2',
+            name: 'Two',
+            priceInPaise: 2_000,
+            startsAt: '2026-01-09T00:00:00.000Z',
+            endsAt: '2026-01-20T00:00:00.000Z',
+            quantity: null,
+          },
+        ],
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    await server.close();
+  });
+
   it('rejects a negative price at the schema boundary', async () => {
     const server = await buildServer();
     const { org, eventId } = await seed(server);

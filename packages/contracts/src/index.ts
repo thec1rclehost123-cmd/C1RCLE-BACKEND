@@ -30,8 +30,12 @@ export type {
   InviteMemberInput,
   VenueProfileDto,
   VenueSlotDto,
+  CreateVenueBlockInput,
   SlotRequestDto,
   CreateSlotRequestInput,
+  SlotRequestListResponse,
+  SlotRequestActor,
+  SlotRequestDetailDto,
 } from './contracts/organization.js';
 
 export {
@@ -46,8 +50,12 @@ export {
   inviteMemberSchema,
   venueProfileDtoSchema,
   venueSlotDtoSchema,
+  createVenueBlockSchema,
   slotRequestDtoSchema,
   createSlotRequestSchema,
+  slotRequestListResponseSchema,
+  slotRequestActorSchema,
+  slotRequestDetailDtoSchema,
 } from './contracts/organization.js';
 
 // Event + Catalog
@@ -58,6 +66,8 @@ export type {
   CreateEventInput,
   UpdateEventInput,
   CancelEventInput,
+  PosterUploadUrlRequest,
+  PosterUploadUrlDto,
   TicketTierDto,
   CreateTicketTierRequest,
   PromoCodeDto,
@@ -75,6 +85,8 @@ export {
   createEventSchema,
   updateEventSchema,
   cancelEventSchema,
+  posterUploadUrlRequestSchema,
+  posterUploadUrlDtoSchema,
   ticketTierStatusSchema,
   ticketTierDtoSchema,
   createTicketTierSchema,
@@ -98,6 +110,9 @@ export type {
   CreateReferralLinkRequest,
   PromoterConnectionDto,
   RequestConnectionRequest,
+  DiscoverPartnerDto,
+  DiscoverPartnerKind,
+  DiscoverPartnersQuery,
 } from './contracts/partner.js';
 
 export {
@@ -113,6 +128,9 @@ export {
   createReferralLinkSchema,
   promoterConnectionDtoSchema,
   requestConnectionSchema,
+  discoverPartnerKindSchema,
+  discoverPartnerDtoSchema,
+  discoverPartnersQuerySchema,
 } from './contracts/partner.js';
 
 // Onboarding / KYC / Admin Authority

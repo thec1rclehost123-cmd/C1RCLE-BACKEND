@@ -297,6 +297,11 @@ function toUserDto(user: { id: string; email: string; name: string; image?: stri
     // Phase 0 scope is partner-dashboard auth only; guest/admin auth are
     // later phases (docs/roadmap/ROADMAP.md) and will need a real role source.
     role: 'partner',
-    avatarUrl: user.image ?? null,
+    // `avatarUrl` is `z.url().nullable()` — Better Auth's Firestore-backed
+    // user record stores an unset image as `''`, not `null`/`undefined`, so
+    // `?? null` alone let a non-URL empty string through and 500'd every
+    // login/signup for an account with no avatar (validateV2Response's
+    // schema check failing after a successful auth).
+    avatarUrl: user.image && user.image.length > 0 ? user.image : null,
   };
 }

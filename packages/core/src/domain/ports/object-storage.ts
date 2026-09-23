@@ -21,6 +21,14 @@ export interface UploadUrlRequest {
   readonly maxBytes: number;
   /** Absolute expiry, epoch ms — computed by the caller from the injected clock. */
   readonly expiresAt: number;
+  /**
+   * Whether the uploaded object must be readable by guests with no
+   * credential. `'public'` makes the signed `PUT` set the *object's* ACL to
+   * `public-read` (never the bucket's), so `toPublicUrl` actually resolves —
+   * used for event posters rendered in guest UIs. Defaults to `'private'` so
+   * KYC images and every other upload stay unreadable without a credential.
+   */
+  readonly visibility?: 'private' | 'public';
 }
 
 export interface UploadUrlGrant {
@@ -39,6 +47,13 @@ export interface ObjectStoragePort {
   /** Recorded so a provider swap is visible in support history. */
   readonly name: string;
   issueUploadUrl(request: UploadUrlRequest): Promise<UploadUrlGrant>;
+  /**
+   * A long-lived public read URL for an uploaded object. Used for media that
+   * must be rendered by guests with no credential — e.g. event posters the
+   * client stores as `imageUrl`. The provider knows how to expose its bucket;
+   * on the memory driver it hands back a non-routable placeholder host.
+   */
+  toPublicUrl(storagePath: string): string;
 }
 
 /**
@@ -51,12 +66,24 @@ export class EchoObjectStorage implements ObjectStoragePort {
   readonly name = 'echo-dev';
 
   async issueUploadUrl(request: UploadUrlRequest): Promise<UploadUrlGrant> {
+    const headers: Record<string, string> = { 'content-type': request.contentType };
+    // Mirrors the real provider's `x-goog-acl` handling so the caller always
+    // receives the same PUT headers regardless of driver.
+    if (request.visibility === 'public') {
+      headers['x-goog-acl'] = 'public-read';
+    }
     return {
       uploadUrl: `memory://uploads/${request.key}`,
       method: 'PUT',
-      headers: { 'content-type': request.contentType },
+      headers,
       storagePath: request.key,
       expiresAt: request.expiresAt,
     };
+  }
+
+  toPublicUrl(storagePath: string): string {
+    // Non-routable reserved host, but a valid URL for `z.url()` — matches the
+    // `memory://` upload URL convention of this dev provider.
+    return `https://uploads.invalid/${storagePath}`;
   }
 }

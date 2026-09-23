@@ -28,3 +28,6 @@ overrides:
   'fast-uri@^3.0.0': '3.1.6'
   'fast-uri@^4.0.0': '4.1.4'
   'nanoid@^3.0.0': '3.3.18'
+  # js-yaml -> 4.3.2 fixes GHSA-2883-xcg3-v3hh (HIGH, maxTotalMergeKeys CPU DoS).
+  # Pulled in by @eslint/eslintrc and cosmiconfig (both declare ^4.1.0).
+  'js-yaml@^4.1.0': '4.3.2'
