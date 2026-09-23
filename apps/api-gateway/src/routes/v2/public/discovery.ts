@@ -4,11 +4,13 @@ import {
   venueDtoSchema,
   hostPublicDtoSchema,
   discoveryFeedDtoSchema,
+  publicTicketTierListResponseSchema,
   paginatedSchema,
 } from '@c1rcle/contracts/client';
+import { effectiveTierPricePaise } from '@c1rcle/core/domain';
 import { z } from 'zod';
 
-import type { Organization } from '@c1rcle/core/domain';
+import type { Organization, TicketTier } from '@c1rcle/core/domain';
 
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
@@ -241,6 +243,36 @@ export default async function publicDiscoveryRoutes(fastify: FastifyInstance) {
       return reply.send(validated);
     },
   );
+
+  // ── EVENT TIERS (public sell surface) ─────────────────────────────────────
+  // Active tiers for a public event with live availability. Non-public events
+  // 404 here exactly like `GET /events/:idOrSlug` (no existence oracle).
+  // Registered AFTER `/events/:idOrSlug` — no capture conflict (`/tiers`
+  // suffix), but kept adjacent for readability.
+  fastify.get(
+    '/events/:idOrSlug/tiers',
+    {
+      preHandler: [fastify.rateLimit('PUBLIC_READ'), fastify.validateV2({ params: idOrSlugParam })],
+    },
+    async (request, reply) => {
+      const { idOrSlug } = request.params as z.infer<typeof idOrSlugParam>;
+      const rows = await services.public
+        .listEventTiers(idOrSlug)
+        .catch((error: unknown) => mapDomainError(reply, request, idOrSlug, error));
+      if (rows === undefined) return reply;
+      const payload = {
+        items: rows.map(({ tier, availableQuantity }) => publicTierToDto(tier, availableQuantity)),
+      };
+      const validated = validateV2Response(
+        reply,
+        request,
+        publicTicketTierListResponseSchema,
+        payload,
+      );
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
 }
 
 /** Public-safe host DTO: no `role` (that's the caller's membership, and
@@ -250,5 +282,22 @@ function hostToDto(org: Organization) {
     id: org.id,
     name: org.name,
     slug: org.slug,
+  };
+}
+
+/**
+ * Public-safe tier projection: identity + display + effective price + live
+ * availability. No purchase bounds, no sales windows, no version stamps.
+ * Legacy tiers without `priceInPaise` price via `effectiveTierPricePaise`.
+ */
+function publicTierToDto(tier: TicketTier, availableQuantity: number) {
+  return {
+    id: tier.id,
+    eventId: tier.eventId,
+    name: tier.name,
+    description: tier.description,
+    priceInPaise: effectiveTierPricePaise(tier),
+    currency: tier.currency,
+    availableQuantity,
   };
 }

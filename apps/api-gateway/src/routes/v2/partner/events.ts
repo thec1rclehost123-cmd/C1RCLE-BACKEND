@@ -467,6 +467,8 @@ export function mapDomainError(
     'event_not_found',
     'slot_request_not_found',
     'partnership_not_found',
+    'ticket_tier_not_found',
+    'promoter_assignment_not_found',
     'onboarding_request_not_found',
     'proposal_not_found',
     // The generic `NotFoundError` (domain/errors.ts) carries this exact code —
@@ -525,6 +527,20 @@ export function mapDomainError(
           expectedVersion: known.expectedVersion,
           currentVersion: known.currentVersion,
         },
+      }),
+    );
+    return undefined;
+  }
+  // Business-rule duplicate (e.g. a second RSVP for the same user+event) —
+  // distinct from optimistic-locking (`version_conflict`) and key reuse
+  // (`idempotency_*`): the request itself is disallowed by current state.
+  if (known?.code === 'conflict') {
+    reply.status(409).send(
+      buildV2ErrorResponse({
+        status: 409,
+        message: known.message ?? 'Conflict',
+        code: 'conflict',
+        requestId: request.id,
       }),
     );
     return undefined;

@@ -95,14 +95,19 @@ export class FirestoreCartReservationRepository implements CartReservationReposi
     return snap.size;
   }
 
+  /**
+   * Index-free by design: single-field `eventId` filter only (automatic
+   * single-field index), active/expiry filtering happens in code — the live
+   * hold set is bounded by the ~10-minute TTL, so the extra reads are
+   * negligible, and this avoids a composite index (repo convention). Never a
+   * public route response; only `InventoryService` aggregation input.
+   */
   async listActiveByEvent(eventId: EntityId, now: Date): Promise<CartReservation[]> {
-    // Composite index required: eventId ==, status ==, expiresAt >.
-    const snap = await this.collection
-      .where('eventId', '==', eventId)
-      .where('status', '==', 'active')
-      .where('expiresAt', '>', now.toISOString())
-      .get();
-    return snap.docs.map((doc) => toCartReservation(doc.data()));
+    const snap = await this.collection.where('eventId', '==', eventId).get();
+    const nowMs = now.getTime();
+    return snap.docs
+      .map((doc) => toCartReservation(doc.data()))
+      .filter((hold) => hold.status === 'active' && Date.parse(hold.expiresAt) > nowMs);
   }
 }
 

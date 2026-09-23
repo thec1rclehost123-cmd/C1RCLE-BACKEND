@@ -6,6 +6,7 @@ import {
 import { isPublicStatus } from '../../domain/models/event.js';
 
 import type { EntityId } from '../../domain/identity.js';
+import type { TicketTier } from '../../domain/models/event-catalog.js';
 import type { Event } from '../../domain/models/event.js';
 import type { Organization } from '../../domain/models/organization.js';
 import type { Venue } from '../../domain/models/venue.js';
@@ -52,6 +53,27 @@ export class PublicService {
    * the domain's `isPublic` flag, so a draft/cancelled event can never appear. */
   async listEvents(query: PaginationQuery): Promise<Page<Event>> {
     return this.events.listPublic(query);
+  }
+
+  /**
+   * Active sellable tiers for a public event, each with live availability
+   * (`quantity - sold - activeHolds`). Non-public events 404 via `getEvent`
+   * (same no-oracle rule); paused/sold_out tiers stay hidden from guests.
+   */
+  async listEventTiers(
+    idOrSlug: EntityId,
+  ): Promise<{ tier: TicketTier; availableQuantity: number }[]> {
+    const event = await this.getEvent(idOrSlug);
+    const tiers = await this.deps.repositories.catalog.listTiers(event.id);
+    const rows: { tier: TicketTier; availableQuantity: number }[] = [];
+    for (const tier of tiers) {
+      if (tier.status !== 'active') continue;
+      rows.push({
+        tier,
+        availableQuantity: await this.deps.inventory.getAvailableQuantity(event.id, tier.id),
+      });
+    }
+    return rows;
   }
 
   /**

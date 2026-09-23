@@ -111,6 +111,21 @@ export function updateTicketTier(
   return bumpVersion({ ...tier, ...changes }, now ?? new Date());
 }
 
+/**
+ * Effective unit price for reads against tiers that predate `priceInPaise`.
+ * Legacy tier docs (written by the pre-V2 catalog) carry `doorPriceInPaise`
+ * or no price field at all. RSVP and public listings must not crash on those
+ * docs — and must never invent a price: the legacy door price wins when it
+ * is a valid non-negative integer, otherwise the tier prices as zero, and
+ * callers still gate free-vs-paid on `event.isFree`, never on this alone.
+ */
+export function effectiveTierPricePaise(tier: TicketTier): number {
+  if (typeof tier.priceInPaise === 'number') return tier.priceInPaise;
+  const legacy = (tier as unknown as { doorPriceInPaise?: unknown }).doorPriceInPaise;
+  if (typeof legacy === 'number' && Number.isInteger(legacy) && legacy >= 0) return legacy;
+  return 0;
+}
+
 // ─── Promo codes ──────────────────────────────────────────────────────────────
 
 export type PromoDiscountType = 'percent' | 'fixed';

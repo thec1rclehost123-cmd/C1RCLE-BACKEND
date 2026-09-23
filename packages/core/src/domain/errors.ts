@@ -115,6 +115,18 @@ export class InvalidOperationError extends DomainError {
   }
 }
 
+/**
+ * The request conflicts with current state (e.g. an RSVP already exists for
+ * this user+event). Maps to HTTP 409 with code `conflict` — distinct from
+ * `VersionConflictError` (optimistic-locking) and `IdempotencyConflictError`
+ * (key reuse): this is a business-rule duplicate, not a concurrency accident.
+ */
+export class ConflictError extends DomainError {
+  constructor(message: string) {
+    super(message, 'conflict');
+  }
+}
+
 export class IdempotencyConflictError extends DomainError {
   constructor(idempotencyKey: string) {
     super(

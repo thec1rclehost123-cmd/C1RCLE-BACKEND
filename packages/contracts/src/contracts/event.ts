@@ -259,3 +259,28 @@ export const assignPromoterSchema = z
   })
   .strict();
 export type AssignPromoterRequest = z.infer<typeof assignPromoterSchema>;
+
+/* ─── Public ticket-tier reads (guest checkout) ──────────────────────────── */
+
+/**
+ * Slim sell-surface projection of a ticket tier for anonymous guests. No
+ * internal bounds (`min/maxPerOrder`), no sales windows — just what checkout
+ * needs: identity, display, effective price, and live availability. Legacy
+ * tiers without `priceInPaise` price via `effectiveTierPricePaise` (domain).
+ */
+export const publicTicketTierDtoSchema = z.object({
+  id: opaqueIdSchema,
+  eventId: opaqueIdSchema,
+  name: z.string(),
+  description: z.string(),
+  priceInPaise: z.number().int().nonnegative(),
+  currency: z.string().length(3),
+  availableQuantity: z.number().int().nonnegative(),
+});
+export type PublicTicketTierDto = z.infer<typeof publicTicketTierDtoSchema>;
+
+/** `GET /public/events/:idOrSlug/tiers` — active tiers only, never paged. */
+export const publicTicketTierListResponseSchema = z.object({
+  items: z.array(publicTicketTierDtoSchema),
+});
+export type PublicTicketTierListResponse = z.infer<typeof publicTicketTierListResponseSchema>;

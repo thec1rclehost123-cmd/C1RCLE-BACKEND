@@ -1,8 +1,18 @@
-import { InvalidOperationError, VersionConflictError } from '../../domain/errors.js';
+import { createHash } from 'node:crypto';
+
+import {
+  ConflictError,
+  EventNotFoundError,
+  InvalidOperationError,
+  TicketTierNotFoundError,
+  UnauthorizedError,
+  VersionConflictError,
+} from '../../domain/errors.js';
 import { issueEntitlements } from '../../domain/models/entitlement.js';
+import { effectiveTierPricePaise } from '../../domain/models/event-catalog.js';
 import { platformFeePercentFor } from '../../domain/models/onboarding.js';
 import { commissionTierFor } from '../../domain/models/partnership.js';
-import { SYSTEM_ACTOR } from '../context.js';
+import { isSystemActor, SYSTEM_ACTOR } from '../context.js';
 import { createFinanceService } from '../finance/finance-service.js';
 import { createLeaderboardService } from '../finance/leaderboard-service.js';
 
@@ -20,6 +30,16 @@ export interface CheckoutAttribution {
   referralLinkId: EntityId;
   promoterId: EntityId;
   code: string;
+}
+
+/**
+ * Deterministic RSVP order id for one user+event. Hashed (not concatenated)
+ * so the result always fits the 64-char opaque-id cap regardless of id
+ * lengths — same reason `entitlementId` hashes rather than concatenates.
+ */
+export function rsvpOrderId(eventId: EntityId, userId: EntityId): EntityId {
+  const digest = createHash('sha256').update(`rsvp:${eventId}:${userId}`).digest('hex');
+  return `RSVP-${digest.slice(0, 32)}`;
 }
 
 /**
@@ -148,6 +168,131 @@ export class CheckoutService {
 
     await this.deps.repositories.cartReservations.create(hold);
     return hold;
+  }
+
+  /**
+   * RSVP — direct free-ticket fulfillment with no payment provider involved.
+   * One call: eligibility (free event + zero-price tier) → 1-per-event check
+   * → inventory check → paid zero-total order + entitlements.
+   *
+   * Rules:
+   * - Auth required: the 1-per-account guarantee needs a real user id.
+   * - Quantity is fixed at 1 (no quantity input) — one RSVP per user per event.
+   * - Settlement is deliberately skipped: a ₹0 order contributes nothing to
+   *   the partner ledger or the promoter leaderboard.
+   * - A concurrent double-tap converges on the winner (same pattern as
+   *   `confirmPayment`'s webhook/redirect race); a sequential second RSVP is
+   *   a 409 `ConflictError`.
+   */
+  async createRsvp(input: {
+    actor: ActorContext;
+    eventId: EntityId;
+    tierId: EntityId;
+  }): Promise<{ order: Order; entitlements: Entitlement[] }> {
+    const { actor, eventId, tierId } = input;
+
+    if (!actor.userId || isSystemActor(actor)) {
+      throw new UnauthorizedError('Authentication is required to book tickets');
+    }
+
+    const event =
+      (await this.deps.repositories.events.getById(eventId)) ??
+      (await this.deps.repositories.events.getBySlug(eventId));
+    if (!event) throw new EventNotFoundError(eventId);
+    if (event.status !== 'published') {
+      throw new InvalidOperationError(`Event is ${event.status}, RSVP is unavailable`);
+    }
+    if (!event.isFree) {
+      throw new InvalidOperationError('RSVP is available only for free events');
+    }
+
+    const tier = await this.deps.repositories.catalog.getTierById(tierId);
+    if (!tier || tier.eventId !== event.id) {
+      throw new TicketTierNotFoundError(tierId);
+    }
+    if (tier.status !== 'active') {
+      throw new InvalidOperationError(`Tier ${tier.name} is ${tier.status}`);
+    }
+    // Legacy tolerance: tiers written before `priceInPaise` existed price via
+    // `doorPriceInPaise` (or nothing) — see `effectiveTierPricePaise`.
+    const unitPricePaise = effectiveTierPricePaise(tier);
+    if (unitPricePaise !== 0) {
+      throw new InvalidOperationError('RSVP is available only for zero-price tiers');
+    }
+
+    // Deterministic id from the RESOLVED event id (callers may pass id or
+    // slug — both must converge on one RSVP): one RSVP per user per event.
+    // Same rationale as entitlement ids — a retried RSVP collides with itself
+    // at the storage layer instead of minting a second ticket.
+    const orderId = rsvpOrderId(event.id, actor.userId);
+    const existing = await this.deps.repositories.orders.getById(orderId);
+    if (existing && existing.status === 'paid') {
+      throw new ConflictError('An RSVP already exists for this event');
+    }
+
+    await this.deps.inventory.assertAvailable(event.id, tierId, 1);
+
+    const now = new Date();
+    const order: Order = {
+      id: orderId,
+      eventId: event.id,
+      organizationId: event.organizationId,
+      userId: actor.userId,
+      contact: { name: 'RSVP Guest', email: '', phone: '' },
+      status: 'paid',
+      lines: [
+        {
+          tierId: tier.id,
+          tierName: tier.name,
+          quantity: 1,
+          unitPricePaise: 0,
+          subtotalPaise: 0,
+        },
+      ],
+      currency: tier.currency,
+      subtotalPaise: 0,
+      discountPaise: 0,
+      discountedSubtotalPaise: 0,
+      platformFeePaise: 0,
+      paymentFeePaise: 0,
+      gstPaise: 0,
+      grandTotalPaise: 0,
+      appliedPromoCode: null,
+      attribution: null,
+      paymentIntentId: null,
+      paymentId: orderId,
+      paidAt: now.toISOString(),
+      reservationExpiresAt: now.toISOString(),
+      failureReason: null,
+      version: 1,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+    };
+
+    try {
+      await this.deps.repositories.orders.save(order);
+    } catch (error) {
+      // Lost a concurrent race with a double-tap on the same RSVP — converge
+      // on the winner rather than failing the guest.
+      if (error instanceof VersionConflictError) {
+        const winner = await this.deps.repositories.orders.getById(orderId);
+        if (winner) {
+          const winnerEntitlements = await this.deps.repositories.entitlements.getByOrderId(
+            winner.id,
+          );
+          return { order: winner, entitlements: winnerEntitlements };
+        }
+      }
+      throw error;
+    }
+
+    const issuedEntitlements = issueEntitlements({ order, now });
+    for (const e of issuedEntitlements) {
+      await this.deps.repositories.entitlements.save(e);
+    }
+
+    const entitlements = await this.deps.repositories.entitlements.getByOrderId(orderId);
+    return { order, entitlements };
   }
 
   /**

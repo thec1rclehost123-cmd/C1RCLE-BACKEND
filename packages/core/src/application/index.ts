@@ -69,7 +69,7 @@ export type { EventHandler } from './events/event-bus.js';
 export { createAuditConsumer, createProjectionConsumer } from './events/audit-consumers.js';
 
 // Phase 4: Checkout, Inventory, Payments
-export { CheckoutService } from './checkout/checkout-service.js';
+export { CheckoutService, rsvpOrderId } from './checkout/checkout-service.js';
 export { InventoryService } from './inventory/inventory-service.js';
 export { PricingService } from './pricing/pricing-service.js';
 export { OrderService } from './orders/order-service.js';

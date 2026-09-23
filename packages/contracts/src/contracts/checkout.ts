@@ -299,3 +299,29 @@ export const refundResponseSchema = z.object({
   amountPaise: z.number().int().nonnegative(),
 });
 export type RefundResponse = z.infer<typeof refundResponseSchema>;
+
+/* ─── RSVP (free, direct, no provider) ─────────────────────────────────────── */
+
+/**
+ * `POST /rsvp` — direct RSVP for free events. One call fulfills immediately:
+ * no quote, no hold, no Razorpay intent/verify. Eligible only when the event
+ * is flagged `isFree` AND the tier is priced at zero; quantity is fixed at 1
+ * server-side (no quantity input), one RSVP per user per event. Auth required.
+ */
+export const rsvpRequestSchema = z
+  .object({
+    eventId: opaqueIdSchema,
+    tierId: opaqueIdSchema,
+  })
+  .strict();
+export type RsvpRequest = z.infer<typeof rsvpRequestSchema>;
+
+/**
+ * RSVP fulfillment — same shape as the payment-confirm response (fulfilled
+ * order + its tickets) so wallet/ticket/scanner reads work unmodified.
+ */
+export const rsvpResponseSchema = z.object({
+  order: checkoutOrderDtoSchema,
+  entitlements: z.array(entitlementDtoSchema),
+});
+export type RsvpResponse = z.infer<typeof rsvpResponseSchema>;
