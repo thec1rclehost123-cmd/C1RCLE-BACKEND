@@ -31,6 +31,37 @@ export interface EventPayloads {
   'event.updated': { title?: string; venueId?: EntityId };
   'event.published': { title: string };
   'event.cancelled': { title: string };
+  /**
+   * A promoter (or the converse: a venue/host offering itself to a promoter)
+   * opened a connection. `targetId` is the RECIPIENT org — the notification
+   * consumer addresses the inbox entry there, not at the event's own
+   * `organizationId` (the requester's org). `promoterName` is resolved by the
+   * emitter so the consumer never performs a second lookup.
+   */
+  'promoter_connection.requested': {
+    connectionId: EntityId;
+    targetId: EntityId;
+    targetType: 'host' | 'venue';
+    initiatedBy: 'promoter' | 'target';
+    promoterId: EntityId;
+    promoterName: string;
+    message: string | null;
+  };
+  /**
+   * A host asked a venue for slot availability (or a venue invited a host).
+   * The recipient org is the OTHER party — the notification consumer picks it
+   * from `initiatedBy`, never from `organizationId` (the initiator's org).
+   * Names are emitter-resolved so the inbox needs no fan-out at read time.
+   */
+  'partnership.requested': {
+    partnershipId: EntityId;
+    venueId: EntityId;
+    venueOrganizationId: EntityId;
+    hostOrganizationId: EntityId;
+    initiatedBy: 'host' | 'venue';
+    venueName: string;
+    hostName: string;
+  };
 }
 
 export type DomainEventType = keyof EventPayloads;

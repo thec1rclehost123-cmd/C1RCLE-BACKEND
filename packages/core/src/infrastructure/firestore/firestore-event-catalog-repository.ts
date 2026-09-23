@@ -27,11 +27,12 @@ export class FirestoreEventCatalogRepository implements EventCatalogRepository {
   // ── Ticket tiers ──────────────────────────────────────────────────────────
   async getTierById(tierId: EntityId): Promise<TicketTier | null> {
     const snap = await this.db.collection(TIERS).doc(tierId).get();
-    return snap.exists ? (snap.data() as unknown as TicketTier) : null;
+    const data = snap.data();
+    return snap.exists && data ? fromTierDoc(data) : null;
   }
   async listTiers(eventId: EntityId): Promise<TicketTier[]> {
     const snap = await this.db.collection(TIERS).where('eventId', '==', eventId).get();
-    return snap.docs.map((doc) => doc.data() as unknown as TicketTier);
+    return snap.docs.map((doc) => fromTierDoc(doc.data()));
   }
   async findWalkInTier(eventId: EntityId): Promise<TicketTier | null> {
     const snap = await this.db
@@ -43,7 +44,7 @@ export class FirestoreEventCatalogRepository implements EventCatalogRepository {
     if (snap.empty) return null;
     const doc = snap.docs[0];
     if (!doc) return null;
-    return doc.exists ? (doc.data() as unknown as TicketTier) : null;
+    return doc.exists ? fromTierDoc(doc.data()) : null;
   }
   async findDineInTier(eventId: EntityId): Promise<TicketTier | null> {
     const snap = await this.db
@@ -55,13 +56,17 @@ export class FirestoreEventCatalogRepository implements EventCatalogRepository {
     if (snap.empty) return null;
     const doc = snap.docs[0];
     if (!doc) return null;
-    return doc.exists ? (doc.data() as unknown as TicketTier) : null;
+    return doc.exists ? fromTierDoc(doc.data()) : null;
   }
   async saveTier(tier: TicketTier, _tx?: TxContext | null): Promise<void> {
-    await this.db
-      .collection(TIERS)
-      .doc(tier.id)
-      .set({ ...tier });
+    const data = { ...tier } as Record<string, unknown>;
+    if (tier.accessType === 'RSVP') {
+      delete data.priceInPaise;
+      delete data.pricingPhases;
+      delete data.doorPriceInPaise;
+      delete data.commissionEligible;
+    }
+    await this.db.collection(TIERS).doc(tier.id).set(data);
   }
 
   // ── Promo codes ───────────────────────────────────────────────────────────
@@ -113,10 +118,26 @@ export class FirestoreEventCatalogRepository implements EventCatalogRepository {
     const snap = await this.db.collection(ASSIGNMENTS).where('eventId', '==', eventId).get();
     return snap.docs.map((doc) => doc.data() as unknown as PromoterAssignment);
   }
+  async listAssignmentsByPromoter(promoterId: EntityId): Promise<PromoterAssignment[]> {
+    const snap = await this.db.collection(ASSIGNMENTS).where('promoterId', '==', promoterId).get();
+    return snap.docs.map((doc) => doc.data() as unknown as PromoterAssignment);
+  }
   async saveAssignment(assignment: PromoterAssignment, _tx?: TxContext | null): Promise<void> {
     await this.db
       .collection(ASSIGNMENTS)
       .doc(assignment.id)
       .set({ ...assignment });
   }
+}
+
+function fromTierDoc(data: DocumentData): TicketTier {
+  // RSVP's non-applicable fields are intentionally absent in Firestore. Keep
+  // the internal pricing projection numeric for existing checkout consumers.
+  return {
+    ...(data as unknown as TicketTier),
+    priceInPaise: (data.priceInPaise as number | undefined) ?? 0,
+    pricingPhases: (data.pricingPhases as TicketTier['pricingPhases'] | undefined) ?? [],
+    commissionEligible: (data.commissionEligible as boolean | undefined) ?? false,
+    doorPriceInPaise: (data.doorPriceInPaise as number | null | undefined) ?? null,
+  };
 }

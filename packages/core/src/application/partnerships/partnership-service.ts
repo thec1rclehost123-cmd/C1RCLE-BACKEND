@@ -13,7 +13,7 @@ import {
   isPartyTo,
   rejectPartnership,
 } from '../../domain/models/partnership.js';
-import { requireOrgAccess } from '../context.js';
+import { requireOrgAccess, emit } from '../context.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type { Partnership, PartnershipInitiator } from '../../domain/models/partnership.js';
@@ -113,6 +113,27 @@ export class PartnershipService {
     this.deps.logger.info('partnership.requested', {
       partnershipId: partnership.id,
       venueId: command.venueId,
+    });
+
+    // Notification producer: the recipient is the OTHER party (host asks a
+    // venue → the venue's org is notified; venue invites a host → the host's
+    // org is). Names are emitter-resolved so the inbox consumer does no
+    // fan-out. `emit` resolves `organizationId` from the ACTOR, so the
+    // consumer must read the recipient from the payload, not the event.
+    const [venueForNotify, hostOrgForNotify] = await Promise.all([
+      this.deps.repositories.venues.getById(command.venueId),
+      this.deps.repositories.organizations.getById(hostOrganizationId),
+    ]);
+    const venueName = venueForNotify?.public.name ?? venueOrganizationId;
+    const hostName = hostOrgForNotify?.name ?? hostOrganizationId;
+    await emit(this.deps, actor, partnership.id, 'partnership.requested', {
+      partnershipId: partnership.id,
+      venueId: command.venueId,
+      venueOrganizationId,
+      hostOrganizationId,
+      initiatedBy: partnership.initiatedBy,
+      venueName,
+      hostName,
     });
     return partnership;
   }

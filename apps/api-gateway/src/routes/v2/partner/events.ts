@@ -5,6 +5,7 @@ import {
   paginationQuerySchema,
   versionHeaderSchema,
   eventDtoSchema,
+  promoterAssignedEventDtoSchema,
   updateEventSchema,
   cancelEventSchema,
   posterUploadUrlRequestSchema,
@@ -92,8 +93,56 @@ const readHeaders = z.looseObject({
 });
 
 const eventListSchema = paginatedSchema(eventDtoSchema);
+const assignedEventListSchema = z.array(promoterAssignedEventDtoSchema);
 
 export default async function partnerEventRoutes(fastify: FastifyInstance) {
+  // Promoters see only events with an active assignment to their own org.
+  // This is intentionally separate from the owner-scoped organization list.
+  fastify.get(
+    '/promoters/:promoterId/events',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({
+          params: z.object({ promoterId: opaqueIdSchema }),
+          headers: readHeaders,
+        }),
+        fastify.requirePermission('event.read'),
+      ],
+    },
+    async (request, reply) => {
+      const { promoterId } = request.params as { promoterId: string };
+      const actor = services.actor(request);
+      const events = await services.catalog
+        .listAssignedEvents(actor, promoterId)
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, promoterId, error, { hideForbidden: true }),
+        );
+      if (events === undefined) return reply;
+      const validated = validateV2Response(
+        reply,
+        request,
+        assignedEventListSchema,
+        events.map(({ event, assignment }) => ({
+          event: eventToDto(event),
+          assignment: {
+            id: assignment.id,
+            eventId: assignment.eventId,
+            promoterId: assignment.promoterId,
+            status: assignment.status,
+            terms: assignment.terms,
+            endedAt: assignment.endedAt,
+            version: assignment.version,
+            createdAt: assignment.createdAt,
+            updatedAt: assignment.updatedAt,
+          },
+        })),
+      );
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
   // ── LIST (org-scoped path, matches task.md §5) ────────────────────────────
   fastify.get(
     '/organizations/:organizationId/events',
@@ -478,10 +527,12 @@ export function mapDomainError(
     'organization_not_found',
     'venue_not_found',
     'event_not_found',
+    'promoter_assignment_not_found',
     'slot_request_not_found',
     'partnership_not_found',
     'onboarding_request_not_found',
     'proposal_not_found',
+    'notification_not_found',
     // The generic `NotFoundError` (domain/errors.ts) carries this exact code —
     // previously missing here, so an order/ticket "not found" fell through
     // every branch below into the unmapped-error 500 (docs/architecture/

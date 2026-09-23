@@ -7,6 +7,7 @@ import { PricingService } from './pricing-service.js';
 import type { TicketTier } from '../../domain/models/event-catalog.js';
 import type { EventCatalogRepository } from '../../domain/ports/repositories.js';
 
+
 function tier(overrides: Partial<TicketTier> = {}): TicketTier {
   return {
     id: 'TIER-1',

@@ -2,6 +2,7 @@ import { InvalidOperationError } from '../errors.js';
 import { bumpVersion, newVersionedEntity } from '../identity.js';
 
 import type { EntityId, VersionedEntity } from '../identity.js';
+import type { OrderAttribution } from './order.js';
 import type { PricingBreakdown } from './pricing.js';
 
 /**
@@ -32,11 +33,7 @@ export interface CartReservation extends VersionedEntity {
   }[];
   pricing: PricingBreakdown;
   appliedPromoCode: string | null;
-  attribution: {
-    referralLinkId: EntityId;
-    promoterId: EntityId;
-    code: string;
-  } | null;
+  attribution: OrderAttribution | null;
   status: CartReservationStatus;
   /** When this hold expires and inventory is returned. ISO-8601. */
   expiresAt: string;
@@ -59,11 +56,7 @@ export interface CreateCartReservationInput {
   }[];
   pricing: PricingBreakdown;
   appliedPromoCode: string | null;
-  attribution: {
-    referralLinkId: EntityId;
-    promoterId: EntityId;
-    code: string;
-  } | null;
+  attribution: OrderAttribution | null;
   /** How long the hold lasts. v1 used ~10 minutes. */
   reservationTtlMs?: number;
   idempotencyKey: string;

@@ -5,10 +5,15 @@ import { commissionTierFor } from '../../domain/models/partnership.js';
 import { SYSTEM_ACTOR } from '../context.js';
 import { createFinanceService } from '../finance/finance-service.js';
 import { createLeaderboardService } from '../finance/leaderboard-service.js';
+import {
+  ReferralLinkService,
+  signPromoterAttribution,
+} from '../promoters/referral-link-service.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type { CartReservation } from '../../domain/models/cart-reservation.js';
 import type { Entitlement } from '../../domain/models/entitlement.js';
+import type { CommissionTerms } from '../../domain/models/event-catalog.js';
 import type { Order } from '../../domain/models/order.js';
 import type { PricingBreakdown } from '../../domain/models/pricing.js';
 import type { ActorContext, ServiceDeps } from '../context.js';
@@ -20,6 +25,11 @@ export interface CheckoutAttribution {
   referralLinkId: EntityId;
   promoterId: EntityId;
   code: string;
+  assignmentId: EntityId;
+  assignmentVersion: number;
+  termsSnapshot: CommissionTerms;
+  attributionSignature: string;
+  promoterCommissionPaise: number;
 }
 
 /**
@@ -64,12 +74,19 @@ export class CheckoutService {
     // returned to the caller rather than thrown away here.
     let attribution: CheckoutAttribution | null = null;
     if (referralCode) {
-      const link = await this.deps.repositories.referralLinks.findByCode(eventId, referralCode);
-      if (link && link.isActive) {
+      const signed = await new ReferralLinkService(this.deps).resolveAttribution(
+        eventId,
+        referralCode,
+      );
+      if (signed) {
         attribution = {
-          referralLinkId: link.id,
-          promoterId: link.promoterId,
-          code: link.code,
+          referralLinkId: signed.referralLinkId,
+          promoterId: signed.promoterId,
+          code: signed.code,
+          assignmentId: signed.assignmentId,
+          assignmentVersion: signed.assignmentVersion,
+          termsSnapshot: signed.terms,
+          attributionSignature: signPromoterAttribution(signed, this.deps.config.magicTicketSecret),
         };
       }
     }
@@ -79,6 +96,19 @@ export class CheckoutService {
       lines: pricingLines,
       promoCode,
     });
+
+    if (attribution) {
+      const promoterCommissionPaise = commissionForLines(pricing.lines, attribution.termsSnapshot);
+      if (promoterCommissionPaise > pricing.grandTotalPaise - pricing.platformFeePaise) {
+        throw new InvalidOperationError(
+          'The assigned promoter commission exceeds this order’s distributable total',
+        );
+      }
+      attribution = {
+        ...attribution,
+        promoterCommissionPaise,
+      };
+    }
 
     return { pricing, attribution };
   }
@@ -94,7 +124,7 @@ export class CheckoutService {
     lines: { tierId: EntityId; tierName: string; quantity: number; unitPricePaise: number }[];
     pricing: PricingBreakdown;
     appliedPromoCode: string | null;
-    attribution: { referralLinkId: EntityId; promoterId: EntityId; code: string } | null;
+    attribution: CheckoutAttribution | null;
     userId?: EntityId | null;
     idempotencyKey: string;
     reservationTtlMs?: number;
@@ -408,9 +438,19 @@ export class CheckoutService {
         platformFeeRate,
         venueShareRate,
         promoterCommissionRate,
+        promoterCommissionPaise: order.attribution?.promoterCommissionPaise ?? null,
       },
       SYSTEM_ACTOR,
     );
+
+    if (order.attribution) {
+      await this.deps.repositories.referralLinks.recordSale(
+        order.attribution.referralLinkId,
+        order.id,
+        order.grandTotalPaise,
+        order.attribution.promoterCommissionPaise,
+      );
+    }
 
     // Leaderboard: increments in the same call as the ledger write it is
     // derived from (v1's "Option 3" time & location matrix), keyed by the
@@ -444,4 +484,15 @@ export class CheckoutService {
     }
     return map;
   }
+}
+
+function commissionForLines(lines: PricingBreakdown['lines'], terms: CommissionTerms): number {
+  return lines.reduce((sum, line) => {
+    const rate = terms.tierRates?.[line.tierId] ?? terms;
+    return (
+      sum +
+      Math.floor((line.subtotalPaise * rate.ratePercent) / 100) +
+      rate.flatPaise * line.quantity
+    );
+  }, 0);
 }

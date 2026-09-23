@@ -3,6 +3,7 @@ import { transitionStatus } from '../fsm.js';
 import { bumpVersion, newVersionedEntity } from '../identity.js';
 
 import type { EntityId, VersionedEntity } from '../identity.js';
+import type { CommissionTerms } from './event-catalog.js';
 import type { PricingBreakdown } from './pricing.js';
 
 /**
@@ -79,6 +80,11 @@ export interface OrderAttribution {
   referralLinkId: EntityId;
   promoterId: EntityId;
   code: string;
+  assignmentId: EntityId;
+  assignmentVersion: number;
+  termsSnapshot: CommissionTerms;
+  attributionSignature: string;
+  promoterCommissionPaise: number;
 }
 
 export interface Order extends VersionedEntity {

@@ -54,6 +54,16 @@ export class FirestoreEventRepository implements EventRepository {
     return paginateQuery(base, query, toEvent);
   }
 
+  async listUpcomingPublic(startAtOrAfter: string, limit: number): Promise<Event[]> {
+    const snap = await this.collection
+      .where('isPublic', '==', true)
+      .where('startAt', '>=', startAtOrAfter)
+      .orderBy('startAt', 'asc')
+      .limit(limit)
+      .get();
+    return snap.docs.map((doc) => toEvent(doc.data()));
+  }
+
   async save(event: Event, _tx?: TxContext | null): Promise<void> {
     // Compare-and-set: a write of version N must find N-1 (see compare-and-set.ts).
     await compareAndSet(this.db, this.collection, event, toDoc);

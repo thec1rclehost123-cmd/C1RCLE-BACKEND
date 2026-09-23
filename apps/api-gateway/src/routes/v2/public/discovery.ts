@@ -5,10 +5,11 @@ import {
   hostPublicDtoSchema,
   discoveryFeedDtoSchema,
   paginatedSchema,
+  ticketTierDtoSchema,
 } from '@c1rcle/contracts/client';
 import { z } from 'zod';
 
-import type { Organization } from '@c1rcle/core/domain';
+import type { Organization, TicketTier } from '@c1rcle/core/domain';
 
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
@@ -52,8 +53,78 @@ const searchQuerySchema = paginationQuerySchema.extend({
 });
 
 const eventListSchema = paginatedSchema(eventDtoSchema);
+const publicTierListSchema = z.array(ticketTierDtoSchema);
+const promoterClickBodySchema = z
+  .object({ eventSlug: z.string().min(1).max(80), code: z.string().min(4).max(16) })
+  .strict();
+const vanityParamsSchema = z.object({
+  handle: z.string().min(1).max(60),
+  slug: z.string().min(1).max(60),
+});
+const vanityResolutionSchema = z.object({ eventSlug: z.string(), code: z.string() });
 
 export default async function publicDiscoveryRoutes(fastify: FastifyInstance) {
+  fastify.get(
+    '/events/:idOrSlug/ticket-tiers',
+    {
+      preHandler: [fastify.rateLimit('PUBLIC_READ'), fastify.validateV2({ params: idOrSlugParam })],
+    },
+    async (request, reply) => {
+      const { idOrSlug } = request.params as z.infer<typeof idOrSlugParam>;
+      const tiers = await services.public
+        .getEventTicketTiers(idOrSlug)
+        .catch((error: unknown) => mapDomainError(reply, request, idOrSlug, error));
+      if (!tiers) return reply;
+      const validated = validateV2Response(
+        reply,
+        request,
+        publicTierListSchema,
+        tiers.map(publicTierToDto),
+      );
+      if (!validated) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  fastify.get(
+    '/promoter-links/:handle/:slug',
+    {
+      preHandler: [
+        fastify.rateLimit('PUBLIC_READ'),
+        fastify.validateV2({ params: vanityParamsSchema }),
+      ],
+    },
+    async (request, reply) => {
+      const { handle, slug } = request.params as z.infer<typeof vanityParamsSchema>;
+      const resolved = await services.referralLinks.resolveVanity(handle, slug);
+      if (!resolved) return reply.status(404).send({ message: 'Link not found' });
+      const validated = validateV2Response(reply, request, vanityResolutionSchema, resolved);
+      if (!validated) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  // Anonymous share-link hit tracking. Attribution itself is still resolved
+  // from the signed server-side record during checkout.
+  fastify.post(
+    '/promoter-links/click',
+    {
+      preHandler: [
+        fastify.rateLimit('PUBLIC_READ'),
+        fastify.validateV2({ body: promoterClickBodySchema }),
+      ],
+    },
+    async (request, reply) => {
+      const { eventSlug, code } = request.body as z.infer<typeof promoterClickBodySchema>;
+      const event = await services.public
+        .getEvent(eventSlug)
+        .catch((error: unknown) => mapDomainError(reply, request, eventSlug, error));
+      if (!event) return reply;
+      const link = await services.referralLinks.trackClick(event.id, code);
+      return reply.send({ tracked: Boolean(link) });
+    },
+  );
+
   // ── EVENTS LIST ────────────────────────────────────────────────────────────
   fastify.get(
     '/events',
@@ -180,6 +251,32 @@ export default async function publicDiscoveryRoutes(fastify: FastifyInstance) {
       return reply.send(validated);
     },
   );
+}
+
+function publicTierToDto(tier: TicketTier) {
+  return {
+    id: tier.id,
+    eventId: tier.eventId,
+    organizationId: tier.organizationId,
+    name: tier.name,
+    description: tier.description,
+    entryType: tier.entryType,
+    currency: tier.currency,
+    priceInPaise: tier.priceInPaise,
+    quantity: tier.quantity,
+    status: tier.status,
+    salesStartAt: tier.salesStartAt,
+    salesEndAt: tier.salesEndAt,
+    maxPerOrder: tier.maxPerOrder,
+    ...(tier.accessType ? { accessType: tier.accessType } : {}),
+    ...(tier.audienceType ? { audienceType: tier.audienceType } : {}),
+    ...(tier.guestCount ? { guestCount: tier.guestCount } : {}),
+    ...(tier.pricingPhases ? { pricingPhases: tier.pricingPhases } : {}),
+    ...(tier.doorPriceInPaise !== undefined ? { doorPriceInPaise: tier.doorPriceInPaise } : {}),
+    ...(tier.benefits ? { benefits: tier.benefits } : {}),
+    ...(tier.minAge !== undefined ? { minAge: tier.minAge } : {}),
+    ...(tier.maxAge !== undefined ? { maxAge: tier.maxAge } : {}),
+  };
 }
 
 /** Public-safe host DTO: no `role` (that's the caller's membership, and

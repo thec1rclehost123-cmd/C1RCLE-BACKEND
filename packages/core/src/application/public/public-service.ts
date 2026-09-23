@@ -70,6 +70,14 @@ export class PublicService {
     return event;
   }
 
+  /** Public, currently sellable tiers for a published event page. */
+  async getEventTicketTiers(idOrSlug: EntityId) {
+    const event = await this.getEvent(idOrSlug);
+    return (await this.deps.repositories.catalog.listTiers(event.id)).filter(
+      (tier) => tier.status === 'active',
+    );
+  }
+
   /** Venue public profile by slug. A suspended venue is not discoverable. */
   async getVenue(slug: string): Promise<Venue> {
     const venue = await this.venues.getBySlugGlobal(slug);
@@ -95,8 +103,7 @@ export class PublicService {
    * `DISCOVERY_LIMIT`. Revisit if/when curation becomes a real concept.
    */
   async discovery(): Promise<Event[]> {
-    const page = await this.events.listPublic({ limit: DISCOVERY_LIMIT });
-    return [...page.items].sort((a, b) => a.startAt.localeCompare(b.startAt));
+    return this.events.listUpcomingPublic(new Date().toISOString(), DISCOVERY_LIMIT);
   }
 
   /**

@@ -138,3 +138,9 @@ export class NotFoundError extends DomainError {
     super(`${resource} ${id} not found`, 'not_found');
   }
 }
+
+export class NotificationNotFoundError extends DomainError {
+  constructor(notificationId: string) {
+    super(`Notification ${notificationId} not found`, 'notification_not_found');
+  }
+}
