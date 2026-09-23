@@ -246,6 +246,11 @@ export class MemorySlotRequestRepository implements SlotRequestRepository {
     return serializeSlice(all, query);
   }
 
+  async listByHost(hostId: EntityId, query: PaginationQuery): Promise<Page<SlotRequest>> {
+    const all = [...this.requests.values()].filter((r) => r.hostId === hostId);
+    return serializeSlice(all, query);
+  }
+
   async save(request: SlotRequest, _tx?: TxContext | null): Promise<void> {
     casSet(this.requests, request);
   }

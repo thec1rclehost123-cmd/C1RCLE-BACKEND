@@ -2,11 +2,18 @@ import { describe, expect, it } from 'vitest';
 
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 
+import partnerEventRoutes from './events.js';
 import partnerPartnershipRoutes from './partnerships.js';
 import partnerVenueRoutes from './venues.js';
 
 const buildServer = () =>
   buildPartnerTestServer({ routes: [partnerVenueRoutes, partnerPartnershipRoutes] });
+
+// The venue-detail test needs an event on the *host* org; the test server
+// registers the event routes too (services + repositories are memoized per
+// file, so both servers share state).
+const buildServerWithEvents = () =>
+  buildPartnerTestServer({ routes: [partnerVenueRoutes, partnerEventRoutes] });
 
 const ORG = 'org_1';
 const READ_HEADERS = { 'x-organization-id': ORG };
@@ -827,6 +834,179 @@ describe('V2 partners venues slice — slot requests', () => {
     });
     expect(second.statusCode).toBe(400);
     expect(second.json()).toMatchObject({ code: 'validation', status: 400 });
+    await server.close();
+  });
+
+  it('lists the host organization’s outgoing slot requests', async () => {
+    const server = await buildServer();
+    const { id } = await createVenue(server);
+    const created = await server.inject({
+      method: 'POST',
+      url: `/venues/${id}/slot-requests`,
+      headers: { ...READ_HEADERS, 'idempotency-key': 'idem-host-out-list-create' },
+      payload: { message: 'Host-side list please' },
+    });
+    expect(created.statusCode).toBe(201);
+    const response = await server.inject({
+      method: 'GET',
+      url: `/organizations/${ORG}/slot-requests?limit=10`,
+      headers: READ_HEADERS,
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.items.map((item: { id: string }) => item.id)).toContain(created.json().id);
+    expect(body.items).toContainEqual(expect.objectContaining({ hostId: ORG, status: 'pending' }));
+    expect(body.pageInfo).toMatchObject({ page: 1, pageSize: 10 });
+    await server.close();
+  });
+
+  it('forbids listing another tenant’s outgoing slot requests', async () => {
+    const server = await buildServer();
+    const response = await server.inject({
+      method: 'GET',
+      url: `/organizations/org_999/slot-requests?limit=10`,
+      headers: READ_HEADERS,
+    });
+    expect(response.statusCode).toBe(403);
+    await server.close();
+  });
+
+  it('returns the request + linked event + venue for a venue-owner detail view', async () => {
+    const server = await buildServerWithEvents();
+    const { id } = await createVenue(server);
+    const event = await server.inject({
+      method: 'POST',
+      url: `/organizations/${ORG}/events`,
+      headers: { ...READ_HEADERS, 'idempotency-key': 'idem-host-out-detail-event' },
+      payload: {
+        venueId: id,
+        title: 'Bass Drop Night',
+        startAt: '2026-10-01T19:30:00.000Z',
+        endAt: '2026-10-01T23:00:00.000Z',
+      },
+    });
+    expect(event.statusCode).toBe(201);
+    const created = await server.inject({
+      method: 'POST',
+      url: `/venues/${id}/slot-requests`,
+      headers: { ...READ_HEADERS, 'idempotency-key': 'idem-host-out-detail-create' },
+      payload: { eventId: event.json().id, message: 'Review this one' },
+    });
+    expect(created.statusCode).toBe(201);
+    const response = await server.inject({
+      method: 'GET',
+      url: `/venues/${id}/slot-requests/${created.json().id}`,
+      headers: READ_HEADERS,
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.request).toMatchObject({
+      id: created.json().id,
+      venueId: id,
+      hostId: ORG,
+      eventId: event.json().id,
+      status: 'pending',
+    });
+    expect(body.event).toMatchObject({ id: event.json().id, title: 'Bass Drop Night' });
+    expect(body.venue).toEqual({ id, name: 'Aurora Hall' });
+    // The memory test driver has no Organization record for the fixed dev
+    // actor, so the (nullable) host resolves to null here; on Firestore the
+    // requesting org exists and this is `{ id, name }`.
+    expect(body.host).toBeNull();
+    await server.close();
+  });
+
+  it('returns 404 for a detail view that is not under the venue', async () => {
+    const server = await buildServerWithEvents();
+    const { id } = await createVenue(server);
+    const other = await createVenue(server);
+    const created = await server.inject({
+      method: 'POST',
+      url: `/venues/${other.id}/slot-requests`,
+      headers: { ...READ_HEADERS, 'idempotency-key': 'idem-host-out-detail-404-create' },
+      payload: {},
+    });
+    expect(created.statusCode).toBe(201);
+    const response = await server.inject({
+      method: 'GET',
+      url: `/venues/${id}/slot-requests/${created.json().id}`,
+      headers: READ_HEADERS,
+    });
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toMatchObject({ code: 'not_found' });
+    await server.close();
+  });
+
+  it('lets the host org cancel its own accepted request (domain: accepted → cancelled)', async () => {
+    const server = await buildServer();
+    const { id } = await createVenue(server);
+    const created = await server.inject({
+      method: 'POST',
+      url: `/venues/${id}/slot-requests`,
+      headers: { ...READ_HEADERS, 'idempotency-key': 'idem-host-cancel-create' },
+      payload: {},
+    });
+    expect(created.statusCode).toBe(201);
+    const accepted = await server.inject({
+      method: 'POST',
+      url: `/venues/slot-requests/${created.json().id}/accept`,
+      headers: { ...READ_HEADERS, 'idempotency-key': 'idem-host-cancel-accept' },
+    });
+    expect(accepted.statusCode).toBe(200);
+    const response = await server.inject({
+      method: 'POST',
+      url: `/venues/slot-requests/${created.json().id}/cancel`,
+      headers: { ...READ_HEADERS, 'idempotency-key': 'idem-host-cancel' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ id: created.json().id, status: 'cancelled' });
+    await server.close();
+  });
+
+  it('rejects a cancel of a still-pending request (state machine: pending → cancelled is not legal)', async () => {
+    const server = await buildServer();
+    const { id } = await createVenue(server);
+    const created = await server.inject({
+      method: 'POST',
+      url: `/venues/${id}/slot-requests`,
+      headers: { ...READ_HEADERS, 'idempotency-key': 'idem-host-cancel-pending-create' },
+      payload: {},
+    });
+    expect(created.statusCode).toBe(201);
+    const response = await server.inject({
+      method: 'POST',
+      url: `/venues/slot-requests/${created.json().id}/cancel`,
+      headers: { ...READ_HEADERS, 'idempotency-key': 'idem-host-cancel-pending' },
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({ code: 'conflict' });
+    await server.close();
+  });
+
+  it('returns 404 when a non-host org tries to cancel someone else’s request', async () => {
+    const server = await buildServer();
+    const { id } = await createVenue(server);
+    // Sent by a *different* host org — cross-org create is by design.
+    const created = await server.inject({
+      method: 'POST',
+      url: `/venues/${id}/slot-requests`,
+      headers: {
+        'x-organization-id': 'org_2',
+        'idempotency-key': 'idem-host-cancel-xtenant-create',
+      },
+      payload: {},
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({ hostId: 'org_2' });
+    const response = await server.inject({
+      method: 'POST',
+      url: `/venues/slot-requests/${created.json().id}/cancel`,
+      // Venue-owner org (org_1) is not the requester — service 404s it the
+      // same way it hides cross-tenant accept/reject targets.
+      headers: { ...READ_HEADERS, 'idempotency-key': 'idem-host-cancel-xtenant' },
+    });
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toMatchObject({ code: 'not_found' });
     await server.close();
   });
 });

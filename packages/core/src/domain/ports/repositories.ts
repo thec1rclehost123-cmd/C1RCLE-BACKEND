@@ -213,6 +213,8 @@ export interface VenueRepository {
 export interface SlotRequestRepository {
   getById(slotRequestId: EntityId): Promise<SlotRequest | null>;
   listByVenue(venueId: EntityId, query: PaginationQuery): Promise<Page<SlotRequest>>;
+  /** Outgoing (host-side) requests: everything submitted by this organization. */
+  listByHost(hostId: EntityId, query: PaginationQuery): Promise<Page<SlotRequest>>;
   save(request: SlotRequest, tx?: TxContext | null): Promise<void>;
 }
 

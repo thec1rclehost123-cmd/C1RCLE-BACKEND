@@ -39,10 +39,18 @@ export type Permission =
   | 'event.cancel'
   /** Ask a venue for a slot — the host side of the same conversation. */
   | 'slot-request.create'
+  /** Read a caller's own (in/out-bound) slot requests. */
+  | 'slot-request.list'
+
   /** Phase 5: door staff overriding a denied scan (manual admission). */
   | 'ticket.override';
 
-const READ_ONLY: readonly Permission[] = ['organization.read', 'venue.read', 'event.read'];
+const READ_ONLY: readonly Permission[] = [
+  'organization.read',
+  'venue.read',
+  'event.read',
+  'slot-request.list',
+];
 
 /**
  * Role → permissions. Owner and admin run the tenant; manager operates it;
@@ -64,6 +72,7 @@ export const ROLE_PERMISSIONS: Readonly<Record<OrganizationRole, readonly Permis
     'event.publish',
     'event.cancel',
     'slot-request.create',
+    'slot-request.list',
     'ticket.override',
   ],
   admin: [
@@ -80,6 +89,7 @@ export const ROLE_PERMISSIONS: Readonly<Record<OrganizationRole, readonly Permis
     'event.publish',
     'event.cancel',
     'slot-request.create',
+    'slot-request.list',
     'ticket.override',
   ],
   manager: [
@@ -92,6 +102,7 @@ export const ROLE_PERMISSIONS: Readonly<Record<OrganizationRole, readonly Permis
     'event.update',
     'event.publish',
     'slot-request.create',
+    'slot-request.list',
     'ticket.override',
   ],
   member: READ_ONLY,

@@ -55,6 +55,7 @@ describe('role → permission table', () => {
       'event.publish',
       'event.cancel',
       'slot-request.create',
+      'slot-request.list',
     ];
     const granted = new Set(Object.values(ROLE_PERMISSIONS).flat());
     // A permission no role holds is dead policy: it can only ever deny.
