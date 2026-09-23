@@ -54,6 +54,7 @@ import type {
   LeaderboardStat,
 } from '../models/leaderboard.js';
 import type { LedgerEntry, LedgerEntryType } from '../models/ledger.js';
+import type { Notification } from '../models/notification.js';
 import type { OnboardingRequest, OnboardingStatus } from '../models/onboarding.js';
 import type { Order } from '../models/order.js';
 import type {
@@ -148,6 +149,22 @@ export interface ReferralLinkRepository {
   getById(linkId: EntityId): Promise<ReferralLink | null>;
   /** The guest-facing lookup: resolve a shared code to its link. */
   findByCode(eventId: EntityId, code: string): Promise<ReferralLink | null>;
+  /** Promoter-wide code identity used across every event link. */
+  findByCodeGlobal(code: string): Promise<ReferralLink | null>;
+  /** Existing link used only to recover the promoter's stable code. */
+  findAnyByPromoter(promoterId: EntityId): Promise<ReferralLink | null>;
+  findByVanity(prefix: string, slug: string): Promise<ReferralLink | null>;
+  claimVanityAlias(prefix: string, slug: string, linkId: EntityId): Promise<boolean>;
+  claimGlobalCode(code: string, promoterId: EntityId): Promise<boolean>;
+  getOrCreatePromoterCode(promoterId: EntityId, proposedCode: string): Promise<string | null>;
+  recordClick(linkId: EntityId): Promise<boolean>;
+  /** Atomic paid-order counters, idempotency is owned by the order settlement path. */
+  recordSale(
+    linkId: EntityId,
+    orderId: EntityId,
+    revenuePaise: number,
+    commissionPaise: number,
+  ): Promise<void>;
   listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<ReferralLink>>;
   listByPromoter(promoterId: EntityId, query: PaginationQuery): Promise<Page<ReferralLink>>;
   save(link: ReferralLink, tx?: TxContext | null): Promise<void>;
@@ -227,6 +244,8 @@ export interface EventRepository {
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Event>>;
   listByVenue(venueId: EntityId, query: PaginationQuery): Promise<Page<Event>>;
   listPublic(query: PaginationQuery): Promise<Page<Event>>;
+  /** Upcoming public events, ordered by start time and bounded at the query. */
+  listUpcomingPublic(startAtOrAfter: string, limit: number): Promise<Event[]>;
   save(event: Event, tx?: TxContext | null): Promise<void>;
   delete(eventId: EntityId, tx?: TxContext | null): Promise<void>;
 }
@@ -252,6 +271,7 @@ export interface EventCatalogRepository {
   // Promoter assignments
   getAssignmentById(assignmentId: EntityId): Promise<PromoterAssignment | null>;
   listAssignments(eventId: EntityId): Promise<PromoterAssignment[]>;
+  listAssignmentsByPromoter(promoterId: EntityId): Promise<PromoterAssignment[]>;
   saveAssignment(assignment: PromoterAssignment, tx?: TxContext | null): Promise<void>;
 }
 
@@ -769,6 +789,32 @@ export interface EmailOtpRepository {
   delete(recipient: EntityId): Promise<void>;
 }
 
+// ─── Notifications (V2 partner inbox) ─────────────────────────────────────
+
+/**
+ * Partner-dashboard inbox, addressed to the ORGANIZATION (recipientId), not
+ * to a person — matches the org-scoped RBAC model. List reads are bounded by
+ * `PaginationQuery`; `markAllRead` returns how many rows flipped so the
+ * route can report a real count.
+ */
+export interface NotificationRepository {
+  create(notification: Notification, tx?: TxContext | null): Promise<void>;
+  save(notification: Notification, tx?: TxContext | null): Promise<void>;
+  getById(notificationId: EntityId): Promise<Notification | null>;
+  /**
+   * Newest-first. The Firestore adapter materializes the per-recipient rows
+   * and sorts in memory (same bound/pattern as venue overlapping slots), so
+   * no composite `recipientId + createdAt` index must be provisioned.
+   */
+  listByRecipient(recipientId: EntityId, query: PaginationQuery): Promise<Page<Notification>>;
+  listUnreadByRecipient(recipientId: EntityId, query: PaginationQuery): Promise<Page<Notification>>;
+  /** Marks one read; resolves null when the row is gone. */
+  markRead(notificationId: EntityId, nowIso: string): Promise<Notification | null>;
+  /** Marks every unread row for the recipient; returns the count flipped. */
+  markAllRead(recipientId: EntityId, nowIso: string): Promise<number>;
+  countUnread(recipientId: EntityId): Promise<number>;
+}
+
 export type {
   LedgerEntry,
   LedgerEntryType,
@@ -781,4 +827,5 @@ export type {
   LeaderboardBucket,
   LeaderboardPeriodType,
   EmailOtp,
+  Notification,
 };

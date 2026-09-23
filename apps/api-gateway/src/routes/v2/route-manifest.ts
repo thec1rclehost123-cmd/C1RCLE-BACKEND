@@ -4,6 +4,7 @@ import { getGatewayConfig, GatewayConfigError } from '../../config/index.js';
 import { createV2Services } from '../../lib/v2-services.js';
 import authContextPlugin, { buildBetterAuth } from '../../plugins/auth.js';
 
+import adminAlertsRoutes from './admin/alerts.js';
 import adminRoutes from './admin/onboarding-review.js';
 import authRoutes from './auth/index.js';
 import otpRoutes from './auth/otp-routes.js';
@@ -16,6 +17,7 @@ import phase5ScannerRoutes from './door/scanner-routes.js';
 import financeRoutes from './finance/finance-routes.js';
 import leaderboardRoutes from './finance/leaderboard-routes.js';
 import { internalRoutes } from './internal/index.js';
+import notificationRoutes from './notifications/notifications-routes.js';
 import onboardingRoutes from './onboarding.js';
 import orderRoutes from './orders/orders-routes.js';
 import partnerAnalyticsRoutes from './partner/analytics.js';
@@ -101,6 +103,7 @@ export async function registerV2Routes(app: FastifyInstance): Promise<void> {
       // platform admin acts across all of them.
       await onboardingRoutes(v2);
       await adminRoutes(v2);
+      await adminAlertsRoutes(v2);
       // Phase 4 PR2: guest checkout + payments + Razorpay webhook.
       await checkoutRoutes(v2);
       await paymentRoutes(v2);
@@ -117,6 +120,7 @@ export async function registerV2Routes(app: FastifyInstance): Promise<void> {
       // Phase 6: Finance / Ledger / Payouts
       await financeRoutes(v2);
       await leaderboardRoutes(v2);
+      await notificationRoutes(v2);
     },
     { prefix: '/api/v2' },
   );

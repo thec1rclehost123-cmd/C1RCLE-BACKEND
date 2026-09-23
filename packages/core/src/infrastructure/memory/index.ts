@@ -29,3 +29,4 @@ export * from './memory-bank-account-repository.js';
 export * from './memory-dispute-repository.js';
 export * from './memory-leaderboard-repository.js';
 export * from './memory-email-otp-repository.js';
+export * from './memory-notification-repository.js';

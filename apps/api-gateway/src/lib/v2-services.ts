@@ -15,6 +15,7 @@ import {
   IdempotencyService,
   OnboardingService,
   AdminAuthorityService,
+  AdminAlertsService,
   InProcessEventBus,
   createAuditConsumer,
   createProjectionConsumer,
@@ -33,6 +34,8 @@ import {
   createDisputeService,
   createLeaderboardService,
   createEmailOtpService,
+  NotificationService,
+  createNotificationConsumer,
   type ScannerService,
   type DoorService,
   type CoverWalletService,
@@ -107,6 +110,8 @@ export interface PartnerV2Services {
   onboarding: OnboardingService;
   /** Phase 2: platform-admin resolution, tiering and dual control. */
   adminAuthority: AdminAuthorityService;
+  /** Phase 2: per-category count of items needing admin attention. */
+  adminAlerts: AdminAlertsService;
   checkout: CheckoutService;
   /** Phase 4 PR1: unauthenticated guest-facing discovery reads. */
   public: PublicService;
@@ -156,6 +161,8 @@ export interface PartnerV2Services {
   leaderboard: LeaderboardService;
   /** Email OTP (signup verification). */
   emailOtp: EmailOtpService;
+  /** V2 partner-dashboard inbox — recipient is the org tenant. */
+  notifications: NotificationService;
 }
 
 // Each route module calls `createV2Services()` independently at import time
@@ -222,6 +229,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     redis: { url: gw.REDIS_URL },
     firestore: { projectId: gw.FIRESTORE_PROJECT_ID },
     storage: gw.FIREBASE_STORAGE_BUCKET ? { kycBucket: gw.FIREBASE_STORAGE_BUCKET } : undefined,
+    magicTicketSecret: gw.BETTER_AUTH_SECRET,
     emailOtpSecret: gw.EMAIL_OTP_SECRET,
   });
 
@@ -301,7 +309,21 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     repositories,
   };
 
+  // V2 partner inbox producer consumer: domain events → notification rows.
+  // Subscribed to each producer event type; the handler is a named function
+  // (its `handler.name` keys the bus's per-event dedupe set).
+  const notificationConsumer = createNotificationConsumer({
+    notifications: repositories.notifications,
+    config: coreConfig,
+    logger: deps.logger,
+  });
+  eventBus.subscribe('promoter_connection.requested', notificationConsumer);
+  eventBus.subscribe('partnership.requested', notificationConsumer);
+  eventBus.subscribe('event.published', notificationConsumer);
+
   const adminAuthority = new AdminAuthorityService(deps);
+  const onboardingService = new OnboardingService(deps, adminAuthority);
+  const adminAlerts = new AdminAlertsService(deps, adminAuthority, onboardingService);
 
   // Phase 5 services
   const scanner = createScannerService({
@@ -393,8 +415,9 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     events: new EventService(deps),
     catalog: new EventCatalogService(deps),
     analytics: new AnalyticsService(deps),
-    onboarding: new OnboardingService(deps, adminAuthority),
+    onboarding: onboardingService,
     adminAuthority,
+    adminAlerts,
     checkout: new CheckoutService(deps),
     public: new PublicService(deps),
     paymentProvider,
@@ -421,5 +444,6 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     dispute,
     leaderboard,
     emailOtp,
+    notifications: new NotificationService(deps),
   };
 }

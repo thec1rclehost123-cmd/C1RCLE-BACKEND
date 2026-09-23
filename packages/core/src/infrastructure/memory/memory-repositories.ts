@@ -116,6 +116,13 @@ export class MemoryEventRepository implements EventRepository {
     return serializeSlice(all, query);
   }
 
+  async listUpcomingPublic(startAtOrAfter: string, limit: number): Promise<Event[]> {
+    return [...this.events.values()]
+      .filter((event) => event.isPublic && event.startAt >= startAtOrAfter)
+      .sort((a, b) => a.startAt.localeCompare(b.startAt))
+      .slice(0, limit);
+  }
+
   async save(event: Event, _tx?: TxContext | null): Promise<void> {
     casSet(this.events, event);
   }
@@ -346,6 +353,10 @@ export class MemoryEventCatalogRepository implements EventCatalogRepository {
 
   async listAssignments(eventId: EntityId): Promise<PromoterAssignment[]> {
     return [...this.assignments.values()].filter((a) => a.eventId === eventId);
+  }
+
+  async listAssignmentsByPromoter(promoterId: EntityId): Promise<PromoterAssignment[]> {
+    return [...this.assignments.values()].filter((a) => a.promoterId === promoterId);
   }
 
   async saveAssignment(assignment: PromoterAssignment, _tx?: TxContext | null): Promise<void> {
