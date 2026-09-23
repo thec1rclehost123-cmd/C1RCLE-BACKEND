@@ -167,7 +167,7 @@ describe('ticket tiers', () => {
       payload: { name: 'RSVP', priceInPaise: 1, quantity: 10, accessType: 'RSVP' },
     });
 
-    expect(response.statusCode).toBe(400);
+    expect(response.statusCode).toBe(422);
     await server.close();
   });
 
