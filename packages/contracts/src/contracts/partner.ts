@@ -164,12 +164,37 @@ export const referralLinkDtoSchema = z.object({
   eventId: opaqueIdSchema,
   promoterId: opaqueIdSchema,
   organizationId: opaqueIdSchema,
+  assignmentId: opaqueIdSchema.nullable(),
+  assignmentVersion: z.number().int().positive().nullable(),
+  termsSnapshot: z
+    .object({
+      version: z.number().int().positive(),
+      ratePercent: z.number().int().min(0).max(100),
+      flatPaise: z.number().int().nonnegative(),
+      tierRates: z
+        .record(
+          z.string(),
+          z.object({
+            ratePercent: z.number().int().min(0).max(100),
+            flatPaise: z.number().int().nonnegative(),
+          }),
+        )
+        .optional(),
+    })
+    .nullable(),
+  attributionSignature: z.string().nullable(),
+  eventTitle: z.string(),
+  campaignLabel: z.string(),
+  vanityPrefix: z.string(),
+  vanitySlug: z.string().nullable(),
   code: z.string().min(4).max(16),
   label: z.string().min(1).max(120),
   isActive: z.boolean(),
   /** Vanity counters. The authoritative attribution lives on the order. */
   clicks: z.number().int().nonnegative(),
   conversions: z.number().int().nonnegative(),
+  revenuePaise: z.number().int().nonnegative(),
+  commissionPaise: z.number().int().nonnegative(),
   version: z.number().int().positive(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),

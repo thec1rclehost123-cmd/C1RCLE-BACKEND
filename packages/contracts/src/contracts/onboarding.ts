@@ -303,3 +303,28 @@ export const adminAuditRecordDtoSchema = z.object({
   occurredAt: z.number().int().nonnegative(),
 });
 export type AdminAuditRecordDto = z.infer<typeof adminAuditRecordDtoSchema>;
+
+/* ─── Admin alerts dashboard ─────────────────────────────────────────────── */
+
+/** Which attention-queue a count refers to. Grows as admin desks ship
+ * (Phase 7: refunds, support SLA). */
+export const adminAlertCategoryKeySchema = z.enum(['pending_proposals', 'pending_onboarding']);
+export type AdminAlertCategoryKey = z.infer<typeof adminAlertCategoryKeySchema>;
+
+/** Visual priority hint for the bell panel, reused by the frontend as-is. */
+export const adminAlertSeveritySchema = z.enum(['normal', 'urgent']);
+
+export const adminAlertCategorySchema = z.object({
+  key: adminAlertCategoryKeySchema,
+  label: z.string(),
+  count: z.number().int().nonnegative(),
+  severity: adminAlertSeveritySchema,
+});
+export type AdminAlertCategory = z.infer<typeof adminAlertCategorySchema>;
+
+/** Snapshot of items needing admin attention. */
+export const adminAlertsResponseSchema = z.object({
+  generatedAt: z.iso.datetime(),
+  categories: z.array(adminAlertCategorySchema),
+});
+export type AdminAlertsResponse = z.infer<typeof adminAlertsResponseSchema>;

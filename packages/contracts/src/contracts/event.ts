@@ -150,6 +150,16 @@ export const ticketPricingPhaseSchema = z.object({
   quantity: z.number().int().nonnegative().nullable(),
 });
 
+/** Create input deliberately has no year; the gateway resolves it server-side. */
+export const createTicketPricingPhaseSchema = z.object({
+  id: z.string().min(1).max(64),
+  name: z.string().min(1).max(80),
+  priceInPaise: z.number().int().positive(),
+  startDate: z.string().regex(/^\d{2}-\d{2}$/),
+  endDate: z.string().regex(/^\d{2}-\d{2}$/),
+  quantity: z.number().int().nonnegative().nullable(),
+});
+
 export const ticketTierDtoSchema = z.object({
   id: opaqueIdSchema,
   eventId: opaqueIdSchema,
@@ -191,13 +201,13 @@ export const ticketTierDtoSchema = z.object({
 });
 export type TicketTierDto = z.infer<typeof ticketTierDtoSchema>;
 
-export const createTicketTierSchema = z
+const createTicketTierBaseSchema = z
   .object({
     name: z.string().min(1).max(120),
     description: z.string().max(2000).optional(),
     entryType: z.string().min(1).max(40).optional(),
     currency: z.string().length(3).optional(),
-    priceInPaise: z.number().int().nonnegative(),
+    priceInPaise: z.number().int().nonnegative().optional(),
     quantity: z.number().int().nonnegative(),
     salesStartAt: z.iso.datetime().nullable().optional(),
     salesEndAt: z.iso.datetime().nullable().optional(),
@@ -205,7 +215,7 @@ export const createTicketTierSchema = z
     accessType: ticketAccessTypeSchema.optional(),
     audienceType: ticketAudienceTypeSchema.optional(),
     guestCount: z.number().int().positive().optional(),
-    pricingPhases: z.array(ticketPricingPhaseSchema).max(20).optional(),
+    pricingPhases: z.array(createTicketPricingPhaseSchema).max(20).optional(),
     doorPriceInPaise: z.number().int().nonnegative().nullable().optional(),
     benefits: z.array(z.string().min(1).max(200)).max(20).optional(),
     minAge: z.number().int().min(0).max(100).nullable().optional(),
@@ -224,6 +234,32 @@ export const createTicketTierSchema = z
     commissionEligible: z.boolean().optional(),
   })
   .strict();
+
+export const createTicketTierSchema = createTicketTierBaseSchema.superRefine((tier, ctx) => {
+  if (tier.accessType === 'RSVP') {
+    for (const key of [
+      'priceInPaise',
+      'pricingPhases',
+      'commissionEligible',
+      'doorPriceInPaise',
+    ] as const) {
+      if (tier[key] !== undefined)
+        ctx.addIssue({
+          code: 'custom',
+          path: [key],
+          message: 'RSVP tickets cannot include price, pricing phases, door price, or commission.',
+        });
+    }
+  } else {
+    if (tier.priceInPaise === undefined || tier.priceInPaise <= 0) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['priceInPaise'],
+        message: 'Paid tickets require a positive price.',
+      });
+    }
+  }
+});
 export type CreateTicketTierRequest = z.infer<typeof createTicketTierSchema>;
 
 export const promoTypeSchema = z.enum(['public', 'private', 'single_use', 'multi_use']);
@@ -319,6 +355,13 @@ export const promoterAssignmentDtoSchema = z.object({
   updatedAt: z.iso.datetime(),
 });
 export type PromoterAssignmentDto = z.infer<typeof promoterAssignmentDtoSchema>;
+
+/** Event projection plus the exact commission terms frozen for this promoter. */
+export const promoterAssignedEventDtoSchema = z.object({
+  event: eventDtoSchema,
+  assignment: promoterAssignmentDtoSchema,
+});
+export type PromoterAssignedEventDto = z.infer<typeof promoterAssignedEventDtoSchema>;
 
 export const assignPromoterSchema = z
   .object({

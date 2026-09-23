@@ -69,6 +69,7 @@ export type {
   TablePackageDto,
   CreateTablePackageRequest,
   PromoterAssignmentDto,
+  PromoterAssignedEventDto,
   AssignPromoterRequest,
 } from './contracts/event.js';
 
@@ -89,6 +90,7 @@ export {
   tablePackageDtoSchema,
   createTablePackageSchema,
   promoterAssignmentDtoSchema,
+  promoterAssignedEventDtoSchema,
   assignPromoterSchema,
 } from './contracts/event.js';
 
@@ -321,3 +323,30 @@ export {
   leaderboardStatResponseSchema,
   leaderboardTopResponseSchema,
 } from './contracts/phase6.js';
+
+// Notifications (V2 partner inbox)
+export type {
+  NotificationRecipientTypeDto,
+  NotificationActionTypeDto,
+  NotificationActionDto,
+  NotificationPriorityDto,
+  NotificationDto,
+  NotificationsListResponse,
+  NotificationReadRequest,
+  MarkAllNotificationsReadResult,
+  NotificationDecisionDto,
+  NotificationActionRequestDto,
+} from './contracts/notifications.js';
+
+export {
+  notificationRecipientTypeSchema,
+  notificationActionTypeSchema,
+  notificationActionSchema,
+  notificationPrioritySchema,
+  notificationDtoSchema,
+  notificationsListResponseSchema,
+  notificationReadRequestSchema,
+  markAllNotificationsReadResultSchema,
+  notificationDecisionSchema,
+  notificationActionRequestSchema,
+} from './contracts/notifications.js';
