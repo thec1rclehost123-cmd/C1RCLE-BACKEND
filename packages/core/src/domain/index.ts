@@ -26,6 +26,7 @@ export * from './models/bank-account.js';
 export * from './models/dispute.js';
 export * from './models/leaderboard.js';
 export * from './models/email-otp.js';
+export * from './models/notification.js';
 export * from './ports/email-sender.js';
 export * from './events.js';
 export * from './ports/outbox.js';

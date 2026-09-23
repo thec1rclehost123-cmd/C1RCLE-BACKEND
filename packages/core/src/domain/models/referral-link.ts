@@ -2,6 +2,7 @@ import { InvalidOperationError } from '../errors.js';
 import { bumpVersion, newVersionedEntity } from '../identity.js';
 
 import type { EntityId, VersionedEntity } from '../identity.js';
+import type { CommissionTerms } from './event-catalog.js';
 
 /**
  * ─── Promoter referral links (Phase 1) ───────────────────────────────────────
@@ -9,11 +10,9 @@ import type { EntityId, VersionedEntity } from '../identity.js';
  * A promoter's shareable link for one event. Its only job is to carry
  * attribution from a click to an order.
  *
- * The rule that shapes everything here: **attribution is captured onto the
- * order at purchase time, never recalculated later from the link.** A link can
- * be deactivated, renamed, or its owner's commission tier can change, and none
- * of that may rewrite what a past order earned. This model therefore holds no
- * money and no commission rate — only identity and counters.
+ * Commission terms are snapshotted from the active assignment and signed at
+ * creation. Orders carry that verified snapshot forward; link revenue fields
+ * below are reporting counters, while the ledger remains authoritative.
  */
 
 export interface ReferralLink extends VersionedEntity {
@@ -21,6 +20,15 @@ export interface ReferralLink extends VersionedEntity {
   eventId: EntityId;
   promoterId: EntityId;
   organizationId: EntityId;
+  /** Assignment whose approved compensation was frozen when this link was made. */
+  assignmentId: EntityId | null;
+  assignmentVersion: number | null;
+  termsSnapshot: CommissionTerms | null;
+  attributionSignature: string | null;
+  eventTitle: string;
+  campaignLabel: string;
+  vanityPrefix: string;
+  vanitySlug: string | null;
   /** Short, case-insensitive, URL-safe. Unique per event. */
   code: string;
   label: string;
@@ -32,6 +40,8 @@ export interface ReferralLink extends VersionedEntity {
    * is also what writes the immutable attribution onto the order itself.
    */
   conversions: number;
+  revenuePaise: number;
+  commissionPaise: number;
 }
 
 /**
@@ -48,6 +58,13 @@ export interface CreateReferralLinkInput {
   eventId: EntityId;
   promoterId: EntityId;
   organizationId: EntityId;
+  assignmentId?: EntityId;
+  assignmentVersion?: number;
+  termsSnapshot?: CommissionTerms;
+  attributionSignature?: string;
+  eventTitle?: string;
+  vanityPrefix?: string;
+  vanitySlug?: string;
   /** Omit to generate one. */
   code?: string;
   label?: string;
@@ -68,11 +85,21 @@ export function createReferralLink(input: CreateReferralLinkInput): ReferralLink
     eventId: input.eventId,
     promoterId: input.promoterId,
     organizationId: input.organizationId,
+    assignmentId: input.assignmentId ?? null,
+    assignmentVersion: input.assignmentVersion ?? null,
+    termsSnapshot: input.termsSnapshot ?? null,
+    attributionSignature: input.attributionSignature ?? null,
+    eventTitle: input.eventTitle ?? '',
+    campaignLabel: input.label ?? 'organic',
+    vanityPrefix: input.vanityPrefix ?? '',
+    vanitySlug: input.vanitySlug ?? null,
     code,
     label: input.label ?? code,
     isActive: true,
     clicks: 0,
     conversions: 0,
+    revenuePaise: 0,
+    commissionPaise: 0,
     ...newVersionedEntity(input.now ?? new Date()),
   };
 }
@@ -91,6 +118,24 @@ export function generateReferralCode(random: () => number = Math.random): string
     code += CODE_ALPHABET[position] ?? '';
   }
   return code;
+}
+
+/** V1-compatible promoter code: cleaned display name (3–7 chars) + 3 random chars. */
+export function generatePromoterCode(
+  displayName: string,
+  random: () => number = Math.random,
+): string {
+  const name = displayName
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .slice(0, 7)
+    .padEnd(3, 'X');
+  let suffix = '';
+  for (let index = 0; index < 3; index++) {
+    suffix +=
+      CODE_ALPHABET[Math.floor(random() * CODE_ALPHABET.length) % CODE_ALPHABET.length] ?? '';
+  }
+  return `${name}${suffix}`;
 }
 
 /**

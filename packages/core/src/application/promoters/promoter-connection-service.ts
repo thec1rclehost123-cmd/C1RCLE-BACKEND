@@ -8,7 +8,7 @@ import {
   rejectConnection,
   revokeConnection,
 } from '../../domain/models/promoter-connection.js';
-import { requireOrgAccess } from '../context.js';
+import { requireOrgAccess, emit } from '../context.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type {
@@ -86,6 +86,19 @@ export class PromoterConnectionService {
     });
     await this.repo.save(connection);
     this.deps.logger.info('promoter_connection.requested', { connectionId: connection.id });
+
+    // Notification producer: the recipient is the OTHER party, resolved for
+    // the inbox consumer rather than left to a read-time fan-out.
+    const promoterOrg = await this.deps.repositories.organizations.getById(connection.promoterId);
+    await emit(this.deps, actor, connection.id, 'promoter_connection.requested', {
+      connectionId: connection.id,
+      targetId,
+      targetType: connection.targetType,
+      initiatedBy: connection.initiatedBy,
+      promoterId: connection.promoterId,
+      promoterName: promoterOrg?.name ?? connection.promoterId,
+      message: connection.message,
+    });
     return connection;
   }
 

@@ -54,6 +54,7 @@ export type {
 export { PublicService } from './public/public-service.js';
 export { AdminAuthorityService } from './admin/admin-authority-service.js';
 export type { ProposeCommand, AuditInput } from './admin/admin-authority-service.js';
+export { AdminAlertsService } from './admin/admin-alerts-service.js';
 export { OnboardingService } from './onboarding/onboarding-service.js';
 export type {
   StartApplicationCommand,
@@ -147,3 +148,10 @@ export type { LeaderboardService, LeaderboardServiceDeps } from './finance/leade
 export { createLeaderboardService } from './finance/leaderboard-service.js';
 export type { EmailOtpService, EmailOtpServiceDeps } from './auth/email-otp-service.js';
 export { createEmailOtpService } from './auth/email-otp-service.js';
+export { NotificationService } from './notifications/notification-service.js';
+export type {
+  RecordNotificationInput,
+  NotificationListResult,
+  NotificationDecision,
+} from './notifications/notification-service.js';
+export { createNotificationConsumer } from './notifications/notification-consumer.js';
