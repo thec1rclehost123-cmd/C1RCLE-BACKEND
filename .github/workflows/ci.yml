@@ -21,6 +21,10 @@ on:
         description: Skip the Docker build and image scan
         type: boolean
         default: false
+      verify_deploy:
+        description: Run post-deploy verification (wait for live SHA + smoke tests) against the live service
+        type: boolean
+        default: false
 
 # Cancel superseded PR runs; never cancel a main run, because its tail end
 # verifies a production deploy that is already in flight.
@@ -554,7 +558,14 @@ jobs:
   verify-deploy:
     name: Verify deploy
     needs: ci-ok
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging')
+    # Runs on push to main/staging (the merge that triggers Render's deploy) or
+    # on demand via workflow_dispatch with inputs.verify_deploy — the dispatch
+    # path makes post-deploy verification observable and debuggable without
+    # needing a deploy. Keep this in sync with the env block below.
+    if: >
+      (github.event_name == 'push' &&
+       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging')) ||
+      (github.event_name == 'workflow_dispatch' && inputs.verify_deploy == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # Both branches currently deploy to the one live v2 service
@@ -572,10 +583,22 @@ jobs:
     env:
       DEPLOY_URL: https://circle-v2-backend.onrender.com
       DEPLOY_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
+      # The /api/v2/internal/* endpoints are gated behind nginx: they answer
+      # 404 without this header, so wait-for-deploy and smoke need the value.
+      NGINX_READINESS_TOKEN: ${{ secrets.NGINX_READINESS_TOKEN }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
+
+      - name: Log deploy-verification context
+        run: |
+          echo "event_name=${{ github.event_name }}"
+          echo "ref=${{ github.ref }}"
+          echo "sha=$GITHUB_SHA"
+          echo "deploy_env=$DEPLOY_ENV"
+          echo "readiness_token_set=${{ secrets.NGINX_READINESS_TOKEN != '' }}"
+          echo "verify_source=${{ github.event_name == 'push' && 'push' || 'workflow_dispatch' }}"
 
       - name: Detect Render API credentials
         id: render
