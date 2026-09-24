@@ -556,20 +556,23 @@ jobs:
   # waits for the commit to go live, smoke-tests it, and rolls back + files an
   # incident if anything fails.
   #
-  # Deliberately a plain job: no `environment:` block, no `inputs` in the `if`,
-  # and the same simple job-level `if` shape as the scenario job above — proven
-  # to run on push. (The old standalone verify-deploy workflow existed because a
-  # job-level `if` + `environment:` combo was mis-evaluated by the runner on
-  # push; a plain `if` with `needs` is the most battle-tested construct there is.)
+  # There is deliberately NO job-level `if:` on this job: the runner mis-evaluates
+  # job-level `if:` on push in this repo (proven by the 09-22 skip, and again on
+  # the 09-24 #54 merge run, where `if: github.event_name == 'push' &&
+  # github.ref == 'refs/heads/staging'` was skipped on a genuine push to staging
+  # while the sibling `scenario` job with the same context ran). The staging-push
+  # check therefore lives in a PURE-SHELL gate step (no expression evaluation),
+  # and every consequential step is guarded by the battle-tested
+  # `if: steps.gate.outputs.match == 'true'`. `needs: ci-ok` remains the CI gate
+  # — a `needs`-based dependency, which is reliable.
   #
   # Only `staging` deploys today: no `main`-tracking Render service exists yet
   # (the one live service, circle-v2-backend, tracks `staging`). When a `main`
-  # service is created, add `|| github.ref == 'refs/heads/main'` here and set
-  # `RENDER_SERVICE_ID` alongside `RENDER_STAGING_SERVICE_ID`.
+  # service is created, extend the gate step and set `RENDER_SERVICE_ID`
+  # alongside `RENDER_STAGING_SERVICE_ID`.
   deploy:
     name: Deploy & verify
     needs: ci-ok
-    if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -581,7 +584,23 @@ jobs:
         with:
           persist-credentials: false
 
+      # ── GATE: this job must only act on a push to `staging` ────────────────
+      # Pure shell — no Actions expressions, so nothing can mis-evaluate. The
+      # runner sets these env vars from the event; on every other run (PRs,
+      # dispatch) `match` is `false` and every step below is skipped.
+      - name: 'Gate: staging push only'
+        id: gate
+        run: |
+          echo "event=$GITHUB_EVENT_NAME ref=$GITHUB_REF"
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF" = "refs/heads/staging" ]; then
+            echo "match=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "match=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Not a push to staging (event=$GITHUB_EVENT_NAME ref=$GITHUB_REF) — skipping the gated deploy."
+          fi
+
       - name: Detect Render API credentials
+        if: steps.gate.outputs.match == 'true'
         id: render
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
@@ -600,6 +619,7 @@ jobs:
       # conclusion other than success/skipped fails the job, so the deploy is
       # never triggered. Times out after 25 minutes, which still fails closed.
       - name: Wait for the Security pipeline to pass
+        if: steps.gate.outputs.match == 'true'
         timeout-minutes: 25
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
@@ -637,6 +657,7 @@ jobs:
             process.exit(1);
 
       - name: Trigger Render deploy
+        if: steps.gate.outputs.match == 'true'
         timeout-minutes: 5
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
@@ -654,6 +675,7 @@ jobs:
             "https://api.render.com/v1/services/$RENDER_SERVICE_ID/deploys"
 
       - name: Wait for Render to serve this commit
+        if: steps.gate.outputs.match == 'true'
         env:
           NGINX_READINESS_TOKEN: ${{ secrets.NGINX_READINESS_TOKEN }}
         run: |
@@ -664,20 +686,21 @@ jobs:
             --interval 15
 
       - name: Smoke test deploy
+        if: steps.gate.outputs.match == 'true'
         id: smoke
         env:
           NGINX_READINESS_TOKEN: ${{ secrets.NGINX_READINESS_TOKEN }}
         run: node scripts/ci/smoke.mjs --url "$PRODUCTION_URL"
 
       - name: Roll back the failed deploy
-        if: failure() && steps.smoke.outcome == 'failure' && steps.render.outputs.rollback == 'true'
+        if: steps.gate.outputs.match == 'true' && failure() && steps.smoke.outcome == 'failure' && steps.render.outputs.rollback == 'true'
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           RENDER_SERVICE_ID: ${{ secrets.RENDER_STAGING_SERVICE_ID }}
         run: node scripts/ci/render-rollback.mjs
 
       - name: File a deploy incident
-        if: failure()
+        if: steps.gate.outputs.match == 'true' && failure()
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           ROLLBACK_ATTEMPTED: ${{ steps.render.outputs.rollback }}
