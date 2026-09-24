@@ -365,17 +365,27 @@ export class CheckoutService {
   private async recordSettlement(order: Order): Promise<void> {
     const hostOrganizationId = order.organizationId;
 
-    // Venue org: resolved via the host<->venue Partnership for the event's
-    // venue. A host-run event with no venue partnership settles entirely to
-    // the host — there is no separate venue party to pay.
+    // Venue org + share: resolved via the host<->venue Partnership for the
+    // event's venue. A host-run event with no venue partnership settles
+    // entirely to the host — there is no separate venue party to pay.
     let venueOrganizationId = hostOrganizationId;
+    let venueShareRate = 0;
     const event = await this.deps.repositories.events.getById(order.eventId);
     if (event?.venueId) {
       const partnership = await this.deps.repositories.partnerships.findByPair(
         hostOrganizationId,
         event.venueId,
       );
-      if (partnership) venueOrganizationId = partnership.venueOrganizationId;
+      if (partnership) {
+        venueOrganizationId = partnership.venueOrganizationId;
+        // The negotiated venue share (whole-number % on the Partnership, v1's
+        // venueCommissionRate convention) → settlement ratio. `null` (never
+        // negotiated) settles 0 to the venue — the long-documented fail-safe,
+        // see phase-06-*.md. A live partnership wins; otherwise the most recent
+        // resolved one is returned by findByPair, so a blocked pair still pays
+        // its last-agreed rate (the venue did host the event).
+        venueShareRate = (partnership.venueShareRate ?? 0) / 100;
+      }
     }
 
     // Platform fee rate: the host's onboarding plan tier (Phase 2), the only
@@ -385,13 +395,6 @@ export class CheckoutService {
     const onboarding =
       await this.deps.repositories.onboarding.findByProvisionedOrganizationId(hostOrganizationId);
     const platformFeeRate = platformFeePercentFor(onboarding?.plan ?? 'basic') / 100;
-
-    // Venue revenue-share rate: no persisted source exists yet anywhere in
-    // the domain (Partnership carries no negotiated rate field). Rather than
-    // fabricating a number that would misallocate real money, this settles
-    // 0 to the venue until a rate is actually configurable — tracked in
-    // docs/roadmap/phase-06-finance-ledger-payouts.md.
-    const venueShareRate = 0;
 
     // Promoter commission rate: the v1-proven performance tier, keyed by the
     // promoter's total attributed conversions across all their links.

@@ -143,6 +143,7 @@ export type {
   PartnershipDto,
   RequestPartnershipRequest,
   ResolvePartnershipRequest,
+  SetVenueShareRequest,
   PartnerAccessDto,
   OrganizationOverviewDto,
   EventAnalyticsDto,
@@ -157,6 +158,7 @@ export {
   partnershipDtoSchema,
   requestPartnershipSchema,
   resolvePartnershipSchema,
+  setVenueShareRequestSchema,
   partnerPermissionSchema,
   partnerAccessDtoSchema,
   organizationOverviewDtoSchema,
@@ -189,6 +191,8 @@ export type {
   ProposeActionRequest,
   ResolveProposalRequest,
   AdminAuditRecordDto,
+  AdminLookupResultItem,
+  AdminLookupResponse,
 } from './contracts/onboarding.js';
 
 export {
@@ -219,6 +223,8 @@ export {
   proposeActionSchema,
   resolveProposalSchema,
   adminAuditRecordDtoSchema,
+  adminLookupResultItemSchema,
+  adminLookupResponseSchema,
 } from './contracts/onboarding.js';
 
 // Checkout / Orders / Payments / Entitlements
@@ -400,6 +406,109 @@ export {
   phase5ErrorCodeSchema,
 } from './contracts/phase5.js';
 
+// Phase 7: Admin directory (venues / events / hosts / users)
+export type {
+  AdminVenueDto,
+  AdminVenueListResponse,
+  AdminEventDto,
+  AdminEventListResponse,
+  AdminHostDto,
+  AdminHostListResponse,
+  AdminUserDto,
+  AdminUserListResponse,
+} from './contracts/admin.js';
+
+export {
+  adminVenueDtoSchema,
+  adminVenueListResponseSchema,
+  adminEventDtoSchema,
+  adminEventListResponseSchema,
+  adminHostDtoSchema,
+  adminHostListResponseSchema,
+  adminUserDtoSchema,
+  adminUserListResponseSchema,
+} from './contracts/admin.js';
+
+// Phase 7: Admin orders desk (platform-wide read-only order list)
+export type {
+  AdminOrderContactDto,
+  AdminOrderDto,
+  AdminOrderListResponse,
+} from './contracts/admin-orders.js';
+
+export {
+  adminOrderContactDtoSchema,
+  adminOrderDtoSchema,
+  adminOrderListResponseSchema,
+} from './contracts/admin-orders.js';
+
+// Phase 7: Admin analytics desk (platform-wide revenue/ticket/event summary)
+export type {
+  AdminAnalyticsTopOrgDto,
+  AdminAnalyticsSummaryDto,
+} from './contracts/admin-analytics.js';
+
+export {
+  adminAnalyticsTopOrgDtoSchema,
+  adminAnalyticsSummaryDtoSchema,
+} from './contracts/admin-analytics.js';
+
+// Phase 7: Admin tickets desk (platform-wide entitlement ledger)
+export type {
+  AdminTicketStatus,
+  AdminTicketDto,
+  AdminTicketListResponse,
+} from './contracts/admin-tickets.js';
+
+export {
+  adminTicketStatusSchema,
+  adminTicketDtoSchema,
+  adminTicketListResponseSchema,
+} from './contracts/admin-tickets.js';
+
+// Phase 7: Admin promotions desk (platform-wide, read-only promo code listing)
+export type {
+  AdminPromoType,
+  AdminPromoDiscountType,
+  AdminPromoDto,
+  AdminPromoListResponse,
+} from './contracts/admin-promotions.js';
+
+export {
+  adminPromoTypeSchema,
+  adminPromoDiscountTypeSchema,
+  adminPromoDtoSchema,
+  adminPromoListResponseSchema,
+} from './contracts/admin-promotions.js';
+
+// Phase 7: Admin promoters desk (platform-wide, read-only assignment listing)
+export type {
+  AdminPromoterAssignmentStatus,
+  AdminPromoterAssignmentDto,
+  AdminPromoterAssignmentListResponse,
+  AdminPromoterSuspendRequest,
+  AdminPromoterActionResponse,
+} from './contracts/admin-promoters.js';
+
+export {
+  adminPromoterAssignmentStatusSchema,
+  adminPromoterAssignmentDtoSchema,
+  adminPromoterAssignmentListResponseSchema,
+  adminPromoterSuspendRequestSchema,
+  adminPromoterActionResponseSchema,
+} from './contracts/admin-promoters.js';
+
+// Phase 7: Admin platform settings
+export type {
+  PlatformSettingsDto,
+  PlatformSettingsUpdateRequest,
+} from './contracts/admin-settings.js';
+
+export {
+  platformSettingsDtoSchema,
+  platformSettingsUpdateRequestSchema,
+} from './contracts/admin-settings.js';
+
 // Phase 6: Finance / Ledger / Payouts
 export type {
   LedgerEntryDto,
@@ -411,6 +520,9 @@ export type {
   RaiseDisputeRequest,
   ResolveDisputeRequest,
   DisputeResponse,
+  DisputeResolutionOutcome,
+  AdminDisputeStatus,
+  AdminResolveDisputeInput,
   LeaderboardPeriodType,
   LeaderboardQuery,
   LeaderboardStatResponse,
@@ -418,6 +530,9 @@ export type {
   RejectRefundRequestInput,
   AdminRefundRequestStatus,
   AdminRefundRequestDto,
+  AdminPayoutStatus,
+  RunPayoutBatchInput,
+  PayoutBatchResult,
 } from './contracts/phase6.js';
 
 export {
@@ -427,13 +542,19 @@ export {
   payoutRequestSchema,
   payoutResponseSchema,
   payoutListResponseSchema,
+  adminPayoutStatusSchema,
+  runPayoutBatchSchema,
+  payoutBatchResultSchema,
   bankAccountRequestSchema,
   bankAccountResponseSchema,
   bankAccountListResponseSchema,
   raiseDisputeRequestSchema,
   resolveDisputeRequestSchema,
+  disputeResolutionOutcomeSchema,
   disputeResponseSchema,
   disputeListResponseSchema,
+  adminDisputeStatusSchema,
+  adminResolveDisputeSchema,
   leaderboardPeriodTypeSchema,
   leaderboardQuerySchema,
   leaderboardStatResponseSchema,
@@ -445,6 +566,53 @@ export {
   adminRefundRequestDtoSchema,
   adminRefundRequestListResponseSchema,
 } from './contracts/phase6.js';
+
+// Phase 7: Trust & safety + admin desks
+export type {
+  SupportTicketStatus,
+  SupportTicketPriority,
+  SupportTicketCategory,
+  SupportTicketMessageDto,
+  SupportInternalNoteDto,
+  SupportTimelineEventDto,
+  SupportTicketLinksDto,
+  SupportSlaDto,
+  SupportTicketRequesterDto,
+  SupportTicketDto,
+  SubmitSupportTicketInput,
+  SupportTicketMessageInput,
+  AssignSupportTicketInput,
+  ChangeSupportTicketPriorityInput,
+  SupportTicketLinkInput,
+  ResolveSupportTicketInput,
+  MergeSupportTicketInput,
+  SupportTicketQuery,
+  SupportTicketIdParam,
+} from './contracts/phase7.js';
+
+export {
+  supportTicketStatusSchema,
+  supportTicketPrioritySchema,
+  supportTicketCategorySchema,
+  supportTicketMessageDtoSchema,
+  supportInternalNoteDtoSchema,
+  supportTimelineEventDtoSchema,
+  supportTicketLinksDtoSchema,
+  supportSlaDtoSchema,
+  supportTicketRequesterDtoSchema,
+  supportTicketAssigneeDtoSchema,
+  supportTicketDtoSchema,
+  supportTicketListResponseSchema,
+  submitSupportTicketSchema,
+  supportTicketMessageSchema,
+  assignSupportTicketSchema,
+  changeSupportTicketPrioritySchema,
+  supportTicketLinkSchema,
+  resolveSupportTicketSchema,
+  mergeSupportTicketSchema,
+  supportTicketQuerySchema,
+  supportTicketIdParamSchema,
+} from './contracts/phase7.js';
 
 // Public / discovery (Phase 4 PR1)
 export type {

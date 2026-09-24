@@ -63,9 +63,18 @@ import type {
 } from '../models/organization.js';
 import type { Partnership } from '../models/partnership.js';
 import type { Payout, PayoutStatus } from '../models/payout.js';
+import type { PlatformSettings } from '../models/platform-settings.js';
+import type { PlatformUser } from '../models/platform-user.js';
 import type { PromoterConnection } from '../models/promoter-connection.js';
 import type { ReferralLink } from '../models/referral-link.js';
 import type { AdminRefundRequest, AdminRefundRequestStatus } from '../models/refund-request.js';
+import type {
+  SafetyReport,
+  SafetyReportCategory,
+  SafetyReportPriority,
+  SafetyReportStatus,
+  SafetyReportTargetType,
+} from '../models/safety-report.js';
 import type {
   ScanLedger,
   ScanLedgerStatus,
@@ -73,6 +82,13 @@ import type {
   ScanDenyReason,
 } from '../models/scan-ledger.js';
 import type { ScannerDevice } from '../models/scanner-device.js';
+import type {
+  SupportTicket,
+  SupportTicketCategory,
+  SupportTicketPriority,
+  SupportTicketStatus,
+} from '../models/support-ticket.js';
+import type { UserBan } from '../models/user-ban.js';
 import type { Venue, VenueSlot, SlotRequest } from '../models/venue.js';
 
 // ─── Phase 5: Scan Ledger, Event Code, Scanner Session, Door Sale, Cover Wallet ───────
@@ -110,10 +126,31 @@ export interface OrganizationRepository {
   getBySlug(slug: string): Promise<Organization | null>;
   /** All orgs a user id belongs to as a member. */
   listForMember(userId: EntityId, query: PaginationQuery): Promise<Page<Organization>>;
+  /** Platform-wide org directory (admin hosts view) — global, not org-scoped. */
+  listAll(query: PaginationQuery): Promise<Page<Organization>>;
   listMembers(organizationId: EntityId, query: PaginationQuery): Promise<Page<OrganizationMember>>;
   getMember(organizationId: EntityId, userId: EntityId): Promise<OrganizationMember | null>;
   save(org: Organization, tx?: TxContext | null): Promise<void>;
   delete(organizationId: EntityId, tx?: TxContext | null): Promise<void>;
+}
+
+/**
+ * Platform user directory (admin users view). READ-ONLY by design — admin
+ * routes never mutate Better Auth accounts. Implementations read the
+ * `v2_auth_users` collection (firestore) or an in-memory seed (memory driver).
+ */
+export interface UserAccountRepository {
+  /** Platform-wide user directory — global, not org-scoped. */
+  listAll(query: PaginationQuery): Promise<Page<PlatformUser>>;
+  getById(userId: EntityId): Promise<PlatformUser | null>;
+  /** Exact-match lookup by email — the admin global-lookup's second key besides id. */
+  getByEmail(email: string): Promise<PlatformUser | null>;
+}
+
+/** Ban state for platform users, one record per user, keyed by user id. */
+export interface UserBanRepository {
+  getByUserId(userId: EntityId): Promise<UserBan | null>;
+  save(ban: UserBan, tx?: TxContext | null): Promise<void>;
 }
 
 /**
@@ -182,6 +219,8 @@ export interface VenueRepository {
    * addresses a venue by slug alone, with no tenant context of its own. */
   getBySlugGlobal(slug: string): Promise<Venue | null>;
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Venue>>;
+  /** Platform-wide venue directory (admin venues view) — global, not org-scoped. */
+  listAll(query: PaginationQuery): Promise<Page<Venue>>;
   save(venue: Venue, tx?: TxContext | null): Promise<void>;
 }
 
@@ -206,6 +245,8 @@ export interface EventRepository {
   getBySlug(slug: string): Promise<Event | null>;
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Event>>;
   listByVenue(venueId: EntityId, query: PaginationQuery): Promise<Page<Event>>;
+  /** Platform-wide event directory (admin events view) — global, includes non-public. */
+  listAll(query: PaginationQuery): Promise<Page<Event>>;
   listPublic(query: PaginationQuery): Promise<Page<Event>>;
   save(event: Event, tx?: TxContext | null): Promise<void>;
   delete(eventId: EntityId, tx?: TxContext | null): Promise<void>;
@@ -224,6 +265,8 @@ export interface EventCatalogRepository {
   getPromoById(promoId: EntityId): Promise<PromoCode | null>;
   getPromoByCode(code: string, eventId: EntityId | null): Promise<PromoCode | null>;
   listPromos(eventId: EntityId, query: PaginationQuery): Promise<Page<PromoCode>>;
+  /** Platform-wide promo listing (admin read-only dashboard). */
+  listAllPromos(query: PaginationQuery): Promise<Page<PromoCode>>;
   savePromo(promo: PromoCode, tx?: TxContext | null): Promise<void>;
   // Table packages
   getTableById(tableId: EntityId): Promise<TablePackage | null>;
@@ -232,6 +275,10 @@ export interface EventCatalogRepository {
   // Promoter assignments
   getAssignmentById(assignmentId: EntityId): Promise<PromoterAssignment | null>;
   listAssignments(eventId: EntityId): Promise<PromoterAssignment[]>;
+  /** All assignments for a given promoter user (admin lifecycle queries). */
+  listAssignmentsByPromoter(promoterId: EntityId): Promise<PromoterAssignment[]>;
+  /** Platform-wide promoter-assignment listing (admin read-only dashboard). */
+  listAllAssignments(query: PaginationQuery): Promise<Page<PromoterAssignment>>;
   saveAssignment(assignment: PromoterAssignment, tx?: TxContext | null): Promise<void>;
 }
 
@@ -420,6 +467,8 @@ export interface OrderRepository {
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Order>>;
   /** Lists orders for an event. */
   listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<Order>>;
+  /** Lists all orders platform-wide (admin read-only dashboards). */
+  listAll(query: PaginationQuery): Promise<Page<Order>>;
   /** Saves (create or update). Version is checked for optimistic locking. */
   save(order: Order, tx?: TxContext | null): Promise<void>;
 }
@@ -438,6 +487,8 @@ export interface EntitlementRepository {
   listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<Entitlement>>;
   /** Fetches entitlements for an organization (partner/admin). */
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Entitlement>>;
+  /** Lists all entitlements platform-wide (admin read-only dashboards). */
+  listAll(query: PaginationQuery): Promise<Page<Entitlement>>;
   /** Saves (create or update — scan increments version). Version checked for optimistic locking. */
   save(entitlement: Entitlement, tx?: TxContext | null): Promise<void>;
   /** Bulk save for fulfilment (atomic with order creation). */
@@ -794,6 +845,8 @@ export interface PayoutRepository {
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Payout>>;
   sumPaidByOrganization(organizationId: EntityId): Promise<number>;
   sumRequestedOrProcessingByOrganization(organizationId: EntityId): Promise<number>;
+  /** Cross-org admin view — the batch-run and freeze/release queues. `null` = every status. */
+  listByStatus(status: PayoutStatus | null, query: PaginationQuery): Promise<Page<Payout>>;
 }
 
 /** Partner payout destinations. Full account number never leaves the adapter unmasked. */
@@ -815,6 +868,8 @@ export interface DisputeRepository {
     organizationId: EntityId,
     query: PaginationQuery & { status?: DisputeStatus },
   ): Promise<Page<Dispute>>;
+  /** Cross-org admin queue. `null` = every status. */
+  listByStatus(status: DisputeStatus | null, query: PaginationQuery): Promise<Page<Dispute>>;
 }
 
 /** Admin refund requests (Phase 6 admin). Version-checked saves for the N-approver accumulator. */
@@ -827,6 +882,74 @@ export interface AdminRefundRequestRepository {
     query: PaginationQuery,
   ): Promise<Page<AdminRefundRequest>>;
   save(request: AdminRefundRequest, tx?: TxContext | null): Promise<void>;
+}
+
+/**
+ * Platform safety reports (Phase 7). Version-checked saves — the report is a
+ * single versioned aggregate, so a concurrent resolution write loses. Soft
+ * deletion follows the same "always recoverable" rule as support tickets.
+ */
+export interface SafetyReportQuery {
+  status?: SafetyReportStatus;
+  category?: SafetyReportCategory;
+  priority?: SafetyReportPriority;
+  targetType?: SafetyReportTargetType;
+  reporterUserId?: EntityId;
+  /** Case-insensitive substring over details. */
+  search?: string;
+  includeDeleted?: boolean;
+}
+
+/** Desk stat counters — the real safety metric (no v1-style fabricated rating). */
+export interface SafetyReportStats {
+  open: number;
+  dismissed: number;
+  actioned: number;
+  total: number;
+  /** All reports in the critical bucket (category `safety`). */
+  critical: number;
+}
+
+export interface SafetyReportRepository {
+  getById(id: EntityId, opts?: { includeDeleted?: boolean }): Promise<SafetyReport | null>;
+  list(query: SafetyReportQuery, pagination: PaginationQuery): Promise<Page<SafetyReport>>;
+  listByReporter(
+    reporterUserId: EntityId,
+    pagination: PaginationQuery,
+  ): Promise<Page<SafetyReport>>;
+  stats(): Promise<SafetyReportStats>;
+  save(report: SafetyReport): Promise<void>;
+}
+
+/**
+ * Platform support tickets (Phase 7). Version-checked saves — the ticket is a
+ * single versioned aggregate (messages, internal notes and timeline live on
+ * it), so every mutation bumps `version` and a concurrent write loses.
+ * `softDeleted` tickets are never returned by `list` unless explicitly
+ * requested, matching the "soft delete with attribution, always recoverable"
+ * rule; they remain addressable by `getById` so restore is a pure save.
+ */
+export interface SupportTicketQuery {
+  status?: SupportTicketStatus;
+  priority?: SupportTicketPriority;
+  category?: SupportTicketCategory;
+  assigneeUserId?: EntityId;
+  requesterUserId?: EntityId;
+  /** Case-insensitive substring over subject + description. */
+  search?: string;
+  includeDeleted?: boolean;
+}
+
+export interface SupportTicketRepository {
+  getById(id: EntityId, opts?: { includeDeleted?: boolean }): Promise<SupportTicket | null>;
+  /** The ticket a client points at via `mergedInto`. */
+  listByMergedInto(ticketId: EntityId): Promise<SupportTicket[]>;
+  list(query: SupportTicketQuery, pagination: PaginationQuery): Promise<Page<SupportTicket>>;
+  listByRequester(
+    requesterUserId: EntityId,
+    pagination: PaginationQuery,
+  ): Promise<Page<SupportTicket>>;
+  save(ticket: SupportTicket): Promise<void>;
 }
 
 /**
@@ -863,6 +986,17 @@ export interface EmailOtpRepository {
   delete(recipient: EntityId): Promise<void>;
 }
 
+// ─── Platform settings (singleton doc) ──────────────────────────────────────
+
+/**
+ * Singleton read/write for the platform-wide settings doc.
+ * Backed by `v2_platform_settings/singleton` in Firestore.
+ */
+export interface PlatformSettingsRepository {
+  get(): Promise<PlatformSettings>;
+  save(settings: PlatformSettings): Promise<void>;
+}
+
 export type {
   LedgerEntry,
   LedgerEntryType,
@@ -875,4 +1009,5 @@ export type {
   LeaderboardBucket,
   LeaderboardPeriodType,
   EmailOtp,
+  PlatformSettings,
 };

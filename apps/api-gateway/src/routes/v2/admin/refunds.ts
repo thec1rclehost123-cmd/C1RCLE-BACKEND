@@ -13,7 +13,9 @@ import { z } from 'zod';
 
 import type { AdminRefundRequest, Order } from '@c1rcle/core/domain';
 
+import { csvEscape } from '../../../lib/csv.js';
 import { isIdempotencyConflict, runIdempotent } from '../../../lib/v2-idempotency.js';
+import { requestMeta } from '../../../lib/v2-request-meta.js';
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
 import { requireUserId } from '../onboarding.js';
@@ -103,11 +105,15 @@ export default async function adminRefundRoutes(fastify: FastifyInstance) {
         idempotencyKey: v2Headers['idempotency-key'],
         context: { path: {}, body },
         run: async () => {
-          const outcome = await services.refund.requestRefund(userId, {
-            orderId: body.orderId,
-            amountPaise: body.amountPaise,
-            reason: body.reason,
-          });
+          const outcome = await services.refund.requestRefund(
+            userId,
+            {
+              orderId: body.orderId,
+              amountPaise: body.amountPaise,
+              reason: body.reason,
+            },
+            requestMeta(request),
+          );
           const validated = validateV2Response(
             reply,
             request,
@@ -153,7 +159,11 @@ export default async function adminRefundRoutes(fastify: FastifyInstance) {
         idempotencyKey: v2Headers['idempotency-key'],
         context: { path: { refundRequestId }, body: {} },
         run: async () => {
-          const outcome = await services.refund.approveRefund(userId, refundRequestId);
+          const outcome = await services.refund.approveRefund(
+            userId,
+            refundRequestId,
+            requestMeta(request),
+          );
           const validated = validateV2Response(
             reply,
             request,
@@ -202,7 +212,12 @@ export default async function adminRefundRoutes(fastify: FastifyInstance) {
         idempotencyKey: v2Headers['idempotency-key'],
         context: { path: { refundRequestId }, body },
         run: async () => {
-          const outcome = await services.refund.rejectRefund(userId, refundRequestId, body.reason);
+          const outcome = await services.refund.rejectRefund(
+            userId,
+            refundRequestId,
+            body.reason,
+            requestMeta(request),
+          );
           const validated = validateV2Response(
             reply,
             request,
@@ -258,6 +273,55 @@ export default async function adminRefundRoutes(fastify: FastifyInstance) {
       });
       if (validated === undefined) return reply;
       return reply.send(validated);
+    },
+  );
+
+  fastify.get(
+    '/admin/refunds/export.csv',
+    {
+      preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({})],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+
+      const page = await services.refund
+        .listRefunds(userId, null, { limit: 1000, cursor: null })
+        .catch((error: unknown) => mapDomainError(reply, request, userId, error));
+      if (page === undefined) return reply;
+
+      const header = [
+        'id',
+        'orderId',
+        'organizationId',
+        'amountPaise',
+        'requestedBy',
+        'reason',
+        'status',
+        'rejectedBy',
+        'rejectionReason',
+        'createdAt',
+      ];
+      const lines = page.items.map((request_) => {
+        const dto = toRefundDto(request_);
+        return [
+          csvEscape(dto.id),
+          csvEscape(dto.orderId),
+          csvEscape(dto.organizationId),
+          csvEscape(dto.amountPaise),
+          csvEscape(dto.requestedBy),
+          csvEscape(dto.reason),
+          csvEscape(dto.status),
+          csvEscape(dto.rejectedBy),
+          csvEscape(dto.rejectionReason),
+          csvEscape(new Date(dto.createdAt).toISOString()),
+        ].join(',');
+      });
+      const csv = [header.map(csvEscape).join(','), ...lines].join('\n');
+      return reply
+        .type('text/csv')
+        .header('Content-Disposition', 'attachment; filename="refunds.csv"')
+        .send(csv);
     },
   );
 

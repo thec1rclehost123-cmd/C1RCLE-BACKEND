@@ -103,6 +103,7 @@ async function seedEvent(
     isFree: false,
     cancellationReason: null,
     capacity,
+    adminOverride: false,
     version: 1,
     createdAt: now,
     updatedAt: now,

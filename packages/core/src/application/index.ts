@@ -37,6 +37,7 @@ export type { RequestPartnershipCommand } from './partnerships/partnership-servi
 export { PublicService } from './public/public-service.js';
 export { AdminAuthorityService } from './admin/admin-authority-service.js';
 export type { ProposeCommand, AuditInput } from './admin/admin-authority-service.js';
+export { AdminOperationsService } from './admin/admin-ops-service.js';
 export { OnboardingService } from './onboarding/onboarding-service.js';
 export type {
   StartApplicationCommand,
@@ -145,6 +146,7 @@ export type {
   RequestPayoutInput,
 } from './finance/payout-service.js';
 export { createPayoutService } from './finance/payout-service.js';
+export { AdminPayoutService } from './finance/admin-payout-service.js';
 export type {
   BankAccountService,
   BankAccountServiceDeps,
@@ -157,8 +159,13 @@ export type {
   RaiseDisputeInput,
 } from './finance/dispute-service.js';
 export { createDisputeService } from './finance/dispute-service.js';
+export { AdminDisputeService } from './finance/admin-dispute-service.js';
 export type { RequestRefundCommand } from './finance/refund-service.js';
 export { RefundService } from './finance/refund-service.js';
+export { SupportService } from './support/support-service.js';
+export type { SubmitTicketCommand } from './support/support-service.js';
+export { AdminSupportService } from './support/admin-support-service.js';
+export type { AssignAgentInput, SupportLinkInput } from './support/admin-support-service.js';
 export type { LeaderboardService, LeaderboardServiceDeps } from './finance/leaderboard-service.js';
 export { createLeaderboardService } from './finance/leaderboard-service.js';
 export type { EmailOtpService, EmailOtpServiceDeps } from './auth/email-otp-service.js';

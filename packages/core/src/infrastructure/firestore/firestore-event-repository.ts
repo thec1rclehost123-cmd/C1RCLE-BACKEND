@@ -54,6 +54,10 @@ export class FirestoreEventRepository implements EventRepository {
     return paginateQuery(base, query, toEvent);
   }
 
+  async listAll(query: PaginationQuery): Promise<Page<Event>> {
+    return paginateQuery(this.collection, query, toEvent);
+  }
+
   async save(event: Event, _tx?: TxContext | null): Promise<void> {
     // Compare-and-set: a write of version N must find N-1 (see compare-and-set.ts).
     await compareAndSet(this.db, this.collection, event, toDoc);
@@ -89,6 +93,7 @@ function toEvent(data: DocumentData): Event {
     // Documents written before the field existed read as "not configured",
     // which is exactly what `null` already means here.
     capacity: (data.capacity as number | null | undefined) ?? null,
+    adminOverride: (data.adminOverride as boolean | undefined) ?? false,
     version: data.version as number,
     createdAt: data.createdAt as string,
     updatedAt: data.updatedAt as string,

@@ -244,7 +244,7 @@ async function main(): Promise<void> {
   console.info(`Seeded ${tierIdsByEvent.size} ticket tiers and up to 6 promo codes.`);
 
   // ─── Seed: promoter assignments per migrated event ─────────────────────────
-  const assignmentStatuses = ['active', 'active', 'active', 'ended'] as const;
+  const assignmentStatuses = ['active', 'active', 'suspended', 'ended'] as const;
   for (let i = 0; i < Math.min(8, eventIds.length * 2); i++) {
     const eventId = eventIds[i % eventIds.length];
     if (eventId === undefined) continue;
@@ -256,7 +256,9 @@ async function main(): Promise<void> {
       now,
     });
     const status = assignmentStatuses[i % assignmentStatuses.length];
-    if (status === 'ended') {
+    if (status === 'suspended') {
+      assignment = { ...assignment, status, suspendedAt: now.toISOString() };
+    } else if (status === 'ended') {
       assignment = { ...assignment, status, endedAt: now.toISOString() };
     }
     await repos.catalog.saveAssignment(assignment);

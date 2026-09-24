@@ -126,6 +126,18 @@ async function onboardAndApproveHost(
       createPlatformAdmin({ id: 'ops_1', email: 'ops@c1rcle.test', role: 'ops' }),
     );
 
+  // Approval is gated on every required document being verified on the KYC
+  // desk first — a separate admin action from the application decision.
+  for (const label of ['id_front', 'id_back', 'selfie']) {
+    const verify = await server.inject({
+      method: 'POST',
+      url: `/api/v2/admin/onboarding/applications/${requestId}/documents/${label}/verify`,
+      headers: asUser('ops_1'),
+      payload: {},
+    });
+    expect(verify.statusCode, JSON.stringify(verify.json())).toBe(200);
+  }
+
   const approve = await server.inject({
     method: 'POST',
     url: `/api/v2/admin/onboarding/applications/${requestId}/approve`,

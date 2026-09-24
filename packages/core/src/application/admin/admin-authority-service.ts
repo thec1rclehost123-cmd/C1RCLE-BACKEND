@@ -14,6 +14,7 @@ import {
   proposeAction,
   rejectProposal,
   requiresDualControl,
+  updatePlatformAdminRole,
 } from '../../domain/models/admin-authority.js';
 
 import type { EntityId } from '../../domain/identity.js';
@@ -24,6 +25,7 @@ import type {
   ProposalStatus,
   ProposedAction,
 } from '../../domain/models/admin-authority.js';
+import type { AuditRequestMeta } from '../../domain/ports/audit.js';
 import type { PaginationQuery } from '../../domain/ports/repositories.js';
 import type { ServiceDeps } from '../context.js';
 
@@ -125,7 +127,11 @@ export class AdminAuthorityService {
 
   /* ─── Dual control ───────────────────────────────────────────────────────── */
 
-  async propose(userId: EntityId, command: ProposeCommand): Promise<ProposedAction> {
+  async propose(
+    userId: EntityId,
+    command: ProposeCommand,
+    meta?: AuditRequestMeta,
+  ): Promise<ProposedAction> {
     const admin = await this.requireAdmin(userId);
     const proposal = proposeAction({
       id: this.deps.config.ids(),
@@ -144,6 +150,8 @@ export class AdminAuthorityService {
       before: null,
       after: { action: proposal.action, status: proposal.status },
       reason: proposal.reason,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     this.deps.logger.info('admin.proposal_raised', {
       proposalId: proposal.id,
@@ -152,15 +160,29 @@ export class AdminAuthorityService {
     return proposal;
   }
 
-  async approve(userId: EntityId, proposalId: EntityId, reason?: string): Promise<ProposedAction> {
-    return this.resolve(userId, proposalId, reason, approveProposal);
+  async approve(
+    userId: EntityId,
+    proposalId: EntityId,
+    reason?: string,
+    meta?: AuditRequestMeta,
+  ): Promise<ProposedAction> {
+    return this.resolve(userId, proposalId, reason, approveProposal, meta);
   }
 
-  async reject(userId: EntityId, proposalId: EntityId, reason?: string): Promise<ProposedAction> {
-    return this.resolve(userId, proposalId, reason, rejectProposal);
+  async reject(
+    userId: EntityId,
+    proposalId: EntityId,
+    reason?: string,
+    meta?: AuditRequestMeta,
+  ): Promise<ProposedAction> {
+    return this.resolve(userId, proposalId, reason, rejectProposal, meta);
   }
 
-  async cancel(userId: EntityId, proposalId: EntityId): Promise<ProposedAction> {
+  async cancel(
+    userId: EntityId,
+    proposalId: EntityId,
+    meta?: AuditRequestMeta,
+  ): Promise<ProposedAction> {
     const admin = await this.requireAdmin(userId);
     const proposal = await this.requireProposal(proposalId);
     const cancelled = cancelProposal(proposal, admin.id, this.deps.config.clock.now());
@@ -172,6 +194,8 @@ export class AdminAuthorityService {
       before: { status: proposal.status },
       after: { status: cancelled.status },
       reason: null,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     return cancelled;
   }
@@ -194,6 +218,7 @@ export class AdminAuthorityService {
       proposal: ProposedAction,
       input: { resolvedBy: EntityId; resolverRole: AdminRole; reason?: string; now?: Date },
     ) => ProposedAction,
+    meta?: AuditRequestMeta,
   ): Promise<ProposedAction> {
     const admin = await this.requireAdmin(userId);
     const proposal = await this.requireProposal(proposalId);
@@ -212,6 +237,8 @@ export class AdminAuthorityService {
       before: { status: proposal.status },
       after: { status: resolved.status },
       reason: resolved.resolutionReason,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     this.deps.logger.info('admin.proposal_resolved', {
       proposalId: proposal.id,
@@ -241,7 +268,11 @@ export class AdminAuthorityService {
    * otherwise the executing admin could approve one thing and provision
    * something else.
    */
-  async provisionAdminFromProposal(userId: EntityId, proposalId: EntityId): Promise<PlatformAdmin> {
+  async provisionAdminFromProposal(
+    userId: EntityId,
+    proposalId: EntityId,
+    meta?: AuditRequestMeta,
+  ): Promise<PlatformAdmin> {
     const admin = await this.authorize(userId, 'ADMIN_PROVISION');
     const proposal = await this.requireProposal(proposalId);
     if (proposal.action !== 'ADMIN_PROVISION') {
@@ -274,8 +305,61 @@ export class AdminAuthorityService {
       before: existing ? { role: existing.role, isActive: existing.isActive } : null,
       after: { role: next.role, isActive: next.isActive },
       reason: proposal.reason,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     return next;
+  }
+
+  /**
+   * Changes an admin's role. TIER3, dual control, same execute-from-
+   * approved-proposal shape as `provisionAdminFromProposal`: the new role
+   * is read from the proposal payload, never from this call's arguments.
+   */
+  async updateAdminRoleFromProposal(
+    userId: EntityId,
+    proposalId: EntityId,
+    meta?: AuditRequestMeta,
+  ): Promise<PlatformAdmin> {
+    const admin = await this.authorize(userId, 'ADMIN_ROLE_UPDATE');
+    const proposal = await this.requireProposal(proposalId);
+    if (proposal.action !== 'ADMIN_ROLE_UPDATE') {
+      throw new InvalidOperationError('This proposal does not update an admin role');
+    }
+    if (!isExecutable(proposal)) {
+      throw new ForbiddenError('This proposal has not been approved by a second admin');
+    }
+
+    const { targetUserId, role } = readRoleUpdatePayload(proposal.payload);
+    const target = await this.admins.getById(targetUserId);
+    if (!target) throw new InvalidOperationError(`No such admin: ${targetUserId}`);
+
+    // Demoting the last active `super` would leave nobody able to propose
+    // any future TIER3 action (all of them require `super` to propose) —
+    // an availability lockout, not a dual-control bypass, but the same
+    // "don't let the console lock itself out" reasoning `revokeAdmin`
+    // already applies to self-revoke.
+    if (target.role === 'super' && role !== 'super') {
+      const { items } = await this.admins.list({ limit: 1000, cursor: null });
+      const activeSupers = items.filter((a) => a.role === 'super' && a.isActive).length;
+      if (activeSupers <= 1) {
+        throw new InvalidOperationError('Cannot demote the last active super admin');
+      }
+    }
+
+    const updated = updatePlatformAdminRole(target, role, this.deps.config.clock.now());
+    if (updated !== target) await this.admins.save(updated);
+    await this.record(admin, {
+      action: 'ADMIN_ROLE_UPDATE',
+      targetType: 'platform_admin',
+      targetId: target.id,
+      before: { role: target.role },
+      after: { role: updated.role },
+      reason: proposal.reason,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
+    });
+    return updated;
   }
 
   /**
@@ -283,7 +367,11 @@ export class AdminAuthorityService {
    * take authority away is the wrong failure mode when an account is
    * compromised. Granting it is the dangerous direction.
    */
-  async revokeAdmin(userId: EntityId, targetUserId: EntityId): Promise<PlatformAdmin> {
+  async revokeAdmin(
+    userId: EntityId,
+    targetUserId: EntityId,
+    meta?: AuditRequestMeta,
+  ): Promise<PlatformAdmin> {
     const admin = await this.requireAdmin(userId);
     if (admin.role !== 'super') {
       throw new ForbiddenError('Only a super admin can revoke platform authority');
@@ -304,6 +392,8 @@ export class AdminAuthorityService {
       before: { isActive: target.isActive },
       after: { isActive: revoked.isActive },
       reason: null,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     return revoked;
   }
@@ -339,4 +429,19 @@ function readProvisionPayload(payload: Record<string, unknown>): {
     throw new InvalidOperationError('Proposal payload is missing a valid `role`');
   }
   return { userId, email, role: role as AdminRole };
+}
+
+function readRoleUpdatePayload(payload: Record<string, unknown>): {
+  targetUserId: EntityId;
+  role: AdminRole;
+} {
+  const targetUserId = payload.targetUserId;
+  const role = payload.role;
+  if (typeof targetUserId !== 'string' || targetUserId.length === 0) {
+    throw new InvalidOperationError('Proposal payload is missing `targetUserId`');
+  }
+  if (typeof role !== 'string' || !ADMIN_ROLES.includes(role as AdminRole)) {
+    throw new InvalidOperationError('Proposal payload is missing a valid `role`');
+  }
+  return { targetUserId, role: role as AdminRole };
 }
