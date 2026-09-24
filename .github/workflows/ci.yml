@@ -124,6 +124,16 @@ jobs:
         if: always()
         run: node scripts/check-boundaries.mjs
 
+      # The deployed sidecar runs nginx in front of Fastify. A config error
+      # (e.g. a duplicate proxy_* directive) makes the container exit before
+      # Render's health gate, which CI never noticed until a merge had already
+      # deployed the broken image. This check expands every include and fails
+      # on the same classes nginx reports at startup ([emerg] duplicate).
+      - name: Nginx config
+        id: nginx
+        if: always()
+        run: node scripts/check-nginx-config.mjs
+
       # A focused `it.only` silently disables every other test in its file, so a
       # green suite can be hiding almost all of itself.
       - name: No focused tests committed
@@ -149,6 +159,7 @@ jobs:
             echo "| Lint | ${{ steps.lint.outcome }} |"
             echo "| Typecheck | ${{ steps.typecheck.outcome }} |"
             echo "| Boundaries | ${{ steps.boundaries.outcome }} |"
+            echo "| Nginx config | ${{ steps.nginx.outcome }} |"
             echo "| Focused tests | ${{ steps.focused.outcome }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
