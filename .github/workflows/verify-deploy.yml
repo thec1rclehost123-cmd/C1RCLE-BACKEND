@@ -1,0 +1,115 @@
+# ─── Post-deploy verification ─────────────────────────────────────────────────
+# Render auto-deploys on push to main/staging, out of band from the CI workflow.
+# This workflow waits for THAT deploy to go live, proves it works, and rolls it
+# back (or files an incident) if it does not.
+#
+# Deliberately has NO job-level `if:` and NO `environment:` block: verification
+# is gated entirely by the native workflow-level `on.push.branches` filter,
+# which GitHub applies before any expression evaluation. The previous
+# in-workflow job was silently skipped by the runner on every push since 09-22
+# (its `if:` was never the problem — see fix/verify-deploy-workflow), so this
+# standalone workflow keeps the trigger source of truth in one place.
+#
+# Manual runs: use the "Run workflow" button (workflow_dispatch). The workflow
+# becomes dispatchable once it is present on the default branch (main).
+name: Verify deploy
+
+on:
+  push:
+    branches: [main, staging]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write # file an incident if smoke fails
+
+jobs:
+  verify:
+    name: Verify deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Both branches currently deploy to the one live v2 service
+    # (circle-v2-backend, tracking `staging`) — there is no separate
+    # `main`-tracking Render service yet. Update this URL when one exists.
+    env:
+      DEPLOY_URL: https://circle-v2-backend.onrender.com
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Detect Render API credentials
+        id: render
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ github.ref == 'refs/heads/main' && secrets.RENDER_SERVICE_ID || secrets.RENDER_STAGING_SERVICE_ID }}
+        run: |
+          if [ -n "$RENDER_API_KEY" ] && [ -n "$RENDER_SERVICE_ID" ]; then
+            echo "rollback=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "rollback=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Render API credentials for $GITHUB_REF_NAME are not set — automatic rollback is disabled."
+          fi
+
+      - name: Wait for Render to serve this commit
+        env:
+          NGINX_READINESS_TOKEN: ${{ secrets.NGINX_READINESS_TOKEN }}
+        run: |
+          node scripts/ci/wait-for-deploy.mjs \
+            --url "$DEPLOY_URL" \
+            --sha "$GITHUB_SHA" \
+            --timeout 900 \
+            --interval 15
+
+      - name: Smoke test deploy
+        id: smoke
+        env:
+          NGINX_READINESS_TOKEN: ${{ secrets.NGINX_READINESS_TOKEN }}
+        run: node scripts/ci/smoke.mjs --url "$DEPLOY_URL"
+
+      - name: Roll back the failed deploy
+        if: failure() && steps.smoke.outcome == 'failure' && steps.render.outputs.rollback == 'true'
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ github.ref == 'refs/heads/main' && secrets.RENDER_SERVICE_ID || secrets.RENDER_STAGING_SERVICE_ID }}
+        run: node scripts/ci/render-rollback.mjs
+
+      - name: File a deploy incident
+        if: failure()
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          ROLLBACK_ATTEMPTED: ${{ steps.render.outputs.rollback }}
+        with:
+          script: |
+            const env = process.env.GITHUB_REF_NAME;
+            const title = `${env} smoke tests failed for ${context.sha.slice(0, 7)}`;
+            const body = [
+              `Post-deploy verification failed on \`${context.ref.replace('refs/heads/', '')}\` (${env}).`,
+              '',
+              `- Commit: ${context.sha}`,
+              `- Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              `- Target: ${process.env.DEPLOY_URL}`,
+              `- Automatic rollback attempted: ${process.env.ROLLBACK_ATTEMPTED}`,
+              '',
+              "Check the run's job summary for which smoke assertions failed.",
+            ].join('\n');
+            const existing = await github.rest.issues.listForRepo({
+              ...context.repo,
+              state: 'open',
+              labels: 'production-incident',
+            });
+            const open = existing.data.find((issue) => issue.title === title);
+            if (open) {
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: open.number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                ...context.repo,
+                title,
+                body,
+                labels: ['production-incident', 'automated'],
+              });
+            }
