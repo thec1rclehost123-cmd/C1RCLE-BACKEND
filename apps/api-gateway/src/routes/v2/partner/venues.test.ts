@@ -431,6 +431,142 @@ describe('V2 partners venues slice — profile, calendar, menu, availability', (
     await server.close();
   });
 
+  it('unblocks a blocked calendar slot so the date reads open again', async () => {
+    const server = await buildServer();
+    const { id } = await createVenue(server);
+    const created = await server.inject({
+      method: 'POST',
+      url: `/venues/${id}/calendar/blocks`,
+      headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
+      payload: {
+        label: 'Private event',
+        startTime: '2026-09-17T19:00:00.000Z',
+        endTime: '2026-09-17T23:00:00.000Z',
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const blockId = created.json().id as string;
+
+    const unblocked = await server.inject({
+      method: 'DELETE',
+      url: `/venues/${id}/calendar/blocks/${blockId}`,
+      headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
+    });
+    expect(unblocked.statusCode).toBe(200);
+    expect(unblocked.json()).toMatchObject({ id: blockId, status: 'cancelled' });
+
+    // Cancelled tombstones stay out of the calendar read …
+    const calendar = await server.inject({
+      method: 'GET',
+      url: `/venues/${id}/calendar?from=2026-09-01T00:00:00Z&to=2026-09-30T00:00:00Z`,
+      headers: READ_HEADERS,
+    });
+    expect(calendar.statusCode).toBe(200);
+    expect(calendar.json()).toEqual([]);
+
+    // … and re-unblocking the same slot is a 400, not a silent no-op.
+    const again = await server.inject({
+      method: 'DELETE',
+      url: `/venues/${id}/calendar/blocks/${blockId}`,
+      headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
+    });
+    expect(again.statusCode).toBe(400);
+    await server.close();
+  });
+
+  it('rejects a block that overlaps an existing slot but allows adjacent ones', async () => {
+    const server = await buildServer();
+    const { id } = await createVenue(server);
+    const seed = await server.inject({
+      method: 'POST',
+      url: `/venues/${id}/calendar/blocks`,
+      headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
+      payload: {
+        label: 'Evening hold',
+        startTime: '2026-09-17T19:00:00.000Z',
+        endTime: '2026-09-17T23:00:00.000Z',
+      },
+    });
+    expect(seed.statusCode).toBe(201);
+
+    const overlapping = await server.inject({
+      method: 'POST',
+      url: `/venues/${id}/calendar/blocks`,
+      headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
+      payload: {
+        label: 'Overlapping hold',
+        startTime: '2026-09-17T22:00:00.000Z',
+        endTime: '2026-09-17T23:30:00.000Z',
+      },
+    });
+    expect(overlapping.statusCode).toBe(400);
+
+    // Touching exactly at the boundary is adjacent, not overlapping.
+    const adjacent = await server.inject({
+      method: 'POST',
+      url: `/venues/${id}/calendar/blocks`,
+      headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
+      payload: {
+        label: 'Late hold',
+        startTime: '2026-09-17T23:00:00.000Z',
+        endTime: '2026-09-17T23:30:00.000Z',
+      },
+    });
+    expect(adjacent.statusCode).toBe(201);
+    await server.close();
+  });
+
+  it('supports overnight blocks that run past midnight', async () => {
+    const server = await buildServer();
+    const { id } = await createVenue(server);
+    const created = await server.inject({
+      method: 'POST',
+      url: `/venues/${id}/calendar/blocks`,
+      headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
+      payload: {
+        label: 'Overnight hold',
+        startTime: '2026-09-17T22:00:00.000Z',
+        endTime: '2026-09-18T02:00:00.000Z',
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({ status: 'blocked' });
+
+    // A next-morning block inside the overnight range is an overlap.
+    const clash = await server.inject({
+      method: 'POST',
+      url: `/venues/${id}/calendar/blocks`,
+      headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
+      payload: {
+        label: 'Morning clash',
+        startTime: '2026-09-18T01:00:00.000Z',
+        endTime: '2026-09-18T03:00:00.000Z',
+      },
+    });
+    expect(clash.statusCode).toBe(400);
+    await server.close();
+  });
+
+  it('returns 404 when unblocking an unknown block or a foreign venue', async () => {
+    const server = await buildServer();
+    const { id } = await createVenue(server);
+
+    const missing = await server.inject({
+      method: 'DELETE',
+      url: `/venues/${id}/calendar/blocks/block_missing`,
+      headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
+    });
+    expect(missing.statusCode).toBe(404);
+
+    const foreign = await server.inject({
+      method: 'DELETE',
+      url: '/venues/venue_foreign/calendar/blocks/block_missing',
+      headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
+    });
+    expect(foreign.statusCode).toBe(404);
+    await server.close();
+  });
+
   it('gets the (empty) public menu', async () => {
     const server = await buildServer();
     const { id } = await createVenue(server);

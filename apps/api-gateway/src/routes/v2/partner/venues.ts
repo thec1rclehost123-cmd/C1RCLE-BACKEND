@@ -40,6 +40,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 const services = createV2Services();
 
 const venueIdParam = z.object({ venueId: opaqueIdSchema });
+const venueBlockParam = z.object({ venueId: opaqueIdSchema, blockId: opaqueIdSchema });
 const orgIdParam = z.object({ organizationId: opaqueIdSchema });
 
 const createVenueBody = createVenueSchema;
@@ -421,6 +422,48 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
               conflictId: v2Headers['idempotency-key'],
             })
           : mapDomainError(reply, request, venueId, error),
+      );
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
+
+  // ── UNBLOCK (soft-cancel a blocked slot) ─────────────────────────────────
+  fastify.delete(
+    '/venues/:venueId/calendar/blocks/:blockId',
+    {
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({
+          params: venueBlockParam,
+          headers: venueHeaders.extend({ 'idempotency-key': idempotencyKeySchema }),
+        }),
+        fastify.requirePermission('venue.manage'),
+      ],
+    },
+    async (request, reply) => {
+      const { venueId, blockId } = request.params as z.infer<typeof venueBlockParam>;
+      const actor = services.actor(request);
+      const v2Headers = request.v2Headers ?? {};
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: actor.userId,
+        commandName: 'venue-calendar.unblock',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { venueId, blockId }, body: {} },
+        run: async () => {
+          const unblocked = await services.venueCalendar.unblock(actor, venueId, blockId);
+          const validated = validateV2Response(reply, request, venueSlotDtoSchema, unblocked);
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
+        },
+      }).catch((error: unknown) =>
+        isIdempotencyConflict(error)
+          ? mapDomainError(reply, request, blockId, error, {
+              conflictId: v2Headers['idempotency-key'],
+            })
+          : mapDomainError(reply, request, blockId, error),
       );
       if (result === undefined) return reply;
       return reply.status(result.statusCode).send(result.body);

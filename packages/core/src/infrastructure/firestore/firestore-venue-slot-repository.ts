@@ -1,3 +1,5 @@
+import { doSlotRangesOverlap } from '../../domain/models/venue.js';
+
 import type { EntityId } from '../../domain/identity.js';
 import type { VenueSlot } from '../../domain/models/venue.js';
 import type { VenueSlotRepository, TxContext } from '../../domain/ports/repositories.js';
@@ -31,6 +33,24 @@ export class FirestoreVenueSlotRepository implements VenueSlotRepository {
       batch.set(this.collection.doc(slot.id), toDoc(slot));
     }
     await batch.commit();
+  }
+
+  async getSlotById(slotId: EntityId): Promise<VenueSlot | null> {
+    const doc = await this.collection.doc(slotId).get();
+    if (!doc.exists) return null;
+    const data = doc.data();
+    return data ? toVenueSlot(data) : null;
+  }
+
+  async listOverlappingSlots(
+    venueId: EntityId,
+    startTime: string,
+    endTime: string,
+  ): Promise<VenueSlot[]> {
+    const snap = await this.collection.where('venueId', '==', venueId).get();
+    return snap.docs
+      .map((doc) => toVenueSlot(doc.data()))
+      .filter((slot) => doSlotRangesOverlap(slot.startTime, slot.endTime, startTime, endTime));
   }
 }
 

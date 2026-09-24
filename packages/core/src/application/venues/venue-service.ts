@@ -1,6 +1,7 @@
 import {
   VenueNotFoundError,
   SlotRequestNotFoundError,
+  NotFoundError,
   VersionConflictError,
 } from '../../domain/errors.js';
 import {
@@ -8,6 +9,8 @@ import {
   updateVenue,
   createSlotRequest,
   createVenueBlock,
+  assertSlotRangeFree,
+  cancelVenueBlock,
   transitionSlotRequest,
   computeVenueAvailability,
   updateVenueMenu,
@@ -177,7 +180,10 @@ export class VenueCalendarService {
     if (!venue || venue.organizationId !== actor.organizationId) {
       throw new VenueNotFoundError(venueId);
     }
-    return this.deps.repositories.venueSlots.listSlots(venueId, from, to);
+    const slots = await this.deps.repositories.venueSlots.listSlots(venueId, from, to);
+    // Cancelled slots are tombstones from unblock — never surface them as
+    // calendar content, otherwise an unblocked date still reads as blocked.
+    return slots.filter((slot) => slot.status !== 'cancelled');
   }
 
   async block(actor: ActorContext, command: CreateVenueBlockCommand) {
@@ -186,6 +192,14 @@ export class VenueCalendarService {
     if (!venue || venue.organizationId !== actor.organizationId) {
       throw new VenueNotFoundError(command.venueId);
     }
+    // Single-track timeline: a new block must not touch any live slot —
+    // this also covers overnight ranges, which compare as plain datetimes.
+    const overlapping = await this.deps.repositories.venueSlots.listOverlappingSlots(
+      command.venueId,
+      command.startTime,
+      command.endTime,
+    );
+    assertSlotRangeFree(overlapping, command.startTime, command.endTime);
     const block = createVenueBlock({
       id: this.deps.config.ids(),
       venueId: command.venueId,
@@ -196,6 +210,23 @@ export class VenueCalendarService {
     });
     await this.deps.repositories.venueSlots.saveSlots([block]);
     return block;
+  }
+
+  async unblock(actor: ActorContext, venueId: EntityId, blockId: EntityId) {
+    const venues = this.deps.repositories.venues;
+    const venue = await venues.getById(venueId);
+    if (!venue || venue.organizationId !== actor.organizationId) {
+      throw new VenueNotFoundError(venueId);
+    }
+    const slot = await this.deps.repositories.venueSlots.getSlotById(blockId);
+    // Hide cross-venue existence (IDOR guard): a block from another venue
+    // reads as missing, never as someone else's.
+    if (!slot || slot.venueId !== venueId) {
+      throw new NotFoundError('Venue slot', blockId);
+    }
+    const cancelled = cancelVenueBlock(slot, this.deps.config.clock.now());
+    await this.deps.repositories.venueSlots.saveSlots([cancelled]);
+    return cancelled;
   }
 
   /**
