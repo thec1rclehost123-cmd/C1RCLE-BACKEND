@@ -53,8 +53,22 @@ export interface AdminAuditRecord {
   after?: Record<string, unknown> | null;
   /** Operator-supplied justification, when the action required one. */
   reason?: string | null;
+  /** Caller IP (route-captured), for investigative context. */
+  ipAddress?: string;
+  /** Caller `User-Agent` (route-captured), for investigative context. */
+  userAgent?: string;
   /** Epoch ms. */
   occurredAt?: number;
+}
+
+/**
+ * Caller context a route captures and forwards into an admin audit record —
+ * the actor's IP and `User-Agent`. Best-effort; both stay optional because
+ * a proxy may rewrite `request.ip` and the header may be absent.
+ */
+export interface AuditRequestMeta {
+  ipAddress?: string;
+  userAgent?: string;
 }
 
 export interface AdminAuditRepository {

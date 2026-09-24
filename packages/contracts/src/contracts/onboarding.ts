@@ -39,10 +39,21 @@ export const onboardingProfileSchema = z
   .strict();
 export type OnboardingProfileDto = z.infer<typeof onboardingProfileSchema>;
 
+/**
+ * A document's KYC review state — separate from `OnboardingStatus`. `pending`
+ * means uploaded but not yet reviewed; `verified`/`rejected` are a KYC
+ * reviewer's explicit call, never inferred from the application's own status.
+ */
+export const onboardingDocumentStatusSchema = z.enum(['pending', 'verified', 'rejected']);
+
 export const onboardingDocumentSchema = z.object({
   label: z.string().min(1).max(60),
   storagePath: z.string().min(1).max(500),
   uploadedAt: z.iso.datetime(),
+  status: onboardingDocumentStatusSchema,
+  reviewedBy: opaqueIdSchema.nullable(),
+  reviewedAt: z.iso.datetime().nullable(),
+  rejectionReason: z.string().nullable(),
 });
 
 export const onboardingRequestDtoSchema = z.object({
@@ -138,6 +149,16 @@ export const documentUploadUrlDtoSchema = z
   .strict();
 export type DocumentUploadUrlDto = z.infer<typeof documentUploadUrlDtoSchema>;
 
+/** Admin-side signed GET for one uploaded KYC document. */
+export const documentReadUrlDtoSchema = z
+  .object({
+    readUrl: z.string().min(1),
+    /** Epoch ms — the URL is unusable after this. */
+    expiresAt: z.number().int().positive(),
+  })
+  .strict();
+export type DocumentReadUrlDto = z.infer<typeof documentReadUrlDtoSchema>;
+
 export const verifyDocumentSchema = z
   .object({
     documentType: z.string().min(1).max(40),
@@ -174,6 +195,14 @@ export const reviewOnboardingSchema = z
   })
   .strict();
 export type ReviewOnboardingRequest = z.infer<typeof reviewOnboardingSchema>;
+
+/** KYC desk: rejecting a document always requires a reason (unlike verifying it). */
+export const rejectKycDocumentSchema = z
+  .object({
+    reason: z.string().min(1).max(2000),
+  })
+  .strict();
+export type RejectKycDocumentRequest = z.infer<typeof rejectKycDocumentSchema>;
 
 /**
  * The organization an approval created. Deliberately not `organizationDtoSchema`:
@@ -215,13 +244,7 @@ export const approveOnboardingResultSchema = z.object({
       registrationNumber: z.string().max(120).optional(),
       entityType: z.string().max(120).optional(),
     }),
-    documents: z.array(
-      z.object({
-        label: z.string().min(1).max(60),
-        storagePath: z.string().min(1).max(500),
-        uploadedAt: z.iso.datetime(),
-      }),
-    ),
+    documents: z.array(onboardingDocumentSchema),
     missingDocuments: z.array(z.string()),
     submittedAt: z.iso.datetime().nullable(),
     reviewedBy: opaqueIdSchema.nullable(),
