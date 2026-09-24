@@ -12,6 +12,11 @@
  *     --url https://circle-v2-backend.onrender.com \
  *     --sha $GITHUB_SHA [--timeout 900] [--interval 15] [--grace 240]
  *
+ * The /version endpoint sits behind an nginx gate that answers 404 without an
+ * X-Readiness-Token header, so the token is mandatory here (NGINX_READINESS_TOKEN
+ * env var, or --token). Without it the endpoint could never identify the build,
+ * so the script fails fast instead of timing out after 15 minutes.
+ *
  * If the live build predates the `commit` field (it reports null), the script
  * cannot identify the build. It then waits `--grace` seconds for a restart,
  * and if the field never appears it exits 0 with a warning rather than
@@ -37,6 +42,16 @@ if (!baseUrl || !targetSha) {
   process.exit(1);
 }
 
+const readinessToken = process.env.NGINX_READINESS_TOKEN ?? arg('token', '');
+if (!readinessToken) {
+  console.error(
+    '::error::NGINX_READINESS_TOKEN is required (repo secret) or pass --token. ' +
+      'The /api/v2/internal/version endpoint returns 404 without it, so the ' +
+      'deploy can never be positively identified.',
+  );
+  process.exit(1);
+}
+
 const versionUrl = `${baseUrl}/api/v2/internal/version`;
 const short = (sha) => sha.slice(0, 7);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -47,7 +62,7 @@ async function probe() {
   try {
     const response = await fetch(versionUrl, {
       signal: controller.signal,
-      headers: { accept: 'application/json' },
+      headers: { accept: 'application/json', 'x-readiness-token': readinessToken },
     });
     if (!response.ok) return { state: 'http', detail: String(response.status) };
     const body = await response.json();
