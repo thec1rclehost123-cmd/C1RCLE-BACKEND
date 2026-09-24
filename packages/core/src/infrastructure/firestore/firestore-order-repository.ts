@@ -76,6 +76,24 @@ export class FirestoreOrderRepository implements OrderRepository {
     return paginateQuery(base, query, toOrder);
   }
 
+  async countPaidQuantityByUserAndEvent(
+    userId: EntityId,
+    eventId: EntityId,
+    tierId: EntityId,
+  ): Promise<number> {
+    // Single-field equality on `userId` (already indexed by `listByUser`),
+    // then event/status/tier filtered in application code — bounded by one
+    // user's order history, no new composite index required.
+    const snap = await this.collection.where('userId', '==', userId).get();
+    return snap.docs.reduce((sum, doc) => {
+      const order = toOrder(doc.data());
+      if (order.eventId !== eventId || order.status !== 'paid') return sum;
+      return (
+        sum + order.lines.reduce((s, line) => s + (line.tierId === tierId ? line.quantity : 0), 0)
+      );
+    }, 0);
+  }
+
   async save(order: Order, _tx?: TxContext | null): Promise<void> {
     // Compare-and-set: a write of version N must find N-1 (see compare-and-set.ts).
     await compareAndSet(this.db, this.collection, order, toDoc);

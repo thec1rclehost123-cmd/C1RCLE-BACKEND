@@ -27,7 +27,6 @@ function tier(overrides: Partial<TicketTier> = {}): TicketTier {
     status: 'active',
     salesStartAt: null,
     salesEndAt: null,
-    minPerOrder: null,
     maxPerOrder: null,
     version: 1,
     createdAt: '2026-08-14T00:00:00.000Z',
@@ -185,9 +184,6 @@ describe('calculatePricing', () => {
     expect(() =>
       calculatePricing({ lines: [{ tier: tier({ maxPerOrder: 4 }), quantity: 5 }] }),
     ).toThrow(/maximum of 4/);
-    expect(() =>
-      calculatePricing({ lines: [{ tier: tier({ minPerOrder: 2 }), quantity: 1 }] }),
-    ).toThrow(/minimum of 2/);
   });
 
   it('refuses a fractional or non-positive quantity', () => {

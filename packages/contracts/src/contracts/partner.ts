@@ -191,6 +191,29 @@ export const createReferralLinkSchema = z
   .strict();
 export type CreateReferralLinkRequest = z.infer<typeof createReferralLinkSchema>;
 
+/* ─── Promoter Compensation Models ───────────────────────────────────────── */
+
+export const promoterRateTypeSchema = z.enum(['percentage', 'fixed']);
+export type PromoterRateType = z.infer<typeof promoterRateTypeSchema>;
+
+export const promoterCompensationModelSchema = z.enum(['standard', 'custom', 'salary']);
+export type PromoterCompensationModel = z.infer<typeof promoterCompensationModelSchema>;
+
+export const promoterCompensationRateSchema = z.object({
+  rateType: promoterRateTypeSchema,
+  rateValue: z.number().nonnegative(),
+});
+export type PromoterCompensationRate = z.infer<typeof promoterCompensationRateSchema>;
+
+export const promoterCompensationConfigSchema = z.object({
+  model: promoterCompensationModelSchema,
+  globalCommission: promoterCompensationRateSchema,
+  tierCommissions: z.record(z.string(), promoterCompensationRateSchema).optional(),
+  salaryAmount: z.number().nonnegative().optional(),
+  salaryNotes: z.string().optional(),
+});
+export type PromoterCompensationConfig = z.infer<typeof promoterCompensationConfigSchema>;
+
 /* ─── Promoter connections ───────────────────────────────────────────────── */
 
 export const promoterConnectionStatusSchema = z.enum([

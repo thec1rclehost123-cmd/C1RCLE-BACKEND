@@ -13,6 +13,8 @@ import {
   updateVenueMenuSchema,
   slotRequestDtoSchema,
   createSlotRequestSchema,
+  slotRequestListResponseSchema,
+  slotRequestDetailDtoSchema,
   paginatedSchema,
 } from '@c1rcle/contracts/client';
 import { z } from 'zod';
@@ -24,7 +26,7 @@ import { isIdempotencyConflict, runIdempotent } from '../../../lib/v2-idempotenc
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
 
-import { mapDomainError } from './events.js';
+import { mapDomainError, eventToDto } from './events.js';
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
@@ -42,6 +44,10 @@ const services = createV2Services();
 const venueIdParam = z.object({ venueId: opaqueIdSchema });
 const venueBlockParam = z.object({ venueId: opaqueIdSchema, blockId: opaqueIdSchema });
 const orgIdParam = z.object({ organizationId: opaqueIdSchema });
+const slotRequestDetailParam = z.object({
+  venueId: opaqueIdSchema,
+  slotRequestId: opaqueIdSchema,
+});
 
 const createVenueBody = createVenueSchema;
 
@@ -628,6 +634,78 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
     },
   );
 
+  // ── SLOT REQUESTS (host-side outgoing list; venue-owner detail) ──
+  fastify.get(
+    '/organizations/:organizationId/slot-requests',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({
+          params: orgIdParam,
+          querystring: paginationQuerySchema,
+          headers: venueHeaders,
+        }),
+        fastify.requirePermission('slot-request.list'),
+      ],
+    },
+    async (request, reply) => {
+      const { organizationId } = request.params as z.infer<typeof orgIdParam>;
+      const query = request.query as z.infer<typeof paginationQuerySchema>;
+      const actor = services.actor(request);
+      const page = await services.venueSlotRequests
+        .listForHost(actor, organizationId, { limit: query.limit, cursor: query.cursor ?? null })
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, organizationId, error, { hideForbidden: true }),
+        );
+      if (page === undefined) return reply;
+      const payload = {
+        items: page.items,
+        pageInfo: {
+          page: 1,
+          pageSize: query.limit,
+          total: page.total,
+          hasNextPage: page.nextCursor !== null,
+        },
+      };
+      const validated = validateV2Response(reply, request, slotRequestListResponseSchema, payload);
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  fastify.get(
+    '/venues/:venueId/slot-requests/:slotRequestId',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({
+          params: slotRequestDetailParam,
+          headers: venueHeaders,
+        }),
+        fastify.requirePermission('venue.read'),
+      ],
+    },
+    async (request, reply) => {
+      const { venueId, slotRequestId } = request.params as z.infer<typeof slotRequestDetailParam>;
+      const actor = services.actor(request);
+      const detail = await services.venueSlotRequests
+        .getDetailForVenue(actor, venueId, slotRequestId)
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, slotRequestId, error, { hideForbidden: true }),
+        );
+      if (detail === undefined) return reply;
+      const payload = {
+        request: detail.request,
+        event: detail.event ? eventToDto(detail.event) : null,
+        venue: detail.venue,
+        host: detail.host,
+      };
+      const validated = validateV2Response(reply, request, slotRequestDetailDtoSchema, payload);
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
   fastify.post(
     '/venues/:venueId/slot-requests',
     {
@@ -724,6 +802,51 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
       },
     );
   }
+
+  // Host-side withdrawal: the requester cancels their own outgoing request.
+  // Scoped to `slot-request.create` — the host org that sent the request is the
+  // only caller the service will authorize (venue owners do not get this).
+  fastify.post(
+    '/venues/slot-requests/:slotRequestId/cancel',
+    {
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({
+          params: slotRequestIdParam,
+          headers: venueHeaders.extend({ 'idempotency-key': idempotencyKeySchema }),
+        }),
+        fastify.requirePermission('slot-request.create'),
+      ],
+    },
+    async (request, reply) => {
+      const { slotRequestId } = request.params as z.infer<typeof slotRequestIdParam>;
+      const actor = services.actor(request);
+      const v2Headers = request.v2Headers ?? {};
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: actor.userId,
+        commandName: 'venue.slotRequest.cancel',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { slotRequestId }, body: {} },
+        run: async () => {
+          const slotRequest = await services.venueSlotRequests.cancel(actor, slotRequestId);
+          const validated = validateV2Response(reply, request, slotRequestDtoSchema, slotRequest);
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
+        },
+      }).catch((error: unknown) => {
+        if (isIdempotencyConflict(error)) {
+          return mapDomainError(reply, request, slotRequestId, error, {
+            conflictId: v2Headers['idempotency-key'],
+          });
+        }
+        return mapDomainError(reply, request, slotRequestId, error);
+      });
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
 }
 
 /** Converts the core domain Venue to the canonical public-facing wire DTO. */

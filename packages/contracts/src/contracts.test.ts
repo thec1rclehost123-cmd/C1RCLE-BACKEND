@@ -135,6 +135,7 @@ describe('client schemas — canonical fixtures', () => {
         startingPricePaise: 0,
         isFree: true,
         cancellationReason: null,
+        compensation: null,
         ...base,
       }).success,
     ).toBe(true);

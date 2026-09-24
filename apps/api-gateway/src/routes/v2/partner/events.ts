@@ -66,6 +66,17 @@ const createEventBody = z
     startAt: z.iso.datetime(),
     endAt: z.iso.datetime().nullable().optional(),
     tags: z.array(z.string().min(1).max(40)).max(50).optional(),
+    compensation: z
+      .object({
+        model: z.enum(['standard', 'custom', 'salary']),
+        globalRatePercent: z.number().int().min(0).max(100).nullable(),
+        tierRates: z.record(z.string(), z.number().int().min(0).max(100)),
+        salaryAmountPaise: z.number().int().positive().nullable(),
+        salaryPeriod: z.enum(['per_event', 'per_day', 'per_month']).nullable(),
+        salaryNotes: z.string().max(2000).nullable(),
+      })
+      .nullable()
+      .optional(),
   })
   .strict();
 
@@ -185,6 +196,7 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
             startAt: body.startAt,
             endAt: body.endAt ?? null,
             tags: body.tags,
+            compensation: body.compensation ?? null,
           });
           const validated = validateV2Response(reply, request, eventDtoSchema, eventToDto(event));
           if (validated === undefined) throw new Error('v2 response validation failed');
@@ -441,6 +453,7 @@ export function eventToDto(event: Event) {
     startingPricePaise: event.startingPricePaise,
     isFree: event.isFree,
     cancellationReason: event.cancellationReason,
+    compensation: event.compensation ?? null,
     version: event.version,
     createdAt: event.createdAt,
     updatedAt: event.updatedAt,

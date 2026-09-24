@@ -109,6 +109,24 @@ export class FirestoreCartReservationRepository implements CartReservationReposi
       .map((doc) => toCartReservation(doc.data()))
       .filter((hold) => hold.status === 'active' && Date.parse(hold.expiresAt) > nowMs);
   }
+
+  async countActiveQuantity(
+    userId: EntityId,
+    eventId: EntityId,
+    tierId: EntityId,
+    now: Date,
+  ): Promise<number> {
+    // Single-field equality on `userId` (already indexed by `listByUser`),
+    // then event/tier/status/time filtered in application code — bounded by
+    // one user's live cart holdings, no new composite index required.
+    const snap = await this.collection.where('userId', '==', userId).get();
+    return snap.docs.reduce((sum, doc) => {
+      const r = toCartReservation(doc.data());
+      if (r.eventId !== eventId || r.status !== 'active') return sum;
+      if (Date.parse(r.expiresAt) <= now.getTime()) return sum;
+      return sum + r.lines.reduce((s, line) => s + (line.tierId === tierId ? line.quantity : 0), 0);
+    }, 0);
+  }
 }
 
 function toDoc(reservation: CartReservation): DocumentData {
