@@ -78,8 +78,8 @@ export type {
   OfflineManifestEntry,
   OfflineSyncInput,
   OfflineSyncResult,
-} from './scanner/scanner-service.js';
-export { createScannerService } from './scanner/scanner-service.js';
+} from './door/scanner-service.js';
+export { createScannerService } from './door/scanner-service.js';
 export type {
   DoorOpsService,
   DoorOpsServiceDeps,

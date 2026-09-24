@@ -3,6 +3,7 @@ import { canSessionCharge } from '../../domain/models/event-code.js';
 import { requireOrgAccess } from '../context.js';
 
 import type { DoorStats, DoorStatsService } from './door-stats-service.js';
+import type { OpenScannerSessionCommand, ScannerService } from './scanner-service.js';
 import type { EntityId } from '../../domain/identity.js';
 import type { DoorSale } from '../../domain/models/door-sale.js';
 import type { Entitlement } from '../../domain/models/entitlement.js';
@@ -13,7 +14,6 @@ import type { ScanLedger } from '../../domain/models/scan-ledger.js';
 import type { Page } from '../../domain/ports/repositories.js';
 import type { ServiceDeps, ActorContext } from '../context.js';
 import type { CoverWalletService, WalletChargeView } from '../cover-wallet/cover-wallet-service.js';
-import type { OpenScannerSessionCommand, ScannerService } from '../scanner/scanner-service.js';
 
 /**
  * ─── Door operations (Phase 5) ──────────────────────────────────────────────
