@@ -196,8 +196,14 @@ export class EventService {
     const startingPricePaise = tiers.length
       ? Math.min(...tiers.map((tier) => tier.priceInPaise))
       : 0;
-    const isFree = tiers.length === 0 || tiers.every((tier) => tier.priceInPaise === 0);
+    // Respect an explicit `isFree: false` set by the host via PATCH — only
+    // auto-derive from tiers when the event hasn't been explicitly marked paid.
+    const isFree =
+      !event.isFree
+        ? false
+        : tiers.length === 0 || tiers.every((tier) => tier.priceInPaise === 0);
     const withCatalogSummary = { ...event, startingPricePaise, isFree };
+
     // The `scheduled` step is transient: only the final `published` state is
     // persisted, so the version bump happens once. Walking two live bumps
     // (review→scheduled→published) and saving only the last would write
