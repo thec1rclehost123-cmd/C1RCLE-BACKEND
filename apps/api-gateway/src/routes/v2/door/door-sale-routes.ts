@@ -90,7 +90,7 @@ export default async function phase5DoorSaleRoutes(fastify: FastifyInstance) {
               guestPhone: body.guestPhone ?? undefined,
               guestAge: body.guestAge ?? undefined,
               gender: body.gender ?? undefined,
-              contact: body.contact ?? undefined,
+              guestEmail: body.guestEmail ?? undefined,
               totalGuests: body.totalGuests,
               gate: body.gate ?? undefined,
               paymentMode: body.paymentMode,
@@ -149,7 +149,7 @@ export default async function phase5DoorSaleRoutes(fastify: FastifyInstance) {
               guestPhone: body.guestPhone ?? undefined,
               guestAge: body.guestAge ?? undefined,
               gender: body.gender ?? undefined,
-              contact: body.contact ?? undefined,
+              guestEmail: body.guestEmail ?? undefined,
               totalGuests: body.totalGuests,
               // CreateDineInInput.tableNumber is a required `string` even
               // though the wire contract and the persisted sale both treat

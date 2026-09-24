@@ -78,6 +78,7 @@ in staging so development defaults cannot silently activate:
 | `PUBLIC_API_URL` | Verified HTTPS API base URL; hostname must match `NGINX_SERVER_NAME`. |
 | `BETTER_AUTH_URL` | Verified HTTPS Better Auth base URL. |
 | `BETTER_AUTH_SECRET` | Secret-manager value at least 32 characters; never the development default. |
+| `MAGIC_TICKET_SECRET` | Secret-manager value at least 32 characters. Signs rotating door QRs and offline admission manifests; a leak or a shared default lets anyone mint a valid ticket QR. |
 | `TRUSTED_PROXY_CIDRS` | Exact proxy peer list from the edge section. |
 | `APP_VERSION` | Semantic version returned by `/api/v2/internal/version`. |
 | `BUILD_SHA` | Optional explicit immutable commit SHA. On Render, the gateway and preflight fall back to documented `RENDER_GIT_COMMIT`. |

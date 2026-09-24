@@ -161,6 +161,7 @@ Fastify-side variables both apply to the same service:
 | `BETTER_AUTH_URL`, `PUBLIC_API_URL` | `https://<this service's Render URL>` | **Point at the ONE sidecar service's own URL** — there is no separate nginx URL to point at, unlike the two-service topology |
 | `ALLOWED_ORIGINS` | `https://<frontend domain>` | Same as the real topology |
 | `EMAIL_OTP_SECRET` | secret | Required in production, same as the real topology |
+| `MAGIC_TICKET_SECRET` | secret, 32+ chars | Required in production. Phase 5 door QR / offline-manifest HMAC key. |
 | `TRUSTED_PROXY_CIDRS` | `127.0.0.1/32` | **Different from the two-service topology.** nginx and Fastify are on loopback inside the same container, so the trusted peer is always `127.0.0.1`, never a Render private-network CIDR. Using a real private-network CIDR here would be wrong for this topology and either too permissive or a no-op. |
 | `LOG_LEVEL` | `info` | Same as the real topology |
 

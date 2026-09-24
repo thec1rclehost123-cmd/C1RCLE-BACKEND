@@ -353,6 +353,15 @@ export class CheckoutService {
    * is never the right actor for this write; `requireOrgAccess` treats a
    * system actor as pre-authorized (see `context.ts`).
    */
+  /**
+   * Public because a door ticket sale is also "a paid order became money",
+   * and it must land in the same ledger through the same writer rather than
+   * growing a second settlement path that can drift from this one.
+   */
+  async settleOrder(order: Order): Promise<void> {
+    return this.recordSettlement(order);
+  }
+
   private async recordSettlement(order: Order): Promise<void> {
     const hostOrganizationId = order.organizationId;
 

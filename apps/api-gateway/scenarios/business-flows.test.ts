@@ -3,8 +3,6 @@ import { createHmac } from 'node:crypto';
 import { MemoryPaymentProvider, createPlatformAdmin } from '@c1rcle/core/domain';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import type { ActorContext } from '@c1rcle/core/application';
-
 import { buildApp } from '../src/app.js';
 import { createV2Services } from '../src/lib/v2-services.js';
 
@@ -37,13 +35,6 @@ let keySeq = 0;
 const ik = (prefix: string) => `${prefix}-${++keySeq}-${Date.now()}`;
 
 const services = createV2Services();
-
-const STAFF: ActorContext = {
-  userId: 'staff_1',
-  organizationId: 'org_placeholder',
-  role: 'owner',
-  capabilities: [],
-};
 
 /** Header set for an org-scoped host actor (fabricated on the memory driver). */
 const host = (orgId: string) => ({
@@ -373,20 +364,15 @@ describe('scenario: guest purchase + door check-in + finance settlement', () => 
     expect(tickets.length).toBe(1);
     const entitlementId: string = tickets[0].id;
 
-    // ── Door admission (standard event-code path) ───────────────────────────
-    const eventCode = await services.scanner.createEventCode(
-      {
-        eventId,
-        organizationId: orgId,
-        venueId: null,
-        type: 'full',
-        gate: null,
-        createdBy: STAFF.userId,
-        createdByName: 'Staff One',
-        expiresAt: null,
-      },
-      { ...STAFF, organizationId: orgId },
-    );
+    // ── Door admission (mint a door code over HTTP, redeem it, scan) ────────
+    const codeResponse = await server.inject({
+      method: 'POST',
+      url: `/api/v2/events/${eventId}/door-codes`,
+      headers: { 'x-organization-id': orgId },
+      payload: { type: 'full', gate: null, expiresAt: null },
+    });
+    expect(codeResponse.statusCode, JSON.stringify(codeResponse.json())).toBe(201);
+    const doorCode: string = codeResponse.json().code;
 
     const deviceId = `device_scenario_${keySeq}`;
     const session = await server.inject({
@@ -395,27 +381,35 @@ describe('scenario: guest purchase + door check-in + finance settlement', () => 
       headers: { 'x-organization-id': orgId },
       payload: {
         eventId,
-        code: eventCode.code,
+        code: doorCode,
         deviceId,
         deviceName: 'Gate iPad 1',
         sessionType: 'staff',
       },
     });
     expect(session.statusCode, JSON.stringify(session.json())).toBe(201);
+    const scannerToken: string = session.json().sessionToken;
+    expect(scannerToken).toEqual(expect.any(String));
 
     const checkIn = await server.inject({
       method: 'POST',
       url: '/api/v2/door/check-ins',
-      headers: { 'x-organization-id': orgId },
-      payload: {
-        eventId,
-        qrPayload: entitlementId,
-        scannedBy: { uid: STAFF.userId, name: 'Staff One', role: 'staff' },
-        deviceId,
-      },
+      headers: { 'x-organization-id': orgId, 'x-scanner-session-token': scannerToken },
+      payload: { eventId, qrPayload: entitlementId, operatorName: 'Staff One' },
     });
     expect(checkIn.statusCode, JSON.stringify(checkIn.json())).toBe(200);
     expect(checkIn.json()).toMatchObject({ status: 'consumed', checkInId: expect.any(String) });
+
+    // The same ticket a second time is refused — the entitlement was actually
+    // spent, not merely logged.
+    const replay = await server.inject({
+      method: 'POST',
+      url: '/api/v2/door/check-ins',
+      headers: { 'x-organization-id': orgId, 'x-scanner-session-token': scannerToken },
+      payload: { eventId, qrPayload: entitlementId },
+    });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json()).toMatchObject({ status: 'denied', denyReason: 'already_used' });
 
     // ── Host finance ledger has the settlement split ────────────────────────
     const ledger = await server.inject({

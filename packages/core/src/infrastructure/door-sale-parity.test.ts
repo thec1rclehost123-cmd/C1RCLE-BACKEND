@@ -122,7 +122,7 @@ function doorSaleInput(overrides: Partial<DoorSaleCreateInput> = {}): DoorSaleCr
     guestPhone: '+1234567890',
     guestAge: 25,
     gender: 'male',
-    contact: 'john@example.com',
+    guestEmail: 'john@example.com',
     totalGuests: 2,
     tableNumber: null,
     gate: 'Gate A',

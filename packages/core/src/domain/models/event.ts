@@ -89,6 +89,18 @@ export interface Event extends VersionedEntity {
   /** Reason/meta recorded when CANCELLED. */
   cancellationReason: string | null;
   /**
+   * Total people the room legally holds, for the door's occupancy gauge.
+   *
+   * Nullable on purpose: many events genuinely have no fixed cap, and a
+   * fabricated default (the old scanner UI hardcoded 500) tells door staff a
+   * confident number nobody set. `null` means "not configured" and the door
+   * shows occupancy without a limit rather than inventing one.
+   *
+   * This is NOT ticket inventory. Tier quantities decide what can be sold;
+   * capacity decides when the fire marshal stops the night.
+   */
+  capacity: number | null;
+  /**
    * True while the current `sales_paused` state was forced by a platform
    * admin rather than the partner pausing their own sales. Lets partner UI
    * tell an admin halt apart from a self-pause instead of showing the same
@@ -109,6 +121,7 @@ export interface CreateEventInput {
   startAt: string;
   endAt?: string | null;
   tags?: string[];
+  capacity?: number | null;
   now?: Date;
 }
 
@@ -141,6 +154,7 @@ export function createEvent(input: CreateEventInput): Event {
     startingPricePaise: 0,
     isFree: true,
     cancellationReason: null,
+    capacity: input.capacity ?? null,
     adminOverride: false,
     ...newVersionedEntity(now),
   };
@@ -157,6 +171,7 @@ interface EventChanges {
   tags?: string[];
   startingPricePaise?: number;
   isFree?: boolean;
+  capacity?: number | null;
 }
 
 /** Controlled attribute update (no status changes here). Bumps version. */

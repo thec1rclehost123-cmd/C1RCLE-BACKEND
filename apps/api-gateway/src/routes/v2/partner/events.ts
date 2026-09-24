@@ -466,6 +466,20 @@ export function mapDomainError(
     );
     return undefined;
   }
+  if (known?.code === 'device_not_authorized') {
+    // Never masked as a 404, even on routes that hide `forbidden`: door staff
+    // need to be told the handset is deauthorized, and there is nothing to
+    // hide from a caller who already proved tenancy and a live session.
+    reply.status(403).send(
+      buildV2ErrorResponse({
+        status: 403,
+        message: known.message ?? 'Device not authorized',
+        code: 'forbidden',
+        requestId: request.id,
+      }),
+    );
+    return undefined;
+  }
   if (known?.code === 'forbidden') {
     // Single-resource reads hide cross-tenant existence (IDOR guard): a
     // forbidden fetch is reported as 404, never as it being someone else's.

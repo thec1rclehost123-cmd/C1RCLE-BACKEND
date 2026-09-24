@@ -40,7 +40,14 @@ export type Permission =
   /** Ask a venue for a slot — the host side of the same conversation. */
   | 'slot-request.create'
   /** Phase 5: door staff overriding a denied scan (manual admission). */
-  | 'ticket.override';
+  | 'ticket.override'
+  /**
+   * Phase 5: minting, listing and revoking the door codes that authorize a
+   * scanner device, and closing the sessions they opened. Separate from
+   * `ticket.override` because it is a credential-management right, not a
+   * door-staff one: whoever holds it can hand out entry to the event.
+   */
+  | 'door.manage';
 
 const READ_ONLY: readonly Permission[] = ['organization.read', 'venue.read', 'event.read'];
 
@@ -65,6 +72,7 @@ export const ROLE_PERMISSIONS: Readonly<Record<OrganizationRole, readonly Permis
     'event.cancel',
     'slot-request.create',
     'ticket.override',
+    'door.manage',
   ],
   admin: [
     'organization.read',
@@ -81,6 +89,7 @@ export const ROLE_PERMISSIONS: Readonly<Record<OrganizationRole, readonly Permis
     'event.cancel',
     'slot-request.create',
     'ticket.override',
+    'door.manage',
   ],
   manager: [
     'organization.read',
@@ -93,6 +102,7 @@ export const ROLE_PERMISSIONS: Readonly<Record<OrganizationRole, readonly Permis
     'event.publish',
     'slot-request.create',
     'ticket.override',
+    'door.manage',
   ],
   member: READ_ONLY,
 };

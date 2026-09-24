@@ -90,6 +90,9 @@ function toEvent(data: DocumentData): Event {
     startingPricePaise: (data.startingPricePaise as number | null) ?? null,
     isFree: data.isFree as boolean,
     cancellationReason: (data.cancellationReason as string | null) ?? null,
+    // Documents written before the field existed read as "not configured",
+    // which is exactly what `null` already means here.
+    capacity: (data.capacity as number | null | undefined) ?? null,
     adminOverride: (data.adminOverride as boolean | undefined) ?? false,
     version: data.version as number,
     createdAt: data.createdAt as string,

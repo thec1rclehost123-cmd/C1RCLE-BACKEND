@@ -212,6 +212,16 @@ export default tseslint.config(
       ],
     },
   },
+  /* One-off v1 -> v2 migration script: a deliberate, standalone read-only
+   * Firestore connection to the OLD project (see the file's own header for
+   * why it can't reuse @c1rcle/core's adapter). Not a repository port, not
+   * reused by route/service code — the boundary rule doesn't apply here. */
+  {
+    files: ['**/api-gateway/src/lib/v1-read-only-client.ts'],
+    rules: {
+      'no-restricted-syntax': 'off',
+    },
+  },
   /* Opt-in integration tests read real credentials from env by design (see
    * the file header) — matches check-boundaries.mjs's own test-file exemption. */
   {

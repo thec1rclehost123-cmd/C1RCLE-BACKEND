@@ -26,7 +26,9 @@ import checkoutRoutes from './checkout/checkout-routes.js';
 import paymentRoutes from './checkout/payment-routes.js';
 import webhookRoutes from './checkout/webhook-routes.js';
 import phase5CoverWalletRoutes from './door/cover-wallet-routes.js';
+import doorOpsRoutes from './door/door-ops-routes.js';
 import phase5DoorSaleRoutes from './door/door-sale-routes.js';
+import doorCodeRoutes from './door/event-code-routes.js';
 import phase5ScannerRoutes from './door/scanner-routes.js';
 import financeRoutes from './finance/finance-routes.js';
 import leaderboardRoutes from './finance/leaderboard-routes.js';
@@ -157,6 +159,8 @@ export async function registerV2Routes(
       await ticketRoutes(v2);
       await walletRoutes(v2);
       // Phase 5: Door / Scanner / Cover-wallet
+      await doorCodeRoutes(v2);
+      await doorOpsRoutes(v2);
       await phase5DoorSaleRoutes(v2);
       await phase5CoverWalletRoutes(v2);
       await phase5ScannerRoutes(v2);

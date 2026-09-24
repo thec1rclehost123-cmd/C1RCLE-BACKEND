@@ -27,6 +27,8 @@ import {
   createDoorService,
   createCoverWalletService,
   createDoorStatsService,
+  createDoorOpsService,
+  createDoorTicketSaleService,
   createFinanceService,
   createPayoutService,
   AdminPayoutService,
@@ -42,6 +44,8 @@ import {
   type DoorService,
   type CoverWalletService,
   type DoorStatsService,
+  type DoorOpsService,
+  type DoorTicketSaleService,
   type FinanceService,
   type PayoutService,
   type BankAccountService,
@@ -149,6 +153,10 @@ export interface PartnerV2Services {
   coverWallet: CoverWalletService;
   /** Phase 5 (Founder Task B2): GET /door/stats read model. */
   doorStats: DoorStatsService;
+  /** Phase 5: event picker, shift start, guest roster, manual check-in. */
+  doorOps: DoorOpsService;
+  /** Phase 5: paid walk-up ticket sale (real order + tickets + settlement). */
+  doorTicketSale: DoorTicketSaleService;
   /** Phase 6: ledger + balances. */
   finance: FinanceService;
   /** Phase 6: payout requests + lifecycle. */
@@ -238,6 +246,10 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     firestore: { projectId: gw.FIRESTORE_PROJECT_ID },
     storage: gw.FIREBASE_STORAGE_BUCKET ? { kycBucket: gw.FIREBASE_STORAGE_BUCKET } : undefined,
     emailOtpSecret: gw.EMAIL_OTP_SECRET,
+    // Was never passed, so every deploy silently used the core default — a
+    // published constant that anyone reading the repo could use to mint a
+    // valid door QR for any ticket. Production now fails to boot without it.
+    magicTicketSecret: gw.MAGIC_TICKET_SECRET,
   });
 
   const repositories: ServiceDeps['repositories'] = buildRepositories(gw);
@@ -323,6 +335,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     scanLedger: repositories.scanLedger,
     eventCodes: repositories.eventCodes,
     scannerSessions: repositories.scannerSessions,
+    scannerDevices: repositories.scannerDevices,
     entitlements: repositories.entitlements,
     repositories,
     config: coreConfig,
@@ -357,9 +370,45 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
 
   const doorStats = createDoorStatsService({
     events: repositories.events,
+    catalog: repositories.catalog,
     scanLedger: repositories.scanLedger,
     doorSales: repositories.doorSales,
     coverWallets: repositories.coverWallets,
+  });
+
+  // The door's non-camera screens: event picker, shift start, roster, manual
+  // check-in. Composes scanner + stats + catalog, so a route stays one call.
+  const doorOps = createDoorOpsService({
+    scanner,
+    coverWallet,
+    doorStats,
+    events: repositories.events,
+    catalog: repositories.catalog,
+    entitlements: repositories.entitlements,
+    eventCodes: repositories.eventCodes,
+    doorSales: repositories.doorSales,
+    scanLedger: repositories.scanLedger,
+    adminAudit: adminAudits,
+    logger: deps.logger,
+  });
+
+  const checkout = new CheckoutService(deps);
+
+  // The paid walk-up sale. `settleOrder` is injected from the checkout
+  // service so door revenue lands in the finance ledger through the SAME
+  // writer as online revenue, rather than growing a second settlement path
+  // that can drift from it.
+  const doorTicketSale = createDoorTicketSaleService({
+    scanner,
+    events: repositories.events,
+    catalog: repositories.catalog,
+    orders: repositories.orders,
+    entitlements: repositories.entitlements,
+    scanLedger: repositories.scanLedger,
+    inventory,
+    adminAudit: adminAudits,
+    logger: deps.logger,
+    settleOrder: (order) => checkout.settleOrder(order),
   });
 
   // Phase 6 services
@@ -417,7 +466,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     onboarding: new OnboardingService(deps, adminAuthority),
     adminAuthority,
     adminOps,
-    checkout: new CheckoutService(deps),
+    checkout,
     public: new PublicService(deps),
     paymentProvider,
     orders: new OrderService(deps),
@@ -436,6 +485,8 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     door,
     coverWallet,
     doorStats,
+    doorOps,
+    doorTicketSale,
     // Phase 6
     finance,
     payout,

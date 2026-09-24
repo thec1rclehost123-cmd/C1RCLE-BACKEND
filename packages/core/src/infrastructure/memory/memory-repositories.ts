@@ -5,6 +5,7 @@
  */
 
 import { VersionConflictError } from '../../domain/errors.js';
+import { admitSeats } from '../../domain/models/entitlement.js';
 import { DEFAULT_PLATFORM_SETTINGS } from '../../domain/models/platform-settings.js';
 
 import type { EntityId } from '../../domain/identity.js';
@@ -22,6 +23,8 @@ import type { Organization, OrganizationMember } from '../../domain/models/organ
 import type { PlatformSettings } from '../../domain/models/platform-settings.js';
 import type { Venue, VenueSlot, SlotRequest } from '../../domain/models/venue.js';
 import type {
+  AdmissionClaim,
+  ClaimAdmissionOptions,
   EventRepository,
   OrganizationRepository,
   VenueRepository,
@@ -522,6 +525,26 @@ export class MemoryEntitlementRepository implements EntitlementRepository {
 
   async saveMany(entitlements: Entitlement[], _tx?: TxContext | null): Promise<void> {
     for (const e of entitlements) casSet(this.entitlements, e);
+  }
+
+  /**
+   * The same rule as the Firestore adapter, with the same atomicity
+   * guarantee: there is no `await` between the read and the write, so no
+   * other task can interleave. A memory adapter that quietly allowed a
+   * double admission would make every test that passes on it worthless as
+   * evidence about production.
+   */
+  async claimAdmission(
+    entitlementId: EntityId,
+    eventId: EntityId,
+    options?: ClaimAdmissionOptions,
+  ): Promise<AdmissionClaim> {
+    const current = this.entitlements.get(entitlementId) ?? null;
+    const decision = admitSeats(current, eventId, options);
+    if (decision.admitted && decision.entitlement) {
+      this.entitlements.set(entitlementId, decision.entitlement);
+    }
+    return decision;
   }
 
   async countValidByTier(tierId: EntityId): Promise<number> {

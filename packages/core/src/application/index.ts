@@ -63,14 +63,45 @@ export { TicketService } from './tickets/ticket-service.js';
 export type {
   ScannerService,
   ScannerServiceDeps,
-  ScanTicketInput,
-  ScanMagicTicketInput,
+  BindDeviceCommand,
+  HeartbeatCommand,
+  ConfirmCoupleCommand,
+  StaffDenyCommand,
+  CreateEventCodeCommand,
+  OpenScannerSessionCommand,
+  OpenScannerSessionResult,
+  ScanInput,
+  ResolveInput,
   ScanResult,
-  ResolveTicketInput,
-  ResolveMagicTicketInput,
   TicketResolution,
-} from './scanner/scanner-service.js';
-export { createScannerService } from './scanner/scanner-service.js';
+  TicketSummary,
+  OfflineManifest,
+  OfflineManifestEntry,
+  OfflineSyncInput,
+  OfflineSyncResult,
+} from './door/scanner-service.js';
+export { createScannerService } from './door/scanner-service.js';
+export type {
+  DoorOpsService,
+  DoorOpsServiceDeps,
+  DoorEventSummary,
+  DoorTierSummary,
+  DoorGuest,
+  DoorGuestSource,
+  StartShiftResult,
+  ResolveWalletCommand,
+  ChargeWalletCommand,
+  WalletChargeResult,
+} from './door/door-ops-service.js';
+export { createDoorOpsService, resolveDoorDate } from './door/door-ops-service.js';
+export type {
+  DoorTicketSaleService,
+  DoorTicketSaleServiceDeps,
+  DoorTicketSaleCommand,
+  DoorTicketSaleResult,
+  DoorPaymentMode,
+} from './door/door-ticket-sale-service.js';
+export { createDoorTicketSaleService } from './door/door-ticket-sale-service.js';
 export type {
   DoorService,
   DoorServiceDeps,
