@@ -3,10 +3,11 @@
 # a single `ci-ok` job aggregates them — that is the ONE status check to require
 # in branch protection, so adding a gate never means editing branch settings.
 #
-# Deployment is not triggered here. Render auto-deploys on push to main, out of
-# band. This workflow verifies the deploy afterwards: it waits until the live
-# build reports the SHA under test, smoke-tests it, and rolls back + files an
-# issue if the smoke tests fail.
+# Deploys are GATED here. Render does NOT auto-deploy (autoDeploy is off, see
+# render.yaml). After every gate in this pipeline passes (`ci-ok`) AND the
+# Security pipeline (security.yml, `Security OK`) passes for the same commit,
+# the `deploy` job triggers Render, waits for the build to go live, smoke-tests
+# it, and rolls back + files an issue if anything fails.
 name: CI
 
 on:
@@ -22,8 +23,9 @@ on:
         type: boolean
         default: false
 
-# Cancel superseded PR runs; never cancel a main run, because its tail end
-# verifies a production deploy that is already in flight.
+# Cancel superseded PR runs; never cancel a pushed run on main/staging — its
+# tail end gates, triggers and verifies the production deploy, so cancelling it
+# mid-flight would silently skip a deployment.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -545,3 +547,173 @@ jobs:
             exit 1
           fi
           echo "All gates green."
+
+  # ── Gated deploy & post-deploy verification ─────────────────────────────────
+  # Render no longer auto-deploys (autoDeploy is off — see render.yaml). The
+  # deploy happens HERE, and only here, and only when EVERY gate in this pipeline
+  # has passed (`needs: ci-ok`) AND the Security pipeline (`Security OK` in
+  # security.yml) has passed for this exact commit. The job then triggers Render,
+  # waits for the commit to go live, smoke-tests it, and rolls back + files an
+  # incident if anything fails.
+  #
+  # Deliberately a plain job: no `environment:` block, no `inputs` in the `if`,
+  # and the same simple job-level `if` shape as the scenario job above — proven
+  # to run on push. (The old standalone verify-deploy workflow existed because a
+  # job-level `if` + `environment:` combo was mis-evaluated by the runner on
+  # push; a plain `if` with `needs` is the most battle-tested construct there is.)
+  #
+  # Only `staging` deploys today: no `main`-tracking Render service exists yet
+  # (the one live service, circle-v2-backend, tracks `staging`). When a `main`
+  # service is created, add `|| github.ref == 'refs/heads/main'` here and set
+  # `RENDER_SERVICE_ID` alongside `RENDER_STAGING_SERVICE_ID`.
+  deploy:
+    name: Deploy & verify
+    needs: ci-ok
+    if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read # list Security workflow runs for the gate
+      issues: write # file an incident if the deploy fails
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Detect Render API credentials
+        id: render
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_STAGING_SERVICE_ID }}
+        run: |
+          if [ -n "$RENDER_API_KEY" ] && [ -n "$RENDER_SERVICE_ID" ]; then
+            echo "rollback=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "rollback=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Render API credentials for $GITHUB_REF_NAME are not set — automatic rollback is disabled."
+          fi
+
+      # ── GATE: deployment must not start until Security passes ──────────────
+      # Polls the Security workflow run that THIS push started (event=push,
+      # head_sha = the deployed commit) and blocks until it completes. Any
+      # conclusion other than success/skipped fails the job, so the deploy is
+      # never triggered. Times out after 25 minutes, which still fails closed.
+      - name: Wait for the Security pipeline to pass
+        timeout-minutes: 25
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const sha = context.sha;
+            const deadline = Date.now() + 25 * 60 * 1000;
+            let seen = false;
+            while (Date.now() < deadline) {
+              const { data } = await github.rest.actions.listWorkflowRunsForRepo({
+                owner, repo, event: 'push', head_sha: sha, per_page: 100,
+              });
+              const runs = data.workflow_runs.filter((r) => r.name === 'Security');
+              if (runs.length > 0) {
+                seen = true;
+                const run = runs[0];
+                if (run.status === 'completed') {
+                  if (run.conclusion === 'success' || run.conclusion === 'skipped') {
+                    console.log(`Security pipeline passed — run ${run.id} (${run.conclusion}). Triggering deploy.`);
+                    return;
+                  }
+                  core.setFailed(`Security pipeline concluded '${run.conclusion}' (run ${run.id}) — deploy blocked.`);
+                  process.exit(1);
+                }
+                console.log(`Security run ${run.id} still ${run.status}…`);
+              } else {
+                console.log(`No Security run for ${sha.slice(0, 7)} yet…`);
+              }
+              await new Promise((resolve) => setTimeout(resolve, 15000));
+            }
+            core.setFailed(seen
+              ? 'Security pipeline did not finish within 25 minutes — deploy blocked.'
+              : `No Security workflow run appeared for ${sha.slice(0, 7)} within 25 minutes — deploy blocked.`);
+            process.exit(1);
+
+      - name: Trigger Render deploy
+        timeout-minutes: 5
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_STAGING_SERVICE_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "$RENDER_API_KEY" ] || [ -z "$RENDER_SERVICE_ID" ]; then
+            echo "::error::RENDER_API_KEY / RENDER_STAGING_SERVICE_ID are not set — cannot trigger the gated deploy."
+            exit 1
+          fi
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $RENDER_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{}' \
+            "https://api.render.com/v1/services/$RENDER_SERVICE_ID/deploys"
+
+      - name: Wait for Render to serve this commit
+        env:
+          NGINX_READINESS_TOKEN: ${{ secrets.NGINX_READINESS_TOKEN }}
+        run: |
+          node scripts/ci/wait-for-deploy.mjs \
+            --url "$PRODUCTION_URL" \
+            --sha "$GITHUB_SHA" \
+            --timeout 900 \
+            --interval 15
+
+      - name: Smoke test deploy
+        id: smoke
+        env:
+          NGINX_READINESS_TOKEN: ${{ secrets.NGINX_READINESS_TOKEN }}
+        run: node scripts/ci/smoke.mjs --url "$PRODUCTION_URL"
+
+      - name: Roll back the failed deploy
+        if: failure() && steps.smoke.outcome == 'failure' && steps.render.outputs.rollback == 'true'
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_STAGING_SERVICE_ID }}
+        run: node scripts/ci/render-rollback.mjs
+
+      - name: File a deploy incident
+        if: failure()
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          ROLLBACK_ATTEMPTED: ${{ steps.render.outputs.rollback }}
+        with:
+          script: |
+            const title = `staging gated deploy failed for ${context.sha.slice(0, 7)}`;
+            const body = [
+              'The gated deploy path failed on `staging`. Two things to know:',
+              '',
+              '- If this ran, CI OK had already passed; the Security gate or the deploy/verify itself is what failed.',
+              '- If the Security gate failed, nothing was deployed — the current live build is the previous commit.',
+              '',
+              `- Commit: ${context.sha}`,
+              `- Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              `- Target: ${process.env.PRODUCTION_URL}`,
+              `- Automatic rollback attempted: ${process.env.ROLLBACK_ATTEMPTED}`,
+              '',
+              "Check the run's job summary for which step failed.",
+            ].join('\n');
+            const existing = await github.rest.issues.listForRepo({
+              ...context.repo,
+              state: 'open',
+              labels: 'production-incident',
+            });
+            const open = existing.data.find((issue) => issue.title === title);
+            if (open) {
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: open.number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                ...context.repo,
+                title,
+                body,
+                labels: ['production-incident', 'automated'],
+              });
+            }
