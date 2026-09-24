@@ -20,9 +20,12 @@ services:
     plan: starter
     region: singapore
     branch: main
-    # Render builds and deploys on every push to `branch`. CI verifies the
-    # result afterwards (see .github/workflows/ci.yml, verify-deploy).
-    autoDeploy: true
+    # Deploys are CI-GATED: Render does NOT build or deploy on push
+    # (autoDeploy is false). The ci.yml `deploy` job triggers Render only after
+    # CI OK and the Security pipeline (`Security OK`) both pass for the pushed
+    # commit, then smoke-tests the result. The live service tracks `staging`;
+    # keep this Blueprint's `branch` in step when it is adopted.
+    autoDeploy: false
 
     # The gateway's liveness probe. It is the only unauthenticated endpoint
     # guaranteed to answer before any dependency is wired.
