@@ -22,7 +22,8 @@ export type RateLimitClass =
   | 'STANDARD_COMMAND'
   | 'SENSITIVE_COMMAND'
   | 'OTP_SEND'
-  | 'OTP_VERIFY';
+  | 'OTP_VERIFY'
+  | 'SCANNER_COMMAND';
 
 interface Budget {
   readonly limit: number;
@@ -41,6 +42,12 @@ export const RATE_LIMIT_CLASSES: Readonly<Record<RateLimitClass, Budget>> = {
   // is the HTTP-layer backstop).
   OTP_SEND: { limit: 5, windowMs: 60_000 },
   OTP_VERIFY: { limit: 10, windowMs: 60_000 },
+  // A busy club door genuinely scans faster than STANDARD_COMMAND's 60/min:
+  // several devices, one verified operator, a queue moving at a few guests a
+  // second. Throttling that would hold up a real line, so scanning gets its
+  // own budget. It is still bounded — the door is not an unlimited write
+  // surface — and admission itself is idempotent per ticket regardless.
+  SCANNER_COMMAND: { limit: 300, windowMs: 60_000 },
 };
 
 export interface RateLimitOptions {

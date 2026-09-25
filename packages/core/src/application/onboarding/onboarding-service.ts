@@ -1,6 +1,7 @@
 import {
   ForbiddenError,
   InvalidOperationError,
+  NotFoundError,
   OnboardingRequestNotFoundError,
 } from '../../domain/errors.js';
 import {
@@ -9,12 +10,14 @@ import {
   createOnboardingRequest,
   missingDocuments,
   platformFeePercentFor,
+  rejectOnboardingDocument,
   rejectOnboardingRequest,
   requestOnboardingChanges,
   REQUIRED_DOCUMENT_LABELS,
   sanitizeApplicantProfile,
   submitOnboardingRequest,
   updateOnboardingProfile,
+  verifyOnboardingDocument,
 } from '../../domain/models/onboarding.js';
 import { createOrganization } from '../../domain/models/organization.js';
 
@@ -28,6 +31,7 @@ import type {
   PartnerEntityType,
 } from '../../domain/models/onboarding.js';
 import type { Capability, Organization } from '../../domain/models/organization.js';
+import type { AuditRequestMeta } from '../../domain/ports/audit.js';
 import type { UploadUrlGrant } from '../../domain/ports/object-storage.js';
 import type { PaginationQuery } from '../../domain/ports/repositories.js';
 import type { VerificationResult } from '../../domain/ports/verification.js';
@@ -60,6 +64,8 @@ const VERIFICATION_WINDOW_MS = 24 * 60 * 60 * 1000;
 const MAX_DOCUMENT_BYTES = 5 * 1024 * 1024;
 const UPLOAD_URL_TTL_MS = 10 * 60 * 1000;
 const ALLOWED_UPLOAD_CONTENT_TYPES: readonly string[] = ['image/jpeg', 'image/png', 'image/webp'];
+/** Admin read URLs are minted per view, not cached — short-lived on purpose. */
+const READ_URL_TTL_MS = 10 * 60 * 1000;
 
 export interface StartApplicationCommand {
   requestedType: PartnerEntityType;
@@ -287,6 +293,103 @@ export class OnboardingService {
   }
 
   /**
+   * Mints a short-lived signed GET URL so an admin can actually view an
+   * uploaded KYC image before deciding on the application — v1 had this
+   * (`kyc/[uid]/route.js`'s signed-URL helper, prefix-allowlisted since it
+   * took an arbitrary key); v2 doesn't need a separate allowlist because the
+   * key is derived from a document already attached to a request this
+   * method loaded, never from caller input.
+   *
+   * Any admin may view (matches v1's broader view-vs-decide role split —
+   * approval itself stays ONBOARDING_APPROVE/TIER2, viewing isn't a decision).
+   */
+  async issueDocumentReadUrl(
+    adminUserId: EntityId,
+    requestId: EntityId,
+    label: string,
+  ): Promise<{ readUrl: string; expiresAt: number }> {
+    await this.authority.requireAdmin(adminUserId);
+    const request = await this.requireRequest(requestId);
+    const document = request.documents.find((doc) => doc.label === label);
+    if (!document) throw new NotFoundError('onboarding_document', label);
+
+    const expiresAt = this.deps.config.clock.now().getTime() + READ_URL_TTL_MS;
+    const grant = await this.deps.objectStorage.issueReadUrl({
+      key: document.storagePath,
+      expiresAt,
+    });
+    return { readUrl: grant.readUrl, expiresAt: grant.expiresAt };
+  }
+
+  /**
+   * KYC review desk: marks one uploaded document legitimate. Never touches
+   * `OnboardingRequest.status` — that decision belongs to `approve`/
+   * `reject`/`requestChanges` below, on the Onboarding desk, not here.
+   * Same TIER2 gate as the application decisions (`ONBOARDING_APPROVE`):
+   * this codebase doesn't carry a separate KYC-only admin action yet, and
+   * document legitimacy is exactly the kind of call `support` shouldn't
+   * make unsupervised either.
+   */
+  async verifyKycDocument(
+    adminUserId: EntityId,
+    requestId: EntityId,
+    label: string,
+    meta?: AuditRequestMeta,
+  ): Promise<OnboardingRequest> {
+    const admin = await this.authority.authorize(adminUserId, 'ONBOARDING_APPROVE');
+    const request = await this.requireRequest(requestId);
+    const updated = verifyOnboardingDocument(
+      request,
+      label,
+      admin.id,
+      this.deps.config.clock.now(),
+    );
+    await this.repo.save(updated);
+    await this.authority.record(admin, {
+      action: 'onboarding.document.verify',
+      targetType: 'onboarding_request',
+      targetId: request.id,
+      before: { label, status: 'pending' },
+      after: { label, status: 'verified' },
+      reason: null,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
+    });
+    return updated;
+  }
+
+  /** KYC review desk: marks one uploaded document illegitimate/unreadable. */
+  async rejectKycDocument(
+    adminUserId: EntityId,
+    requestId: EntityId,
+    label: string,
+    reason: string,
+    meta?: AuditRequestMeta,
+  ): Promise<OnboardingRequest> {
+    const admin = await this.authority.authorize(adminUserId, 'ONBOARDING_APPROVE');
+    const request = await this.requireRequest(requestId);
+    const updated = rejectOnboardingDocument(
+      request,
+      label,
+      admin.id,
+      reason,
+      this.deps.config.clock.now(),
+    );
+    await this.repo.save(updated);
+    await this.authority.record(admin, {
+      action: 'onboarding.document.reject',
+      targetType: 'onboarding_request',
+      targetId: request.id,
+      before: { label },
+      after: { label, status: 'rejected' },
+      reason,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
+    });
+    return updated;
+  }
+
+  /**
    * Approves an application and provisions the organization it asked for.
    *
    * The two writes are ordered organization-first: a failure after the
@@ -301,6 +404,7 @@ export class OnboardingService {
   async approve(
     adminUserId: EntityId,
     command: ReviewCommand,
+    meta?: AuditRequestMeta,
   ): Promise<{ request: OnboardingRequest; organization: Organization }> {
     const admin = await this.authority.authorize(adminUserId, 'ONBOARDING_APPROVE');
     const request = await this.requireRequest(command.requestId);
@@ -338,6 +442,8 @@ export class OnboardingService {
       before: { status: request.status },
       after: { status: approved.status, organizationId: organization.id },
       reason: command.note ?? null,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     this.deps.logger.info('onboarding.approved', {
       requestId: request.id,
@@ -346,15 +452,33 @@ export class OnboardingService {
     return { request: approved, organization };
   }
 
-  async reject(adminUserId: EntityId, command: ReviewCommand): Promise<OnboardingRequest> {
-    return this.review(adminUserId, command, 'onboarding.reject', (request, admin, now) =>
-      rejectOnboardingRequest(request, { reviewedBy: admin.id, note: command.note, now }),
+  async reject(
+    adminUserId: EntityId,
+    command: ReviewCommand,
+    meta?: AuditRequestMeta,
+  ): Promise<OnboardingRequest> {
+    return this.review(
+      adminUserId,
+      command,
+      'onboarding.reject',
+      (request, admin, now) =>
+        rejectOnboardingRequest(request, { reviewedBy: admin.id, note: command.note, now }),
+      meta,
     );
   }
 
-  async requestChanges(adminUserId: EntityId, command: ReviewCommand): Promise<OnboardingRequest> {
-    return this.review(adminUserId, command, 'onboarding.request_changes', (request, admin, now) =>
-      requestOnboardingChanges(request, { reviewedBy: admin.id, note: command.note, now }),
+  async requestChanges(
+    adminUserId: EntityId,
+    command: ReviewCommand,
+    meta?: AuditRequestMeta,
+  ): Promise<OnboardingRequest> {
+    return this.review(
+      adminUserId,
+      command,
+      'onboarding.request_changes',
+      (request, admin, now) =>
+        requestOnboardingChanges(request, { reviewedBy: admin.id, note: command.note, now }),
+      meta,
     );
   }
 
@@ -363,6 +487,7 @@ export class OnboardingService {
     command: ReviewCommand,
     auditAction: string,
     apply: (request: OnboardingRequest, admin: PlatformAdmin, now: Date) => OnboardingRequest,
+    meta?: AuditRequestMeta,
   ): Promise<OnboardingRequest> {
     // Rejecting and asking for changes are TIER2 as well: both determine
     // whether a business gets onto the platform.
@@ -377,6 +502,8 @@ export class OnboardingService {
       before: { status: request.status },
       after: { status: updated.status },
       reason: command.note ?? null,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     return updated;
   }

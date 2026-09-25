@@ -39,6 +39,7 @@ import type {
   ScanLedgerRepository,
   EventCodeRepository,
   ScannerSessionRepository,
+  ScannerDeviceRepository,
   DoorSaleRepository,
   CoverWalletRepository,
   CoverWalletTxnRepository,
@@ -50,6 +51,12 @@ import type {
   LeaderboardRepository,
   EmailOtpRepository,
   GuestProfileRepository,
+  AdminRefundRequestRepository,
+  UserAccountRepository,
+  UserBanRepository,
+  PlatformSettingsRepository,
+  SupportTicketRepository,
+  SafetyReportRepository,
 } from '../domain/ports/repositories.js';
 import type { VerificationProvider } from '../domain/ports/verification.js';
 import type { Logger } from '../telemetry/logger.js';
@@ -118,6 +125,8 @@ export interface ServiceDeps {
     scanLedger: ScanLedgerRepository;
     eventCodes: EventCodeRepository;
     scannerSessions: ScannerSessionRepository;
+    /** Phase 5: handsets a venue has authorized to work its door. */
+    scannerDevices: ScannerDeviceRepository;
     doorSales: DoorSaleRepository;
     coverWallets: CoverWalletRepository;
     coverWalletTxns: CoverWalletTxnRepository;
@@ -130,6 +139,16 @@ export interface ServiceDeps {
     leaderboard: LeaderboardRepository;
     emailOtp: EmailOtpRepository;
     guestProfiles: GuestProfileRepository;
+    refundRequests: AdminRefundRequestRepository;
+    /** Platform support tickets (guest intake + admin desk). */
+    supportTickets: SupportTicketRepository;
+    /** Platform safety reports (guest intake + admin desk). */
+    safetyReports: SafetyReportRepository;
+    /** Platform user directory (admin users view) — read-only. */
+    users: UserAccountRepository;
+    /** Platform user ban state — Phase 7 trust & safety. */
+    userBans: UserBanRepository;
+    platformSettings: PlatformSettingsRepository;
   };
 }
 

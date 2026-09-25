@@ -1,7 +1,8 @@
 import {
   paginationQuerySchema,
   eventDtoSchema,
-  venueDtoSchema,
+  eventPublicDetailDtoSchema,
+  venuePublicDetailDtoSchema,
   hostPublicDtoSchema,
   discoveryFeedDtoSchema,
   publicTicketTierListResponseSchema,
@@ -11,6 +12,7 @@ import { effectiveTierPricePaise } from '@c1rcle/core/domain';
 import { z } from 'zod';
 
 import type { Organization, TicketTier } from '@c1rcle/core/domain';
+import type { Organization, Venue } from '@c1rcle/core/domain';
 
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
@@ -110,11 +112,16 @@ export default async function publicDiscoveryRoutes(fastify: FastifyInstance) {
     },
     async (request, reply) => {
       const { idOrSlug } = request.params as z.infer<typeof idOrSlugParam>;
-      const event = await services.public
+      const detail = await services.public
         .getEvent(idOrSlug)
         .catch((error: unknown) => mapDomainError(reply, request, idOrSlug, error));
-      if (event === undefined) return reply;
-      const validated = validateV2Response(reply, request, eventDtoSchema, eventToDto(event));
+      if (detail === undefined) return reply;
+      const payload = {
+        ...eventToDto(detail.event),
+        venue: detail.venue === null ? null : eventVenueToDto(detail.venue),
+        organizer: detail.organizer === null ? null : hostToDto(detail.organizer),
+      };
+      const validated = validateV2Response(reply, request, eventPublicDetailDtoSchema, payload);
       if (validated === undefined) return reply;
       return reply.send(validated);
     },
@@ -154,7 +161,12 @@ export default async function publicDiscoveryRoutes(fastify: FastifyInstance) {
         .getVenue(slug)
         .catch((error: unknown) => mapDomainError(reply, request, slug, error));
       if (venue === undefined) return reply;
-      const validated = validateV2Response(reply, request, venueDtoSchema, venueToDto(venue));
+      const validated = validateV2Response(
+        reply,
+        request,
+        venuePublicDetailDtoSchema,
+        publicVenueToDto(venue),
+      );
       if (validated === undefined) return reply;
       return reply.send(validated);
     },

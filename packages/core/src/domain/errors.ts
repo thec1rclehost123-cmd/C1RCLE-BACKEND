@@ -76,6 +76,24 @@ export class ForbiddenError extends DomainError {
   }
 }
 
+/**
+ * The presented scanner-session token is valid, but the handset it belongs to
+ * is no longer authorized by the venue (unbound, or never bound).
+ *
+ * Its own type rather than a plain `ForbiddenError` because the two must get
+ * different answers at the edge. A cross-tenant `ForbiddenError` is masked as
+ * a 404 so it cannot confirm that another club's resource exists; this one
+ * must stay a plain 403, because the door staff standing there need to be
+ * told "this phone is no longer authorized" rather than "no such event" —
+ * and there is nothing to hide, since the caller has already proved both
+ * tenant membership and a live session.
+ */
+export class DeviceNotAuthorizedError extends DomainError {
+  constructor(message = 'This device is not authorized to scan for this venue') {
+    super(message, 'device_not_authorized');
+  }
+}
+
 /** No valid session (B10) — distinct from `ForbiddenError` (valid session, wrong scope). */
 export class UnauthorizedError extends DomainError {
   constructor(message = 'Authentication required') {

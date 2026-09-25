@@ -1,19 +1,19 @@
 # CI/CD
 
-Three workflows, one required status check, and a deploy that Render triggers
-but GitHub verifies.
+Three workflows, one required status check, and a deploy that CI gates,
+triggers, and verifies.
 
 ```
-push / PR ──► ci.yml ──────────► CI OK ──► verify-deploy (main only)
-              security.yml ────► Security OK
-   cron ────► maintenance.yml
+push / PR ──► ci.yml ──────────► CI OK ──┐
+              security.yml ────► Security OK ─┼─► gated deploy (staging) ──► Render ──► smoke
+   cron ────► maintenance.yml                ┘
 ```
 
 ---
 
 ## 1. The workflows
 
-### `ci.yml` — every push and pull request to `main`
+### `ci.yml` — every push and pull request to `main` and `staging`
 
 One pipeline, fanned out. All gates run in parallel off a shared composite
 setup (`.github/actions/setup`), then `ci-ok` aggregates them.
@@ -28,7 +28,7 @@ setup (`.github/actions/setup`), then `ci-ok` aggregates them.
 | `actionlint` | Lints the workflows themselves, shellcheck included |
 | `commit-lint` | Conventional-commit check on the PR commits **and the PR title** — the title is what a squash merge writes to `main` |
 | `ci-ok` | **The one check to require in branch protection** |
-| `verify-deploy` | `main` only — waits for Render, smoke-tests production, rolls back on failure |
+| `deploy` | `staging` only — after `ci-ok` **and** `Security OK`, triggers the Render deploy, waits for the commit to go live, smoke-tests it, rolls back / files an incident on failure |
 
 ### Why so few jobs
 
@@ -55,9 +55,9 @@ deliberate: path filters and opt-in gates legitimately skip, and requiring
 `success` from all of them would block every docs-only pull request. Because it
 aggregates, **adding a new gate never means editing branch-protection settings**.
 
-Concurrency cancels superseded pull-request runs but never cancels a `main`
-run — the tail of a `main` run is verifying a production deploy that is already
-in flight.
+Concurrency cancels superseded pull-request runs but never cancels a pushed
+run on `main`/`staging` — the tail of that run gates, triggers and verifies the
+production deploy, so cancelling it would silently skip a deployment.
 
 ### `security.yml` — pull requests, `main`, and Mondays 06:15 UTC
 
@@ -88,14 +88,18 @@ changed.
 
 ## 2. Deployment model
 
-Render auto-deploys on push to `main`, out of band from GitHub Actions. CI does
-not trigger the deploy; it **verifies** it.
+Deploys are gated in CI. Render does **not** auto-deploy (its `autoDeploy` is
+off). After every CI gate passes (`ci-ok`) **and** the Security pipeline
+(`Security OK`) passes for the same commit, the `deploy` job triggers a Render
+deploy through the Render API and then verifies it.
 
 ```
-push main
-   ├─► Render builds the Dockerfile and swaps traffic   (out of band)
-   └─► ci.yml gates ──► ci-ok ──► verify-deploy
+push staging
+   ├─► ci.yml gates ──► ci-ok
+   ├─► security.yml ──────► Security OK
+   └─► deploy job (needs: ci-ok, waits for Security OK)
                                     │
+                                    ├─ POST /v1/services/{id}/deploys   trigger Render
                                     ├─ wait-for-deploy.mjs  poll /api/v2/internal/version
                                     │                       until commit == GITHUB_SHA
                                     ├─ smoke.mjs            6 black-box assertions
@@ -110,9 +114,10 @@ from the old one. If the live build predates that field it reports `null`, and
 `wait-for-deploy.mjs` warns and proceeds rather than blocking on a feature it
 cannot detect.
 
-**Rollback** needs `RENDER_API_KEY` and `RENDER_SERVICE_ID`. Without them the
-job logs a notice and skips the rollback step — it still fails the run and files
-the incident issue.
+**Trigger and rollback** need `RENDER_API_KEY` and `RENDER_STAGING_SERVICE_ID`.
+The deploy cannot start without them — the job fails closed rather than
+skipping the gate. If rollback is impossible the run still fails and files the
+incident issue.
 
 ### Smoke assertions
 
@@ -140,7 +145,7 @@ CI harness both install from a context with no `.git` (see `.dockerignore`),
 where husky exits non-zero. Hook installation is a developer convenience, never
 a build dependency.
 
-### Branch protection on `main`
+### Branch protection on `main` and `staging`
 
 Require exactly two checks:
 
@@ -163,19 +168,22 @@ them means every new gate needs a settings change.
 
 | Secret | Needed? | Effect |
 | --- | --- | --- |
-| `RENDER_API_KEY` | optional | Enables automatic rollback |
-| `RENDER_SERVICE_ID` | optional | Enables automatic rollback |
+| `RENDER_API_KEY` | **required** | Lets CI trigger the gated deploy and roll back a failed one |
+| `RENDER_STAGING_SERVICE_ID` | **required** | Render service id for `staging` deploys (`circle-v2-backend`) |
+| `RENDER_SERVICE_ID` | future | Render service id for `main`, once a `main`-tracking service exists |
 | `FRONTEND_REPO_TOKEN` | optional | Only if `C1RCLE-FRONTEND` is private; falls back to `GITHUB_TOKEN` |
 
-Everything else runs on the built-in `GITHUB_TOKEN`. There are no deploy
-credentials in CI, because CI does not deploy.
+Everything else runs on the built-in `GITHUB_TOKEN`. CI deploys, so the Render
+credentials above are the only secrets beyond it.
 
-### The `production` environment
+### Human approval on deploys
 
-`verify-deploy` declares `environment: production`. GitHub creates it on first
-use. Add required reviewers there if you want a human gate before production is
-verified — note this gates the *verification*, not the deploy, which Render has
-already performed.
+The deploy job deliberately has **no `environment:` block** — the 09-2026
+autopsy showed the runner mis-evaluates job-level `if:` + `environment:` combos
+on push, and the gate rests on CI OK + Security OK + branch protection instead.
+If you want a human gate on `staging` deploys, the clean way is a required
+reviewer on the merge (branch protection) — the deploy runs on the merge push,
+so the approval happens before this workflow is even created.
 
 ### Contract parity
 

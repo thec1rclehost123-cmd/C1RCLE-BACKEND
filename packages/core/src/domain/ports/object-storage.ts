@@ -43,6 +43,20 @@ export interface UploadUrlGrant {
   readonly expiresAt: number;
 }
 
+export interface ReadUrlRequest {
+  /** The exact same object key an `issueUploadUrl` call wrote to. */
+  readonly key: string;
+  /** Absolute expiry, epoch ms. Short-lived — minted per admin view, not cached. */
+  readonly expiresAt: number;
+}
+
+export interface ReadUrlGrant {
+  /** Where to `GET` the file. Opaque; never logged in full. */
+  readonly readUrl: string;
+  /** Echoes the request's `expiresAt`, epoch ms. */
+  readonly expiresAt: number;
+}
+
 export interface ObjectStoragePort {
   /** Recorded so a provider swap is visible in support history. */
   readonly name: string;
@@ -54,6 +68,14 @@ export interface ObjectStoragePort {
    * on the memory driver it hands back a non-routable placeholder host.
    */
   toPublicUrl(storagePath: string): string;
+   * Admin-side signed read — lets a platform admin actually view a KYC
+   * document before approving/rejecting an application. v1 had the same
+   * idea (`kyc/[uid]/route.js` signed-URL helper) but allowlisted by path
+   * prefix since it took an arbitrary collection field as the key; this
+   * port only ever signs a key the caller derived from an `OnboardingRequest`
+   * it already loaded, so the prefix allowlist has no separate job to do here.
+   */
+  issueReadUrl(request: ReadUrlRequest): Promise<ReadUrlGrant>;
 }
 
 /**
@@ -85,5 +107,10 @@ export class EchoObjectStorage implements ObjectStoragePort {
     // Non-routable reserved host, but a valid URL for `z.url()` — matches the
     // `memory://` upload URL convention of this dev provider.
     return `https://uploads.invalid/${storagePath}`;
+  async issueReadUrl(request: ReadUrlRequest): Promise<ReadUrlGrant> {
+    return {
+      readUrl: `memory://reads/${request.key}`,
+      expiresAt: request.expiresAt,
+    };
   }
 }

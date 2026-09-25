@@ -1,6 +1,10 @@
 import { FieldValue } from 'firebase-admin/firestore';
 
-import { createEventCode, createScannerSession } from '../../domain/models/event-code.js';
+import {
+  createEventCode,
+  createScannerSession,
+  hashSessionToken,
+} from '../../domain/models/event-code.js';
 
 import { paginateQuery } from './pagination.js';
 
@@ -143,8 +147,7 @@ export class FirestoreScannerSessionRepository implements ScannerSessionReposito
   }> {
     const result = createScannerSession(input);
     await this.sessionsCollection.doc(result.session.id).set(toSessionDoc(result.session));
-    const crypto = await import('crypto');
-    const tokenHash = crypto.createHash('sha256').update(result.sessionToken).digest('hex');
+    const tokenHash = hashSessionToken(result.sessionToken);
     await this.tokensCollection.doc(tokenHash).set({ sessionId: result.session.id });
     return result;
   }

@@ -83,6 +83,9 @@ function toPartnership(data: DocumentData): Partnership {
     initiatedBy: data.initiatedBy as Partnership['initiatedBy'],
     status: data.status as Partnership['status'],
     message: (data.message ?? null) as string | null,
+    // Pre-existing docs predate the venue-share field — read them as
+    // "not negotiated" rather than fabricating a rate.
+    venueShareRate: (data.venueShareRate ?? null) as number | null,
     resolutionReason: (data.resolutionReason ?? null) as string | null,
     resolvedAt: (data.resolvedAt ?? null) as string | null,
     version: data.version as number,

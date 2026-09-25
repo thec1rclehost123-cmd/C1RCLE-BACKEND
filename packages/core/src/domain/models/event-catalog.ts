@@ -368,9 +368,11 @@ export interface PromoterAssignment extends VersionedEntity {
   createdAt: string;
   /** When the assignment was revoked/unlinked, if ever. */
   endedAt: string | null;
+  /** When the assignment was suspended by an admin, if ever. */
+  suspendedAt: string | null;
 }
 
-export type PromoterAssignmentStatus = 'active' | 'ended';
+export type PromoterAssignmentStatus = 'active' | 'ended' | 'suspended';
 
 export interface CreatePromoterAssignmentInput {
   id: EntityId;
@@ -402,6 +404,7 @@ export function createPromoterAssignment(input: CreatePromoterAssignmentInput): 
     status: 'active',
     terms: input.terms,
     endedAt: null,
+    suspendedAt: null,
     ...newVersionedEntity(input.now ?? new Date()),
   };
 }
@@ -414,4 +417,32 @@ export function endPromoterAssignment(
   if (assignment.status === 'ended') return assignment;
   const stamped = bumpVersion(assignment, now ?? new Date());
   return { ...stamped, status: 'ended', endedAt: (now ?? new Date()).toISOString() };
+}
+
+/**
+ * Suspends an assignment — the promoter can no longer earn commission on this
+ * event while the suspension is active. The partner endpoint should stop
+ * issuing referral codes until the admin reinstates.
+ */
+export function suspendPromoterAssignment(
+  assignment: PromoterAssignment,
+  now?: Date,
+): PromoterAssignment {
+  if (assignment.status === 'ended') return assignment;
+  if (assignment.status === 'suspended') return assignment;
+  const stamped = bumpVersion(assignment, now ?? new Date());
+  return { ...stamped, status: 'suspended', suspendedAt: (now ?? new Date()).toISOString() };
+}
+
+/**
+ * Reinstates a suspended assignment. The frozen commission terms are preserved
+ * and the promoter may resume earning.
+ */
+export function reinstatePromoterAssignment(
+  assignment: PromoterAssignment,
+  now?: Date,
+): PromoterAssignment {
+  if (assignment.status !== 'suspended') return assignment;
+  const stamped = bumpVersion(assignment, now ?? new Date());
+  return { ...stamped, status: 'active', suspendedAt: null };
 }

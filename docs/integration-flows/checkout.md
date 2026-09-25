@@ -1,13 +1,15 @@
 # Checkout integration flow
 
-**Status:** ASPIRATIONAL — none of the checkout / orders / payments / tickets
-routes are registered on the gateway yet (404 by absence). This is the intended
-shape for when Phase 6 lands; do not build a frontend consumer against it now.
-Guest-portal checkout stays fixture-only until the backend routes exist and are
-tested. Wire shapes below still need reconciling with the corrected envelope
-(bare DTO / flat errors) in `docs/api-contracts/error-contract.md`.
+**Status:** LIVE (verified 2026-09-07) — checkout, orders, payments, tickets,
+wallet, and public discovery routes are all registered under
+`apps/api-gateway/src/routes/v2/{checkout,orders,tickets,wallet,public}/`
+(payments + razorpay webhook live in `checkout/payment-routes.ts` and
+`checkout/webhook-routes.ts`), each with route tests. This document describes
+the intended wire shape; reconcile specifics with the corrected envelope
+(bare DTO / flat errors) in `docs/api-contracts/error-contract.md` and the
+frozen per-domain contracts in `packages/contracts/src/`.
 **Frontend:** apps/guest-portal checkout and confirmation routes.
-**Backend contract:** `/api/v2` checkout, orders, payments, tickets — all BLOCKED.
+**Backend contract:** `/api/v2` checkout, orders, payments, tickets — all LIVE.
 
 ## Authority rules
 

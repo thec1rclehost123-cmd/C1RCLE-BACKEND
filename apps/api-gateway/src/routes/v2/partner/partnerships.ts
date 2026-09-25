@@ -5,6 +5,7 @@ import {
   partnershipDtoSchema,
   requestPartnershipSchema,
   resolvePartnershipSchema,
+  setVenueShareRequestSchema,
   paginatedSchema,
 } from '@c1rcle/contracts/client';
 import { z } from 'zod';
@@ -113,6 +114,7 @@ export default async function partnerPartnershipRoutes(fastify: FastifyInstance)
             initiatedBy: body.initiatedBy,
             hostOrganizationId: body.hostOrganizationId,
             message: body.message,
+            venueShareRate: body.venueShareRate,
           });
           const validated = validateV2Response(
             reply,
@@ -155,6 +157,63 @@ export default async function partnerPartnershipRoutes(fastify: FastifyInstance)
     services.partnerships.block(actor, id, reason),
   );
   registerAction(fastify, 'end', (actor, id) => services.partnerships.end(actor, id));
+
+  // ── SET VENUE SHARE ───────────────────────────────────────────────────────
+  // Negotiates (or clears) the venue's split on a live partnership. A command,
+  // not a PATCH: only a party to an ACTIVE partnership may set it, and the
+  // domain enforces the 0..50 bounds + version bump.
+  fastify.post(
+    '/partnerships/:partnershipId/venue-share',
+    {
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({
+          params: partnershipIdParam,
+          headers: commandHeaders,
+          body: setVenueShareRequestSchema,
+        }),
+        fastify.requirePermission('venue.manage'),
+      ],
+    },
+    async (request, reply) => {
+      const { partnershipId } = request.params as z.infer<typeof partnershipIdParam>;
+      const body = request.body as z.infer<typeof setVenueShareRequestSchema>;
+      const actor = services.actor(request);
+      const v2Headers = request.v2Headers ?? {};
+
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: actor.userId,
+        commandName: 'partnerships.venue-share',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { partnershipId }, body },
+        run: async () => {
+          const partnership = await services.partnerships.setVenueShare(
+            actor,
+            partnershipId,
+            body.venueShareRate,
+          );
+          const validated = validateV2Response(
+            reply,
+            request,
+            partnershipDtoSchema,
+            partnershipToDto(partnership),
+          );
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
+        },
+      }).catch((error: unknown) =>
+        isIdempotencyConflict(error)
+          ? mapDomainError(reply, request, partnershipId, error, {
+              conflictId: v2Headers['idempotency-key'],
+            })
+          : mapDomainError(reply, request, partnershipId, error),
+      );
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
 }
 
 type ActorOf = ReturnType<typeof services.actor>;
@@ -239,6 +298,7 @@ function partnershipToDto(partnership: Partnership, names: PartnershipNames | nu
     initiatedBy: partnership.initiatedBy,
     status: partnership.status,
     message: partnership.message,
+    venueShareRate: partnership.venueShareRate,
     resolutionReason: partnership.resolutionReason,
     resolvedAt: partnership.resolvedAt,
     version: partnership.version,

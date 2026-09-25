@@ -18,9 +18,10 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "boundaries": "node scripts/check-boundaries.mjs",
+    "check:nginx": "node scripts/check-nginx-config.mjs",
     "prepare": "husky || true",
     "contract-parity": "node scripts/contract-parity.mjs",
-    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm boundaries && pnpm test && pnpm build"
+    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm boundaries && pnpm check:nginx && pnpm test && pnpm build"
   },
   "devDependencies": {
     "@commitlint/cli": "^20.1.0",

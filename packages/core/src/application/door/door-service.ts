@@ -47,7 +47,7 @@ export interface CreateWalkInInput {
   guestPhone?: string;
   guestAge?: number;
   gender?: string;
-  contact?: string;
+  guestEmail?: string;
   totalGuests: number;
   gate?: string;
   paymentMode: 'cash' | 'card' | 'upi' | 'other';
@@ -60,7 +60,7 @@ export interface CreateDineInInput {
   guestPhone?: string;
   guestAge?: number;
   gender?: string;
-  contact?: string;
+  guestEmail?: string;
   totalGuests: number;
   tableNumber: string;
   gate?: string;
@@ -139,7 +139,7 @@ function createDoorServiceImpl(deps: DoorServiceDeps): DoorService {
       guestPhone: input.guestPhone ?? null,
       guestAge: input.guestAge ?? null,
       gender: input.gender ?? null,
-      contact: input.contact ?? null,
+      guestEmail: input.guestEmail ?? null,
       totalGuests: input.totalGuests,
       tableNumber: null,
       gate: input.gate ?? null,
@@ -206,7 +206,7 @@ function createDoorServiceImpl(deps: DoorServiceDeps): DoorService {
       guestPhone: input.guestPhone ?? null,
       guestAge: input.guestAge ?? null,
       gender: input.gender ?? null,
-      contact: input.contact ?? null,
+      guestEmail: input.guestEmail ?? null,
       totalGuests: input.totalGuests,
       tableNumber: input.tableNumber,
       gate: input.gate ?? null,
