@@ -556,15 +556,18 @@ jobs:
   # waits for the commit to go live, smoke-tests it, and rolls back + files an
   # incident if anything fails.
   #
-  # There is deliberately NO job-level `if:` on this job: the runner mis-evaluates
-  # job-level `if:` on push in this repo (proven by the 09-22 skip, and again on
-  # the 09-24 #54 merge run, where `if: github.event_name == 'push' &&
-  # github.ref == 'refs/heads/staging'` was skipped on a genuine push to staging
-  # while the sibling `scenario` job with the same context ran). The staging-push
-  # check therefore lives in a PURE-SHELL gate step (no expression evaluation),
-  # and every consequential step is guarded by the battle-tested
-  # `if: steps.gate.outputs.match == 'true'`. `needs: ci-ok` remains the CI gate
-  # — a `needs`-based dependency, which is reliable.
+  # Job-level `if:` conditions are NOT reliable on push in this repo (proven
+  # repeatedly: the 09-22 skip; PR #54's merge run where a matching push/staging
+  # `if:` was skipped while the sibling `scenario` job — same context — ran; and
+  # PR #55's merge run where a needs-based job with NO `if:` was skipped even
+  # though its `needs: ci-ok` succeeded). The only job-level shape PROVEN to run
+  # on push here is `if: always()` — that is exactly what the `ci-ok` job uses,
+  # and it has run on every push, every time. So this job uses `if: always()`
+  # and does ALL of its own gating in the pure-shell gate step below: it checks
+  # the event is a push to `staging` AND that `needs.ci-ok.result` is `success`
+  # (passed in as env), so a failed CI still blocks the deploy even though the
+  # job itself always runs. Every consequential step then runs only when the
+  # gate output says `match=true`.
   #
   # Only `staging` deploys today: no `main`-tracking Render service exists yet
   # (the one live service, circle-v2-backend, tracks `staging`). When a `main`
@@ -573,6 +576,7 @@ jobs:
   deploy:
     name: Deploy & verify
     needs: ci-ok
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -584,19 +588,24 @@ jobs:
         with:
           persist-credentials: false
 
-      # ── GATE: this job must only act on a push to `staging` ────────────────
+      # ── GATE: this job must only act on a push to `staging` when CI passed ──
       # Pure shell — no Actions expressions, so nothing can mis-evaluate. The
-      # runner sets these env vars from the event; on every other run (PRs,
-      # dispatch) `match` is `false` and every step below is skipped.
-      - name: 'Gate: staging push only'
+      # runner sets these env vars from the event, and `needs.ci-ok.result` is
+      # passed in as env. On any other run (PRs, dispatch) or a failed CI,
+      # `match` is `false` and every step below is skipped.
+      - name: 'Gate: staging push + CI OK only'
         id: gate
+        env:
+          CI_OK_RESULT: ${{ needs.ci-ok.result }}
         run: |
-          echo "event=$GITHUB_EVENT_NAME ref=$GITHUB_REF"
-          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF" = "refs/heads/staging" ]; then
+          echo "event=$GITHUB_EVENT_NAME ref=$GITHUB_REF ci_ok=$CI_OK_RESULT"
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && \
+             [ "$GITHUB_REF" = "refs/heads/staging" ] && \
+             [ "$CI_OK_RESULT" = "success" ]; then
             echo "match=true" >> "$GITHUB_OUTPUT"
           else
             echo "match=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Not a push to staging (event=$GITHUB_EVENT_NAME ref=$GITHUB_REF) — skipping the gated deploy."
+            echo "::notice::Not a successful-CI push to staging (event=$GITHUB_EVENT_NAME ref=$GITHUB_REF ci_ok=$CI_OK_RESULT) — skipping the gated deploy."
           fi
 
       - name: Detect Render API credentials
