@@ -3,10 +3,11 @@
 # a single `ci-ok` job aggregates them — that is the ONE status check to require
 # in branch protection, so adding a gate never means editing branch settings.
 #
-# Deployment is not triggered here. Render auto-deploys on push to main, out of
-# band. This workflow verifies the deploy afterwards: it waits until the live
-# build reports the SHA under test, smoke-tests it, and rolls back + files an
-# issue if the smoke tests fail.
+# Deploys are GATED here. Render does NOT auto-deploy (autoDeploy is off, see
+# render.yaml). After every gate in this pipeline passes (`ci-ok`) AND the
+# Security pipeline (security.yml, `Security OK`) passes for the same commit,
+# the `deploy` job triggers Render, waits for the build to go live, smoke-tests
+# it, and rolls back + files an issue if anything fails.
 name: CI
 
 on:
@@ -22,8 +23,9 @@ on:
         type: boolean
         default: false
 
-# Cancel superseded PR runs; never cancel a main run, because its tail end
-# verifies a production deploy that is already in flight.
+# Cancel superseded PR runs; never cancel a pushed run on main/staging — its
+# tail end gates, triggers and verifies the production deploy, so cancelling it
+# mid-flight would silently skip a deployment.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -90,7 +92,10 @@ jobs:
   static:
     name: Static analysis
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    # PR-gate only. A push to main/staging is always a merge of a PR that
+    # already ran this — re-running it on the merge commit is the exact
+    # duplication this workflow used to have (same job, same diff, twice).
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -121,6 +126,16 @@ jobs:
         if: always()
         run: node scripts/check-boundaries.mjs
 
+      # The deployed sidecar runs nginx in front of Fastify. A config error
+      # (e.g. a duplicate proxy_* directive) makes the container exit before
+      # Render's health gate, which CI never noticed until a merge had already
+      # deployed the broken image. This check expands every include and fails
+      # on the same classes nginx reports at startup ([emerg] duplicate).
+      - name: Nginx config
+        id: nginx
+        if: always()
+        run: node scripts/check-nginx-config.mjs
+
       # A focused `it.only` silently disables every other test in its file, so a
       # green suite can be hiding almost all of itself.
       - name: No focused tests committed
@@ -146,6 +161,7 @@ jobs:
             echo "| Lint | ${{ steps.lint.outcome }} |"
             echo "| Typecheck | ${{ steps.typecheck.outcome }} |"
             echo "| Boundaries | ${{ steps.boundaries.outcome }} |"
+            echo "| Nginx config | ${{ steps.nginx.outcome }} |"
             echo "| Focused tests | ${{ steps.focused.outcome }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -154,7 +170,11 @@ jobs:
   test:
     name: Build, test & coverage
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    # PR-gate for every branch, but a push (merge) only re-runs on main —
+    # that's the one branch whose coverage baseline this job records below,
+    # so it can't simply be skipped there. A push to staging is always an
+    # already-tested PR merge, so it's skipped like the other gates.
+    if: needs.changes.outputs.code == 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -231,20 +251,20 @@ jobs:
           path: .coverage-baseline
           key: coverage-baseline-${{ github.event.repository.default_branch }}-${{ github.sha }}
 
-  # ── End-to-end scenario suite (main only) ─────────────────────────────────
+  # ── End-to-end scenario suite (merge only) ────────────────────────────────
   # The two `/api/v2` business journeys (host lifecycle; guest purchase → door
   # → check-in → finance settlement) run over the FULL wired `buildApp()` on
   # the memory driver. This is the trunk-merge safety net. It lives in
   # `apps/api-gateway/scenarios/` — OUTSIDE `src/` so the unit `test` task never
-  # runs it by accident — and is gated to pushes on `main` only: the branch that
-  # deploys to production, where a regression here becomes an incident. Running
-  # it on every PR/staging commit would roughly double CI wall time for little
-  # added signal; staging reuses the fast unit gates until a merge approaches.
-  # `ci-ok` treats this as `skipped` (a pass) on non-main runs.
+  # runs it by accident — and is gated to pushes on `main`/`staging` only:
+  # branches that deploy, where a regression here becomes an incident. Running
+  # it on every PR would roughly double CI wall time for little added signal;
+  # PRs reuse the fast unit gates until a merge lands.
+  # `ci-ok` treats this as `skipped` (a pass) on PR runs.
   scenario:
-    name: Scenario suite (main only)
+    name: Scenario suite (merge only)
     needs: changes
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.code == 'true'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging') && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -263,7 +283,8 @@ jobs:
   docker:
     name: Docker build & scan
     needs: changes
-    if: needs.changes.outputs.docker == 'true' && !inputs.skip_docker
+    # PR-gate only — see `static`'s comment above for why push is excluded.
+    if: needs.changes.outputs.docker == 'true' && !inputs.skip_docker && github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
@@ -336,9 +357,13 @@ jobs:
           docker run -d --name c1rcle-smoke -p 8080:8080 \
             -e NODE_ENV=production \
             -e STORAGE_DRIVER=memory \
+            -e ALLOW_MEMORY_STORAGE_IN_PRODUCTION=true \
             -e BETTER_AUTH_SECRET="$(openssl rand -hex 32)" \
             -e BETTER_AUTH_URL="https://smoke.invalid" \
+            -e PUBLIC_API_URL="https://smoke.invalid" \
+            -e ALLOWED_ORIGINS="https://smoke.invalid" \
             -e EMAIL_OTP_SECRET="$(openssl rand -hex 32)" \
+            -e MAGIC_TICKET_SECRET="$(openssl rand -hex 32)" \
             "c1rcle-backend:${GITHUB_SHA}"
           for i in $(seq 1 45); do
             if curl -fsS http://localhost:8080/api/v2/internal/health > /tmp/health.json; then
@@ -407,7 +432,8 @@ jobs:
   contract-parity:
     name: Contract parity (frontend)
     needs: changes
-    if: vars.CONTRACT_PARITY_ENABLED == 'true' && needs.changes.outputs.contracts == 'true'
+    # PR-gate only — see `static`'s comment above for why push is excluded.
+    if: vars.CONTRACT_PARITY_ENABLED == 'true' && needs.changes.outputs.contracts == 'true' && github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -522,40 +548,145 @@ jobs:
           fi
           echo "All gates green."
 
-  # ── Post-deploy verification (main only) ───────────────────────────────────
-  # Render auto-deploys on push. This waits for THAT deploy to go live, proves
-  # it works, and rolls it back if it does not.
-  verify-deploy:
-    name: Verify production deploy
+  # ── Gated deploy & post-deploy verification ─────────────────────────────────
+  # Render no longer auto-deploys (autoDeploy is off — see render.yaml). The
+  # deploy happens HERE, and only here, and only when EVERY gate in this pipeline
+  # has passed (`needs: ci-ok`) AND the Security pipeline (`Security OK` in
+  # security.yml) has passed for this exact commit. The job then triggers Render,
+  # waits for the commit to go live, smoke-tests it, and rolls back + files an
+  # incident if anything fails.
+  #
+  # Job-level `if:` conditions are NOT reliable on push in this repo (proven
+  # repeatedly: the 09-22 skip; PR #54's merge run where a matching push/staging
+  # `if:` was skipped while the sibling `scenario` job — same context — ran; and
+  # PR #55's merge run where a needs-based job with NO `if:` was skipped even
+  # though its `needs: ci-ok` succeeded). The only job-level shape PROVEN to run
+  # on push here is `if: always()` — that is exactly what the `ci-ok` job uses,
+  # and it has run on every push, every time. So this job uses `if: always()`
+  # and does ALL of its own gating in the pure-shell gate step below: it checks
+  # the event is a push to `staging` AND that `needs.ci-ok.result` is `success`
+  # (passed in as env), so a failed CI still blocks the deploy even though the
+  # job itself always runs. Every consequential step then runs only when the
+  # gate output says `match=true`.
+  #
+  # Only `staging` deploys today: no `main`-tracking Render service exists yet
+  # (the one live service, circle-v2-backend, tracks `staging`). When a `main`
+  # service is created, extend the gate step and set `RENDER_SERVICE_ID`
+  # alongside `RENDER_STAGING_SERVICE_ID`.
+  deploy:
+    name: Deploy & verify
     needs: ci-ok
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    environment:
-      name: production
-      url: https://circle-v2-backend.onrender.com
+    timeout-minutes: 60
     permissions:
       contents: read
-      issues: write # file an incident if smoke fails
+      actions: read # list Security workflow runs for the gate
+      issues: write # file an incident if the deploy fails
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
 
+      # ── GATE: this job must only act on a push to `staging` when CI passed ──
+      # Pure shell — no Actions expressions, so nothing can mis-evaluate. The
+      # runner sets these env vars from the event, and `needs.ci-ok.result` is
+      # passed in as env. On any other run (PRs, dispatch) or a failed CI,
+      # `match` is `false` and every step below is skipped.
+      - name: 'Gate: staging push + CI OK only'
+        id: gate
+        env:
+          CI_OK_RESULT: ${{ needs.ci-ok.result }}
+        run: |
+          echo "event=$GITHUB_EVENT_NAME ref=$GITHUB_REF ci_ok=$CI_OK_RESULT"
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && \
+             [ "$GITHUB_REF" = "refs/heads/staging" ] && \
+             [ "$CI_OK_RESULT" = "success" ]; then
+            echo "match=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "match=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Not a successful-CI push to staging (event=$GITHUB_EVENT_NAME ref=$GITHUB_REF ci_ok=$CI_OK_RESULT) — skipping the gated deploy."
+          fi
+
       - name: Detect Render API credentials
+        if: steps.gate.outputs.match == 'true'
         id: render
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
-          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_STAGING_SERVICE_ID }}
         run: |
           if [ -n "$RENDER_API_KEY" ] && [ -n "$RENDER_SERVICE_ID" ]; then
             echo "rollback=true" >> "$GITHUB_OUTPUT"
           else
             echo "rollback=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::RENDER_API_KEY / RENDER_SERVICE_ID are not set — automatic rollback is disabled."
+            echo "::notice::Render API credentials for $GITHUB_REF_NAME are not set — automatic rollback is disabled."
           fi
 
+      # ── GATE: deployment must not start until Security passes ──────────────
+      # Polls the Security workflow run that THIS push started (event=push,
+      # head_sha = the deployed commit) and blocks until it completes. Any
+      # conclusion other than success/skipped fails the job, so the deploy is
+      # never triggered. Times out after 25 minutes, which still fails closed.
+      - name: Wait for the Security pipeline to pass
+        if: steps.gate.outputs.match == 'true'
+        timeout-minutes: 25
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const sha = context.sha;
+            const deadline = Date.now() + 25 * 60 * 1000;
+            let seen = false;
+            while (Date.now() < deadline) {
+              const { data } = await github.rest.actions.listWorkflowRunsForRepo({
+                owner, repo, event: 'push', head_sha: sha, per_page: 100,
+              });
+              const runs = data.workflow_runs.filter((r) => r.name === 'Security');
+              if (runs.length > 0) {
+                seen = true;
+                const run = runs[0];
+                if (run.status === 'completed') {
+                  if (run.conclusion === 'success' || run.conclusion === 'skipped') {
+                    console.log(`Security pipeline passed — run ${run.id} (${run.conclusion}). Triggering deploy.`);
+                    return;
+                  }
+                  core.setFailed(`Security pipeline concluded '${run.conclusion}' (run ${run.id}) — deploy blocked.`);
+                  process.exit(1);
+                }
+                console.log(`Security run ${run.id} still ${run.status}…`);
+              } else {
+                console.log(`No Security run for ${sha.slice(0, 7)} yet…`);
+              }
+              await new Promise((resolve) => setTimeout(resolve, 15000));
+            }
+            core.setFailed(seen
+              ? 'Security pipeline did not finish within 25 minutes — deploy blocked.'
+              : `No Security workflow run appeared for ${sha.slice(0, 7)} within 25 minutes — deploy blocked.`);
+            process.exit(1);
+
+      - name: Trigger Render deploy
+        if: steps.gate.outputs.match == 'true'
+        timeout-minutes: 5
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_STAGING_SERVICE_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "$RENDER_API_KEY" ] || [ -z "$RENDER_SERVICE_ID" ]; then
+            echo "::error::RENDER_API_KEY / RENDER_STAGING_SERVICE_ID are not set — cannot trigger the gated deploy."
+            exit 1
+          fi
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $RENDER_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{}' \
+            "https://api.render.com/v1/services/$RENDER_SERVICE_ID/deploys"
+
       - name: Wait for Render to serve this commit
+        if: steps.gate.outputs.match == 'true'
+        env:
+          NGINX_READINESS_TOKEN: ${{ secrets.NGINX_READINESS_TOKEN }}
         run: |
           node scripts/ci/wait-for-deploy.mjs \
             --url "$PRODUCTION_URL" \
@@ -563,34 +694,40 @@ jobs:
             --timeout 900 \
             --interval 15
 
-      - name: Smoke test production
+      - name: Smoke test deploy
+        if: steps.gate.outputs.match == 'true'
         id: smoke
+        env:
+          NGINX_READINESS_TOKEN: ${{ secrets.NGINX_READINESS_TOKEN }}
         run: node scripts/ci/smoke.mjs --url "$PRODUCTION_URL"
 
       - name: Roll back the failed deploy
-        if: failure() && steps.smoke.outcome == 'failure' && steps.render.outputs.rollback == 'true'
+        if: steps.gate.outputs.match == 'true' && failure() && steps.smoke.outcome == 'failure' && steps.render.outputs.rollback == 'true'
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
-          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_STAGING_SERVICE_ID }}
         run: node scripts/ci/render-rollback.mjs
 
-      - name: File a production incident
-        if: failure()
+      - name: File a deploy incident
+        if: steps.gate.outputs.match == 'true' && failure()
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           ROLLBACK_ATTEMPTED: ${{ steps.render.outputs.rollback }}
         with:
           script: |
-            const title = `Production smoke tests failed for ${context.sha.slice(0, 7)}`;
+            const title = `staging gated deploy failed for ${context.sha.slice(0, 7)}`;
             const body = [
-              'Post-deploy verification failed on `main`.',
+              'The gated deploy path failed on `staging`. Two things to know:',
+              '',
+              '- If this ran, CI OK had already passed; the Security gate or the deploy/verify itself is what failed.',
+              '- If the Security gate failed, nothing was deployed — the current live build is the previous commit.',
               '',
               `- Commit: ${context.sha}`,
               `- Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-              '- Target: https://circle-v2-backend.onrender.com',
+              `- Target: ${process.env.PRODUCTION_URL}`,
               `- Automatic rollback attempted: ${process.env.ROLLBACK_ATTEMPTED}`,
               '',
-              "Check the run's job summary for which smoke assertions failed.",
+              "Check the run's job summary for which step failed.",
             ].join('\n');
             const existing = await github.rest.issues.listForRepo({
               ...context.repo,

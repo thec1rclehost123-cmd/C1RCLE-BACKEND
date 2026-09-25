@@ -33,7 +33,7 @@ import type {
   DoorSaleStatus,
 } from '../models/door-sale.js';
 import type { EmailOtp } from '../models/email-otp.js';
-import type { Entitlement } from '../models/entitlement.js';
+import type { AdmissionClaim, Entitlement } from '../models/entitlement.js';
 import type {
   TicketTier,
   PromoCode,
@@ -63,14 +63,32 @@ import type {
 } from '../models/organization.js';
 import type { Partnership } from '../models/partnership.js';
 import type { Payout, PayoutStatus } from '../models/payout.js';
+import type { PlatformSettings } from '../models/platform-settings.js';
+import type { PlatformUser } from '../models/platform-user.js';
 import type { PromoterConnection } from '../models/promoter-connection.js';
 import type { ReferralLink } from '../models/referral-link.js';
+import type { AdminRefundRequest, AdminRefundRequestStatus } from '../models/refund-request.js';
+import type {
+  SafetyReport,
+  SafetyReportCategory,
+  SafetyReportPriority,
+  SafetyReportStatus,
+  SafetyReportTargetType,
+} from '../models/safety-report.js';
 import type {
   ScanLedger,
   ScanLedgerStatus,
   ScanLedgerCreateInput,
   ScanDenyReason,
 } from '../models/scan-ledger.js';
+import type { ScannerDevice } from '../models/scanner-device.js';
+import type {
+  SupportTicket,
+  SupportTicketCategory,
+  SupportTicketPriority,
+  SupportTicketStatus,
+} from '../models/support-ticket.js';
+import type { UserBan } from '../models/user-ban.js';
 import type { Venue, VenueSlot, SlotRequest } from '../models/venue.js';
 
 // ─── Phase 5: Scan Ledger, Event Code, Scanner Session, Door Sale, Cover Wallet ───────
@@ -108,10 +126,31 @@ export interface OrganizationRepository {
   getBySlug(slug: string): Promise<Organization | null>;
   /** All orgs a user id belongs to as a member. */
   listForMember(userId: EntityId, query: PaginationQuery): Promise<Page<Organization>>;
+  /** Platform-wide org directory (admin hosts view) — global, not org-scoped. */
+  listAll(query: PaginationQuery): Promise<Page<Organization>>;
   listMembers(organizationId: EntityId, query: PaginationQuery): Promise<Page<OrganizationMember>>;
   getMember(organizationId: EntityId, userId: EntityId): Promise<OrganizationMember | null>;
   save(org: Organization, tx?: TxContext | null): Promise<void>;
   delete(organizationId: EntityId, tx?: TxContext | null): Promise<void>;
+}
+
+/**
+ * Platform user directory (admin users view). READ-ONLY by design — admin
+ * routes never mutate Better Auth accounts. Implementations read the
+ * `v2_auth_users` collection (firestore) or an in-memory seed (memory driver).
+ */
+export interface UserAccountRepository {
+  /** Platform-wide user directory — global, not org-scoped. */
+  listAll(query: PaginationQuery): Promise<Page<PlatformUser>>;
+  getById(userId: EntityId): Promise<PlatformUser | null>;
+  /** Exact-match lookup by email — the admin global-lookup's second key besides id. */
+  getByEmail(email: string): Promise<PlatformUser | null>;
+}
+
+/** Ban state for platform users, one record per user, keyed by user id. */
+export interface UserBanRepository {
+  getByUserId(userId: EntityId): Promise<UserBan | null>;
+  save(ban: UserBan, tx?: TxContext | null): Promise<void>;
 }
 
 /**
@@ -180,6 +219,8 @@ export interface VenueRepository {
    * addresses a venue by slug alone, with no tenant context of its own. */
   getBySlugGlobal(slug: string): Promise<Venue | null>;
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Venue>>;
+  /** Platform-wide venue directory (admin venues view) — global, not org-scoped. */
+  listAll(query: PaginationQuery): Promise<Page<Venue>>;
   save(venue: Venue, tx?: TxContext | null): Promise<void>;
 }
 
@@ -204,6 +245,8 @@ export interface EventRepository {
   getBySlug(slug: string): Promise<Event | null>;
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Event>>;
   listByVenue(venueId: EntityId, query: PaginationQuery): Promise<Page<Event>>;
+  /** Platform-wide event directory (admin events view) — global, includes non-public. */
+  listAll(query: PaginationQuery): Promise<Page<Event>>;
   listPublic(query: PaginationQuery): Promise<Page<Event>>;
   save(event: Event, tx?: TxContext | null): Promise<void>;
   delete(eventId: EntityId, tx?: TxContext | null): Promise<void>;
@@ -222,6 +265,8 @@ export interface EventCatalogRepository {
   getPromoById(promoId: EntityId): Promise<PromoCode | null>;
   getPromoByCode(code: string, eventId: EntityId | null): Promise<PromoCode | null>;
   listPromos(eventId: EntityId, query: PaginationQuery): Promise<Page<PromoCode>>;
+  /** Platform-wide promo listing (admin read-only dashboard). */
+  listAllPromos(query: PaginationQuery): Promise<Page<PromoCode>>;
   savePromo(promo: PromoCode, tx?: TxContext | null): Promise<void>;
   // Table packages
   getTableById(tableId: EntityId): Promise<TablePackage | null>;
@@ -230,6 +275,10 @@ export interface EventCatalogRepository {
   // Promoter assignments
   getAssignmentById(assignmentId: EntityId): Promise<PromoterAssignment | null>;
   listAssignments(eventId: EntityId): Promise<PromoterAssignment[]>;
+  /** All assignments for a given promoter user (admin lifecycle queries). */
+  listAssignmentsByPromoter(promoterId: EntityId): Promise<PromoterAssignment[]>;
+  /** Platform-wide promoter-assignment listing (admin read-only dashboard). */
+  listAllAssignments(query: PaginationQuery): Promise<Page<PromoterAssignment>>;
   saveAssignment(assignment: PromoterAssignment, tx?: TxContext | null): Promise<void>;
 }
 
@@ -418,6 +467,8 @@ export interface OrderRepository {
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Order>>;
   /** Lists orders for an event. */
   listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<Order>>;
+  /** Lists all orders platform-wide (admin read-only dashboards). */
+  listAll(query: PaginationQuery): Promise<Page<Order>>;
   /** Saves (create or update). Version is checked for optimistic locking. */
   save(order: Order, tx?: TxContext | null): Promise<void>;
 }
@@ -436,12 +487,54 @@ export interface EntitlementRepository {
   listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<Entitlement>>;
   /** Fetches entitlements for an organization (partner/admin). */
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Entitlement>>;
+  /** Lists all entitlements platform-wide (admin read-only dashboards). */
+  listAll(query: PaginationQuery): Promise<Page<Entitlement>>;
   /** Saves (create or update — scan increments version). Version checked for optimistic locking. */
   save(entitlement: Entitlement, tx?: TxContext | null): Promise<void>;
   /** Bulk save for fulfilment (atomic with order creation). */
   saveMany(entitlements: Entitlement[], tx?: TxContext | null): Promise<void>;
   /** Counts valid entitlements for a tier (inventory/sell-through). */
   countValidByTier(tierId: EntityId): Promise<number>;
+  /**
+   * Atomically admits one person against this entitlement, or refuses.
+   *
+   * This is the door's ONLY admission primitive. Two physical scanners can
+   * present the same QR in the same millisecond; a read-then-write in a
+   * service would let both through (both read `scanCount: 0`, both write
+   * `1`). The check and the increment therefore happen where atomicity
+   * actually exists — inside the adapter, in one Firestore transaction
+   * (D-015's rule, applied to admission rather than to `version`).
+   *
+   * The rule itself is not duplicated here: both adapters call the domain's
+   * `admitSeats`, so the transactional path and the read-only preview path
+   * can never disagree about what is admissible.
+   */
+  claimAdmission(
+    entitlementId: EntityId,
+    eventId: EntityId,
+    options?: ClaimAdmissionOptions,
+  ): Promise<AdmissionClaim>;
+}
+
+export type { AdmissionClaim };
+
+export interface ClaimAdmissionOptions {
+  /**
+   * How many people this one call admits. 1 for an ordinary scan; 2 for a
+   * confirmed couple ticket, where both guests walk through together and the
+   * pair must be consumed in ONE transaction — claiming twice would let the
+   * two halves land either side of a concurrent scan and admit three people
+   * on a two-person ticket. Defaults to 1.
+   */
+  seats?: number;
+  /**
+   * Refuses the claim unless the ticket's scan count is exactly this. The
+   * couple-confirmation token was minted against a state a staff member saw;
+   * if anything consumed a seat since, the confirmation must fail rather than
+   * admit against a target that moved underneath it.
+   */
+  expectedScansUsed?: number;
+  now?: Date;
 }
 
 /** Promo redemption tracking (shared with Phase 3 event-catalog). */
@@ -486,8 +579,70 @@ export interface ScanLedgerRepository {
   /** Legal only from `denied` — see `domain/models/scan-ledger.ts`'s `overrideScan`. */
   markOverridden(id: EntityId, overriddenBy: string, reason: string): Promise<ScanLedger | null>;
   countByEventAndStatus(eventId: EntityId, status: ScanLedgerStatus): Promise<number>;
+  /**
+   * People actually admitted for an event, and how they came in.
+   *
+   * A count of rows is NOT this number: one confirmed couple-ticket row
+   * admits two, an override row admits one against a denial, and a denied row
+   * admits nobody. The door's occupancy gauge is a life-safety number, so it
+   * sums `admittedCount` rather than counting scans.
+   */
+  getAdmissionStats(eventId: EntityId, tierNames: readonly string[]): Promise<ScanAdmissionStats>;
   countConsumedByEntitlement(entitlementId: EntityId): Promise<number>;
+  /**
+   * Offline backlog for an event's sync replay (scans recorded before `before`).
+   * Bounded: returns at most `MAX_SYNC_SCANS` rows, no ordering promise — a
+   * backlog larger than that needs another sync pass once the queue drains, so
+   * callers must loop rather than assume they got everything.
+   */
   findOfflineScans(eventId: EntityId, before: Date): Promise<ScanLedger[]>;
+}
+
+export interface ScanAdmissionStats {
+  /** Total people admitted by ticket scans (couples counted as two). */
+  admitted: number;
+  /** Admitted per tier name, for the tier names asked for. */
+  byEntryType: Record<string, number>;
+  /**
+   * Admitted against a tier that no longer appears in the event's catalog
+   * (renamed or deleted mid-event). Surfaced rather than dropped so the parts
+   * always add up to `admitted` — a breakdown that silently loses people is
+   * worse than one that says "and these".
+   */
+  unattributed: number;
+}
+
+/**
+ * Bound scanner devices — the handsets a venue has authorized for its door.
+ * Keyed by `${organizationId}_${deviceId}` so a device id only ever means
+ * something inside one tenant.
+ */
+export interface ScannerDeviceRepository {
+  findById(id: EntityId): Promise<ScannerDevice | null>;
+  findByDevice(organizationId: EntityId, deviceId: string): Promise<ScannerDevice | null>;
+  listByOrganization(
+    organizationId: EntityId,
+    query: PaginationQuery,
+  ): Promise<Page<ScannerDevice>>;
+  save(device: ScannerDevice, tx?: TxContext | null): Promise<void>;
+  /**
+   * Liveness + per-device counters. Deliberately NOT a `save` of the whole
+   * aggregate: heartbeats and scan counters arrive constantly and from every
+   * device at once, and routing them through the version check would make
+   * ordinary traffic conflict with itself. Nothing here is an invariant —
+   * these fields are observability, not truth.
+   */
+  touch(
+    id: EntityId,
+    patch: {
+      lastSeenAt: string;
+      lastEventId?: EntityId | null;
+      lastGate?: string | null;
+      lastScanAt?: string | null;
+      lastScanResult?: string | null;
+      incrementScanCount?: boolean;
+    },
+  ): Promise<void>;
 }
 
 /** Event Code repository — authorization codes for scanner apps. */
@@ -690,6 +845,8 @@ export interface PayoutRepository {
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Payout>>;
   sumPaidByOrganization(organizationId: EntityId): Promise<number>;
   sumRequestedOrProcessingByOrganization(organizationId: EntityId): Promise<number>;
+  /** Cross-org admin view — the batch-run and freeze/release queues. `null` = every status. */
+  listByStatus(status: PayoutStatus | null, query: PaginationQuery): Promise<Page<Payout>>;
 }
 
 /** Partner payout destinations. Full account number never leaves the adapter unmasked. */
@@ -711,6 +868,88 @@ export interface DisputeRepository {
     organizationId: EntityId,
     query: PaginationQuery & { status?: DisputeStatus },
   ): Promise<Page<Dispute>>;
+  /** Cross-org admin queue. `null` = every status. */
+  listByStatus(status: DisputeStatus | null, query: PaginationQuery): Promise<Page<Dispute>>;
+}
+
+/** Admin refund requests (Phase 6 admin). Version-checked saves for the N-approver accumulator. */
+export interface AdminRefundRequestRepository {
+  getById(id: EntityId): Promise<AdminRefundRequest | null>;
+  /** Every request against one order — used to compute the refundable remainder. */
+  listByOrder(orderId: EntityId): Promise<AdminRefundRequest[]>;
+  listByStatus(
+    status: AdminRefundRequestStatus | null,
+    query: PaginationQuery,
+  ): Promise<Page<AdminRefundRequest>>;
+  save(request: AdminRefundRequest, tx?: TxContext | null): Promise<void>;
+}
+
+/**
+ * Platform safety reports (Phase 7). Version-checked saves — the report is a
+ * single versioned aggregate, so a concurrent resolution write loses. Soft
+ * deletion follows the same "always recoverable" rule as support tickets.
+ */
+export interface SafetyReportQuery {
+  status?: SafetyReportStatus;
+  category?: SafetyReportCategory;
+  priority?: SafetyReportPriority;
+  targetType?: SafetyReportTargetType;
+  reporterUserId?: EntityId;
+  /** Case-insensitive substring over details. */
+  search?: string;
+  includeDeleted?: boolean;
+}
+
+/** Desk stat counters — the real safety metric (no v1-style fabricated rating). */
+export interface SafetyReportStats {
+  open: number;
+  dismissed: number;
+  actioned: number;
+  total: number;
+  /** All reports in the critical bucket (category `safety`). */
+  critical: number;
+}
+
+export interface SafetyReportRepository {
+  getById(id: EntityId, opts?: { includeDeleted?: boolean }): Promise<SafetyReport | null>;
+  list(query: SafetyReportQuery, pagination: PaginationQuery): Promise<Page<SafetyReport>>;
+  listByReporter(
+    reporterUserId: EntityId,
+    pagination: PaginationQuery,
+  ): Promise<Page<SafetyReport>>;
+  stats(): Promise<SafetyReportStats>;
+  save(report: SafetyReport): Promise<void>;
+}
+
+/**
+ * Platform support tickets (Phase 7). Version-checked saves — the ticket is a
+ * single versioned aggregate (messages, internal notes and timeline live on
+ * it), so every mutation bumps `version` and a concurrent write loses.
+ * `softDeleted` tickets are never returned by `list` unless explicitly
+ * requested, matching the "soft delete with attribution, always recoverable"
+ * rule; they remain addressable by `getById` so restore is a pure save.
+ */
+export interface SupportTicketQuery {
+  status?: SupportTicketStatus;
+  priority?: SupportTicketPriority;
+  category?: SupportTicketCategory;
+  assigneeUserId?: EntityId;
+  requesterUserId?: EntityId;
+  /** Case-insensitive substring over subject + description. */
+  search?: string;
+  includeDeleted?: boolean;
+}
+
+export interface SupportTicketRepository {
+  getById(id: EntityId, opts?: { includeDeleted?: boolean }): Promise<SupportTicket | null>;
+  /** The ticket a client points at via `mergedInto`. */
+  listByMergedInto(ticketId: EntityId): Promise<SupportTicket[]>;
+  list(query: SupportTicketQuery, pagination: PaginationQuery): Promise<Page<SupportTicket>>;
+  listByRequester(
+    requesterUserId: EntityId,
+    pagination: PaginationQuery,
+  ): Promise<Page<SupportTicket>>;
+  save(ticket: SupportTicket): Promise<void>;
 }
 
 /**
@@ -747,6 +986,17 @@ export interface EmailOtpRepository {
   delete(recipient: EntityId): Promise<void>;
 }
 
+// ─── Platform settings (singleton doc) ──────────────────────────────────────
+
+/**
+ * Singleton read/write for the platform-wide settings doc.
+ * Backed by `v2_platform_settings/singleton` in Firestore.
+ */
+export interface PlatformSettingsRepository {
+  get(): Promise<PlatformSettings>;
+  save(settings: PlatformSettings): Promise<void>;
+}
+
 export type {
   LedgerEntry,
   LedgerEntryType,
@@ -759,4 +1009,5 @@ export type {
   LeaderboardBucket,
   LeaderboardPeriodType,
   EmailOtp,
+  PlatformSettings,
 };

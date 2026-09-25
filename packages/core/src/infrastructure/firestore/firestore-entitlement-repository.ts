@@ -1,9 +1,13 @@
+import { admitSeats } from '../../domain/models/entitlement.js';
+
 import { compareAndSet } from './compare-and-set.js';
 import { paginateQuery } from './pagination.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type { Entitlement, EntitlementStatus } from '../../domain/models/entitlement.js';
 import type {
+  AdmissionClaim,
+  ClaimAdmissionOptions,
   EntitlementRepository,
   Page,
   PaginationQuery,
@@ -60,6 +64,11 @@ export class FirestoreEntitlementRepository implements EntitlementRepository {
     return paginateQuery(base, query, toEntitlement);
   }
 
+  async listAll(query: PaginationQuery): Promise<Page<Entitlement>> {
+    const base = this.collection.orderBy('createdAt', 'desc');
+    return paginateQuery(base, query, toEntitlement);
+  }
+
   async save(entitlement: Entitlement, _tx?: TxContext | null): Promise<void> {
     await compareAndSet(this.db, this.collection, entitlement, toDoc);
   }
@@ -78,6 +87,29 @@ export class FirestoreEntitlementRepository implements EntitlementRepository {
       }
     }
     await batch.commit();
+  }
+
+  /**
+   * One transaction: read, evaluate with the domain rule, write the
+   * incremented entitlement. Firestore aborts and retries the whole closure
+   * if the document changed under it, so the second of two simultaneous
+   * scanners re-reads the incremented `scanCount` and is denied
+   * `already_used` — a double admission is impossible, not merely unlikely.
+   */
+  async claimAdmission(
+    entitlementId: EntityId,
+    eventId: EntityId,
+    options?: ClaimAdmissionOptions,
+  ): Promise<AdmissionClaim> {
+    const ref = this.collection.doc(entitlementId);
+    return this.db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      const data = snap.data();
+      const current = data ? toEntitlement(data) : null;
+      const decision = admitSeats(current, eventId, options);
+      if (decision.admitted && decision.entitlement) tx.set(ref, toDoc(decision.entitlement));
+      return decision;
+    });
   }
 
   async countValidByTier(tierId: EntityId): Promise<number> {

@@ -66,6 +66,11 @@ export class FirestoreOrderRepository implements OrderRepository {
     return paginateQuery(base, query, toOrder);
   }
 
+  async listAll(query: PaginationQuery): Promise<Page<Order>> {
+    const base = this.collection.orderBy('createdAt', 'desc');
+    return paginateQuery(base, query, toOrder);
+  }
+
   async save(order: Order, _tx?: TxContext | null): Promise<void> {
     // Compare-and-set: a write of version N must find N-1 (see compare-and-set.ts).
     await compareAndSet(this.db, this.collection, order, toDoc);
@@ -100,6 +105,7 @@ function toDoc(order: Order): DocumentData {
     paidAt: order.paidAt,
     reservationExpiresAt: order.reservationExpiresAt,
     failureReason: order.failureReason,
+    refundedPaise: order.refundedPaise,
     version: order.version,
     createdAt: order.createdAt,
     updatedAt: order.updatedAt,
@@ -130,6 +136,9 @@ function toOrder(data: DocumentData): Order {
     paidAt: data.paidAt as string | null,
     reservationExpiresAt: data.reservationExpiresAt as string,
     failureReason: data.failureReason as string | null,
+    // Existing orders written before this field existed have no value —
+    // they predate refunds, so zero is the correct read, not a guess.
+    refundedPaise: (data.refundedPaise as number | undefined) ?? 0,
     version: data.version as number,
     createdAt: data.createdAt as string,
     updatedAt: data.updatedAt as string,

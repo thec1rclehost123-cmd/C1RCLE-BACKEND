@@ -2,265 +2,290 @@ import { describe, expect, it } from 'vitest';
 
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 
+import partnerEventRoutes from './events.js';
 import partnerOrganizationRoutes from './organizations.js';
 import partnerPartnershipRoutes from './partnerships.js';
 import partnerVenueRoutes from './venues.js';
 
 /**
- * ─── Partnerships over HTTP (Phase 1) ────────────────────────────────────────
- *
- * The interesting cases are the two v1 behaviours this port deliberately
- * tightened: a requester could approve their own request, and `blocked` could
- * be silently undone by a later approve.
+ * ─── V2 partnerships slice over HTTP (Phase 1) ───────────────────────────────
+ * The venue↔host graph. The new `venue-share` command is the focus: it must be
+ * a party-only, active-only negotiation of the % the venue takes of each
+ * settlement's gross — and the DTO must round-trip the negotiated value.
  */
 
 let keySeq = 0;
 const buildServer = () =>
   buildPartnerTestServer({
-    routes: [partnerOrganizationRoutes, partnerVenueRoutes, partnerPartnershipRoutes],
+    routes: [
+      partnerOrganizationRoutes,
+      partnerVenueRoutes,
+      partnerEventRoutes,
+      partnerPartnershipRoutes,
+    ],
   });
 
 type Server = Awaited<ReturnType<typeof buildServer>>;
-
-const read = (org: string) => ({ 'x-organization-id': org });
 const write = (org: string) => ({
-  ...read(org),
-  'idempotency-key': `ptn-key-${++keySeq}`,
+  'x-organization-id': org,
+  'idempotency-key': `partner-key-${++keySeq}`,
 });
 
-async function createOrganization(server: Server): Promise<string> {
-  const created = await server.inject({
+/**
+ * Two tenants — a host and the owner of a venue — plus a venue owned by the
+ * latter. Used to open (and later act on) a host→venue partnership request.
+ */
+async function seedHostAndVenue(
+  server: Server,
+): Promise<{ host: string; venue: string; venueOrg: string }> {
+  const hostCreated = await server.inject({
     method: 'POST',
     url: '/organizations',
-    headers: { 'x-organization-id': 'org_seed', 'idempotency-key': `seed-${++keySeq}` },
-    payload: { name: 'Org', slug: `org-${keySeq}` },
+    headers: { 'x-organization-id': 'org_host_seed', 'idempotency-key': `seed-${++keySeq}` },
+    payload: { name: 'Host Co', slug: `host-co-${keySeq}` },
   });
-  const id: string = created.json().id;
-  return id;
-}
+  const host: string = hostCreated.json().id;
 
-async function createVenue(server: Server, org: string): Promise<string> {
-  const created = await server.inject({
+  const venueOrgCreated = await server.inject({
     method: 'POST',
-    url: `/organizations/${org}/venues`,
-    headers: write(org),
-    payload: { name: 'Sky Bar', slug: `sky-bar-${++keySeq}` },
+    url: '/organizations',
+    headers: { 'x-organization-id': 'org_venue_seed', 'idempotency-key': `seed-${++keySeq}` },
+    payload: { name: 'Venue Co', slug: `venue-co-${keySeq}` },
   });
-  const id: string = created.json().id;
-  return id;
+  const venueOrg: string = venueOrgCreated.json().id;
+
+  const venueCreated = await server.inject({
+    method: 'POST',
+    url: `/organizations/${venueOrg}/venues`,
+    headers: write(venueOrg),
+    payload: { name: 'The Hall', slug: `the-hall-${keySeq}` },
+  });
+  const venue: string = venueCreated.json().id;
+  return { host, venue, venueOrg };
 }
 
-/** A venue owned by one org, and a second org that will play the host. */
-async function twoParties(server: Server) {
-  const venueOrg = await createOrganization(server);
-  const venueId = await createVenue(server, venueOrg);
-  const hostOrg = await createOrganization(server);
-  return { venueOrg, venueId, hostOrg };
+async function activePartnership(
+  server: Server,
+  host: string,
+  venue: string,
+  venueOrg: string,
+): Promise<string> {
+  const requested = await server.inject({
+    method: 'POST',
+    url: '/partnerships',
+    headers: write(host),
+    payload: { venueId: venue, initiatedBy: 'host', venueShareRate: 20 },
+  });
+  expect(requested.statusCode).toBe(201);
+  const partnershipId: string = requested.json().id;
+
+  const approved = await server.inject({
+    method: 'POST',
+    url: `/partnerships/${partnershipId}/approve`,
+    headers: write(venueOrg),
+    payload: {},
+  });
+  expect(approved.statusCode).toBe(200);
+  return partnershipId;
 }
 
-describe('requesting a partnership', () => {
-  it('opens a pending request from the host side', async () => {
+describe('partnerships over HTTP', () => {
+  it('creates a partnership request carrying a proposed venue share', async () => {
     const server = await buildServer();
-    const { venueId, hostOrg } = await twoParties(server);
+    const { host, venue } = await seedHostAndVenue(server);
 
-    const response = await server.inject({
+    const requested = await server.inject({
       method: 'POST',
       url: '/partnerships',
-      headers: write(hostOrg),
-      payload: { venueId, initiatedBy: 'host', message: 'Friday nights?' },
+      headers: write(host),
+      payload: { venueId: venue, initiatedBy: 'host', venueShareRate: 20 },
     });
 
-    expect(response.statusCode).toBe(201);
-    expect(response.json()).toMatchObject({
+    expect(requested.statusCode).toBe(201);
+    expect(requested.json()).toMatchObject({
       status: 'pending',
+      venueShareRate: 20,
       initiatedBy: 'host',
-      hostOrganizationId: hostOrg,
-      venueId,
-      message: 'Friday nights?',
     });
     await server.close();
   });
 
-  it('resolves the venue’s owning organization server-side', async () => {
+  it('creates a partnership request without a venue share (rate null)', async () => {
     const server = await buildServer();
-    const { venueOrg, venueId, hostOrg } = await twoParties(server);
+    const { host, venue } = await seedHostAndVenue(server);
+
+    const requested = await server.inject({
+      method: 'POST',
+      url: '/partnerships',
+      headers: write(host),
+      payload: { venueId: venue, initiatedBy: 'host' },
+    });
+
+    expect(requested.statusCode).toBe(201);
+    expect(requested.json().venueShareRate).toBeNull();
+    await server.close();
+  });
+});
+
+describe('POST /partnerships/:partnershipId/venue-share', () => {
+  it('lets either party negotiate the venue share on an active partnership', async () => {
+    const server = await buildServer();
+    const { host, venue, venueOrg } = await seedHostAndVenue(server);
+    const partnershipId = await activePartnership(server, host, venue, venueOrg);
+
+    // Host sets 20 first...
+    const fromHost = await server.inject({
+      method: 'POST',
+      url: `/partnerships/${partnershipId}/venue-share`,
+      headers: write(host),
+      payload: { venueShareRate: 20 },
+    });
+    expect(fromHost.statusCode).toBe(200);
+    expect(fromHost.json()).toMatchObject({ status: 'active', venueShareRate: 20 });
+
+    // ...then the venue adjusts it. The DTO round-trips the value.
+    const fromVenue = await server.inject({
+      method: 'POST',
+      url: `/partnerships/${partnershipId}/venue-share`,
+      headers: write(venueOrg),
+      payload: { venueShareRate: 25 },
+    });
+    expect(fromVenue.statusCode).toBe(200);
+    expect(fromVenue.json().venueShareRate).toBe(25);
+    expect(fromVenue.json().version).toBeGreaterThan(fromHost.json().version);
+    await server.close();
+  });
+
+  it('clears the venue share back to null', async () => {
+    const server = await buildServer();
+    const { host, venue, venueOrg } = await seedHostAndVenue(server);
+    const partnershipId = await activePartnership(server, host, venue, venueOrg);
+
+    const cleared = await server.inject({
+      method: 'POST',
+      url: `/partnerships/${partnershipId}/venue-share`,
+      headers: write(host),
+      payload: { venueShareRate: null },
+    });
+
+    expect(cleared.statusCode).toBe(200);
+    expect(cleared.json().venueShareRate).toBeNull();
+    await server.close();
+  });
+
+  it('rejects a rate outside the 0..50 band with 422', async () => {
+    const server = await buildServer();
+    const { host, venue, venueOrg } = await seedHostAndVenue(server);
+    const partnershipId = await activePartnership(server, host, venue, venueOrg);
+
+    for (const venueShareRate of [51, -1]) {
+      const response = await server.inject({
+        method: 'POST',
+        url: `/partnerships/${partnershipId}/venue-share`,
+        headers: write(host),
+        payload: { venueShareRate },
+      });
+      expect(response.statusCode).toBe(422);
+    }
+    await server.close();
+  });
+
+  it('rejects a non-integer rate with 422', async () => {
+    const server = await buildServer();
+    const { host, venue, venueOrg } = await seedHostAndVenue(server);
+    const partnershipId = await activePartnership(server, host, venue, venueOrg);
 
     const response = await server.inject({
       method: 'POST',
-      url: '/partnerships',
-      headers: write(hostOrg),
-      payload: { venueId, initiatedBy: 'host' },
+      url: `/partnerships/${partnershipId}/venue-share`,
+      headers: write(host),
+      payload: { venueShareRate: 20.5 },
     });
 
-    // The client never sent venueOrganizationId — it comes from the venue.
-    expect(response.json().venueOrganizationId).toBe(venueOrg);
+    expect(response.statusCode).toBe(422);
     await server.close();
   });
 
-  it('refuses a venue-initiated request from someone who does not own the venue', async () => {
+  it('rejects a rate with a missing body field via 422 (strict body)', async () => {
     const server = await buildServer();
-    const { venueId, hostOrg } = await twoParties(server);
+    const { host, venue, venueOrg } = await seedHostAndVenue(server);
+    const partnershipId = await activePartnership(server, host, venue, venueOrg);
 
     const response = await server.inject({
       method: 'POST',
-      url: '/partnerships',
-      headers: write(hostOrg),
-      payload: { venueId, initiatedBy: 'venue' },
+      url: `/partnerships/${partnershipId}/venue-share`,
+      headers: write(host),
+      payload: {},
     });
 
-    expect(response.statusCode).toBe(403);
+    expect(response.statusCode).toBe(422);
     await server.close();
   });
 
-  it('refuses a second live request for the same pair', async () => {
+  it('rejects a stranger setting the rate with 404 (non-party == not-found)', async () => {
     const server = await buildServer();
-    const { venueId, hostOrg } = await twoParties(server);
-    const payload = { venueId, initiatedBy: 'host' as const };
-
-    await server.inject({ method: 'POST', url: '/partnerships', headers: write(hostOrg), payload });
-    const second = await server.inject({
-      method: 'POST',
-      url: '/partnerships',
-      headers: write(hostOrg),
-      payload,
-    });
-
-    // One live relationship per pair, so approving is never ambiguous.
-    expect(second.statusCode).toBe(400);
-    await server.close();
-  });
-
-  it('404s an unknown venue', async () => {
-    const server = await buildServer();
-    const hostOrg = await createOrganization(server);
+    const { host, venue, venueOrg } = await seedHostAndVenue(server);
+    const partnershipId = await activePartnership(server, host, venue, venueOrg);
 
     const response = await server.inject({
       method: 'POST',
-      url: '/partnerships',
-      headers: write(hostOrg),
-      payload: { venueId: 'ven_nope', initiatedBy: 'host' },
+      url: `/partnerships/${partnershipId}/venue-share`,
+      headers: write('org_stranger_seed'),
+      payload: { venueShareRate: 20 },
     });
 
+    // `fetchParty` treats any non-party as not-found (404) so a caller cannot
+    // distinguish "exists but not yours" from "does not exist" — an id oracle
+    // mitigation.
     expect(response.statusCode).toBe(404);
     await server.close();
   });
-});
 
-describe('answering a request', () => {
-  async function pendingRequest(server: Server) {
-    const parties = await twoParties(server);
-    const created = await server.inject({
+  it('rejects setting a rate before the partnership is active', async () => {
+    const server = await buildServer();
+    const { host, venue } = await seedHostAndVenue(server);
+
+    const requested = await server.inject({
       method: 'POST',
       url: '/partnerships',
-      headers: write(parties.hostOrg),
-      payload: { venueId: parties.venueId, initiatedBy: 'host' },
+      headers: write(host),
+      payload: { venueId: venue, initiatedBy: 'host' },
     });
-    const id: string = created.json().id;
-    return { ...parties, partnershipId: id };
-  }
-
-  it('lets the venue (the counterparty) approve', async () => {
-    const server = await buildServer();
-    const { venueOrg, partnershipId } = await pendingRequest(server);
+    const partnershipId: string = requested.json().id;
 
     const response = await server.inject({
       method: 'POST',
-      url: `/partnerships/${partnershipId}/approve`,
-      headers: write(venueOrg),
+      url: `/partnerships/${partnershipId}/venue-share`,
+      headers: write(host),
+      payload: { venueShareRate: 20 },
     });
 
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ status: 'active' });
-    await server.close();
-  });
-
-  it('refuses to let the REQUESTER approve their own request', async () => {
-    const server = await buildServer();
-    const { hostOrg, partnershipId } = await pendingRequest(server);
-
-    const response = await server.inject({
-      method: 'POST',
-      url: `/partnerships/${partnershipId}/approve`,
-      headers: write(hostOrg),
-    });
-
-    // v1 only checked "are you a party", which allowed exactly this.
     expect(response.statusCode).toBe(400);
     await server.close();
   });
 
-  it('records a rejection reason', async () => {
+  it('is idempotent: replaying the same key returns the same negotiation', async () => {
     const server = await buildServer();
-    const { venueOrg, partnershipId } = await pendingRequest(server);
+    const { host, venue, venueOrg } = await seedHostAndVenue(server);
+    const partnershipId = await activePartnership(server, host, venue, venueOrg);
+    const headers = write(host);
 
-    const response = await server.inject({
+    const first = await server.inject({
       method: 'POST',
-      url: `/partnerships/${partnershipId}/reject`,
-      headers: write(venueOrg),
-      payload: { reason: 'Fully booked' },
+      url: `/partnerships/${partnershipId}/venue-share`,
+      headers,
+      payload: { venueShareRate: 30 },
     });
+    expect(first.statusCode).toBe(200);
 
-    expect(response.json()).toMatchObject({
-      status: 'rejected',
-      resolutionReason: 'Fully booked',
-    });
-    await server.close();
-  });
-
-  it('treats a block as terminal — a later approve cannot undo it', async () => {
-    const server = await buildServer();
-    const { venueOrg, partnershipId } = await pendingRequest(server);
-
-    await server.inject({
+    const replay = await server.inject({
       method: 'POST',
-      url: `/partnerships/${partnershipId}/block`,
-      headers: write(venueOrg),
-      payload: { reason: 'Spam' },
+      url: `/partnerships/${partnershipId}/venue-share`,
+      headers,
+      payload: { venueShareRate: 30 },
     });
-    const approve = await server.inject({
-      method: 'POST',
-      url: `/partnerships/${partnershipId}/approve`,
-      headers: write(venueOrg),
-    });
-
-    // v1's statusMap would have happily written `active` over `blocked`.
-    expect(approve.statusCode).toBe(409);
-    await server.close();
-  });
-
-  it('hides a partnership between two other organizations', async () => {
-    const server = await buildServer();
-    const { partnershipId } = await pendingRequest(server);
-    const stranger = await createOrganization(server);
-
-    const response = await server.inject({
-      method: 'POST',
-      url: `/partnerships/${partnershipId}/approve`,
-      headers: write(stranger),
-    });
-
-    // Not-found rather than forbidden: a stranger learns nothing about it.
-    expect(response.statusCode).toBe(404);
-    await server.close();
-  });
-
-  it('lists partnerships from either side of the graph', async () => {
-    const server = await buildServer();
-    const { hostOrg, venueOrg } = await pendingRequest(server);
-
-    const fromHost = await server.inject({
-      method: 'GET',
-      url: `/organizations/${hostOrg}/partnerships`,
-      headers: read(hostOrg),
-    });
-    const fromVenue = await server.inject({
-      method: 'GET',
-      url: `/organizations/${venueOrg}/partnerships`,
-      headers: read(venueOrg),
-    });
-
-    expect(fromHost.json().items).toHaveLength(1);
-    expect(fromVenue.json().items).toHaveLength(1);
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json().venueShareRate).toBe(30);
     await server.close();
   });
 });

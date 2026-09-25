@@ -88,6 +88,26 @@ export interface Event extends VersionedEntity {
   isFree: boolean;
   /** Reason/meta recorded when CANCELLED. */
   cancellationReason: string | null;
+  /**
+   * Total people the room legally holds, for the door's occupancy gauge.
+   *
+   * Nullable on purpose: many events genuinely have no fixed cap, and a
+   * fabricated default (the old scanner UI hardcoded 500) tells door staff a
+   * confident number nobody set. `null` means "not configured" and the door
+   * shows occupancy without a limit rather than inventing one.
+   *
+   * This is NOT ticket inventory. Tier quantities decide what can be sold;
+   * capacity decides when the fire marshal stops the night.
+   */
+  capacity: number | null;
+  /**
+   * True while the current `sales_paused` state was forced by a platform
+   * admin rather than the partner pausing their own sales. Lets partner UI
+   * tell an admin halt apart from a self-pause instead of showing the same
+   * "paused" badge for both (v1's `adminStore.js:509` did this with the
+   * same flag name).
+   */
+  adminOverride: boolean;
 }
 
 export interface CreateEventInput {
@@ -101,6 +121,7 @@ export interface CreateEventInput {
   startAt: string;
   endAt?: string | null;
   tags?: string[];
+  capacity?: number | null;
   now?: Date;
 }
 
@@ -133,6 +154,8 @@ export function createEvent(input: CreateEventInput): Event {
     startingPricePaise: 0,
     isFree: true,
     cancellationReason: null,
+    capacity: input.capacity ?? null,
+    adminOverride: false,
     ...newVersionedEntity(now),
   };
 }
@@ -148,6 +171,7 @@ interface EventChanges {
   tags?: string[];
   startingPricePaise?: number;
   isFree?: boolean;
+  capacity?: number | null;
 }
 
 /** Controlled attribute update (no status changes here). Bumps version. */
@@ -181,6 +205,10 @@ export function transitionEvent(event: Event, to: EventStatus, now?: Date): Even
     ...stamped,
     status: next,
     isPublic: computeIsPublic(next),
+    // Any real status change clears an admin override — `adminPauseEvent`
+    // re-sets it explicitly right after calling this. A self-pause or a
+    // partner's own resume should never carry a stale override flag.
+    adminOverride: false,
   };
 }
 
@@ -189,6 +217,65 @@ export function cancelEvent(event: Event, reason: string, now?: Date): Event {
   transitionStatus(event.status, 'cancelled', EVENT_TRANSITIONS);
   const stamped = bumpVersion(event, now ?? new Date());
   return { ...stamped, status: 'cancelled', isPublic: false, cancellationReason: reason };
+}
+
+const PAUSABLE_STATUSES: readonly EventStatus[] = ['published', 'sales_paused'];
+
+/**
+ * Admin pause (`EVENT_PAUSE`, TIER1 — any admin, merely logged). Only
+ * reachable from `published`/already-`sales_paused`: the terminal-state
+ * guard is the FSM table itself (`sales_paused` has no inbound edge from
+ * `draft`/`scheduled`/`started`/`ended`/`archived`/`cancelled`), but this
+ * explicit check gives a clear message instead of a generic
+ * `StateTransitionError` — v1's equivalent guard (`adminStore.js:500-502`)
+ * used the same "cannot pause a completed or past event" wording.
+ */
+export function adminPauseEvent(event: Event, now?: Date): Event {
+  if (!PAUSABLE_STATUSES.includes(event.status)) {
+    throw new InvalidOperationError('Cannot pause a completed, past, or cancelled event');
+  }
+  if (event.status === 'sales_paused') {
+    if (event.adminOverride) return event;
+    return { ...bumpVersion(event, now ?? new Date()), adminOverride: true };
+  }
+  return { ...transitionEvent(event, 'sales_paused', now), adminOverride: true };
+}
+
+/** Admin resume (`EVENT_RESUME`, TIER1). Reverses `adminPauseEvent`. */
+export function adminResumeEvent(event: Event, now?: Date): Event {
+  if (!PAUSABLE_STATUSES.includes(event.status)) {
+    throw new InvalidOperationError('Cannot resume a completed, past, or cancelled event');
+  }
+  return transitionEvent(event, 'published', now);
+}
+
+/**
+ * Sources an admin may force-complete from. This is the one *admin-only* FSM
+ * edge — it is deliberately NOT in the public `EVENT_TRANSITIONS` table, which
+ * only allows `started → ended` automatically. A partner must never force-end
+ * their own event; only a platform admin may, so the edge is enforced here by
+ * this explicit guard (same pattern as the `PAUSABLE_STATUSES` guard above
+ * rather than a duplicated public-edge entry).
+ */
+const FORCE_COMPLETABLE_STATUSES: readonly EventStatus[] = ['published', 'sales_paused', 'started'];
+
+/**
+ * Admin force-complete (`EVENT_FORCE_PAUSE`, TIER1 — any admin, merely
+ * logged). The admin-only FSM edge that force-ends a past event whose
+ * lifecycle never transitioned on its own (a sales window that closed days
+ * ago but is still `published`, a `started` event that never hit `ended`,
+ * etc.). Stamps `adminOverride` so the admin trail records the end was forced,
+ * and clears `isPublic` exactly like a natural `ended`.
+ */
+export function adminForceCompleteEvent(event: Event, now?: Date): Event {
+  if (event.status === 'ended') return event;
+  if (!FORCE_COMPLETABLE_STATUSES.includes(event.status)) {
+    throw new InvalidOperationError(
+      'Cannot force-complete a draft, review, scheduled, completed, archived, or cancelled event',
+    );
+  }
+  const stamped = bumpVersion(event, now ?? new Date());
+  return { ...stamped, status: 'ended', isPublic: false, adminOverride: true };
 }
 
 function computeIsPublic(status: EventStatus): boolean {

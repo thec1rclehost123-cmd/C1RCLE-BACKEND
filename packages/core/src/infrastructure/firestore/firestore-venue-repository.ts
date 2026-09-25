@@ -48,6 +48,10 @@ export class FirestoreVenueRepository implements VenueRepository {
     return paginateQuery(base, query, toVenue);
   }
 
+  async listAll(query: PaginationQuery): Promise<Page<Venue>> {
+    return paginateQuery(this.collection, query, toVenue);
+  }
+
   async save(venue: Venue, _tx?: TxContext | null): Promise<void> {
     // Compare-and-set: a write of version N must find N-1 (see compare-and-set.ts).
     await compareAndSet(this.db, this.collection, venue, toDoc);

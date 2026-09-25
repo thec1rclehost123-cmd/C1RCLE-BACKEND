@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  eventPublicDetailDtoSchema,
   eventDtoSchema,
   idempotencyKeySchema,
   noContentSchema,
@@ -11,7 +12,11 @@ import {
   paginationQuerySchema,
   roleSchema,
   sessionSchema,
+  submitSupportTicketSchema,
+  supportTicketDtoSchema,
+  supportTicketQuerySchema,
   userSchema,
+  venuePublicDetailDtoSchema,
   venueDtoSchema,
   versionHeaderSchema,
 } from './client.js';
@@ -133,6 +138,7 @@ describe('client schemas — canonical fixtures', () => {
         startingPricePaise: 0,
         isFree: true,
         cancellationReason: null,
+        capacity: null,
         ...base,
       }).success,
     ).toBe(true);
@@ -140,6 +146,67 @@ describe('client schemas — canonical fixtures', () => {
 
   it('rejects an unknown event status', () => {
     expect(eventDtoSchema.safeParse({ status: 'live' }).success).toBe(false);
+  });
+
+  it('parses public event relationships and rich public venue detail', () => {
+    const base = {
+      version: 1,
+      createdAt: '2026-08-11T10:00:00.000Z',
+      updatedAt: '2026-08-11T10:00:00.000Z',
+    };
+    const address = { city: 'Pune', state: 'Maharashtra', country: 'IN' };
+    const venue = {
+      id: 'ven_1',
+      organizationId: 'org_1',
+      name: 'Sky Bar',
+      slug: 'sky-bar',
+      status: 'active',
+      description: 'Public venue description.',
+      capacity: 500,
+      city: 'Pune',
+      photoUrl: 'https://images.example.test/venue.webp',
+      address,
+      facilities: ['stage'],
+      ...base,
+    };
+    const event = {
+      id: 'evt_1',
+      organizationId: 'org_1',
+      venueId: 'ven_1',
+      slug: 'sky-night',
+      title: 'Sky Night',
+      summary: 'Public summary.',
+      description: '',
+      imageUrl: 'https://images.example.test/event.webp',
+      startAt: '2026-09-01T18:00:00.000Z',
+      endAt: null,
+      status: 'published',
+      isPublic: true,
+      tags: [],
+      startingPricePaise: 5000,
+      isFree: false,
+      cancellationReason: null,
+      capacity: null,
+      ...base,
+    };
+
+    expect(venuePublicDetailDtoSchema.safeParse(venue).success).toBe(true);
+    expect(
+      eventPublicDetailDtoSchema.safeParse({
+        ...event,
+        venue: {
+          id: venue.id,
+          name: venue.name,
+          slug: venue.slug,
+          photoUrl: venue.photoUrl,
+          address,
+        },
+        organizer: { id: 'org_1', name: 'Sky Host', slug: 'sky-host' },
+      }).success,
+    ).toBe(true);
+    expect(
+      eventPublicDetailDtoSchema.safeParse({ ...event, venue: null, organizer: null }).success,
+    ).toBe(true);
   });
 });
 
@@ -194,5 +261,122 @@ describe('error envelope', () => {
       title: ['Required', 'Too short'],
       _root: ['Unrecognized key'],
     });
+  });
+});
+
+describe('Phase 7 support tickets — canonical fixtures', () => {
+  const VALID_TICKET = {
+    id: 'tkt_1',
+    subject: 'Door scan failed for my second ticket',
+    description: 'Only one of the two tickets scanned at entry tonight.',
+    category: 'order',
+    status: 'in_progress',
+    priority: 'high',
+    requester: { userId: 'usr_1', email: 'guest@example.com', organizationId: null },
+    assignee: { userId: 'adm_1', name: 'Support Agent' },
+    messages: [
+      {
+        id: 'msg_1',
+        senderRole: 'customer',
+        senderId: 'usr_1',
+        senderName: 'guest@example.com',
+        content: 'Please look into this.',
+        createdAt: '2026-08-14T12:00:00.000Z',
+      },
+    ],
+    internalNotes: [],
+    timeline: [
+      {
+        id: 'ev_1',
+        type: 'created',
+        message: 'Ticket Created',
+        detail: 'Category: order, priority: high',
+        actorId: 'usr_1',
+        at: '2026-08-14T12:00:00.000Z',
+      },
+    ],
+    links: {
+      venueId: null,
+      eventId: null,
+      orderId: 'ord_9',
+      organizationId: null,
+      userId: null,
+    },
+    sla: {
+      responseDueAt: '2026-08-14T16:00:00.000Z',
+      resolutionDueAt: '2026-08-15T12:00:00.000Z',
+      responseBreachedAt: null,
+      resolutionBreachedAt: null,
+    },
+    mergedInto: null,
+    mergedFrom: [],
+    resolvedAt: null,
+    resolvedBy: null,
+    closedAt: null,
+    closedBy: null,
+    deletedAt: null,
+    deletedBy: null,
+    createdAt: '2026-08-14T12:00:00.000Z',
+    updatedAt: '2026-08-14T12:00:00.000Z',
+  };
+
+  it('parses the canonical ticket and the intake command', () => {
+    expect(supportTicketDtoSchema.parse(VALID_TICKET)).toMatchObject({
+      category: 'order',
+      priority: 'high',
+    });
+    expect(
+      submitSupportTicketSchema.parse({
+        subject: 'Door scan failed',
+        description: 'Only one ticket scanned at entry.',
+        category: 'order',
+        priority: 'urgent',
+      }),
+    ).toMatchObject({ category: 'order', priority: 'urgent' });
+    // The intake command defaults priority and tolerates an admitted org id.
+    expect(
+      submitSupportTicketSchema.safeParse({
+        subject: 'Door scan failed',
+        description: 'Only one ticket scanned at entry.',
+        category: 'order',
+      }).data?.priority,
+    ).toBe('medium');
+  });
+
+  it('rejects corrupt ticket fixtures', () => {
+    expect(supportTicketDtoSchema.safeParse({ ...VALID_TICKET, priority: 'instant' }).success).toBe(
+      false,
+    );
+    expect(supportTicketDtoSchema.safeParse({ ...VALID_TICKET, status: 'abandoned' }).success).toBe(
+      false,
+    );
+    expect(
+      supportTicketDtoSchema.safeParse({
+        ...VALID_TICKET,
+        requester: { ...VALID_TICKET.requester, email: 'nope' },
+      }).success,
+    ).toBe(false);
+    expect(
+      supportTicketDtoSchema.safeParse({
+        ...VALID_TICKET,
+        messages: [{ ...VALID_TICKET.messages[0], senderRole: 'machine' }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('queries the desk with status/priority/category and strict body dicts', () => {
+    const parsed = supportTicketQuerySchema.parse({ status: 'open', priority: 'urgent' });
+    expect(parsed).toMatchObject({ status: 'open', priority: 'urgent' });
+    expect(
+      supportTicketQuerySchema.safeParse({ status: 'open', includeDeleted: 'true' }).success,
+    ).toBe(true);
+    expect(
+      submitSupportTicketSchema.safeParse({
+        subject: 'Door scan failed',
+        description: 'Only one ticket scanned at entry.',
+        category: 'order',
+        unexpected: true,
+      }).success,
+    ).toBe(false); // strict() body — no unknown keys
   });
 });

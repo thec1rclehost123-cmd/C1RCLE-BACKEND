@@ -36,6 +36,7 @@ import {
   FirestoreScanLedgerRepository,
   FirestoreEventCodeRepository,
   FirestoreScannerSessionRepository,
+  FirestoreScannerDeviceRepository,
   FirestoreDoorSaleRepository,
   FirestoreCoverWalletRepository,
   FirestoreCoverWalletTxnRepository,
@@ -46,6 +47,12 @@ import {
   FirestoreDisputeRepository,
   FirestoreLeaderboardRepository,
   FirestoreEmailOtpRepository,
+  FirestoreRefundRequestRepository,
+  FirestoreSafetyReportRepository,
+  FirestoreSupportTicketRepository,
+  FirestoreUserAccountRepository,
+  FirestoreUserBanRepository,
+  FirestorePlatformSettingsRepository,
 } from './firestore/index.js';
 import {
   MemoryOrganizationRepository,
@@ -70,6 +77,7 @@ import {
   MemoryScanLedgerRepository,
   MemoryEventCodeRepository,
   MemoryScannerSessionRepository,
+  MemoryScannerDeviceRepository,
   MemoryDoorSaleRepository,
   MemoryCoverWalletRepository,
   MemoryCoverWalletTxnRepository,
@@ -80,6 +88,12 @@ import {
   MemoryDisputeRepository,
   MemoryLeaderboardRepository,
   MemoryEmailOtpRepository,
+  MemoryRefundRequestRepository,
+  MemorySafetyReportRepository,
+  MemorySupportTicketRepository,
+  MemoryUserAccountRepository,
+  MemoryUserBanRepository,
+  MemoryPlatformSettingsRepository,
 } from './memory/index.js';
 import { MemoryIdempotencyStore } from './memory/memory-idempotency-store.js';
 
@@ -129,6 +143,7 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
       scanLedger: new MemoryScanLedgerRepository(),
       eventCodes: new MemoryEventCodeRepository(),
       scannerSessions: new MemoryScannerSessionRepository(),
+      scannerDevices: new MemoryScannerDeviceRepository(),
       doorSales: new MemoryDoorSaleRepository(),
       coverWallets: new MemoryCoverWalletRepository(),
       coverWalletTxns: new MemoryCoverWalletTxnRepository(),
@@ -140,6 +155,12 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
       disputes: new MemoryDisputeRepository(),
       leaderboard: new MemoryLeaderboardRepository(),
       emailOtp: new MemoryEmailOtpRepository(),
+      refundRequests: new MemoryRefundRequestRepository(),
+      supportTickets: new MemorySupportTicketRepository(),
+      safetyReports: new MemorySafetyReportRepository(),
+      users: new MemoryUserAccountRepository(),
+      userBans: new MemoryUserBanRepository(),
+      platformSettings: new MemoryPlatformSettingsRepository(),
     };
   }
 
@@ -178,6 +199,7 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
     scanLedger: new FirestoreScanLedgerRepository(db),
     eventCodes: new FirestoreEventCodeRepository(db),
     scannerSessions: new FirestoreScannerSessionRepository(db),
+    scannerDevices: new FirestoreScannerDeviceRepository(db),
     doorSales: new FirestoreDoorSaleRepository(db),
     coverWallets: new FirestoreCoverWalletRepository(db),
     coverWalletTxns: new FirestoreCoverWalletTxnRepository(db),
@@ -189,6 +211,12 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
     disputes: new FirestoreDisputeRepository(db),
     leaderboard: new FirestoreLeaderboardRepository(db),
     emailOtp: new FirestoreEmailOtpRepository(db),
+    refundRequests: new FirestoreRefundRequestRepository(db),
+    supportTickets: new FirestoreSupportTicketRepository(db),
+    safetyReports: new FirestoreSafetyReportRepository(db),
+    users: new FirestoreUserAccountRepository(db),
+    userBans: new FirestoreUserBanRepository(db),
+    platformSettings: new FirestorePlatformSettingsRepository(db),
   };
 }
 

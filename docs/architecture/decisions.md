@@ -493,3 +493,306 @@ traceable, not deleted):
   5. `routes/v2/auth/index.ts` `forwardAuthErrorResponse` / `sendAuthError` — on the **login** path, every 4xx returns the constant body `"Authentication failed"`; an unknown email and a wrong password are byte-identical (no account-existence oracle — spec §11.7). Signup still forwards the provider message.
   6. `plugins/auth.ts` — the confirmed Better Auth cookie/session defaults (`httpOnly`, `sameSite: 'lax'`, host-only; `secure` prod-gated via `useSecureCookies`; 7-day session / 1-day `updateAge`, extend-in-place not rotate; `trustedOrigins` = 3000/3001/3002) are documented in a code comment. No behaviour change.
 - **Why:** The frontend was building against a frozen manifest that no longer describes the running gateway — `{ data, meta }` envelopes, a `session.*` route family that was never shipped, and a Firebase identity path that Better Auth replaced. Recording the resolutions here (rather than re-deriving them per screen) keeps every later frontend screen migration honest, and the parity script turns "the two repos agree on the wire contract" into a check instead of a hope. CSRF as a BFF concern is both doc-sanctioned and the only place that can also fix the prod cross-domain `SameSite` cookie gap D-001 left open.
+## D-025 · The door is authenticated twice, and admission is claimed, not checked
+
+- **Date / Status:** 2026-09-11 · **chosen** (Phase 5 scanner hardening)
+- **Context:** The scanner slice shipped wired but not safe to put in front of
+  real clubs. Six findings, each independently sufficient to break a real
+  door night:
+  1. No route minted an event code. `createEventCode` existed on the service
+     and was registered nowhere, so a scanner could only be authorized by
+     hand-writing a Firestore document.
+  2. `scanTicket` resolved its session from a `deviceId` **in the request
+     body**. Any caller could type any device id, so the `full` /
+     `scan_only` / `charge` permission model decided nothing.
+  3. The scan never touched the entitlement. It read one, wrote a ledger row,
+     and returned — `scanCount` stayed 0 forever. A couple ticket
+     (`scanCountAllowed: 2`) was refused on the second person because the
+     duplicate check found the first ledger row, and a ticket's own state
+     never showed it had been used.
+  4. The duplicate check and the ledger write were two non-transactional
+     Firestore calls, so two scanners could both be admitted.
+  5. `magicTicketSecret` was never passed from the gateway config, so every
+     deploy signed rotating QRs with the published constant
+     `default-magic-ticket-secret-change-in-production`, and the signature
+     was compared with `!==`.
+  6. Event codes, session ids and session tokens came from `Math.random()`,
+     and the Firestore adapter persisted the raw session token next to its
+     own hash.
+- **Choice:**
+  - **Two credentials on every scan.** The Better Auth session establishes the
+    operator and the tenant; a new `X-Scanner-Session-Token` — minted once by
+    `POST /door/sessions`, stored only as a SHA-256 hash — establishes the
+    device, the shift, the event and the permissions. Neither alone admits
+    anyone. The operator on the ledger is now `actor.userId`, never a body
+    field, which closes the v1 spoofing pattern
+    `PAYMENT_TICKET_CODE_REVIEW.md` warned about.
+  - **`EntitlementRepository.claimAdmission` is the only admission
+    primitive.** It evaluates the domain rule and increments `scanCount`
+    inside one `runTransaction`. This follows D-015's reasoning applied to
+    admission rather than to `version`: correctness must not depend on a
+    service remembering to re-check. Both adapters call the same pure
+    `evaluateAdmission`, so the transactional path and the read-only preview
+    cannot drift.
+  - **Door codes get their own manager-facing routes** under `door.manage`,
+    a new RBAC permission distinct from `ticket.override` — handing out a
+    door code is giving away entry, which is a different right from letting
+    one guest in. Revoking a code now also revokes the live sessions it
+    opened; a revoked code whose devices keep scanning is not revoked.
+  - **The offline manifest ships with its verifying side.** It was an honest
+    501 precisely because signing without verification is theatre. Sync now
+    re-runs the full atomic claim server-side and returns real `conflicts`,
+    so two offline devices that both admitted one ticket produce one
+    admission and one recorded conflict.
+  - **`MAGIC_TICKET_SECRET` is a boot requirement in production** (32+ chars),
+    HMACs compare with `timingSafeEqual`, and a payload whose window is more
+    than ±2 windows from now is refused as a replayed screenshot rather than
+    clock drift.
+- **Deliberately NOT done:**
+  - An override does **not** top the entitlement back up. It is a human
+    decision recorded against one refusal; crediting a scan back would let
+    one override grant unlimited entries.
+  - The scanner still needs a logged-in staff session — there is no
+    anonymous device-only auth. That is a stronger position than the roadmap's
+    original "device bearer token" follow-up, not a weaker one, and it costs
+    nothing while the scanner app is a staff-operated device.
+  - `GET /door/stats/ws` stays a 501. `@fastify/websocket` is still not
+    registered, and polling `/door/stats` is honest about that.
+- **Wire-contract changes** (backend-owned, D-003): `scanRequestSchema` loses
+  `scannedBy` and `deviceId`; previews answer `valid | invalid` on their own
+  `ticketLookupResponseSchema` instead of reusing `consumed`, which read as
+  "this guest was admitted" when nothing had been; `scannerSessionDtoSchema.sessionToken`
+  is nullable and always `null` on a read; `checkInDtoSchema` moves into the
+  contracts package and gains the `overridden` status the route-local copy
+  omitted (reading back an overridden scan used to 500).
+
+## D-026 · The scanner app's backend: a shift is a session + a bound handset
+
+- **Date / Status:** 2026-09-15 · **chosen** (scanner-app backend build)
+- **Context:** D-025 made the *admission* safe. This decision covers the rest
+  of what a dedicated door app needs — picking tonight's event, registering
+  the handset, working the roster, confirming a couple, recording a refusal —
+  and it was designed against the behaviour of the v1 scanner app rather than
+  reinvented, while deliberately not porting v1's shape.
+- **Choices, and why each is not the obvious one:**
+  - **A bound device is a separate aggregate from a session.** A session lasts
+    one shift; a venue owns a handset for years. `v2_scanner_devices`, keyed
+    `${organizationId}_${deviceId}`, is what a manager revokes when a phone is
+    lost — and unbinding takes effect on the very next scan even though that
+    phone's session token is still cryptographically valid. Folding the device
+    into the session would mean chasing sessions to stop a stolen handset.
+  - **The device id is opaque and client-generated, and that is fine.** v1
+    used the same approach. A hardware id would be privacy-sensitive, often
+    unavailable, and — since the client reports it — not a security boundary
+    either. Authorization comes from the binding record plus the session
+    token, neither of which the client can mint.
+  - **A device refusal is a 403, never masked as a 404.** Every other
+    cross-tenant refusal on these routes is masked, because a 403 would
+    confirm another club's resource exists. This one is not: the caller has
+    already proved tenant membership *and* a live session, so there is
+    nothing to hide, and door staff need "this phone is deauthorized" rather
+    than "no such event". That is why `DeviceNotAuthorizedError` is its own
+    type with its own code.
+  - **A couple ticket stops and asks before anything is spent.** v1 did the
+    same, and the reason is worth recording: consuming a seat before staff
+    confirm the second guest is present strands that guest outside holding a
+    ticket the system says is half-used. `confirmation_required` writes
+    nothing and carries no `checkInId`. The confirmation token is HMAC-signed
+    with the `confirm:` prefix (domain-separated from ticket QRs so the two
+    can never be swapped), 30 seconds, and binds the ticket, the event, the
+    session, the device **and the exact scan count staff were shown** — so it
+    cannot be replayed, aimed at another door, or used after something else
+    consumed a seat. Both seats are then taken in ONE claim
+    (`claimAdmission({ seats: 2 })`): claiming twice would let the halves land
+    either side of a concurrent scan and admit three people on a two-person
+    ticket.
+  - **"Staff denied entry" does NOT consume the ticket.** Someone refused for
+    being drunk or barred did not get in; burning their entry turns a door
+    judgement into a refund dispute. Only the refusal is recorded.
+  - **Manual check-in runs the same atomic claim as the camera.** The button
+    exists for cracked screens and dead phones, not as a way past a spent or
+    voided ticket, and it cannot race a scanner at another door. Its ledger
+    row carries `deviceId: null` and `deviceBound: false` rather than
+    borrowing some device's identity.
+  - **Entered-ness on the roster is read from the ticket, not the ledger.**
+    The ledger records *attempts*, including denials and overrides; the
+    entitlement records what was actually spent. Reading the ledger would show
+    a guest as "entered" because somebody tried.
+  - **Occupancy sums `admittedCount`, it does not count scan rows.** One
+    confirmed couple row admits two, an override row admits one against a
+    denial, a denied row admits nobody. This is a life-safety number.
+    `capacity` is nullable and reports `null` when unset — v1's UI hardcoded
+    500, which told staff a confident number nobody had configured.
+  - **`GET /door/events` resolves "today" in IST, not UTC.** An 11pm show on
+    the 4th is a UTC-5th event, and a door device asking at 1am is still
+    working the previous night. Drafts and cancelled events are excluded: a
+    shift opened on either could only ever deny everyone.
+  - **`SCANNER_COMMAND` (300/min)** for scan-path routes. A club door scans
+    faster than `STANDARD_COMMAND` allows, and throttling it holds up a real
+    queue.
+  - **Door-guest fields are validated server-side** (ten-digit phone, 18+,
+    enumerated gender, real email). These rules previously lived only in the
+    app's submit button, which means they did not exist for anyone calling the
+    API directly.
+- **Deliberately NOT done, and why:**
+  - **No offline queue for admissions.** Losing connectivity denies entry,
+    which is what the app's own spec asks for. The pre-authorized offline
+    manifest from D-025 remains available for venues that opt into it, and its
+    sync still re-runs the full server-side decision — the door app does not
+    use it.
+  - **No realtime push.** `GET /door/stats/ws` is still an honest 501;
+    `@fastify/websocket` is not registered. Polling `/door/stats` works.
+  - **Legacy event-code login is kept, not dropped.** V2's door codes *are*
+    that mechanism, now CSPRNG-generated and properly scoped, and the partner
+    dashboard's scanner flow needs them.
+
+## D-027 · Money at the door: a tab names an item, a sale names a tier
+
+- **Date / Status:** 2026-09-15 · **chosen** (scanner-app backend, part 2)
+- **Context:** The two places money moves at a door — charging a guest's
+  prepaid cover-wallet tab at the bar, and selling entry to someone who turned
+  up without a ticket. Both were missing; the wallet existed but had no
+  scanner-facing surface, and the walk-in flow recorded a headcount rather
+  than a sale.
+- **Choices:**
+  - **A charge names a preset item, never an amount.** `CoverWalletRules`
+    carries the venue's own price list; the scanner sends `presetItemId` and a
+    quantity and the server multiplies. There is no amount field on the wire.
+    Free-entry pricing on a phone, at a bar, at 1am is how a ₹500 drink
+    becomes a ₹5,000 charge — and the guest cannot check the screen before it
+    is taken. `isAvailable` lets a venue switch an item off without editing
+    prices, and `findChargeableItem` fails closed on anything unknown.
+  - **A tab is read from a rotating signed QR, not from a wallet id.** Same
+    30-second window and the same key as ticket QRs, under a `wallet:` purpose
+    prefix so the two can never be swapped, and with a `cw:` wire prefix so
+    the app can tell a tab from a ticket before it hits the network. An
+    unverifiable payload is refused outright — never treated as a bare wallet
+    id, which is exactly how a signature check gets bypassed.
+  - **Charging re-sends the QR, not a wallet id.** A charge therefore always
+    follows a tab physically presented at the bar, rather than a saved id a
+    device could ring up again later.
+  - **The bartender sees a `WalletChargeView`, not the wallet.** First name
+    only, balance (suppressible by the venue), and the available items. Not
+    the guest's id, metadata or transaction history.
+  - **Permission is the session's, not the user's.** Reading or charging a tab
+    requires a `charge`-type door code. A `scan_only` handset at the entrance
+    cannot see, let alone bill, someone's bar tab — which is the entire reason
+    door codes have types.
+  - **A paid walk-up sale creates a real order, not a headcount row.** Paid
+    order + issued tickets + a scan-ledger row per admission + settlement
+    through `CheckoutService.settleOrder` — the *same* writer online revenue
+    uses, made public for exactly this rather than duplicated. A venue's
+    finance screen is then one set of numbers instead of two.
+  - **The door sale walks the order FSM** (`pending → awaiting_payment →
+    paid`), persisting each state, rather than widening the transition table
+    for the door — the same reasoning as D-010's `publish()`. Persisting each
+    step also means a process that dies mid-sale leaves a real order to
+    reconcile against the cash drawer instead of nothing.
+  - **A cash door sale carries no gateway fee and no GST-on-fees.** Face value
+    is the whole total. Charging an online payment fee on cash handed to a
+    human would be inventing a charge nobody is paying.
+  - **The order id is derived from the idempotency key.** A retry after a
+    dropped response collides with the original order at the storage layer
+    rather than charging the guest twice and issuing a second set of tickets.
+  - **Inventory is checked before selling.** `InventoryService` already
+    derives availability from paid orders and holds, so a door sale both
+    respects and contributes to it without a separate counter. The door is the
+    last place that should oversell a room.
+  - **Tickets sold at the door are admitted immediately**, through the same
+    atomic claim a camera scan uses — the guest is standing there — so
+    occupancy and the ledger agree with every other admission that night.
+- **Deliberately NOT done:** refunds, top-ups and freezes stay out of the
+  scanner. They are supervisor-console actions; a device that can reverse a
+  charge at the bar is a device that can be talked into reversing one.
+
+## D-028 · Live door stats are Server-Sent Events, not a WebSocket
+
+- **Date / Status:** 2026-09-15 · **chosen** (supersedes the roadmap's
+  "needs `@fastify/websocket`" note)
+- **Context:** `GET /door/stats/ws` had been an honest 501 since Phase 5
+  landed. The remaining work was "live push"; the roadmap assumed that meant
+  a WebSocket because that is what v1 used.
+- **Choice: SSE at `GET /door/stats/stream`.** The reasoning is mostly
+  security, and mostly about what a WebSocket would force us to invent:
+  1. **The data only flows one way.** The door watches numbers and sends
+     nothing up this channel, so bidirectionality buys nothing and costs a
+     second transport to secure.
+  2. **SSE is ordinary HTTP and inherits every control already in place** —
+     Bearer/cookie auth, `X-Organization-Id` scoping, the CORS allowlist, the
+     rate limiter, the error envelope. A browser cannot attach headers to a
+     WebSocket handshake, which is precisely why WebSocket deployments end up
+     putting access tokens in the query string, where they land in access
+     logs, proxy logs and browser history. Choosing SSE removes that
+     credential-leak class rather than mitigating it.
+  3. **CORS covers it.** WebSocket is exempt from the same-origin policy; its
+     only defence is an `Origin` check someone must remember to write.
+  4. **It is correct on more than one instance.** Each tick recomputes from
+     the read model, so any instance can serve any client. A WebSocket fed by
+     the in-process event bus would look like it worked and would silently
+     deliver only events raised on whichever instance the client reached —
+     the worst kind of broken, and invisible until a second instance exists.
+     Redis fan-out would then be required for *correctness*; here it would
+     only reduce latency.
+  5. **One nginx line** (`proxy_buffering off`) instead of `Upgrade`/
+     `Connection` handling on a snippet that is still inactive.
+- **The cost, stated:** latency is bounded by the 3s tick rather than
+  push-instant. For an occupancy gauge nobody at a door can perceive the
+  difference.
+- **Controls the streaming shape required** (a stream's risks are not a
+  request's):
+  - **Connection budget**, per actor (10) and global (500). Connection count
+    is the DoS vector a rate limiter cannot see — each open is one request, so
+    the limiter never fires while sockets pile up. Slots are released on
+    close, error *and* timeout, and release is idempotent because two of those
+    can fire for one socket.
+  - **Authorization happens before the first byte**, so a caller without
+    access gets an ordinary 404 envelope rather than an opened stream that
+    then errors in a format no client is parsing yet.
+  - **Re-authorized every tick** — the service's tenant check runs each time,
+    so a stream cannot outlive the authority that opened it.
+  - **15-minute hard lifetime**, forcing a reconnect through the full auth
+    path; a revoked membership stops being served in minutes, not whenever
+    someone closes a laptop.
+  - **15s heartbeat comments**, inside nginx's idle timeout.
+  - **Backpressure closes rather than buffers** — a failed `write` means a
+    consumer too slow to keep up, and buffering for it turns one bad client
+    into a memory leak.
+  - `no-store`, `X-Accel-Buffering: no`, and no PII in the payload (counts and
+    money totals only).
+- **`GET /door/stats/ws` is now absent, not a 501.** D-006 says a route that
+  cannot serve is not registered. It was a stub only while there was no live
+  push at all; there is one now, so the placeholder is gone.
+
+## D-029 · Two holes found reviewing the scanner surface, and what they teach
+
+- **Date / Status:** 2026-09-15 · **fixed** · full write-up:
+  `docs/architecture/scanner-threat-model.md`
+- **1. Unbinding a stolen handset could be undone by anyone.**
+  `POST /door/devices` is deliberately ungated so staff can self-register a
+  phone on launch without a manager — safe, because binding alone grants
+  nothing (a device still needs a door code and a session to scan). But it
+  also *reactivated* an unbound device. So a manager revokes a stolen phone,
+  and whoever holds it — still logged in as staff — re-registers the same
+  device id and is back in.
+  **Fix:** `bindDevice` refuses to reactivate; `POST /door/devices/:id/reauthorize`
+  does, gated on `door.manage` and audited.
+  **The lesson:** an endpoint's permission has to be judged against its
+  *strongest* effect, not its usual one. "Register a device" and "restore a
+  revoked device" read like the same verb and are not remotely the same act.
+- **2. Staff could mint a guest's tab QR, and therefore charge an absent
+  guest.** `generateWalletQr` allowed venue staff as well as the owner, for
+  the "guest's phone died" case. But the guest presenting that QR *is* the
+  authorization for a charge — so staff who can mint it can bill a tab with
+  nobody standing there.
+  **Fix:** owner-only. A guest with a dead phone is a supervisor-console
+  problem, exactly like refunds and top-ups.
+  **The lesson:** when a token is what authorizes a debit, "who may read it"
+  and "who may create it" are different questions. Convenience for staff was
+  quietly an insider-fraud path.
+- **Two more, less severe, fixed in the same pass** (see the threat model
+  §3.5): the guest roster paged every entitlement for an event into memory and
+  returned the lot — an OOM risk and a lot of guest PII on the wire, now
+  bounded and filtered server-side with honest `truncated` reporting; and the
+  admissions breakdown sampled 5,000 ledger rows, so above that it understated
+  categories while the total stayed right. It is now exact at any scale via
+  one `sum()` aggregate per tier.

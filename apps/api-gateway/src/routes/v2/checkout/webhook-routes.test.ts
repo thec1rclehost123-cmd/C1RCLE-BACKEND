@@ -8,6 +8,7 @@ import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.
 import partnerEventCatalogRoutes from '../partner/event-catalog.js';
 import partnerEventRoutes from '../partner/events.js';
 import partnerOrganizationRoutes from '../partner/organizations.js';
+import partnerPartnershipRoutes from '../partner/partnerships.js';
 import partnerVenueRoutes from '../partner/venues.js';
 
 import checkoutRoutes from './checkout-routes.js';
@@ -37,6 +38,7 @@ const buildServer = () =>
       partnerVenueRoutes,
       partnerEventRoutes,
       partnerEventCatalogRoutes,
+      partnerPartnershipRoutes,
       checkoutRoutes,
       paymentRoutes,
       webhookRoutes,
@@ -96,6 +98,91 @@ async function createPaymentIntent(server: Server, holdId: string): Promise<stri
     payload: { holdId },
   });
   return attempt.json().paymentIntentId as string;
+}
+
+/**
+ * Creates a hold for an event at a venue owned by a DIFFERENT org (venue-owner),
+ * with an active partnership carrying a `venueShareRate` between the host org
+ * and the venue-owner org. Returns the venue-owner's org id so the test can
+ * assert the ledger entry credits the right tenant.
+ */
+async function seedHoldWithPartnership(
+  server: Server,
+  venueShareRate: number,
+): Promise<{ holdId: string; grandTotalPaise: number; venueOwnerOrgId: string }> {
+  // Host org
+  const hostCreated = await server.inject({
+    method: 'POST',
+    url: '/organizations',
+    headers: { 'x-organization-id': 'org_partner_host', 'idempotency-key': `seed-${++keySeq}` },
+    payload: { name: 'Skyline', slug: `skyline-p-${keySeq}` },
+  });
+  const hostOrg: string = hostCreated.json().id;
+
+  // Venue-owner org
+  const venueOwnerCreated = await server.inject({
+    method: 'POST',
+    url: '/organizations',
+    headers: { 'x-organization-id': 'org_partner_venue', 'idempotency-key': `seed-${++keySeq}` },
+    payload: { name: 'Venue Co', slug: `venue-co-${keySeq}` },
+  });
+  const venueOwnerOrg: string = venueOwnerCreated.json().id;
+
+  // Venue owned by the venue-owner org
+  const venueCreated = await server.inject({
+    method: 'POST',
+    url: `/organizations/${venueOwnerOrg}/venues`,
+    headers: { ...write(venueOwnerOrg), 'idempotency-key': `seed-${++keySeq}` },
+    payload: { name: 'Sky Bar', slug: `sky-bar-partner-${keySeq}` },
+  });
+  const venueId: string = venueCreated.json().id;
+
+  // Partnership: host→venue-owner, with negotiated rate, approved immediately
+  const partnershipRequested = await server.inject({
+    method: 'POST',
+    url: '/partnerships',
+    headers: { ...write(hostOrg), 'idempotency-key': `seed-${++keySeq}` },
+    payload: { venueId, initiatedBy: 'host', venueShareRate },
+  });
+  const partnershipId: string = partnershipRequested.json().id;
+
+  const partnershipApproved = await server.inject({
+    method: 'POST',
+    url: `/partnerships/${partnershipId}/approve`,
+    headers: { ...write(venueOwnerOrg), 'idempotency-key': `seed-${++keySeq}` },
+    payload: {},
+  });
+  expect(partnershipApproved.statusCode).toBe(200);
+
+  // Event under host org at the venue owned by venue-owner org
+  const event = await server.inject({
+    method: 'POST',
+    url: `/organizations/${hostOrg}/events`,
+    headers: { ...write(hostOrg), 'idempotency-key': `seed-${++keySeq}` },
+    payload: { title: 'Sky Night', venueId, startAt: '2026-09-01T18:00:00Z' },
+  });
+  const eventId: string = event.json().id;
+
+  const tier = await server.inject({
+    method: 'POST',
+    url: `/events/${eventId}/ticket-tiers`,
+    headers: { ...write(hostOrg), 'idempotency-key': `seed-${++keySeq}` },
+    payload: { name: 'General', priceInPaise: 150_000, quantity: 100 },
+  });
+  const tierId: string = tier.json().id;
+
+  const hold = await server.inject({
+    method: 'POST',
+    url: '/checkout/holds',
+    headers: { 'idempotency-key': `hold-${++keySeq}` },
+    payload: { eventId, lines: [{ tierId, quantity: 1 }] },
+  });
+
+  return {
+    holdId: hold.json().holdId,
+    grandTotalPaise: hold.json().pricing.grandTotalPaise,
+    venueOwnerOrgId: venueOwnerOrg,
+  };
 }
 
 function webhookPayload(entity: {
@@ -318,6 +405,43 @@ describe('POST /webhooks/payments/razorpay', () => {
     expect(retry.statusCode).toBe(200);
     const entriesAfterRetry = await createV2Services().repos().ledger.findByOrder(orderId);
     expect(entriesAfterRetry).toHaveLength(entries.length);
+
+    await server.close();
+  });
+
+  it('settlement splits a negotiated venue share to the venue-owner org (Phase 6 + venueShareRate)', async () => {
+    const server = await buildServer();
+    const { holdId, grandTotalPaise, venueOwnerOrgId } = await seedHoldWithPartnership(server, 20);
+    const paymentIntentId = await createPaymentIntent(server, holdId);
+    const paymentId = 'pay_venue_share_1';
+    memoryProvider().simulateCapture(paymentId, grandTotalPaise);
+    const body = webhookPayload({ id: paymentId, order_id: paymentIntentId, holdId });
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/webhooks/payments/razorpay',
+      headers: { 'content-type': 'application/json', 'x-razorpay-signature': sign(body) },
+      payload: body,
+    });
+    expect(response.statusCode).toBe(200);
+
+    const orderId = `ORD-${paymentId}`;
+    const entries = await createV2Services().repos().ledger.findByOrder(orderId);
+
+    // A partnership with venueShareRate=20 exists → venue_share is non-zero
+    // and credited to the venue-owner org, not the host org.
+    const venueShare = entries.find((e) => e.entryType === 'venue_share');
+    expect(venueShare?.amount).toBe(Math.round(grandTotalPaise * 0.2));
+    expect(venueShare?.organizationId).toBe(venueOwnerOrgId);
+    expect(venueShare?.status).toBe('pending');
+
+    const platformFee = entries.find((e) => e.entryType === 'platform_fee');
+    expect(platformFee?.amount).toBe(Math.round(grandTotalPaise * 0.15));
+
+    // Split legs sum to gross — venue_share + platform_fee + host_payout = grandTotalPaise.
+    const splitEntries = entries.filter((e) => e.entryType !== 'ticket_revenue');
+    const splitSum = splitEntries.reduce((sum, e) => sum + e.amount, 0);
+    expect(splitSum).toBe(grandTotalPaise);
 
     await server.close();
   });

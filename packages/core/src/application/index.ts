@@ -37,6 +37,7 @@ export type { RequestPartnershipCommand } from './partnerships/partnership-servi
 export { PublicService } from './public/public-service.js';
 export { AdminAuthorityService } from './admin/admin-authority-service.js';
 export type { ProposeCommand, AuditInput } from './admin/admin-authority-service.js';
+export { AdminOperationsService } from './admin/admin-ops-service.js';
 export { OnboardingService } from './onboarding/onboarding-service.js';
 export type {
   StartApplicationCommand,
@@ -62,14 +63,45 @@ export { TicketService } from './tickets/ticket-service.js';
 export type {
   ScannerService,
   ScannerServiceDeps,
-  ScanTicketInput,
-  ScanMagicTicketInput,
+  BindDeviceCommand,
+  HeartbeatCommand,
+  ConfirmCoupleCommand,
+  StaffDenyCommand,
+  CreateEventCodeCommand,
+  OpenScannerSessionCommand,
+  OpenScannerSessionResult,
+  ScanInput,
+  ResolveInput,
   ScanResult,
-  ResolveTicketInput,
-  ResolveMagicTicketInput,
   TicketResolution,
-} from './scanner/scanner-service.js';
-export { createScannerService } from './scanner/scanner-service.js';
+  TicketSummary,
+  OfflineManifest,
+  OfflineManifestEntry,
+  OfflineSyncInput,
+  OfflineSyncResult,
+} from './door/scanner-service.js';
+export { createScannerService } from './door/scanner-service.js';
+export type {
+  DoorOpsService,
+  DoorOpsServiceDeps,
+  DoorEventSummary,
+  DoorTierSummary,
+  DoorGuest,
+  DoorGuestSource,
+  StartShiftResult,
+  ResolveWalletCommand,
+  ChargeWalletCommand,
+  WalletChargeResult,
+} from './door/door-ops-service.js';
+export { createDoorOpsService, resolveDoorDate } from './door/door-ops-service.js';
+export type {
+  DoorTicketSaleService,
+  DoorTicketSaleServiceDeps,
+  DoorTicketSaleCommand,
+  DoorTicketSaleResult,
+  DoorPaymentMode,
+} from './door/door-ticket-sale-service.js';
+export { createDoorTicketSaleService } from './door/door-ticket-sale-service.js';
 export type {
   DoorService,
   DoorServiceDeps,
@@ -114,6 +146,7 @@ export type {
   RequestPayoutInput,
 } from './finance/payout-service.js';
 export { createPayoutService } from './finance/payout-service.js';
+export { AdminPayoutService } from './finance/admin-payout-service.js';
 export type {
   BankAccountService,
   BankAccountServiceDeps,
@@ -126,6 +159,13 @@ export type {
   RaiseDisputeInput,
 } from './finance/dispute-service.js';
 export { createDisputeService } from './finance/dispute-service.js';
+export { AdminDisputeService } from './finance/admin-dispute-service.js';
+export type { RequestRefundCommand } from './finance/refund-service.js';
+export { RefundService } from './finance/refund-service.js';
+export { SupportService } from './support/support-service.js';
+export type { SubmitTicketCommand } from './support/support-service.js';
+export { AdminSupportService } from './support/admin-support-service.js';
+export type { AssignAgentInput, SupportLinkInput } from './support/admin-support-service.js';
 export type { LeaderboardService, LeaderboardServiceDeps } from './finance/leaderboard-service.js';
 export { createLeaderboardService } from './finance/leaderboard-service.js';
 export type { EmailOtpService, EmailOtpServiceDeps } from './auth/email-otp-service.js';

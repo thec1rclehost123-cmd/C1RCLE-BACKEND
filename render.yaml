@@ -20,9 +20,12 @@ services:
     plan: starter
     region: singapore
     branch: main
-    # Render builds and deploys on every push to `branch`. CI verifies the
-    # result afterwards (see .github/workflows/ci.yml, verify-deploy).
-    autoDeploy: true
+    # Deploys are CI-GATED: Render does NOT build or deploy on push
+    # (autoDeploy is false). The ci.yml `deploy` job triggers Render only after
+    # CI OK and the Security pipeline (`Security OK`) both pass for the pushed
+    # commit, then smoke-tests the result. The live service tracks `staging`;
+    # keep this Blueprint's `branch` in step when it is adopted.
+    autoDeploy: false
 
     # The gateway's liveness probe. It is the only unauthenticated endpoint
     # guaranteed to answer before any dependency is wired.
@@ -59,6 +62,13 @@ services:
         sync: false
       - key: BETTER_AUTH_URL
         value: https://circle-v2-backend.onrender.com
+
+      # Phase 5 door scanning. The HMAC key behind rotating ticket QRs and
+      # signed offline admission manifests — forging it forges entry to a paid
+      # event, so production refuses to boot without a real 32+ character
+      # value (apps/api-gateway/src/config/index.ts).
+      - key: MAGIC_TICKET_SECRET
+        sync: false
 
       # Validated but currently unused: rate limiting is an in-memory sliding
       # window (apps/api-gateway/src/plugins/rate-limit.ts). Keep the value
