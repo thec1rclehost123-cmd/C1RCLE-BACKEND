@@ -11,7 +11,8 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:scenarios": "vitest run --config vitest.scenarios.config.mjs",
-    "seed:admin": "tsx --env-file-if-exists=.env.local src/scripts/seed-platform-admin.ts"
+    "seed:admin": "tsx --env-file-if-exists=.env.local src/scripts/seed-platform-admin.ts",
+    "configure:storage-cors": "tsx --env-file-if-exists=.env.local src/scripts/configure-storage-cors.ts"
   },
   "dependencies": {
     "@c1rcle/contracts": "workspace:^",
@@ -28,6 +29,6 @@
     "@types/node": "^24.0.0",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0",
-    "vitest": "^4.1.0"
+    "vitest": "^4.1.11"
   }
 }

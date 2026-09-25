@@ -48,6 +48,7 @@ import type {
   ScannerSessionCreateInput,
 } from '../models/event-code.js';
 import type { Event } from '../models/event.js';
+import type { GuestProfile } from '../models/guest-profile.js';
 import type {
   LeaderboardBucket,
   LeaderboardPeriodType,
@@ -121,9 +122,24 @@ export interface PaginationQuery {
 
 export interface OrganizationRepository {
   getById(organizationId: EntityId): Promise<Organization | null>;
+  /**
+   * Batched id lookup. Replaces the per-row `getById` fan-out in list-style
+   * reads (partnership/connection name resolution) so a 100-row page costs
+   * one call, not 100. Missing ids are simply absent from the result: the
+   * batched resolver's job is to resolve *names*, and a vanished row resolves
+   * to `null`-safe fields, never an error.
+   */
+  getByIds(organizationIds: EntityId[]): Promise<Organization[]>;
   /** Public host-profile lookup — global (not org-scoped): a guest reaches an
    * organization by its slug alone, with no tenant context of their own. */
   getBySlug(slug: string): Promise<Organization | null>;
+  /**
+   * Bounded global browse of active organizations for partner discovery.
+   * Returns at most `limit` rows in an unspecified order; kind/search
+   * filtering happens in the discovery service so neither driver needs new
+   * composite indexes.
+   */
+  listActive(limit: number): Promise<Organization[]>;
   /** All orgs a user id belongs to as a member. */
   listForMember(userId: EntityId, query: PaginationQuery): Promise<Page<Organization>>;
   /** Platform-wide org directory (admin hosts view) — global, not org-scoped. */
@@ -214,10 +230,22 @@ export interface InvitationRepository {
 
 export interface VenueRepository {
   getById(venueId: EntityId): Promise<Venue | null>;
+  /**
+   * Batched id lookup for list-style reads (partnership/connection name
+   * resolution) — same one-call-per-page contract as
+   * `OrganizationRepository.getByIds`.
+   */
+  getByIds(venueIds: EntityId[]): Promise<Venue[]>;
   getBySlug(slug: string, organizationId: EntityId): Promise<Venue | null>;
   /** Public venue-profile lookup — global (not org-scoped): the guest surface
    * addresses a venue by slug alone, with no tenant context of its own. */
   getBySlugGlobal(slug: string): Promise<Venue | null>;
+  /**
+   * Bounded global browse of active venues for partner discovery. Same
+   * contract as `OrganizationRepository.listActive`: at most `limit` rows,
+   * filtering in the service.
+   */
+  listActive(limit: number): Promise<Venue[]>;
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Venue>>;
   /** Platform-wide venue directory (admin venues view) — global, not org-scoped. */
   listAll(query: PaginationQuery): Promise<Page<Venue>>;
@@ -227,12 +255,33 @@ export interface VenueRepository {
 export interface SlotRequestRepository {
   getById(slotRequestId: EntityId): Promise<SlotRequest | null>;
   listByVenue(venueId: EntityId, query: PaginationQuery): Promise<Page<SlotRequest>>;
+  /** Outgoing (host-side) requests: everything submitted by this organization. */
+  listByHost(hostId: EntityId, query: PaginationQuery): Promise<Page<SlotRequest>>;
   save(request: SlotRequest, tx?: TxContext | null): Promise<void>;
 }
 
 export interface VenueSlotRepository {
   listSlots(venueId: EntityId, from: string, to: string): Promise<VenueSlot[]>;
   saveSlots(slots: VenueSlot[], tx?: TxContext | null): Promise<void>;
+  /** Single-slot read for unblock (ownership + status checks). Null when missing. */
+  getSlotById(slotId: EntityId): Promise<VenueSlot | null>;
+  /**
+   * Every slot of the venue whose range touches `[startTime, endTime)` —
+   * regardless of status (the caller ignores `cancelled` tombstones).
+   * Filtered in application code after a single equality query, like
+   * `listSlots`, so no composite Firestore index is required.
+   */
+  listOverlappingSlots(venueId: EntityId, startTime: string, endTime: string): Promise<VenueSlot[]>;
+  /**
+   * Atomic block creation (closes the read-check-write TOCTOU on the overlap
+   * guard). The overlap check and the insert run inside one storage
+   * transaction, so two concurrent block requests for the same minutes can't
+   * both pass the guard. Throws the same `InvalidOperationError` as domain
+   * `assertSlotRangeFree` when the range is taken; returns the stored slot on
+   * success. The memory driver performs the check synchronously (no `await`
+   * between guard and write), which is atomic within a single event-loop turn.
+   */
+  createBlockIfFree(block: VenueSlot): Promise<VenueSlot>;
 }
 
 // ─── Events ──────────────────────────────────────────────────────────────────
@@ -451,6 +500,18 @@ export interface CartReservationRepository {
    * `InventoryService.getAvailableQuantity` — never a public route response.
    */
   listActiveByEvent(eventId: EntityId, now: Date): Promise<CartReservation[]>;
+  /**
+   * Sum of `quantity` across a user's live holds for `(tierId, eventId)` —
+   * `status: 'active'` and not yet past `now`. Drives per-user ticket-caps
+   * (`tier.maxPerUser`) at hold creation. Bounded by one user's active cart
+   * holdings; never a public route response.
+   */
+  countActiveQuantity(
+    userId: EntityId,
+    eventId: EntityId,
+    tierId: EntityId,
+    now: Date,
+  ): Promise<number>;
 }
 
 /** Order repository — the commerce aggregate. */
@@ -467,6 +528,18 @@ export interface OrderRepository {
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Order>>;
   /** Lists orders for an event. */
   listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<Order>>;
+  /**
+   * Sum of `quantity` across a user's *paid* orders for `(tierId, eventId)`.
+   * Drives per-user ticket-caps (`tier.maxPerUser`) at hold creation: only
+   * money- captured orders count — `pending`/`failed`/`cancelled`/`refunded`
+   * never consume the cap. Bounded by one user's order history; never a
+   * public route response.
+   */
+  countPaidQuantityByUserAndEvent(
+    userId: EntityId,
+    eventId: EntityId,
+    tierId: EntityId,
+  ): Promise<number>;
   /** Lists all orders platform-wide (admin read-only dashboards). */
   listAll(query: PaginationQuery): Promise<Page<Order>>;
   /** Saves (create or update). Version is checked for optimistic locking. */
@@ -986,6 +1059,15 @@ export interface EmailOtpRepository {
   delete(recipient: EntityId): Promise<void>;
 }
 
+/**
+ * One doc per session user id, fully replaced on each save — no
+ * optimistic-lock version (matches `EmailOtpRepository`'s `docRef.set`
+ * semantics; a `PUT` with the same body converges, so retries are safe).
+ */
+export interface GuestProfileRepository {
+  getByUserId(userId: EntityId): Promise<GuestProfile | null>;
+  save(profile: GuestProfile): Promise<void>;
+}
 // ─── Platform settings (singleton doc) ──────────────────────────────────────
 
 /**
@@ -1009,5 +1091,6 @@ export type {
   LeaderboardBucket,
   LeaderboardPeriodType,
   EmailOtp,
+  GuestProfile,
   PlatformSettings,
 };

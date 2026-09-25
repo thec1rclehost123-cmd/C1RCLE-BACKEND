@@ -6,6 +6,7 @@ import {
 import { isPublicStatus } from '../../domain/models/event.js';
 
 import type { EntityId } from '../../domain/identity.js';
+import type { TicketTier } from '../../domain/models/event-catalog.js';
 import type { Event } from '../../domain/models/event.js';
 import type { Organization } from '../../domain/models/organization.js';
 import type { Venue } from '../../domain/models/venue.js';
@@ -61,6 +62,27 @@ export class PublicService {
   }
 
   /**
+   * Active sellable tiers for a public event, each with live availability
+   * (`quantity - sold - activeHolds`). Non-public events 404 via `getEvent`
+   * (same no-oracle rule); paused/sold_out tiers stay hidden from guests.
+   */
+  async listEventTiers(
+    idOrSlug: EntityId,
+  ): Promise<{ tier: TicketTier; availableQuantity: number }[]> {
+    const event = await this.getEvent(idOrSlug);
+    const tiers = await this.deps.repositories.catalog.listTiers(event.id);
+    const rows: { tier: TicketTier; availableQuantity: number }[] = [];
+    for (const tier of tiers) {
+      if (tier.status !== 'active') continue;
+      rows.push({
+        tier,
+        availableQuantity: await this.deps.inventory.getAvailableQuantity(event.id, tier.id),
+      });
+    }
+    return rows;
+  }
+
+  /**
    * `idOrSlug`: tries the id first (cheap point read), falls back to a slug
    * lookup. Only a currently-public event is ever returned — a real but
    * non-public event (draft, review, cancelled, …) reports the same
@@ -95,11 +117,37 @@ export class PublicService {
     return venue;
   }
 
+  /**
+   * Venue public profile by id — for guests resolving an event's `venueId`
+   * (events carry the id, not the slug). Same active-only rule as `getVenue`,
+   * so a suspended venue's events show a venue-TBA fallback, never its name.
+   */
+  async getVenueById(venueId: EntityId): Promise<Venue> {
+    const venue = await this.venues.getById(venueId);
+    if (!venue || venue.status !== 'active') {
+      throw new VenueNotFoundError(venueId);
+    }
+    return venue;
+  }
+
   /** Host/organization public profile by slug. Only an active tenant is public. */
   async getHost(slug: string): Promise<Organization> {
     const org = await this.organizations.getBySlug(slug);
     if (!org || org.status !== 'active') {
       throw new OrganizationNotFoundError(slug);
+    }
+    return org;
+  }
+
+  /**
+   * Host public profile by id — for guests resolving an event's
+   * `organizationId` (events carry the id, not the slug). Same active-only
+   * rule as `getHost`.
+   */
+  async getHostById(organizationId: EntityId): Promise<Organization> {
+    const org = await this.organizations.getById(organizationId);
+    if (!org || org.status !== 'active') {
+      throw new OrganizationNotFoundError(organizationId);
     }
     return org;
   }

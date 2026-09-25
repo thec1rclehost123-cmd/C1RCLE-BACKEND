@@ -27,7 +27,9 @@ import type { EntityId, VersionedEntity } from '../identity.js';
 export type PartnershipStatus = 'pending' | 'active' | 'rejected' | 'blocked' | 'ended';
 
 const PARTNERSHIP_TRANSITIONS: Readonly<Record<PartnershipStatus, readonly PartnershipStatus[]>> = {
-  pending: ['active', 'rejected', 'blocked'],
+  // `ended` from pending is the requester's own withdrawal (see
+  // `endPartnership` — the counterparty must answer, never "end").
+  pending: ['active', 'rejected', 'blocked', 'ended'],
   // An active partnership can be wound down or blocked, never re-requested.
   active: ['ended', 'blocked'],
   rejected: [],
@@ -212,7 +214,12 @@ export function blockPartnership(
   return transition(partnership, 'blocked', now ?? new Date(), reason);
 }
 
-/** Winding down an active partnership by mutual course — not a punishment. */
+/**
+ * Winding down an active partnership by mutual course — not a punishment.
+ * From `pending` this is the requester's own withdrawal: the counterparty
+ * must answer (approve/reject), so ending someone else's unanswered request
+ * stays an error rather than a silent veto.
+ */
 export function endPartnership(
   partnership: Partnership,
   endingOrganizationId: EntityId,
@@ -220,6 +227,9 @@ export function endPartnership(
 ): Partnership {
   if (!isPartyTo(partnership, endingOrganizationId)) {
     throw new InvalidOperationError('Only a party to this partnership can end it');
+  }
+  if (partnership.status === 'pending' && endingOrganizationId === counterpartyOf(partnership)) {
+    throw new InvalidOperationError('The invited party must approve or reject this request');
   }
   return transition(partnership, 'ended', now ?? new Date());
 }

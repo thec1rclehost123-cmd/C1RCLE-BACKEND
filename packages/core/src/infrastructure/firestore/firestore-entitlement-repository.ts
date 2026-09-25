@@ -1,7 +1,7 @@
 import { admitSeats } from '../../domain/models/entitlement.js';
 
 import { compareAndSet } from './compare-and-set.js';
-import { paginateQuery } from './pagination.js';
+import { paginateUnordered } from './pagination.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type { Entitlement, EntitlementStatus } from '../../domain/models/entitlement.js';
@@ -44,24 +44,25 @@ export class FirestoreEntitlementRepository implements EntitlementRepository {
     return snap.docs.map((doc) => toEntitlement(doc.data()));
   }
 
+  // Index-free (single-field filter; newest-first sort happens in code —
+  // see `paginateUnordered`): these reads must work with zero provisioned
+  // composite indexes (wallet, door, partner surfaces).
   async listByUser(userId: EntityId, query: PaginationQuery): Promise<Page<Entitlement>> {
-    const base = this.collection.where('userId', '==', userId).orderBy('createdAt', 'desc');
-    return paginateQuery(base, query, toEntitlement);
+    const base = this.collection.where('userId', '==', userId);
+    return paginateUnordered(base, query, toEntitlement);
   }
 
   async listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<Entitlement>> {
-    const base = this.collection.where('eventId', '==', eventId).orderBy('createdAt', 'desc');
-    return paginateQuery(base, query, toEntitlement);
+    const base = this.collection.where('eventId', '==', eventId);
+    return paginateUnordered(base, query, toEntitlement);
   }
 
   async listByOrganization(
     organizationId: EntityId,
     query: PaginationQuery,
   ): Promise<Page<Entitlement>> {
-    const base = this.collection
-      .where('organizationId', '==', organizationId)
-      .orderBy('createdAt', 'desc');
-    return paginateQuery(base, query, toEntitlement);
+    const base = this.collection.where('organizationId', '==', organizationId);
+    return paginateUnordered(base, query, toEntitlement);
   }
 
   async listAll(query: PaginationQuery): Promise<Page<Entitlement>> {

@@ -127,8 +127,46 @@ describe('partnerships over HTTP', () => {
   });
 });
 
-describe('POST /partnerships/:partnershipId/venue-share', () => {
-  it('lets either party negotiate the venue share on an active partnership', async () => {
+  it('opens a pending request from the venue side', async () => {
+    const server = await buildServer();
+    const { venueOrg, venueId, hostOrg } = await twoParties(server);
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/partnerships',
+      headers: write(venueOrg),
+      payload: { venueId, initiatedBy: 'venue', hostOrganizationId: hostOrg },
+    });
+
+    // The route used to drop `hostOrganizationId` before calling the service,
+    // so every venue invite failed as "cannot partner with itself".
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      status: 'pending',
+      initiatedBy: 'venue',
+      hostOrganizationId: hostOrg,
+      venueOrganizationId: venueOrg,
+      venueId,
+    });
+    await server.close();
+  });
+
+  it('422s a venue-initiated request without hostOrganizationId', async () => {
+    const server = await buildServer();
+    const { venueOrg, venueId } = await twoParties(server);
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/partnerships',
+      headers: write(venueOrg),
+      payload: { venueId, initiatedBy: 'venue' },
+    });
+
+    expect(response.statusCode).toBe(422);
+    await server.close();
+  });
+
+  it('refuses a venue-initiated request from someone who does not own the venue', async () => {
     const server = await buildServer();
     const { host, venue, venueOrg } = await seedHostAndVenue(server);
     const partnershipId = await activePartnership(server, host, venue, venueOrg);
@@ -136,9 +174,9 @@ describe('POST /partnerships/:partnershipId/venue-share', () => {
     // Host sets 20 first...
     const fromHost = await server.inject({
       method: 'POST',
-      url: `/partnerships/${partnershipId}/venue-share`,
-      headers: write(host),
-      payload: { venueShareRate: 20 },
+      url: '/partnerships',
+      headers: write(hostOrg),
+      payload: { venueId, initiatedBy: 'venue', hostOrganizationId: hostOrg },
     });
     expect(fromHost.statusCode).toBe(200);
     expect(fromHost.json()).toMatchObject({ status: 'active', venueShareRate: 20 });
@@ -241,7 +279,37 @@ describe('POST /partnerships/:partnershipId/venue-share', () => {
     await server.close();
   });
 
-  it('rejects setting a rate before the partnership is active', async () => {
+  it('lets the requester withdraw a pending request', async () => {
+    const server = await buildServer();
+    const { hostOrg, partnershipId } = await pendingRequest(server);
+
+    // The legacy Sent tab offers "Cancel request", which posts to `end`.
+    const response = await server.inject({
+      method: 'POST',
+      url: `/partnerships/${partnershipId}/end`,
+      headers: write(hostOrg),
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ status: 'ended' });
+    await server.close();
+  });
+
+  it('refuses the counterparty ending a pending request instead of answering it', async () => {
+    const server = await buildServer();
+    const { venueOrg, partnershipId } = await pendingRequest(server);
+
+    const response = await server.inject({
+      method: 'POST',
+      url: `/partnerships/${partnershipId}/end`,
+      headers: write(venueOrg),
+    });
+
+    expect(response.statusCode).toBe(400);
+    await server.close();
+  });
+
+  it('treats a block as terminal — a later approve cannot undo it', async () => {
     const server = await buildServer();
     const { host, venue } = await seedHostAndVenue(server);
 
@@ -278,14 +346,12 @@ describe('POST /partnerships/:partnershipId/venue-share', () => {
     });
     expect(first.statusCode).toBe(200);
 
-    const replay = await server.inject({
-      method: 'POST',
-      url: `/partnerships/${partnershipId}/venue-share`,
-      headers,
-      payload: { venueShareRate: 30 },
-    });
-    expect(replay.statusCode).toBe(200);
-    expect(replay.json().venueShareRate).toBe(30);
+    expect(fromHost.json().items).toHaveLength(1);
+    expect(fromVenue.json().items).toHaveLength(1);
+    // Display names are resolved server-side — the UI must never fall back
+    // to `Host A1B2C3` ID labels when the data exists.
+    expect(fromVenue.json().items[0].hostName).toBe('Org');
+    expect(fromHost.json().items[0].venueName).toBe('Sky Bar');
     await server.close();
   });
 });

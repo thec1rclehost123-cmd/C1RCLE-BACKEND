@@ -58,20 +58,18 @@ describe('V1 parity guard — proven field names are locked on V2 models', () =>
       currency: 'INR',
       priceInPaise: 50_000,
       quantity: 100,
-      minPerOrder: 1,
       maxPerOrder: 4,
       salesStartAt: '2026-08-01T00:00:00.000Z',
       salesEndAt: '2026-08-31T23:59:59.000Z',
     });
     // V1 tier doc: name, description, entryType, price, quantity,
-    // minPerOrder, maxPerOrder, salesStart/salesEnd.
+    // maxPerOrder, salesStart/salesEnd.
     expect(tier).toMatchObject({
       name: 'Early Bird',
       description: 'First 100',
       entryType: 'general',
       currency: 'INR',
       quantity: 100,
-      minPerOrder: 1,
       maxPerOrder: 4,
       salesStartAt: '2026-08-01T00:00:00.000Z',
       salesEndAt: '2026-08-31T23:59:59.000Z',

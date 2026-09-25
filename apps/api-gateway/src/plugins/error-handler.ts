@@ -7,6 +7,7 @@ import {
   SlotRequestNotFoundError,
   TicketTierNotFoundError,
   PromoterAssignmentNotFoundError,
+  ConflictError,
   ForbiddenError,
   UnauthorizedError,
   VersionConflictError,
@@ -41,6 +42,7 @@ export function mapDomainError(error: DomainError): {
     return { status: 404, code: 'not_found' };
   }
   if (error instanceof StateTransitionError) return { status: 409, code: 'conflict' };
+  if (error instanceof ConflictError) return { status: 409, code: 'conflict' };
   if (error instanceof InvalidOperationError) return { status: 400, code: 'validation' };
   return { status: 500, code: 'server' };
 }

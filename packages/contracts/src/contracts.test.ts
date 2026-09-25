@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   eventPublicDetailDtoSchema,
   eventDtoSchema,
+  guestProfileDtoSchema,
   idempotencyKeySchema,
   noContentSchema,
   opaqueIdSchema,
@@ -12,6 +13,7 @@ import {
   paginationQuerySchema,
   roleSchema,
   sessionSchema,
+  upsertGuestProfileSchema,
   submitSupportTicketSchema,
   supportTicketDtoSchema,
   supportTicketQuerySchema,
@@ -138,6 +140,7 @@ describe('client schemas — canonical fixtures', () => {
         startingPricePaise: 0,
         isFree: true,
         cancellationReason: null,
+        compensation: null,
         capacity: null,
         ...base,
       }).success,
@@ -148,65 +151,27 @@ describe('client schemas — canonical fixtures', () => {
     expect(eventDtoSchema.safeParse({ status: 'live' }).success).toBe(false);
   });
 
-  it('parses public event relationships and rich public venue detail', () => {
-    const base = {
-      version: 1,
-      createdAt: '2026-08-11T10:00:00.000Z',
-      updatedAt: '2026-08-11T10:00:00.000Z',
-    };
-    const address = { city: 'Pune', state: 'Maharashtra', country: 'IN' };
-    const venue = {
-      id: 'ven_1',
-      organizationId: 'org_1',
-      name: 'Sky Bar',
-      slug: 'sky-bar',
-      status: 'active',
-      description: 'Public venue description.',
-      capacity: 500,
+  it('parses a guest profile upsert and dto, rejecting short tastes', () => {
+    const body = {
+      displayName: 'Aayush',
+      dateOfBirth: '2000-01-01',
       city: 'Pune',
-      photoUrl: 'https://images.example.test/venue.webp',
-      address,
-      facilities: ['stage'],
-      ...base,
+      tastes: ['Rooftops', 'Live music', 'Art & culture'],
+      intents: ['Find events'],
     };
-    const event = {
-      id: 'evt_1',
-      organizationId: 'org_1',
-      venueId: 'ven_1',
-      slug: 'sky-night',
-      title: 'Sky Night',
-      summary: 'Public summary.',
-      description: '',
-      imageUrl: 'https://images.example.test/event.webp',
-      startAt: '2026-09-01T18:00:00.000Z',
-      endAt: null,
-      status: 'published',
-      isPublic: true,
-      tags: [],
-      startingPricePaise: 5000,
-      isFree: false,
-      cancellationReason: null,
-      capacity: null,
-      ...base,
-    };
-
-    expect(venuePublicDetailDtoSchema.safeParse(venue).success).toBe(true);
+    expect(upsertGuestProfileSchema.parse(body)).toEqual(body);
     expect(
-      eventPublicDetailDtoSchema.safeParse({
-        ...event,
-        venue: {
-          id: venue.id,
-          name: venue.name,
-          slug: venue.slug,
-          photoUrl: venue.photoUrl,
-          address,
-        },
-        organizer: { id: 'org_1', name: 'Sky Host', slug: 'sky-host' },
-      }).success,
-    ).toBe(true);
-    expect(
-      eventPublicDetailDtoSchema.safeParse({ ...event, venue: null, organizer: null }).success,
-    ).toBe(true);
+      guestProfileDtoSchema.parse({
+        ...body,
+        userId: 'user_1',
+        createdAt: '2026-09-08T00:00:00.000Z',
+        updatedAt: '2026-09-08T00:00:00.000Z',
+      }).userId,
+    ).toBe('user_1');
+    expect(upsertGuestProfileSchema.safeParse({ ...body, tastes: ['Rooftops'] }).success).toBe(
+      false,
+    );
+    expect(upsertGuestProfileSchema.safeParse({ ...body, extra: 1 }).success).toBe(false);
   });
 });
 

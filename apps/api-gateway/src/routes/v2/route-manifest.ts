@@ -36,6 +36,7 @@ import { internalRoutes } from './internal/index.js';
 import onboardingRoutes from './onboarding.js';
 import orderRoutes from './orders/orders-routes.js';
 import partnerAnalyticsRoutes from './partner/analytics.js';
+import partnerDiscoveryRoutes from './partner/discover.js';
 import partnerEventCatalogRoutes from './partner/event-catalog.js';
 import partnerEventRoutes from './partner/events.js';
 import partnerOrganizationRoutes from './partner/organizations.js';
@@ -44,7 +45,9 @@ import promoterConnectionRoutes from './partner/promoter-connections.js';
 import partnerReferralLinkRoutes from './partner/referral-links.js';
 import partnerVenueRoutes from './partner/venues.js';
 import phase5Routes from './phase5-routes.js';
+import guestProfileRoutes from './profile.js';
 import publicDiscoveryRoutes from './public/discovery.js';
+import rsvpRoutes from './rsvp/rsvp-routes.js';
 import supportIntakeRoutes from './support/intake-routes.js';
 import ticketRoutes from './tickets/ticket-routes.js';
 import walletRoutes from './wallet/wallet-routes.js';
@@ -127,12 +130,15 @@ export async function registerV2Routes(
       await partnerEventRoutes(v2);
       await partnerEventCatalogRoutes(v2);
       await partnerPartnershipRoutes(v2);
+      await partnerDiscoveryRoutes(v2);
       await partnerAnalyticsRoutes(v2);
       await partnerReferralLinkRoutes(v2);
       await promoterConnectionRoutes(v2);
       // Phase 2: not org-scoped — an applicant has no organization yet, and a
       // platform admin acts across all of them.
       await onboardingRoutes(v2);
+      // Guest profile: session-scoped like onboarding — a guest belongs to no org.
+      await guestProfileRoutes(v2);
       await adminRoutes(v2);
       await adminRefundRoutes(v2);
       await adminPayoutRoutes(v2);
@@ -154,6 +160,8 @@ export async function registerV2Routes(
       await checkoutRoutes(v2);
       await paymentRoutes(v2);
       await webhookRoutes(v2);
+      // RSVP: direct free-ticket booking (no provider), same PR2 family.
+      await rsvpRoutes(v2);
       // Phase 4 PR3: guest order/ticket reads + wallet.
       await orderRoutes(v2);
       await ticketRoutes(v2);

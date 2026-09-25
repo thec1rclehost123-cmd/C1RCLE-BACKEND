@@ -108,8 +108,16 @@ describe('partnership lifecycle', () => {
     expect(isLive(ended)).toBe(false);
   });
 
-  it('cannot end something that was never active', () => {
-    expect(() => endPartnership(request(), HOST, NOW)).toThrow(StateTransitionError);
+  it('lets the requester withdraw a pending request', () => {
+    // The dashboard's Sent tab offers "Cancel request", which ends the
+    // partnership the caller opened themselves.
+    const withdrawn = endPartnership(request('host'), HOST, NOW);
+    expect(withdrawn.status).toBe('ended');
+    expect(isLive(withdrawn)).toBe(false);
+  });
+
+  it('refuses the invited party ending a pending request instead of answering it', () => {
+    expect(() => endPartnership(request('host'), VENUE, NOW)).toThrow(InvalidOperationError);
   });
 });
 

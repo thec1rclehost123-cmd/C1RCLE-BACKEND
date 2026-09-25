@@ -5,7 +5,8 @@ import {
   checkoutHoldResponseSchema,
   idempotencyKeySchema,
 } from '@c1rcle/contracts/client';
-import { EventNotFoundError } from '@c1rcle/core/domain';
+import { isSystemActor } from '@c1rcle/core/application';
+import { EventNotFoundError, UnauthorizedError } from '@c1rcle/core/domain';
 import { z } from 'zod';
 
 import { isIdempotencyConflict, runIdempotent } from '../../../lib/v2-idempotency.js';
@@ -55,6 +56,17 @@ export default async function checkoutRoutes(fastify: FastifyInstance) {
     async (request, reply) => {
       const body = request.body as z.infer<typeof checkoutQuoteRequestSchema>;
       const actor = services.actor(request);
+      // Any ticket booking requires an authenticated account — quotes freeze
+      // into holds/orders attributed to a buyer, never to an anonymous caller.
+      if (!actor.userId || isSystemActor(actor)) {
+        mapDomainError(
+          reply,
+          request,
+          body.eventId,
+          new UnauthorizedError('Authentication is required to book tickets'),
+        );
+        return reply;
+      }
       const result = await services.checkout
         .quote({
           actor,
@@ -91,6 +103,15 @@ export default async function checkoutRoutes(fastify: FastifyInstance) {
       const actor = services.actor(request);
       const v2Headers = request.v2Headers ?? {};
       const idempotencyKey = requiredIdempotencyKey(v2Headers);
+      if (!actor.userId || isSystemActor(actor)) {
+        mapDomainError(
+          reply,
+          request,
+          body.eventId,
+          new UnauthorizedError('Authentication is required to book tickets'),
+        );
+        return reply;
+      }
 
       const result = await runIdempotent({
         idempotency: services.idempotency,
