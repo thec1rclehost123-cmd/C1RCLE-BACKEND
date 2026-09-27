@@ -39,10 +39,16 @@ export const onboardingProfileSchema = z
   .strict();
 export type OnboardingProfileDto = z.infer<typeof onboardingProfileSchema>;
 
+export const onboardingDocumentStatusSchema = z.enum(['pending', 'verified', 'rejected']);
+
 export const onboardingDocumentSchema = z.object({
   label: z.string().min(1).max(60),
   storagePath: z.string().min(1).max(500),
   uploadedAt: z.iso.datetime(),
+  status: onboardingDocumentStatusSchema,
+  reviewedBy: opaqueIdSchema.nullable(),
+  reviewedAt: z.iso.datetime().nullable(),
+  rejectionReason: z.string().nullable(),
 });
 
 export const onboardingRequestDtoSchema = z.object({
@@ -199,13 +205,7 @@ export const approveOnboardingResultSchema = z.object({
       registrationNumber: z.string().max(120).optional(),
       entityType: z.string().max(120).optional(),
     }),
-    documents: z.array(
-      z.object({
-        label: z.string().min(1).max(60),
-        storagePath: z.string().min(1).max(500),
-        uploadedAt: z.iso.datetime(),
-      }),
-    ),
+    documents: z.array(onboardingDocumentSchema),
     missingDocuments: z.array(z.string()),
     submittedAt: z.iso.datetime().nullable(),
     reviewedBy: opaqueIdSchema.nullable(),

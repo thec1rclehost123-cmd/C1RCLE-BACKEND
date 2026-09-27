@@ -15,7 +15,6 @@ import {
   IdempotencyService,
   OnboardingService,
   AdminAuthorityService,
-  AdminAlertsService,
   InProcessEventBus,
   createAuditConsumer,
   createProjectionConsumer,
@@ -110,8 +109,6 @@ export interface PartnerV2Services {
   onboarding: OnboardingService;
   /** Phase 2: platform-admin resolution, tiering and dual control. */
   adminAuthority: AdminAuthorityService;
-  /** Phase 2: per-category count of items needing admin attention. */
-  adminAlerts: AdminAlertsService;
   checkout: CheckoutService;
   /** Phase 4 PR1: unauthenticated guest-facing discovery reads. */
   public: PublicService;
@@ -323,7 +320,6 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
 
   const adminAuthority = new AdminAuthorityService(deps);
   const onboardingService = new OnboardingService(deps, adminAuthority);
-  const adminAlerts = new AdminAlertsService(deps, adminAuthority, onboardingService);
 
   // Phase 5 services
   const scanner = createScannerService({
@@ -417,7 +413,6 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     analytics: new AnalyticsService(deps),
     onboarding: onboardingService,
     adminAuthority,
-    adminAlerts,
     checkout: new CheckoutService(deps),
     public: new PublicService(deps),
     paymentProvider,

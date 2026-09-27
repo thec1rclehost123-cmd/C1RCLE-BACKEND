@@ -293,7 +293,8 @@ function toUserDto(user: { id: string; email: string; name: string; image?: stri
   return {
     id: user.id,
     email: user.email,
-    displayName: user.name,
+    displayName:
+      user.name && user.name.length > 0 ? user.name : (user.email.split('@')[0] ?? 'User'),
     // Phase 0 scope is partner-dashboard auth only; guest/admin auth are
     // later phases (docs/roadmap/ROADMAP.md) and will need a real role source.
     role: 'partner',

@@ -54,7 +54,6 @@ export type {
 export { PublicService } from './public/public-service.js';
 export { AdminAuthorityService } from './admin/admin-authority-service.js';
 export type { ProposeCommand, AuditInput } from './admin/admin-authority-service.js';
-export { AdminAlertsService } from './admin/admin-alerts-service.js';
 export { OnboardingService } from './onboarding/onboarding-service.js';
 export type {
   StartApplicationCommand,

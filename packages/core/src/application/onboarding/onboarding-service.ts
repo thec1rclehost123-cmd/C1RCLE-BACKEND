@@ -201,7 +201,14 @@ export class OnboardingService {
     const request = await this.requireOwn(userId, command.requestId);
     const updated = addOnboardingDocument(
       request,
-      { label: command.label, storagePath: command.storagePath },
+      {
+        label: command.label,
+        storagePath: command.storagePath,
+        status: 'pending',
+        reviewedBy: null,
+        reviewedAt: null,
+        rejectionReason: null,
+      },
       this.deps.config.clock.now(),
     );
     await this.repo.save(updated);

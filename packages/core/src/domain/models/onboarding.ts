@@ -74,12 +74,18 @@ export interface OnboardingProfile {
   entityType?: string;
 }
 
+export type OnboardingDocumentStatus = 'pending' | 'verified' | 'rejected';
+
 /** A KYC document the applicant has uploaded. */
 export interface OnboardingDocument {
   /** v1 label vocabulary: id_front, id_back, selfie, cheque, registration_certificate… */
   label: string;
   storagePath: string;
   uploadedAt: string;
+  status: OnboardingDocumentStatus;
+  reviewedBy: EntityId | null;
+  reviewedAt: string | null;
+  rejectionReason: string | null;
 }
 
 export interface OnboardingRequest extends VersionedEntity {
@@ -160,7 +166,17 @@ export function addOnboardingDocument(
   const documents = request.documents.filter((existing) => existing.label !== document.label);
   return {
     ...bumpVersion(request, at),
-    documents: [...documents, { ...document, uploadedAt: at.toISOString() }],
+    documents: [
+      ...documents,
+      {
+        ...document,
+        uploadedAt: at.toISOString(),
+        status: 'pending',
+        reviewedBy: null,
+        reviewedAt: null,
+        rejectionReason: null,
+      },
+    ],
   };
 }
 
