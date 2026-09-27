@@ -139,10 +139,13 @@ Highest-value unported V1 capabilities: support desk semantics (timeline/merge/a
 3. V2 modular-monolith / doc gaps the general agent surfaced (ranked)
 #	Gap
 1	Analytics read-model never written — partner /analytics/overview always zeros, /events/:id/analytics always 404 (audit-consumers.ts:27 no-op createProjectionConsumer, nothing writes v2_analytics_reads)
+	→ **CLOSED 2026-09-19** (`5959386`): compute-on-request fallback in `analytics-service.ts`; a missing projection no longer yields zeros.
 2	ROADMAP.md says Phase 7 "not started" despite 15 admin route files + phase-07 doc
 3	Three registered 501 stubs (/door/stats/ws, /door/offline-manifest) violate D-006 "never 501" + app.test.ts:132
+	→ **CLOSED 2026-09-16** (`efb8a17`): `/door/offline-manifest` implemented; `/door/stats/ws` **superseded by SSE** `GET /door/stats/stream` (D-028) and the WebSocket path removed rather than stubbed, per D-006. No 501 stubs remain.
 4	Admin analytics truncates at 1k rows but exposes totalRevenuePaise as platform-wide
 5	venueShareRate settles to 0 — real settlement gap (disclosed in ROADMAP)
+	→ **CLOSED 2026-09-17** (`f63f103`): venue share-rate negotiation + settlement split shipped.
 6	No route tests for onboarding-review.ts (13 routes) and admin/orders.ts
 7	Contract parity (63 checks) covers only pre-admin schemas — admin/checkout/order/phase5/6 drift ships silently
 8	Modular-monolith layering itself is clean (no Firestore calls in gateway handlers; all service-wired)

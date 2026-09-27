@@ -30,9 +30,14 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
  * Deliberately a standalone plugin (not folded into `phase5-routes.ts`) so
  * this slice — walk-in, dine-in, sales list — can be built and tested without
  * colliding with the scanner + cover-wallet slices being wired concurrently in
- * that shared file. Registering this plugin into route registration, and
- * leaving `/door/stats` + `/door/stats/ws` as the honest stubs they already
- * are in `phase5-routes.ts`, is owned elsewhere.
+ * that shared file.
+ *
+ * Historical note: this header once added that registration, and leaving
+ * `/door/stats` + `/door/stats/ws` as "the honest stubs they already are" in
+ * `phase5-routes.ts`, was owned elsewhere. Both are now false: this plugin is
+ * registered, `GET /door/stats` is a real read model, and live push shipped as
+ * SSE at `GET /door/stats/stream` (`efb8a17`, 2026-09-16) — there is no
+ * WebSocket route and no 501 stub left in Phase 5.
  */
 
 const services = createV2Services();

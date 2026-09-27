@@ -177,6 +177,20 @@ no domain/schema change was needed, only the actual wiring.
   lands after a `payment.captured` webhook, correct basic-tier platform fee,
   and that a retried webhook delivery does not double the ledger.
 
+> **✅ SUPERSEDED 2026-09-17** (`f63f103`, "feat(partnerships): venue share-rate
+> negotiation + settlement split (Phase 6)"). The limitation described below was
+> real when written and has since been closed. `Partnership` now carries
+> `venueShareRate` (nullable whole-number percent, capped at 50 by
+> `MAX_VENUE_SHARE_PERCENT`, set only via `setVenueShareRate()` and only by a
+> party to an `active` partnership), and `checkout-service.ts` feeds
+> `(partnership.venueShareRate ?? 0) / 100` into settlement. The
+> negotiate→settle path is exposed at
+> `POST /api/v2/partnerships/:partnershipId/venue-share` (idempotent, optimistic
+> version lock). The `?? 0` fail-safe is **retained deliberately**: an
+> un-negotiated rate still settles 0 rather than guessing, because a fabricated
+> rate would misallocate real money. The original text is kept below for
+> history.
+
 **Known, honest limitation — not a bug, a real gap:** `venueShareRate`
 settles to **0** unconditionally. No persisted venue-revenue-share
 configuration exists anywhere in the domain — `Partnership` carries no
@@ -220,3 +234,26 @@ all built, wired, and tested. Remaining known gaps are tracked, not hidden:
 `packages/contracts` into `C1RCLE-FRONTEND` and replacing the
 `dataStatus: 'fixture'` finance screens) — both explicitly out of scope for
 this backend-only phase.
+
+### 2026-09-28 — Doc-truth repair; both Phase 6 follow-ups confirmed closed
+
+Backend re-verified against live code, not against these notes:
+
+- `venueShareRate` — **closed** 2026-09-17 (`f63f103`). The "settles to 0
+  unconditionally" limitation above is superseded; see the banner at its head.
+- Analytics compute-on-request fallback — **shipped** 2026-09-19 (`5959386`),
+  in `packages/core/src/application/analytics/analytics-service.ts`. The
+  precomputed-rollup path now degrades to computing on request instead of
+  returning empty, so the last Phase 6 follow-up is closed too.
+- Contracts — `venueShareRateSchema` / `setVenueShareRequestSchema` are
+  already mirrored into `C1RCLE-FRONTEND/packages/contracts`. No contract
+  regeneration is needed for venue-share work.
+
+**Still open, and genuinely frontend-side:** replacing the
+`dataStatus: 'fixture'` surfaces in `C1RCLE-FRONTEND`. As of 2026-09-28 that
+is 23 interfaces across ~119 files / ~12.6k lines under
+`apps/partner-dashboard/src/components/partner-v3/`. The venue-share control
+itself is now built (`VenueSharePanel` + `api-partnerships-repository.ts`,
+tab `?tab=share`). The rest of that migration is a frontend workstream, not a
+Phase 6 backend gap — and roughly half those interfaces have no backing V2
+endpoint at all, so they cannot be wired without new backend routes.

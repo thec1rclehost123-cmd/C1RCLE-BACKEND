@@ -21,12 +21,12 @@ session can resume without re-deriving context. This is the *only* place
 status is tracked — don't duplicate a "what's done" list anywhere else.
 
 - Phase 0 (Foundation: auth, persistence, the frozen partner slice) — **done**.
-- Phase 1 (Partner dashboards) — **substantially done**; finance blocked on Phase 6.
-- Phase 2 (KYC/Onboarding) — **substantially done**; storage-upload signing deferred.
+- Phase 1 (Partner dashboards) — **done**; finance/analytics shipped with Phase 6, `venueShareRate` shipped 2026-09-17.
+- Phase 2 (KYC/Onboarding) — **done**; pre-signed storage upload URLs shipped 2026-08-30.
 - Phase 3 (Event-catalog & scheduling) — **done**.
 - Phase 4 (Guest checkout & tickets) — **done** (verified 2026-09-07).
-- Phase 5 (Door/Scanner/Cover-wallet) — **done** (verified 2026-09-07); 2 honest 501s remain.
-- Phase 6 (Finance/Ledger/Payouts) — **in progress** (started 2026-09-07).
+- Phase 5 (Door/Scanner/Cover-wallet) — **done** (verified 2026-09-28); both former 501s are now implemented.
+- Phase 6 (Finance/Ledger/Payouts) — **done** (verified 2026-09-08); `venueShareRate` closed 2026-09-17, analytics fallback 2026-09-19.
 - Phase 7 (Admin console backend) — **done** (2026-09-16); Phase C deferrals in `roadmap/ADMIN-DASHBOARD-GAPS.md`.
 - Phase 8 (Social/notifications) — not started.
 
