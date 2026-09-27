@@ -373,12 +373,15 @@ export type {
   AdminPayoutStatus,
   RunPayoutBatchInput,
   PayoutBatchResult,
+  FinanceOrderDto,
 } from './contracts/phase6.js';
 
 export {
   ledgerEntryDtoSchema,
   ledgerEntryListResponseSchema,
   balanceSummaryResponseSchema,
+  financeOrderDtoSchema,
+  financeOrderListResponseSchema,
   payoutRequestSchema,
   payoutResponseSchema,
   payoutListResponseSchema,

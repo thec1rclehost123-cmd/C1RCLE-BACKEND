@@ -168,12 +168,12 @@ async function main(): Promise<void> {
     isObj(scanCouple.json) &&
       scanCouple.json.status === 'confirmation_required' &&
       isObj(scanCouple.json.confirmation) &&
-      typeof (scanCouple.json.confirmation).token === 'string',
+      typeof scanCouple.json.confirmation.token === 'string',
     scanCouple.json,
   );
   const confirmToken =
     isObj(scanCouple.json) && isObj(scanCouple.json.confirmation)
-      ? ((scanCouple.json.confirmation).token as string)
+      ? (scanCouple.json.confirmation.token as string)
       : '';
   const confirm = await call('POST', '/api/v2/door/check-ins/confirm', {
     body: { eventId: EVENT_ID, confirmationToken: confirmToken, confirmed: true },
@@ -363,7 +363,7 @@ async function main(): Promise<void> {
     'stats: {eventId, occupancy:{inside,capacity,remaining,prebooked}}',
     isObj(stats.json) &&
       isObj(stats.json.occupancy) &&
-      typeof (stats.json.occupancy).inside === 'number',
+      typeof stats.json.occupancy.inside === 'number',
     stats.json,
   );
 
@@ -396,8 +396,8 @@ async function main(): Promise<void> {
     'charge code grants canCharge, not canWalkIn',
     isObj(redeemCharge.json) &&
       isObj(redeemCharge.json.permissions) &&
-      (redeemCharge.json.permissions).canCharge === true &&
-      (redeemCharge.json.permissions).canWalkIn === false,
+      redeemCharge.json.permissions.canCharge === true &&
+      redeemCharge.json.permissions.canWalkIn === false,
     isObj(redeemCharge.json) ? redeemCharge.json.permissions : undefined,
   );
 
