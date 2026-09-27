@@ -92,6 +92,9 @@ export type {
   ResolveWalletCommand,
   ChargeWalletCommand,
   WalletChargeResult,
+  AttendanceReport,
+  AttendanceReportGuest,
+  AttendanceReportTierBreakdown,
 } from './door/door-ops-service.js';
 export { createDoorOpsService, resolveDoorDate } from './door/door-ops-service.js';
 export type {

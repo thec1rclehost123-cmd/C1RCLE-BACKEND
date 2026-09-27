@@ -104,6 +104,7 @@ export const venueAddressSchema = z.object({
   lat: z.number().optional(),
   lng: z.number().optional(),
 });
+export type VenueAddress = z.infer<typeof venueAddressSchema>;
 
 export const venuePublicProfileSchema = z.object({
   name: z.string().min(1).max(200),

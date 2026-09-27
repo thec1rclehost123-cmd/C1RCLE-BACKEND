@@ -5,6 +5,7 @@ import {
   paginationQuerySchema,
   venueDtoSchema,
   createVenueSchema,
+  venueAddressSchema,
   venueProfileDtoSchema,
   venueSlotDtoSchema,
   venueAvailabilityDtoSchema,
@@ -69,6 +70,13 @@ const updateVenueBody = z
         shortDescription: z.string().max(200).optional(),
         facilities: z.array(z.string().min(1).max(60)).max(50).optional(),
         capacity: z.number().int().nonnegative().nullable().optional(),
+        // Additive (D-030): lets an owner set the venue's GPS coordinates,
+        // which `door-ops-service.ts`'s shift-open geofence check reads.
+        // Domain-level `updateVenue()` does a SHALLOW merge on `public` —
+        // sending a partial `address` here REPLACES the whole address
+        // object, not deep-merges it, so a caller must send the complete
+        // current address (existing fields + the edit), never lat/lng alone.
+        address: venueAddressSchema.optional(),
       })
       .optional(),
     private: z

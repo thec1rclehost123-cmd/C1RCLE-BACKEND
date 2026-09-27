@@ -388,6 +388,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     eventCodes: repositories.eventCodes,
     doorSales: repositories.doorSales,
     scanLedger: repositories.scanLedger,
+    venues: repositories.venues,
     adminAudit: adminAudits,
     logger: deps.logger,
   });

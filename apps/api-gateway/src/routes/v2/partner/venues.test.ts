@@ -325,6 +325,62 @@ describe('V2 partners venues slice — profile, calendar, menu, availability', (
     await server.close();
   });
 
+  it('sets venue coordinates via PATCH /profile (D-030 geofence)', async () => {
+    const server = await buildServer();
+    const { id } = await createVenue(server);
+    const response = await server.inject({
+      method: 'PATCH',
+      url: `/venues/${id}/profile`,
+      headers: {
+        'x-organization-id': ORG,
+        'idempotency-key': 'idem-venue-profile-address-1',
+        'if-match': '1',
+      },
+      payload: {
+        public: { address: { city: 'Pune', lat: 18.5204, lng: 73.8567 } },
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().public.address).toMatchObject({
+      city: 'Pune',
+      lat: 18.5204,
+      lng: 73.8567,
+    });
+    await server.close();
+  });
+
+  it('address update is a shallow merge — omitting an existing field drops it (documents the gotcha the route comment warns about)', async () => {
+    const server = await buildServer();
+    const { id } = await createVenue(server);
+    // First write establishes city + lat/lng.
+    await server.inject({
+      method: 'PATCH',
+      url: `/venues/${id}/profile`,
+      headers: {
+        'x-organization-id': ORG,
+        'idempotency-key': 'idem-venue-profile-address-2a',
+        'if-match': '1',
+      },
+      payload: { public: { address: { city: 'Pune', lat: 18.5204, lng: 73.8567 } } },
+    });
+    // Second write sends lat/lng only, as a naive caller might.
+    const response = await server.inject({
+      method: 'PATCH',
+      url: `/venues/${id}/profile`,
+      headers: {
+        'x-organization-id': ORG,
+        'idempotency-key': 'idem-venue-profile-address-2b',
+        'if-match': '2',
+      },
+      payload: { public: { address: { lat: 19, lng: 74 } } },
+    });
+    expect(response.statusCode).toBe(200);
+    // `city` is gone — this is the exact shallow-merge behavior the fix's
+    // own code comment warns callers about, not a bug in this route.
+    expect(response.json().public.address).toEqual({ lat: 19, lng: 74 });
+    await server.close();
+  });
+
   it('returns the calendar slots for a window', async () => {
     const server = await buildServer();
     const { id } = await createVenue(server);
