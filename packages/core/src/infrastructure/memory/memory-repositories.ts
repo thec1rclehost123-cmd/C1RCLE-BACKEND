@@ -1,4 +1,6 @@
 import { VersionConflictError } from '../../domain/errors.js';
+import { admitSeats } from '../../domain/models/entitlement.js';
+import { DEFAULT_PLATFORM_SETTINGS } from '../../domain/models/platform-settings.js';
 import { doSlotRangesOverlap, assertSlotRangeFree } from '../../domain/models/venue.js';
 
 /**
@@ -6,10 +8,6 @@ import { doSlotRangesOverlap, assertSlotRangeFree } from '../../domain/models/ve
  * Minimal implementations for the compare-and-set tests and the memory
  * storage driver (`buildRepositories` in `infrastructure/utils.ts`).
  */
-
-import { VersionConflictError } from '../../domain/errors.js';
-import { admitSeats } from '../../domain/models/entitlement.js';
-import { DEFAULT_PLATFORM_SETTINGS } from '../../domain/models/platform-settings.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type { CartReservation } from '../../domain/models/cart-reservation.js';
@@ -559,6 +557,8 @@ export class MemoryOrderRepository implements OrderRepository {
         sum + order.lines.reduce((s, line) => s + (line.tierId === tierId ? line.quantity : 0), 0)
       );
     }, 0);
+  }
+
   async listAll(query: PaginationQuery): Promise<Page<Order>> {
     return serializeSlice([...this.orders.values()], query);
   }

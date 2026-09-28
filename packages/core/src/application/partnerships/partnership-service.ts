@@ -137,6 +137,9 @@ export class PartnershipService {
       );
     }
     return id;
+  }
+
+  /**
    * Negotiates (or clears) the venue share on an active partnership. Either
    * party can set it; the domain guards rate bounds and `active` status.
    */

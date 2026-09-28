@@ -68,6 +68,7 @@ export interface ObjectStoragePort {
    * on the memory driver it hands back a non-routable placeholder host.
    */
   toPublicUrl(storagePath: string): string;
+  /**
    * Admin-side signed read — lets a platform admin actually view a KYC
    * document before approving/rejecting an application. v1 had the same
    * idea (`kyc/[uid]/route.js` signed-URL helper) but allowlisted by path
@@ -107,6 +108,8 @@ export class EchoObjectStorage implements ObjectStoragePort {
     // Non-routable reserved host, but a valid URL for `z.url()` — matches the
     // `memory://` upload URL convention of this dev provider.
     return `https://uploads.invalid/${storagePath}`;
+  }
+
   async issueReadUrl(request: ReadUrlRequest): Promise<ReadUrlGrant> {
     return {
       readUrl: `memory://reads/${request.key}`,

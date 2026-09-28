@@ -68,6 +68,8 @@ export class FirebaseObjectStorage implements ObjectStoragePort {
     // PUT sets *that object's* ACL to public-read while the bucket and every
     // KYC/private object stay credential-only.
     return `https://storage.googleapis.com/${this.bucketName}/${storagePath}`;
+  }
+
   async issueReadUrl(request: ReadUrlRequest): Promise<ReadUrlGrant> {
     const [readUrl] = await this.storage.bucket(this.bucketName).file(request.key).getSignedUrl({
       version: 'v4',

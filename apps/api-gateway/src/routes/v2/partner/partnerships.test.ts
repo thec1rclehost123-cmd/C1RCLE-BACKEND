@@ -30,6 +30,7 @@ const write = (org: string) => ({
   'x-organization-id': org,
   'idempotency-key': `partner-key-${++keySeq}`,
 });
+const read = (org: string) => ({ 'x-organization-id': org });
 
 /**
  * Two tenants — a host and the owner of a venue — plus a venue owned by the
@@ -41,7 +42,10 @@ async function seedHostAndVenue(
   const hostCreated = await server.inject({
     method: 'POST',
     url: '/organizations',
-    headers: { 'x-organization-id': 'org_host_seed', 'idempotency-key': `seed-${++keySeq}` },
+    headers: {
+      'x-organization-id': 'org_host_seed',
+      'idempotency-key': `seed-${++keySeq}`,
+    },
     payload: { name: 'Host Co', slug: `host-co-${keySeq}` },
   });
   const host: string = hostCreated.json().id;
@@ -49,7 +53,10 @@ async function seedHostAndVenue(
   const venueOrgCreated = await server.inject({
     method: 'POST',
     url: '/organizations',
-    headers: { 'x-organization-id': 'org_venue_seed', 'idempotency-key': `seed-${++keySeq}` },
+    headers: {
+      'x-organization-id': 'org_venue_seed',
+      'idempotency-key': `seed-${++keySeq}`,
+    },
     payload: { name: 'Venue Co', slug: `venue-co-${keySeq}` },
   });
   const venueOrg: string = venueOrgCreated.json().id;
@@ -89,6 +96,25 @@ async function activePartnership(
   return partnershipId;
 }
 
+/**
+ * A pending host-initiated request (never approved). Withdraw/answer tests
+ * start here so they never depend on the approval path.
+ */
+async function pendingHostRequest(
+  server: Server,
+): Promise<{ host: string; venue: string; venueOrg: string; partnershipId: string }> {
+  const { host, venue, venueOrg } = await seedHostAndVenue(server);
+  const requested = await server.inject({
+    method: 'POST',
+    url: '/partnerships',
+    headers: write(host),
+    payload: { venueId: venue, initiatedBy: 'host' },
+  });
+  expect(requested.statusCode).toBe(201);
+  const partnershipId: string = requested.json().id;
+  return { host, venue, venueOrg, partnershipId };
+}
+
 describe('partnerships over HTTP', () => {
   it('creates a partnership request carrying a proposed venue share', async () => {
     const server = await buildServer();
@@ -125,17 +151,16 @@ describe('partnerships over HTTP', () => {
     expect(requested.json().venueShareRate).toBeNull();
     await server.close();
   });
-});
 
   it('opens a pending request from the venue side', async () => {
     const server = await buildServer();
-    const { venueOrg, venueId, hostOrg } = await twoParties(server);
+    const { host, venue, venueOrg } = await seedHostAndVenue(server);
 
     const response = await server.inject({
       method: 'POST',
       url: '/partnerships',
       headers: write(venueOrg),
-      payload: { venueId, initiatedBy: 'venue', hostOrganizationId: hostOrg },
+      payload: { venueId: venue, initiatedBy: 'venue', hostOrganizationId: host },
     });
 
     // The route used to drop `hostOrganizationId` before calling the service,
@@ -144,22 +169,22 @@ describe('partnerships over HTTP', () => {
     expect(response.json()).toMatchObject({
       status: 'pending',
       initiatedBy: 'venue',
-      hostOrganizationId: hostOrg,
+      hostOrganizationId: host,
       venueOrganizationId: venueOrg,
-      venueId,
+      venueId: venue,
     });
     await server.close();
   });
 
   it('422s a venue-initiated request without hostOrganizationId', async () => {
     const server = await buildServer();
-    const { venueOrg, venueId } = await twoParties(server);
+    const { venue, venueOrg } = await seedHostAndVenue(server);
 
     const response = await server.inject({
       method: 'POST',
       url: '/partnerships',
       headers: write(venueOrg),
-      payload: { venueId, initiatedBy: 'venue' },
+      payload: { venueId: venue, initiatedBy: 'venue' },
     });
 
     expect(response.statusCode).toBe(422);
@@ -168,15 +193,31 @@ describe('partnerships over HTTP', () => {
 
   it('refuses a venue-initiated request from someone who does not own the venue', async () => {
     const server = await buildServer();
+    const { host, venue } = await seedHostAndVenue(server);
+
+    // The host does not own the venue, so inviting "as the venue" is forbidden.
+    const response = await server.inject({
+      method: 'POST',
+      url: '/partnerships',
+      headers: write(host),
+      payload: { venueId: venue, initiatedBy: 'venue', hostOrganizationId: host },
+    });
+
+    expect(response.statusCode).toBe(403);
+    await server.close();
+  });
+
+  it('negotiates the venue share on an active partnership', async () => {
+    const server = await buildServer();
     const { host, venue, venueOrg } = await seedHostAndVenue(server);
     const partnershipId = await activePartnership(server, host, venue, venueOrg);
 
     // Host sets 20 first...
     const fromHost = await server.inject({
       method: 'POST',
-      url: '/partnerships',
-      headers: write(hostOrg),
-      payload: { venueId, initiatedBy: 'venue', hostOrganizationId: hostOrg },
+      url: `/partnerships/${partnershipId}/venue-share`,
+      headers: write(host),
+      payload: { venueShareRate: 20 },
     });
     expect(fromHost.statusCode).toBe(200);
     expect(fromHost.json()).toMatchObject({ status: 'active', venueShareRate: 20 });
@@ -281,13 +322,14 @@ describe('partnerships over HTTP', () => {
 
   it('lets the requester withdraw a pending request', async () => {
     const server = await buildServer();
-    const { hostOrg, partnershipId } = await pendingRequest(server);
+    const { host, partnershipId } = await pendingHostRequest(server);
 
     // The legacy Sent tab offers "Cancel request", which posts to `end`.
     const response = await server.inject({
       method: 'POST',
       url: `/partnerships/${partnershipId}/end`,
-      headers: write(hostOrg),
+      headers: write(host),
+      payload: {},
     });
 
     expect(response.statusCode).toBe(200);
@@ -297,12 +339,13 @@ describe('partnerships over HTTP', () => {
 
   it('refuses the counterparty ending a pending request instead of answering it', async () => {
     const server = await buildServer();
-    const { venueOrg, partnershipId } = await pendingRequest(server);
+    const { venueOrg, partnershipId } = await pendingHostRequest(server);
 
     const response = await server.inject({
       method: 'POST',
       url: `/partnerships/${partnershipId}/end`,
       headers: write(venueOrg),
+      payload: {},
     });
 
     expect(response.statusCode).toBe(400);
@@ -310,6 +353,32 @@ describe('partnerships over HTTP', () => {
   });
 
   it('treats a block as terminal — a later approve cannot undo it', async () => {
+    const server = await buildServer();
+    const { host, venue, venueOrg } = await seedHostAndVenue(server);
+    const partnershipId = await activePartnership(server, host, venue, venueOrg);
+
+    const blocked = await server.inject({
+      method: 'POST',
+      url: `/partnerships/${partnershipId}/block`,
+      headers: write(venueOrg),
+      payload: {},
+    });
+    expect(blocked.statusCode).toBe(200);
+    expect(blocked.json()).toMatchObject({ status: 'blocked' });
+
+    // The counterparty approved the original request, so it may call approve —
+    // the FSM still refuses the blocked → active edge (409, not a silent undo).
+    const undone = await server.inject({
+      method: 'POST',
+      url: `/partnerships/${partnershipId}/approve`,
+      headers: write(venueOrg),
+      payload: {},
+    });
+    expect(undone.statusCode).toBe(409);
+    await server.close();
+  });
+
+  it('rejects setting the venue share on a pending partnership with 400', async () => {
     const server = await buildServer();
     const { host, venue } = await seedHostAndVenue(server);
 
@@ -346,12 +415,44 @@ describe('partnerships over HTTP', () => {
     });
     expect(first.statusCode).toBe(200);
 
+    const second = await server.inject({
+      method: 'POST',
+      url: `/partnerships/${partnershipId}/venue-share`,
+      headers,
+      payload: { venueShareRate: 30 },
+    });
+    expect(second.statusCode).toBe(200);
+    expect(second.json()).toEqual(first.json());
+    await server.close();
+  });
+
+  it('lists partnerships from either side with resolved display names', async () => {
+    const server = await buildServer();
+    const { host, venue, venueOrg } = await seedHostAndVenue(server);
+    const partnershipId = await activePartnership(server, host, venue, venueOrg);
+
+    const fromHost = await server.inject({
+      method: 'GET',
+      url: `/organizations/${host}/partnerships`,
+      headers: read(host),
+    });
+    const fromVenue = await server.inject({
+      method: 'GET',
+      url: `/organizations/${venueOrg}/partnerships`,
+      headers: read(venueOrg),
+    });
+
+    expect(fromHost.statusCode).toBe(200);
+    expect(fromVenue.statusCode).toBe(200);
     expect(fromHost.json().items).toHaveLength(1);
     expect(fromVenue.json().items).toHaveLength(1);
+    expect(fromHost.json().items[0].id).toBe(partnershipId);
+    expect(fromVenue.json().items[0].id).toBe(partnershipId);
     // Display names are resolved server-side — the UI must never fall back
     // to `Host A1B2C3` ID labels when the data exists.
-    expect(fromVenue.json().items[0].hostName).toBe('Org');
-    expect(fromHost.json().items[0].venueName).toBe('Sky Bar');
+    expect(fromVenue.json().items[0].hostName).toBe('Host Co');
+    expect(fromHost.json().items[0].venueName).toBe('The Hall');
+    expect(fromHost.json().items[0].venueId).toBe(venue);
     await server.close();
   });
 });
