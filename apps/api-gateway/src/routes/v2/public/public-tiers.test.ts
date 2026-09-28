@@ -54,6 +54,8 @@ async function seedPublishedEventWithTiers(
     startingPricePaise: 0,
     isFree: true,
     cancellationReason: null,
+    capacity: null,
+    adminOverride: false,
     version: 1,
     createdAt: now.toISOString(),
     updatedAt: now.toISOString(),

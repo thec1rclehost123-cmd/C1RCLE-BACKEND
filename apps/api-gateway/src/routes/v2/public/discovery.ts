@@ -2,6 +2,7 @@ import {
   paginationQuerySchema,
   eventDtoSchema,
   eventPublicDetailDtoSchema,
+  venueDtoSchema,
   venuePublicDetailDtoSchema,
   hostPublicDtoSchema,
   discoveryFeedDtoSchema,
@@ -11,8 +12,7 @@ import {
 import { effectiveTierPricePaise } from '@c1rcle/core/domain';
 import { z } from 'zod';
 
-import type { Organization, TicketTier } from '@c1rcle/core/domain';
-import type { Organization, Venue } from '@c1rcle/core/domain';
+import type { Organization, TicketTier, Venue } from '@c1rcle/core/domain';
 
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
@@ -294,6 +294,35 @@ function hostToDto(org: Organization) {
     id: org.id,
     name: org.name,
     slug: org.slug,
+  };
+}
+
+/**
+ * Small event-location projection for the event-detail `venue` field: just
+ * enough to identify and describe the authoritative venue, never its tenant
+ * or private profile.
+ */
+function eventVenueToDto(venue: Venue) {
+  return {
+    id: venue.id,
+    name: venue.public.name,
+    slug: venue.public.slug,
+    photoUrl: venue.public.photoUrl,
+    address: venue.public.address,
+  };
+}
+
+/**
+ * Full public venue detail: the canonical venue fields plus the explicitly
+ * public profile fields. Owner/contact/internal-note data never leaves the
+ * private profile.
+ */
+function publicVenueToDto(venue: Venue) {
+  return {
+    ...venueToDto(venue),
+    photoUrl: venue.public.photoUrl,
+    address: venue.public.address,
+    facilities: venue.public.facilities,
   };
 }
 

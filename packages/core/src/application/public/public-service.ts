@@ -69,7 +69,7 @@ export class PublicService {
   async listEventTiers(
     idOrSlug: EntityId,
   ): Promise<{ tier: TicketTier; availableQuantity: number }[]> {
-    const event = await this.getEvent(idOrSlug);
+    const { event } = await this.getEvent(idOrSlug);
     const tiers = await this.deps.repositories.catalog.listTiers(event.id);
     const rows: { tier: TicketTier; availableQuantity: number }[] = [];
     for (const tier of tiers) {

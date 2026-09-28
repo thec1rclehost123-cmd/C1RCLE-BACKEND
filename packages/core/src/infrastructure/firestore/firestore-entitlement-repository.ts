@@ -1,7 +1,7 @@
 import { admitSeats } from '../../domain/models/entitlement.js';
 
 import { compareAndSet } from './compare-and-set.js';
-import { paginateUnordered } from './pagination.js';
+import { paginateQuery, paginateUnordered } from './pagination.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type { Entitlement, EntitlementStatus } from '../../domain/models/entitlement.js';

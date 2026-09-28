@@ -294,6 +294,7 @@ export class CheckoutService {
       paidAt: now.toISOString(),
       reservationExpiresAt: now.toISOString(),
       failureReason: null,
+      refundedPaise: 0,
       version: 1,
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
