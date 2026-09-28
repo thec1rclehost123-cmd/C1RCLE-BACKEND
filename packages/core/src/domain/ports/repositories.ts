@@ -335,6 +335,121 @@ export interface EventAnalytics {
   conversionRate: number;
 }
 
+/** Bucket width for a trends series. */
+export type TrendGranularity = 'hour' | 'day' | 'month';
+
+/**
+ * ─── Organization trends (derived) ────────────────────────────────────────
+ *
+ * One bucket per `granularity` step across `[from, to]` inclusive. The array is
+ * **dense and zero-filled**: a day with no sales is a real data point, and
+ * dropping it would silently compress a quiet week into a busy one when the UI
+ * plots it.
+ *
+ * Granularity is a first-class field rather than a client-side rendering choice
+ * because a dashboard's ranges are genuinely different shapes, not one range at
+ * three zooms: "today" wants hours, "this week" wants days, "all time" wants
+ * months. Coarsening 24 hourly points into one daily point — or asking for 400
+ * daily points to draw twelve bars — would be either useless or unreadable.
+ *
+ * `key` is the bucket's own identity at that granularity, so a consumer never
+ * has to re-derive the bucket boundaries: `YYYY-MM` for `month`, `YYYY-MM-DD`
+ * for `day`, and `YYYY-MM-DDTHH:00` for `hour`. All UTC.
+ *
+ * Revenue is net paise (`grandTotalPaise - refundedPaise`) on captured orders,
+ * matching `OrganizationOverview.totalRevenuePaise` exactly — two different
+ * endpoints must never disagree about the same money. Tickets are order lines.
+ *
+ * There is deliberately **no `clicks` series**. Referral-link clicks are a
+ * per-promoter vanity counter that the authoritative attribution does not
+ * support (see `ReferralLinkDto.clicks`); an org-level rollup of it would be a
+ * number that looks authoritative and is not.
+ */
+export interface OrganizationTrends {
+  organizationId: EntityId;
+  granularity: TrendGranularity;
+  /** Inclusive first bucket key, clamped to the bucket cap. */
+  from: string;
+  /** Inclusive last bucket key. */
+  to: string;
+  /** Ascending by key. At most `MAX_TREND_BUCKETS` entries. */
+  buckets: TrendBucket[];
+  /**
+   * Lifetime totals over everything the scan saw, which is **not** the sum of
+   * `buckets` whenever data falls outside the requested window. Conflating them
+   * would make a legitimately narrow range look like data loss.
+   */
+  totals: {
+    revenuePaise: number;
+    tickets: number;
+    checkIns: number;
+  };
+}
+
+export interface TrendBucket {
+  /** Bucket start, formatted for `granularity`. See `OrganizationTrends`. */
+  key: string;
+  revenuePaise: number;
+  tickets: number;
+  checkIns: number;
+}
+
+/**
+ * An event as an overview card needs it: identity plus the sell-through numbers
+ * and the venue name, which live in three different aggregates.
+ *
+ * `venueName` is resolved server-side. The client has a `venueId` and a separate
+ * venues list, and joining them client-side would mean either shipping every
+ * venue to every dashboard render or rendering a card that says "Venue: —".
+ *
+ * `capacity` is the venue's *public* reported capacity, which may legitimately be
+ * `null` — an event at a venue that has never declared one. It is NOT zero: the
+ * UI divides by it, and zero would render as a divide-by-zero rather than
+ * "not declared". `ticketsSold` counts order lines on captured orders, the same
+ * rule as `OrganizationOverview.totalTicketsSold`.
+ *
+ * `status` is passed through unmapped for the same reason order status is: label
+ * wording is the client's business.
+ */
+export interface OrganizationEventCard {
+  eventId: EntityId;
+  title: string;
+  startAt: string;
+  status: string;
+  venueId: EntityId | null;
+  /** `null` when the event has no venue, or the venue was since deleted. */
+  venueName: string | null;
+  imageUrl: string | null;
+  ticketsSold: number;
+  /** `null` when capacity was never declared. Never `0` to mean "unknown". */
+  capacity: number | null;
+}
+
+/**
+ * Per-day event counts for one calendar month, for the overview's month grid.
+ * `firstDayOffset` is the number of blank cells before day 1 (0 = the 1st is a
+ * Monday with a Monday-first grid) — computed server-side so the client cannot
+ * disagree with the server about which day of the week the month starts on.
+ *
+ * Only events a partner would recognise are counted: an `archived` or `cancelled`
+ * event is not "something happening that day", and counting it would put
+ * strikes on the calendar that the user can then click into.
+ */
+export interface OrganizationCalendar {
+  organizationId: EntityId;
+  /** `YYYY-MM`. */
+  month: string;
+  /** Weekday index of the 1st, 0 = Monday. */
+  firstDayOffset: number;
+  days: CalendarDay[];
+}
+
+export interface CalendarDay {
+  /** Day of month, 1..31. Every day is present, `eventCount: 0` when idle. */
+  day: number;
+  eventCount: number;
+}
+
 /** Read-model access. Writes happen through projections/workers, not routes. */
 export interface AnalyticsReadModelRepository {
   getOrganizationOverview(organizationId: EntityId): Promise<OrganizationOverview | null>;
