@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  eventPublicDetailDtoSchema,
   eventDtoSchema,
   guestProfileDtoSchema,
   idempotencyKeySchema,
@@ -18,7 +17,6 @@ import {
   supportTicketDtoSchema,
   supportTicketQuerySchema,
   userSchema,
-  venuePublicDetailDtoSchema,
   venueDtoSchema,
   versionHeaderSchema,
 } from './client.js';
