@@ -149,28 +149,6 @@ export default async function publicDiscoveryRoutes(fastify: FastifyInstance) {
     },
   );
 
-  // ── VENUE DETAIL BY ID ───────────────────────────────────────────────────
-  // Registered BEFORE `/venues/:slug`: the literal `by-id` matches the slug
-  // char class, so order is what keeps `/venues/by-id/:venueId` from being
-  // captured as a slug lookup. Guests resolve an event's `venueId` (events
-  // carry the id, not the slug) to display the venue name + city.
-  fastify.get(
-    '/venues/by-id/:venueId',
-    {
-      preHandler: [fastify.rateLimit('PUBLIC_READ'), fastify.validateV2({ params: venueIdParam })],
-    },
-    async (request, reply) => {
-      const { venueId } = request.params as z.infer<typeof venueIdParam>;
-      const venue = await services.public
-        .getVenueById(venueId)
-        .catch((error: unknown) => mapDomainError(reply, request, venueId, error));
-      if (venue === undefined) return reply;
-      const validated = validateV2Response(reply, request, venueDtoSchema, venueToDto(venue));
-      if (validated === undefined) return reply;
-      return reply.send(validated);
-    },
-  );
-
   // ── VENUE DETAIL (by slug) ─────────────────────────────────────────────────
   fastify.get(
     '/venues/:slug',
@@ -189,29 +167,6 @@ export default async function publicDiscoveryRoutes(fastify: FastifyInstance) {
         venuePublicDetailDtoSchema,
         publicVenueToDto(venue),
       );
-      if (validated === undefined) return reply;
-      return reply.send(validated);
-    },
-  );
-
-  // ── HOST / ORGANIZATION PUBLIC PROFILE BY ID ─────────────────────────────
-  // Registered BEFORE `/hosts/:slug` for the same capture reason as the
-  // venue by-id route above: guests resolve an event's `organizationId`.
-  fastify.get(
-    '/hosts/by-id/:organizationId',
-    {
-      preHandler: [
-        fastify.rateLimit('PUBLIC_READ'),
-        fastify.validateV2({ params: organizationIdParam }),
-      ],
-    },
-    async (request, reply) => {
-      const { organizationId } = request.params as z.infer<typeof organizationIdParam>;
-      const org = await services.public
-        .getHostById(organizationId)
-        .catch((error: unknown) => mapDomainError(reply, request, organizationId, error));
-      if (org === undefined) return reply;
-      const validated = validateV2Response(reply, request, hostPublicDtoSchema, hostToDto(org));
       if (validated === undefined) return reply;
       return reply.send(validated);
     },
