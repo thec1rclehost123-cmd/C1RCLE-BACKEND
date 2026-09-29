@@ -51,6 +51,8 @@ import type {
   LeaderboardRepository,
   EmailOtpRepository,
   GuestProfileRepository,
+  FollowRepository,
+  NotificationRepository,
   AdminRefundRequestRepository,
   UserAccountRepository,
   UserBanRepository,
@@ -139,6 +141,10 @@ export interface ServiceDeps {
     leaderboard: LeaderboardRepository;
     emailOtp: EmailOtpRepository;
     guestProfiles: GuestProfileRepository;
+    /** Phase 8: guest → venue/host follow edges. */
+    follows: FollowRepository;
+    /** Phase 8: per-user in-app inbox, written by bus consumers. */
+    notifications: NotificationRepository;
     refundRequests: AdminRefundRequestRepository;
     /** Platform support tickets (guest intake + admin desk). */
     supportTickets: SupportTicketRepository;

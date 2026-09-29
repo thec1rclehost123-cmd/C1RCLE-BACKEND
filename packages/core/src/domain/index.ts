@@ -31,6 +31,7 @@ export * from './models/safety-report.js';
 export * from './models/leaderboard.js';
 export * from './models/email-otp.js';
 export * from './models/guest-profile.js';
+export * from './models/social.js';
 export * from './models/platform-settings.js';
 export type * from './models/platform-user.js';
 export * from './ports/email-sender.js';

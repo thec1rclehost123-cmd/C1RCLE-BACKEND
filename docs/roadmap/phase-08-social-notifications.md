@@ -1,6 +1,6 @@
 # Phase 8 — Social / discovery / notifications
 
-**Status:** not started · **Priority:** lowest — build only once Phases 0–7 are live
+**Status:** follow graph + notifications LIVE (branch `feat/phase-08-social-notifications`) · chat/DM not started
 
 v1 has a substantial social/dating layer bolted onto the event platform
 (`social.ts`, 36 endpoints — follow, DM/chat, typing indicators, blocks,
@@ -27,4 +27,29 @@ avoid speccing detail that may drift before it's relevant).
 
 ## Session Log
 
-(none yet)
+### 2026-09-29 — follow graph + "new event" notifications (pub/sub)
+
+Re-audit of `C1RCLE-FRONTEND`: partner-dashboard now ships notification UI
+(`PartnerNotifications`, `VenueNotificationDrawer`) on local mock data, and
+guest-portal has venue/host pages — the precondition above is met for
+follows + notifications. No chat/DM UI exists, so chat stays out of scope.
+
+Built:
+- `v2_follows` (one edge doc per follower+target, deterministic id) and
+  `v2_notifications` (one row per recipient+type+subject, `readAt` inline —
+  no separate `v2_notification_reads`, every row has exactly one recipient).
+- Domain events `follow.created` / `follow.removed` (audited).
+- `SocialService` publishes only; notifications are written by the bus
+  subscriber `createFollowerFanOutConsumer` on `event.published`
+  (replaces v1's inline `notifyNewEvent()`). Idempotent under redelivery and
+  `resumeSales` re-publish.
+- Bus fix: per-handler dedupe was keyed by `handler.name`, so two anonymous
+  subscribers on one event type shared a dedupe set and the second never ran.
+- Routes (session-scoped): `POST /follows`, `DELETE /follows/:type/:id`,
+  `GET /follows/me`, `GET /follows/:type/:id/status`, `GET /notifications/me`,
+  `GET /notifications/me/unread-count`, `POST /notifications/me/read`,
+  `POST /notifications/me/read-all`.
+
+Open: fan-out runs in-process inside the publish request (bus drains on
+append) — move to the durable queue worker when B12 lands. Partner-side
+(org-scoped) notifications and chat/DM remain unbuilt.

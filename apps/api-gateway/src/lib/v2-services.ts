@@ -42,6 +42,8 @@ import {
   createLeaderboardService,
   createEmailOtpService,
   createGuestProfileService,
+  SocialService,
+  createFollowerFanOutConsumer,
   type ScannerService,
   type DoorService,
   type CoverWalletService,
@@ -115,6 +117,8 @@ export interface PartnerV2Services {
   events: EventService;
   catalog: EventCatalogService;
   analytics: AnalyticsService;
+  /** Phase 8: follow graph + notification inbox (guest, session-scoped). */
+  social: SocialService;
   /** Phase 2: partner applications, applicant + admin review sides. */
   onboarding: OnboardingService;
   /** Phase 2: platform-admin resolution, tiering and dual control. */
@@ -269,6 +273,19 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   eventBus.subscribe('event.updated', createAuditConsumer(audits));
   // Future projection consumer (no-op now — wire exists for B11 projections).
   eventBus.subscribe('event.published', createProjectionConsumer);
+  // Phase 8 pub/sub: follow graph changes are audited, and every publish fans
+  // out "new event" notifications to venue + host followers. The publisher
+  // (EventService / SocialService) never calls these directly.
+  eventBus.subscribe('follow.created', createAuditConsumer(audits));
+  eventBus.subscribe('follow.removed', createAuditConsumer(audits));
+  eventBus.subscribe(
+    'event.published',
+    createFollowerFanOutConsumer({
+      events: repositories.events,
+      follows: repositories.follows,
+      notifications: repositories.notifications,
+    }),
+  );
 
   const adminAudits: AdminAuditRepository =
     gw.STORAGE_DRIVER === 'memory'
@@ -478,6 +495,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     catalog: new EventCatalogService(deps),
     analytics: new AnalyticsService(deps),
     onboarding: new OnboardingService(deps, adminAuthority),
+    social: new SocialService(deps),
     adminAuthority,
     adminOps,
     checkout,

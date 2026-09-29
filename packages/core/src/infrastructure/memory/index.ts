@@ -36,3 +36,4 @@ export * from './memory-safety-report-repository.js';
 export * from './memory-leaderboard-repository.js';
 export * from './memory-email-otp-repository.js';
 export * from './memory-guest-profile-repository.js';
+export * from './memory-social-repositories.js';
