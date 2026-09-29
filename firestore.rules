@@ -1,0 +1,16 @@
+rules_version = '2';
+
+// C1RCLE V2 never talks to Firestore from a client SDK — every app (guest
+// portal, partner dashboard, admin console, mobile, scanner) reaches data
+// exclusively through the api-gateway's HTTP API, which uses the Admin SDK
+// (a service account, not subject to these rules). No frontend bundle ships
+// a Firebase client config for Firestore. These rules therefore have no
+// legitimate caller to satisfy: they exist purely as a fail-closed backstop
+// against a leaked client config or a future accidental client SDK usage.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -142,7 +142,25 @@ export interface TicketTier extends VersionedEntity {
   salesStartAt: string | null;
   salesEndAt: string | null;
   /** Maximum tickets that can be purchased per order. */
+  /** Maximum tickets that can be purchased per order. */
   maxPerOrder: number | null;
+  accessType?: TicketAccessType;
+  audienceType?: TicketAudienceType;
+  guestCount?: number;
+  pricingPhases?: TicketPricingPhase[];
+  doorPriceInPaise?: number | null;
+  benefits?: string[];
+  minAge?: number | null;
+  maxAge?: number | null;
+  minPerOrder?: number | null;
+  maxPerUser?: number | null;
+  tableConfig?: {
+    capacity: number;
+    minimumSpendPaise: number;
+    redeemableAmountPaise: number;
+    tableCount: number;
+  } | null;
+  commissionEligible?: boolean;
   accessType?: TicketAccessType;
   audienceType?: TicketAudienceType;
   guestCount?: number;
@@ -184,6 +202,9 @@ export interface CreateTicketTierInput {
   minAge?: number | null;
   maxAge?: number | null;
   minPerOrder?: number | null;
+  maxPerUser?: number | null;
+  tableConfig?: TicketTier['tableConfig'];
+  commissionEligible?: boolean;
   maxPerUser?: number | null;
   tableConfig?: TicketTier['tableConfig'];
   commissionEligible?: boolean;
@@ -304,6 +325,21 @@ export function updateTicketTier(
     throw new InvalidOperationError('Ticket tier price cannot be negative');
   }
   return bumpVersion({ ...tier, ...changes }, now ?? new Date());
+}
+
+/**
+ * Effective unit price for reads against tiers that predate `priceInPaise`.
+ * Legacy tier docs (written by the pre-V2 catalog) carry `doorPriceInPaise`
+ * or no price field at all. RSVP and public listings must not crash on those
+ * docs — and must never invent a price: the legacy door price wins when it
+ * is a valid non-negative integer, otherwise the tier prices as zero, and
+ * callers still gate free-vs-paid on `event.isFree`, never on this alone.
+ */
+export function effectiveTierPricePaise(tier: TicketTier): number {
+  if (typeof tier.priceInPaise === 'number') return tier.priceInPaise;
+  const legacy = (tier as unknown as { doorPriceInPaise?: unknown }).doorPriceInPaise;
+  if (typeof legacy === 'number' && Number.isInteger(legacy) && legacy >= 0) return legacy;
+  return 0;
 }
 
 // ─── Promo codes ──────────────────────────────────────────────────────────────
@@ -453,6 +489,7 @@ export interface CommissionTerms {
   /** Optional fixed fee (paise). */
   flatPaise: number;
   tierRates?: Record<string, { ratePercent: number; flatPaise: number }>;
+  tierRates?: Record<string, { ratePercent: number; flatPaise: number }>;
 }
 
 export interface PromoterAssignment extends VersionedEntity {
@@ -465,9 +502,11 @@ export interface PromoterAssignment extends VersionedEntity {
   createdAt: string;
   /** When the assignment was revoked/unlinked, if ever. */
   endedAt: string | null;
+  /** When the assignment was suspended by an admin, if ever. */
+  suspendedAt: string | null;
 }
 
-export type PromoterAssignmentStatus = 'active' | 'ended';
+export type PromoterAssignmentStatus = 'active' | 'ended' | 'suspended';
 
 export interface CreatePromoterAssignmentInput {
   id: EntityId;
@@ -490,6 +529,13 @@ export function createPromoterAssignment(input: CreatePromoterAssignmentInput): 
     if (rate.flatPaise < 0)
       throw new InvalidOperationError('Tier commission fee cannot be negative');
   }
+  for (const rate of Object.values(input.terms.tierRates ?? {})) {
+    if (rate.ratePercent < 0 || rate.ratePercent > 100) {
+      throw new InvalidOperationError('Tier commission rate must be between 0 and 100');
+    }
+    if (rate.flatPaise < 0)
+      throw new InvalidOperationError('Tier commission fee cannot be negative');
+  }
   if (input.terms.version < 1)
     throw new InvalidOperationError('Commission terms version must be >= 1');
   return {
@@ -499,6 +545,7 @@ export function createPromoterAssignment(input: CreatePromoterAssignmentInput): 
     status: 'active',
     terms: input.terms,
     endedAt: null,
+    suspendedAt: null,
     ...newVersionedEntity(input.now ?? new Date()),
   };
 }
@@ -511,4 +558,32 @@ export function endPromoterAssignment(
   if (assignment.status === 'ended') return assignment;
   const stamped = bumpVersion(assignment, now ?? new Date());
   return { ...stamped, status: 'ended', endedAt: (now ?? new Date()).toISOString() };
+}
+
+/**
+ * Suspends an assignment — the promoter can no longer earn commission on this
+ * event while the suspension is active. The partner endpoint should stop
+ * issuing referral codes until the admin reinstates.
+ */
+export function suspendPromoterAssignment(
+  assignment: PromoterAssignment,
+  now?: Date,
+): PromoterAssignment {
+  if (assignment.status === 'ended') return assignment;
+  if (assignment.status === 'suspended') return assignment;
+  const stamped = bumpVersion(assignment, now ?? new Date());
+  return { ...stamped, status: 'suspended', suspendedAt: (now ?? new Date()).toISOString() };
+}
+
+/**
+ * Reinstates a suspended assignment. The frozen commission terms are preserved
+ * and the promoter may resume earning.
+ */
+export function reinstatePromoterAssignment(
+  assignment: PromoterAssignment,
+  now?: Date,
+): PromoterAssignment {
+  if (assignment.status !== 'suspended') return assignment;
+  const stamped = bumpVersion(assignment, now ?? new Date());
+  return { ...stamped, status: 'active', suspendedAt: null };
 }

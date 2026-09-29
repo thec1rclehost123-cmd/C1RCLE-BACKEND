@@ -1,5 +1,5 @@
 import { compareAndSet } from './compare-and-set.js';
-import { paginateQuery } from './pagination.js';
+import { paginateQuery, paginateUnordered } from './pagination.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type { Order, OrderStatus } from '../../domain/models/order.js';
@@ -49,20 +49,30 @@ export class FirestoreOrderRepository implements OrderRepository {
     return data ? toOrder(data) : null;
   }
 
+  // Index-free (single-field filter; newest-first sort happens in code —
+  // see `paginateUnordered`): these reads must work with zero provisioned
+  // composite indexes (wallet, door, partner surfaces).
   async listByUser(userId: EntityId, query: PaginationQuery): Promise<Page<Order>> {
-    const base = this.collection.where('userId', '==', userId).orderBy('createdAt', 'desc');
-    return paginateQuery(base, query, toOrder);
+    const base = this.collection.where('userId', '==', userId);
+    return paginateUnordered(base, query, toOrder);
   }
 
   async listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Order>> {
-    const base = this.collection
-      .where('organizationId', '==', organizationId)
-      .orderBy('createdAt', 'desc');
-    return paginateQuery(base, query, toOrder);
+    const base = this.collection.where('organizationId', '==', organizationId);
+    return paginateUnordered(base, query, toOrder);
   }
 
+  /**
+   * Index-free by design: single-field `eventId` filter only (automatic
+   * single-field index, no composite). The sole caller,
+   * `InventoryService.getSoldCount`, pages through EVERYTHING and sums —
+   * result order is irrelevant to it — so server-side ordering is skipped
+   * rather than demanding a composite index (repo convention: filtering
+   * happens in code, not in new composite indexes). Callers that need an
+   * order must sort the returned page client-side.
+   */
   async listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<Order>> {
-    const base = this.collection.where('eventId', '==', eventId).orderBy('createdAt', 'desc');
+    const base = this.collection.where('eventId', '==', eventId);
     return paginateQuery(base, query, toOrder);
   }
 
@@ -82,6 +92,11 @@ export class FirestoreOrderRepository implements OrderRepository {
         sum + order.lines.reduce((s, line) => s + (line.tierId === tierId ? line.quantity : 0), 0)
       );
     }, 0);
+  }
+
+  async listAll(query: PaginationQuery): Promise<Page<Order>> {
+    const base = this.collection.orderBy('createdAt', 'desc');
+    return paginateQuery(base, query, toOrder);
   }
 
   async save(order: Order, _tx?: TxContext | null): Promise<void> {
@@ -118,6 +133,7 @@ function toDoc(order: Order): DocumentData {
     paidAt: order.paidAt,
     reservationExpiresAt: order.reservationExpiresAt,
     failureReason: order.failureReason,
+    refundedPaise: order.refundedPaise,
     version: order.version,
     createdAt: order.createdAt,
     updatedAt: order.updatedAt,
@@ -148,6 +164,9 @@ function toOrder(data: DocumentData): Order {
     paidAt: data.paidAt as string | null,
     reservationExpiresAt: data.reservationExpiresAt as string,
     failureReason: data.failureReason as string | null,
+    // Existing orders written before this field existed have no value —
+    // they predate refunds, so zero is the correct read, not a guess.
+    refundedPaise: (data.refundedPaise as number | undefined) ?? 0,
     version: data.version as number,
     createdAt: data.createdAt as string,
     updatedAt: data.updatedAt as string,

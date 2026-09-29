@@ -1,0 +1,67 @@
+
+C:\Users\KESHVI AGARWAL\OneDrive\Desktop\thecircle\thecircle_backend\C1RCLE-BACKEND\apps\api-gateway\src\routes\v2\admin\directory.ts
+   76:5   error  Unsafe assignment of an error typed value                                                                                             @typescript-eslint/no-unsafe-assignment
+  251:60  error  Unsafe argument of type error typed assigned to a parameter of type `ZodType<unknown, unknown, $ZodTypeInternals<unknown, unknown>>`  @typescript-eslint/no-unsafe-argument
+
+C:\Users\KESHVI AGARWAL\OneDrive\Desktop\thecircle\thecircle_backend\C1RCLE-BACKEND\apps\api-gateway\src\routes\v2\admin\event-actions.ts
+  41:5  error  Unsafe assignment of an error typed value  @typescript-eslint/no-unsafe-assignment
+
+C:\Users\KESHVI AGARWAL\OneDrive\Desktop\thecircle\thecircle_backend\C1RCLE-BACKEND\apps\api-gateway\src\routes\v2\public\discovery.ts
+  143:60  error  Unsafe argument of type error typed assigned to a parameter of type `string`  @typescript-eslint/no-unsafe-argument
+
+C:\Users\KESHVI AGARWAL\OneDrive\Desktop\thecircle\thecircle_backend\C1RCLE-BACKEND\packages\core\src\application\admin\admin-ops-service.ts
+  141:5   error  Unsafe return of a value of type error                                                                                          @typescript-eslint/no-unsafe-return
+  141:12  error  Unsafe call of a type that could not be resolved                                                                                @typescript-eslint/no-unsafe-call
+  320:11  error  Unsafe assignment of an error typed value                                                                                       @typescript-eslint/no-unsafe-assignment
+  321:7   error  Unsafe call of a type that could not be resolved                                                                                @typescript-eslint/no-unsafe-call
+  327:17  error  Unsafe member access .items on a type that cannot be resolved                                                                   @typescript-eslint/no-unsafe-member-access
+  328:17  error  Unsafe member access .items on a type that cannot be resolved                                                                   @typescript-eslint/no-unsafe-member-access
+  329:15  error  Unsafe member access .items on a type that cannot be resolved                                                                   @typescript-eslint/no-unsafe-member-access
+  331:33  error  Unsafe argument of type error typed assigned to a parameter of type `Iterable<readonly [unknown, unknown]> | null | undefined`  @typescript-eslint/no-unsafe-argument
+  331:33  error  Unsafe call of a type that could not be resolved                                                                                @typescript-eslint/no-unsafe-call
+  331:41  error  Unsafe member access .items on a type that cannot be resolved                                                                   @typescript-eslint/no-unsafe-member-access
+  331:60  error  Unsafe return of a value of type `any[]`                                                                                        @typescript-eslint/no-unsafe-return
+  331:65  error  Unsafe member access .id on an `any` value                                                                                      @typescript-eslint/no-unsafe-member-access
+  331:73  error  Unsafe member access .name on an `any` value                                                                                    @typescript-eslint/no-unsafe-member-access
+  336:35  error  Unsafe member access .items on a type that cannot be resolved                                                                   @typescript-eslint/no-unsafe-member-access
+  340:15  error  Unsafe member access .status on a type that cannot be resolved                                                                  @typescript-eslint/no-unsafe-member-access
+  341:15  error  Unsafe member access .status on a type that cannot be resolved                                                                  @typescript-eslint/no-unsafe-member-access
+  342:15  error  Unsafe member access .status on a type that cannot be resolved                                                                  @typescript-eslint/no-unsafe-member-access
+  346:30  error  Unsafe member access .grandTotalPaise on a type that cannot be resolved                                                         @typescript-eslint/no-unsafe-member-access
+  346:54  error  Unsafe member access .refundedPaise on a type that cannot be resolved                                                           @typescript-eslint/no-unsafe-member-access
+  348:22  error  Invalid operand for a '+' operation. Operands must each be a number or string. Got `any`                                        @typescript-eslint/restrict-plus-operands
+  348:22  error  Unsafe call of a type that could not be resolved                                                                                @typescript-eslint/no-unsafe-call
+  348:28  error  Unsafe member access .lines on a type that cannot be resolved                                                                   @typescript-eslint/no-unsafe-member-access
+  348:56  error  Invalid operand for a '+' operation. Operands must each be a number or string. Got `any`                                        @typescript-eslint/restrict-plus-operands
+  348:56  error  Unsafe return of a value of type `any`                                                                                          @typescript-eslint/no-unsafe-return
+  348:62  error  Invalid operand for a '+' operation. Operands must each be a number or string. Got `any`                                        @typescript-eslint/restrict-plus-operands
+  348:67  error  Unsafe member access .quantity on an `any` value                                                                                @typescript-eslint/no-unsafe-member-access
+  350:9   error  Unsafe argument of type error typed assigned to a parameter of type `string`                                                    @typescript-eslint/no-unsafe-argument
+  350:15  error  Unsafe member access .organizationId on a type that cannot be resolved                                                          @typescript-eslint/no-unsafe-member-access
+  351:27  error  Unsafe argument of type error typed assigned to a parameter of type `string`                                                    @typescript-eslint/no-unsafe-argument
+  351:33  error  Unsafe member access .organizationId on a type that cannot be resolved                                                          @typescript-eslint/no-unsafe-member-access
+  367:7   error  Unsafe assignment of an error typed value                                                                                       @typescript-eslint/no-unsafe-assignment
+  367:26  error  Unsafe call of a type that could not be resolved                                                                                @typescript-eslint/no-unsafe-call
+  367:36  error  Unsafe member access .items on a type that cannot be resolved                                                                   @typescript-eslint/no-unsafe-member-access
+  367:75  error  Unsafe argument of type `any` assigned to a parameter of type `EventStatus`                                                     @typescript-eslint/no-unsafe-argument
+  367:81  error  Unsafe member access .status on an `any` value                                                                                  @typescript-eslint/no-unsafe-member-access
+  367:90  error  Unsafe member access .length on a type that cannot be resolved                                                                  @typescript-eslint/no-unsafe-member-access
+  369:7   error  Unsafe assignment of an error typed value                                                                                       @typescript-eslint/no-unsafe-assignment
+  369:32  error  Unsafe member access .items on a type that cannot be resolved                                                                   @typescript-eslint/no-unsafe-member-access
+  370:7   error  Unsafe assignment of an error typed value                                                                                       @typescript-eslint/no-unsafe-assignment
+  370:32  error  Unsafe member access .items on a type that cannot be resolved                                                                   @typescript-eslint/no-unsafe-member-access
+
+C:\Users\KESHVI AGARWAL\OneDrive\Desktop\thecircle\thecircle_backend\C1RCLE-BACKEND\packages\core\src\application\door\door-ops-service.ts
+  728:5  error  Unsafe assignment of an error typed value  @typescript-eslint/no-unsafe-assignment
+
+C:\Users\KESHVI AGARWAL\OneDrive\Desktop\thecircle\thecircle_backend\C1RCLE-BACKEND\packages\core\src\application\door\door-stats-service.ts
+  142:9  error  Unsafe assignment of an error typed value  @typescript-eslint/no-unsafe-assignment
+
+C:\Users\KESHVI AGARWAL\OneDrive\Desktop\thecircle\thecircle_backend\C1RCLE-BACKEND\packages\core\src\application\events\event-service.ts
+  222:7  error  Expected an assignment or function call and instead saw an expression  @typescript-eslint/no-unused-expressions
+
+C:\Users\KESHVI AGARWAL\OneDrive\Desktop\thecircle\thecircle_backend\C1RCLE-BACKEND\packages\core\src\application\public\public-service.ts
+  114:60  error  Unsafe argument of type error typed assigned to a parameter of type `string`  @typescript-eslint/no-unsafe-argument
+
+Γ£û 48 problems (48 errors, 0 warnings)
+

@@ -86,6 +86,10 @@ export class FirestoreEventCatalogRepository implements EventCatalogRepository {
     const base = this.db.collection(PROMOS).where('eventId', '==', eventId);
     return paginateQuery(base, query, (data: DocumentData) => data as unknown as PromoCode);
   }
+  async listAllPromos(query: PaginationQuery): Promise<Page<PromoCode>> {
+    const base = this.db.collection(PROMOS);
+    return paginateQuery(base, query, (data: DocumentData) => data as unknown as PromoCode);
+  }
   async savePromo(promo: PromoCode, _tx?: TxContext | null): Promise<void> {
     await this.db
       .collection(PROMOS)
@@ -121,6 +125,14 @@ export class FirestoreEventCatalogRepository implements EventCatalogRepository {
   async listAssignmentsByPromoter(promoterId: EntityId): Promise<PromoterAssignment[]> {
     const snap = await this.db.collection(ASSIGNMENTS).where('promoterId', '==', promoterId).get();
     return snap.docs.map((doc) => doc.data() as unknown as PromoterAssignment);
+  }
+  async listAllAssignments(query: PaginationQuery): Promise<Page<PromoterAssignment>> {
+    const base = this.db.collection(ASSIGNMENTS);
+    return paginateQuery(
+      base,
+      query,
+      (data: DocumentData) => data as unknown as PromoterAssignment,
+    );
   }
   async saveAssignment(assignment: PromoterAssignment, _tx?: TxContext | null): Promise<void> {
     await this.db

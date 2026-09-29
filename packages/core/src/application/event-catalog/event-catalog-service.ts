@@ -45,6 +45,9 @@ export interface CreateTierCommand {
   maxPerUser?: number | null;
   tableConfig?: TicketTier['tableConfig'];
   commissionEligible?: boolean;
+  maxPerUser?: number | null;
+  tableConfig?: TicketTier['tableConfig'];
+  commissionEligible?: boolean;
 }
 
 export interface CreatePromotionCommand {
@@ -108,6 +111,18 @@ export class EventCatalogService {
       salesStartAt: command.salesStartAt ?? null,
       salesEndAt: command.salesEndAt ?? null,
       maxPerOrder: command.maxPerOrder ?? null,
+      accessType: command.accessType,
+      audienceType: command.audienceType,
+      guestCount: command.guestCount,
+      pricingPhases: command.pricingPhases,
+      doorPriceInPaise: command.doorPriceInPaise,
+      benefits: command.benefits,
+      minAge: command.minAge,
+      maxAge: command.maxAge,
+      minPerOrder: command.minPerOrder,
+      maxPerUser: command.maxPerUser,
+      tableConfig: command.tableConfig,
+      commissionEligible: command.commissionEligible,
       accessType: command.accessType,
       audienceType: command.audienceType,
       guestCount: command.guestCount,

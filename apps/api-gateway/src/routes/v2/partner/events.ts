@@ -530,6 +530,8 @@ export function mapDomainError(
     'promoter_assignment_not_found',
     'slot_request_not_found',
     'partnership_not_found',
+    'ticket_tier_not_found',
+    'promoter_assignment_not_found',
     'onboarding_request_not_found',
     'proposal_not_found',
     'notification_not_found',
@@ -563,6 +565,20 @@ export function mapDomainError(
     );
     return undefined;
   }
+  if (known?.code === 'device_not_authorized') {
+    // Never masked as a 404, even on routes that hide `forbidden`: door staff
+    // need to be told the handset is deauthorized, and there is nothing to
+    // hide from a caller who already proved tenancy and a live session.
+    reply.status(403).send(
+      buildV2ErrorResponse({
+        status: 403,
+        message: known.message ?? 'Device not authorized',
+        code: 'forbidden',
+        requestId: request.id,
+      }),
+    );
+    return undefined;
+  }
   if (known?.code === 'forbidden') {
     // Single-resource reads hide cross-tenant existence (IDOR guard): a
     // forbidden fetch is reported as 404, never as it being someone else's.
@@ -589,6 +605,20 @@ export function mapDomainError(
           expectedVersion: known.expectedVersion,
           currentVersion: known.currentVersion,
         },
+      }),
+    );
+    return undefined;
+  }
+  // Business-rule duplicate (e.g. a second RSVP for the same user+event) —
+  // distinct from optimistic-locking (`version_conflict`) and key reuse
+  // (`idempotency_*`): the request itself is disallowed by current state.
+  if (known?.code === 'conflict') {
+    reply.status(409).send(
+      buildV2ErrorResponse({
+        status: 409,
+        message: known.message ?? 'Conflict',
+        code: 'conflict',
+        requestId: request.id,
       }),
     );
     return undefined;

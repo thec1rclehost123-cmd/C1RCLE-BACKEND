@@ -14,6 +14,12 @@ export const partnershipStatusSchema = z.enum([
   'ended',
 ]);
 
+/**
+ * Whole-number percent, matching v1's `venueCommissionRate` convention (NOT a
+ * 0..1 ratio). `null` = not yet negotiated. Capped at 50 by the domain.
+ */
+const venueShareRateSchema = z.number().int().min(0).max(50);
+
 export const partnershipDtoSchema = z.object({
   id: opaqueIdSchema,
   hostOrganizationId: opaqueIdSchema,
@@ -22,6 +28,7 @@ export const partnershipDtoSchema = z.object({
   initiatedBy: z.enum(['host', 'venue']),
   status: partnershipStatusSchema,
   message: z.string().nullable(),
+  venueShareRate: venueShareRateSchema.nullable(),
   resolutionReason: z.string().nullable(),
   resolvedAt: z.iso.datetime().nullable(),
   version: z.number().int().positive(),
@@ -50,6 +57,7 @@ export const requestPartnershipSchema = z
     initiatedBy: z.enum(['host', 'venue']),
     hostOrganizationId: opaqueIdSchema.optional(),
     message: z.string().max(1000).optional(),
+    venueShareRate: venueShareRateSchema.optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -67,6 +75,12 @@ export const resolvePartnershipSchema = z
   .object({ reason: z.string().min(1).max(500).optional() })
   .strict();
 export type ResolvePartnershipRequest = z.infer<typeof resolvePartnershipSchema>;
+
+/** Negotiate (or clear) the venue's share on a live partnership. */
+export const setVenueShareRequestSchema = z
+  .object({ venueShareRate: venueShareRateSchema.nullable() })
+  .strict();
+export type SetVenueShareRequest = z.infer<typeof setVenueShareRequestSchema>;
 
 /* ─── Partner access context ─────────────────────────────────────────────── */
 
@@ -119,8 +133,9 @@ export const topEventDtoSchema = z.object({
 });
 
 /**
- * Read-model only: every value is precomputed at write time. Nothing here is
- * scanned per request, which is why a dashboard can load it cheaply.
+ * Read model first, compute-on-request fallback: cached values when the
+ * projection has run, otherwise a bounded scan of source aggregates. Nothing
+ * here is an unbounded per-request collection reduce.
  */
 export const organizationOverviewDtoSchema = z.object({
   organizationId: opaqueIdSchema,
@@ -134,6 +149,111 @@ export const organizationOverviewDtoSchema = z.object({
   lastEventAt: z.iso.datetime().nullable(),
 });
 export type OrganizationOverviewDto = z.infer<typeof organizationOverviewDtoSchema>;
+
+/**
+ * Bucket width for a trends series. A dashboard's ranges are genuinely
+ * different shapes, not one range at three zooms: "today" wants hours, "this
+ * week" wants days, "all time" wants months.
+ */
+export const trendGranularitySchema = z.enum(['hour', 'day', 'month']);
+export type TrendGranularity = z.infer<typeof trendGranularitySchema>;
+
+/**
+ * One bucket. `key` is the bucket's own identity at that granularity, so a
+ * consumer never has to re-derive bucket boundaries: `YYYY-MM` for `month`,
+ * `YYYY-MM-DD` for `day`, `YYYY-MM-DDTHH:00` for `hour`. All UTC.
+ *
+ * Dense by contract: every bucket in the range is present, `0` when nothing
+ * happened. A sparse series would let a chart compress a quiet week into a busy
+ * one, which is the difference between "we sold nothing Tuesday" and "Tuesday
+ * never existed".
+ */
+export const trendBucketDtoSchema = z.object({
+  key: z.string().regex(/^\d{4}-\d{2}(-\d{2}(T\d{2}:00)?)?$/, 'Expected a trends bucket key'),
+  revenuePaise: z.number().int().nonnegative(),
+  tickets: z.number().int().nonnegative(),
+  checkIns: z.number().int().nonnegative(),
+});
+export type TrendBucketDto = z.infer<typeof trendBucketDtoSchema>;
+
+/**
+ * `totals` are lifetime totals for the scanned data, NOT the sum of `buckets`.
+ *
+ * The two differ whenever an order or scan falls outside the requested window,
+ * and a dashboard showing "₹0 this week" beside "₹4,80,000 total" is a fair
+ * reading of a clamped range — conflating them would make a legitimately
+ * narrow range look like a data-loss bug.
+ */
+export const organizationTrendsDtoSchema = z.object({
+  organizationId: opaqueIdSchema,
+  granularity: trendGranularitySchema,
+  /** Inclusive first bucket key, which may be clamped. */
+  from: z.string().regex(/^\d{4}-\d{2}(-\d{2}(T\d{2}:00)?)?$/),
+  /** Inclusive last bucket key. */
+  to: z.string().regex(/^\d{4}-\d{2}(-\d{2}(T\d{2}:00)?)?$/),
+  buckets: z.array(trendBucketDtoSchema).max(400),
+  totals: z.object({
+    revenuePaise: z.number().int().nonnegative(),
+    tickets: z.number().int().nonnegative(),
+    checkIns: z.number().int().nonnegative(),
+  }),
+});
+export type OrganizationTrendsDto = z.infer<typeof organizationTrendsDtoSchema>;
+
+const calendarDayDtoSchema = z.object({
+  /** 1..31. Every day of the month is present. */
+  day: z.number().int().min(1).max(31),
+  eventCount: z.number().int().nonnegative(),
+});
+
+/**
+ * An event as an overview card needs it.
+ *
+ * `venueName` is denormalised server-side. The client holds a `venueId` and a
+ * separate venues list; joining them client-side would mean shipping every venue
+ * on every dashboard render, or rendering a card that says "Venue: —".
+ *
+ * `capacity` is nullable **by design** and means "the venue never declared one".
+ * It is deliberately not `0`: a card that divides by capacity would render
+ * divide-by-zero, and `0` is indistinguishable from a genuinely sold-out room.
+ */
+export const organizationEventCardDtoSchema = z.object({
+  eventId: opaqueIdSchema,
+  title: z.string(),
+  startAt: z.iso.datetime({ offset: true }),
+  /** `EventStatus`, unmapped — label wording is the client's business. */
+  status: z.string(),
+  venueId: opaqueIdSchema.nullable(),
+  /** `null` when the event has no venue, or the venue was since deleted. */
+  venueName: z.string().nullable(),
+  imageUrl: z.url().nullable(),
+  /** Order lines on captured orders — same rule as `totalTicketsSold`. */
+  ticketsSold: z.number().int().nonnegative(),
+  capacity: z.number().int().nonnegative().nullable(),
+});
+export type OrganizationEventCardDto = z.infer<typeof organizationEventCardDtoSchema>;
+
+export const organizationEventCardListResponseSchema = z.object({
+  organizationId: opaqueIdSchema,
+  items: z.array(organizationEventCardDtoSchema),
+});
+export type OrganizationEventCardListResponse = z.infer<
+  typeof organizationEventCardListResponseSchema
+>;
+
+/**
+ * Month grid for the overview. `firstDayOffset` is the weekday index of the 1st
+ * with 0 = Monday, so client and server cannot disagree about where the month
+ * starts. Cancelled and archived events are excluded server-side.
+ */
+export const organizationCalendarDtoSchema = z.object({
+  organizationId: opaqueIdSchema,
+  /** `YYYY-MM`. */
+  month: z.string().regex(/^\d{4}-\d{2}$/, 'Expected a YYYY-MM month'),
+  firstDayOffset: z.number().int().min(0).max(6),
+  days: z.array(calendarDayDtoSchema).min(28).max(31),
+});
+export type OrganizationCalendarDto = z.infer<typeof organizationCalendarDtoSchema>;
 
 /** Ratios are 0..1, not percentages — the UI decides how to render them. */
 const ratio = () => z.number().min(0).max(1);

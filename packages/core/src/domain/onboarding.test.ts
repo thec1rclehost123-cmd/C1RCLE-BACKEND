@@ -7,11 +7,13 @@ import {
   createOnboardingRequest,
   missingDocuments,
   platformFeePercentFor,
+  rejectOnboardingDocument,
   rejectOnboardingRequest,
   requestOnboardingChanges,
   sanitizeApplicantProfile,
   submitOnboardingRequest,
   updateOnboardingProfile,
+  verifyOnboardingDocument,
 } from './models/onboarding.js';
 
 /**
@@ -101,9 +103,16 @@ describe('the applicant’s side', () => {
 
 describe('the admin’s side', () => {
   const submitted = () => submitOnboardingRequest(withDocuments(), LATER);
+  const verifiedAndSubmitted = () => {
+    let subject = submitted();
+    for (const label of ['id_front', 'id_back', 'selfie']) {
+      subject = verifyOnboardingDocument(subject, label, 'admin_kyc', LATER);
+    }
+    return subject;
+  };
 
   it('approves, recording who decided and what was provisioned', () => {
-    const approved = approveOnboardingRequest(submitted(), {
+    const approved = approveOnboardingRequest(verifiedAndSubmitted(), {
       reviewedBy: 'admin_a',
       provisionedOrganizationId: 'org_new',
       note: 'Docs check out',
@@ -115,6 +124,31 @@ describe('the admin’s side', () => {
       reviewedBy: 'admin_a',
       provisionedOrganizationId: 'org_new',
     });
+  });
+
+  it('refuses to approve while a required document is still unverified', () => {
+    expect(() =>
+      approveOnboardingRequest(submitted(), {
+        reviewedBy: 'admin_a',
+        provisionedOrganizationId: 'org_new',
+        now: LATER,
+      }),
+    ).toThrow(InvalidOperationError);
+  });
+
+  it('refuses to approve when a required document was rejected, not verified', () => {
+    let subject = submitted();
+    subject = verifyOnboardingDocument(subject, 'id_front', 'admin_kyc', LATER);
+    subject = verifyOnboardingDocument(subject, 'id_back', 'admin_kyc', LATER);
+    subject = rejectOnboardingDocument(subject, 'selfie', 'admin_kyc', 'Face not visible', LATER);
+
+    expect(() =>
+      approveOnboardingRequest(subject, {
+        reviewedBy: 'admin_a',
+        provisionedOrganizationId: 'org_new',
+        now: LATER,
+      }),
+    ).toThrow(InvalidOperationError);
   });
 
   it('requires a note when asking for changes', () => {

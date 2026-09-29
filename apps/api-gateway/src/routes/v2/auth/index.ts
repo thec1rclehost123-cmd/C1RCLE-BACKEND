@@ -207,7 +207,18 @@ async function forwardAuthErrorResponse(
   response: Response,
   genericClientErrorMessage?: string,
 ): Promise<undefined> {
-  const status = response.status === 422 ? 422 : response.status >= 500 ? 500 : 400;
+  // 401 is preserved rather than collapsed into 400. A client has to be able to
+  // tell "your password is wrong" (retry, same body) apart from "your payload is
+  // malformed" (fix the request) — and `errorCodeForStatus` only produces the
+  // `unauthorized` code at 401. Collapsing it also broke the D-024 guarantee's
+  // own shape: the anti-oracle constant message is still identical for every
+  // credential failure, so nothing about account existence leaks.
+  const status =
+    response.status === 422 || response.status === 401
+      ? response.status
+      : response.status >= 500
+        ? 500
+        : 400;
   let message = 'Authentication request failed';
   if (genericClientErrorMessage !== undefined && status < 500) {
     // Login path: discard Better Auth's own message and return one constant for
