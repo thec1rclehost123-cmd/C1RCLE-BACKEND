@@ -4,6 +4,7 @@ import { type z } from 'zod';
 
 import type { DoorStats } from '@c1rcle/core/application';
 
+import { getAllowedOrigins, getGatewayConfig } from '../../config/index.js';
 import { createStreamLimiter } from '../../lib/stream-limiter.js';
 import { validateV2Response } from '../../lib/v2-response-validation.js';
 import { createV2Services } from '../../lib/v2-services.js';
@@ -150,6 +151,23 @@ export default async function phase5Routes(fastify: FastifyInstance) {
   );
 }
 
+/**
+ * Same policy `app.ts` gives `@fastify/cors` (exact-origin allowlist,
+ * credentialed) — recomputed here because a hijacked response bypasses
+ * that plugin entirely. `credentials: true` forbids a wildcard origin, so
+ * an unrecognized `Origin` correctly gets no CORS headers at all (the
+ * browser blocks it, same as an ordinary disallowed-origin request would).
+ */
+function corsHeadersFor(request: FastifyRequest): Record<string, string> {
+  const origin = request.headers.origin;
+  if (origin === undefined || !getAllowedOrigins(getGatewayConfig()).includes(origin)) return {};
+  return {
+    'access-control-allow-origin': origin,
+    'access-control-allow-credentials': 'true',
+    vary: 'Origin',
+  };
+}
+
 interface StatsStreamOptions {
   eventId: string;
   actor: ReturnType<typeof services.actor>;
@@ -181,6 +199,14 @@ function startStatsStream(
     // the stream looks dead for its first few seconds.
     'x-accel-buffering': 'no',
     'x-request-id': request.id,
+    // `reply.hijack()` takes this response out of Fastify's normal
+    // pipeline, which is exactly where `@fastify/cors` (registered in
+    // `app.ts`) adds its headers — a hijacked response never gets them, so
+    // a browser client (the scanner-app web target) sees a 200 with no
+    // `Access-Control-Allow-Origin` and blocks it client-side regardless of
+    // what the server actually sent. Computed manually here, matching the
+    // same exact-origin-match + credentials policy `app.ts` configures.
+    ...corsHeadersFor(request),
   });
 
   let closed = false;

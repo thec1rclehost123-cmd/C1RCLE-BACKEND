@@ -85,6 +85,12 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       'X-Client-Request-Id',
       'Idempotency-Key',
       'If-Match',
+      // Every authenticated door/scanner call carries this (see
+      // `scanner-routes.ts`'s `sessionTokenFrom`) — missing from this list
+      // means every such call fails CORS preflight from a browser (the
+      // scanner-app web target), even though native RN callers, which don't
+      // enforce CORS, never surfaced it.
+      'X-Scanner-Session-Token',
     ],
     exposedHeaders: ['X-Request-Id'],
   });

@@ -99,6 +99,8 @@ export interface OpenScannerSessionCommand {
   deviceId: string;
   deviceName: string;
   sessionType: ScannerSessionType;
+  /** See `DoorOpsServiceDeps` / `startShift` (D-030) — read only there. */
+  deviceLocation?: { lat: number; lng: number };
 }
 
 export interface OpenScannerSessionResult {

@@ -1,8 +1,14 @@
+import { MemoryPaymentProvider } from '@c1rcle/core/domain';
 import { describe, expect, it } from 'vitest';
 
 import { createV2Services } from '../../../lib/v2-services.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
+import checkoutRoutes from '../checkout/checkout-routes.js';
+import paymentRoutes from '../checkout/payment-routes.js';
+import partnerEventCatalogRoutes from '../partner/event-catalog.js';
+import partnerEventRoutes from '../partner/events.js';
 import partnerOrganizationRoutes from '../partner/organizations.js';
+import partnerVenueRoutes from '../partner/venues.js';
 
 import financeRoutes from './finance-routes.js';
 
@@ -12,11 +18,26 @@ import financeRoutes from './finance-routes.js';
  * a follow-up) — seeded directly via `services.finance.recordTicketSale` to
  * exercise balance/ledger reads, mirroring how `wallet-routes.test.ts` seeds
  * through the service layer where no route exists for it.
+ *
+ * The checkout/payment/venue/event routes are mounted too, because
+ * `GET /finance/orders` is only meaningfully testable against a real paid order
+ * — seeding one through a repository backdoor would skip the pricing
+ * calculation that produces `grandTotalPaise` in the first place.
  */
 
 let keySeq = 0;
 const buildServer = () =>
-  buildPartnerTestServer({ routes: [partnerOrganizationRoutes, financeRoutes] });
+  buildPartnerTestServer({
+    routes: [
+      partnerOrganizationRoutes,
+      partnerVenueRoutes,
+      partnerEventRoutes,
+      partnerEventCatalogRoutes,
+      checkoutRoutes,
+      paymentRoutes,
+      financeRoutes,
+    ],
+  });
 
 type Server = Awaited<ReturnType<typeof buildServer>>;
 
@@ -596,5 +617,179 @@ describe('disputes', () => {
       payload: { resolutionNote: 'second' },
     });
     expect(res.statusCode).toBe(400);
+  });
+});
+
+/**
+ * ─── GET /organizations/:organizationId/finance/orders ──────────────────────
+ * The partner-scoped order list. Seeded through the real checkout + payment
+ * routes (not a repository backdoor) so `grandTotalPaise`, `status` and
+ * `ticketCount` are the values the production pipeline actually produces.
+ */
+
+function memoryProvider(): MemoryPaymentProvider {
+  const provider = createV2Services().paymentProvider;
+  if (!(provider instanceof MemoryPaymentProvider)) {
+    throw new Error('expected the memory payment provider under STORAGE_DRIVER=memory');
+  }
+  return provider;
+}
+
+/** Seeds org -> venue -> event -> tier -> hold -> paid order. */
+async function seedPaidOrder(server: Server): Promise<{ org: string; orderId: string }> {
+  const org = await seedOrganization(server);
+  const venue = await server.inject({
+    method: 'POST',
+    url: `/organizations/${org}/venues`,
+    headers: write(org),
+    payload: { name: 'Sky Bar', slug: `sky-bar-${++keySeq}` },
+  });
+  const event = await server.inject({
+    method: 'POST',
+    url: `/organizations/${org}/events`,
+    headers: write(org),
+    payload: { title: 'Sky Night', venueId: venue.json().id, startAt: '2026-09-01T18:00:00Z' },
+  });
+  const eventId: string = event.json().id;
+  const tier = await server.inject({
+    method: 'POST',
+    url: `/events/${eventId}/ticket-tiers`,
+    headers: write(org),
+    payload: { name: 'General', priceInPaise: 150_000, quantity: 100 },
+  });
+  const hold = await server.inject({
+    method: 'POST',
+    url: '/checkout/holds',
+    headers: { 'idempotency-key': `hold-${++keySeq}` },
+    payload: { eventId, lines: [{ tierId: tier.json().id, quantity: 2 }] },
+  });
+  const grandTotalPaise: number = hold.json().pricing.grandTotalPaise;
+  const attempt = await server.inject({
+    method: 'POST',
+    url: '/payments/attempts',
+    headers: { 'idempotency-key': `attempt-${++keySeq}` },
+    payload: { holdId: hold.json().holdId },
+  });
+  const paymentId = `pay_finance_${++keySeq}`;
+  const provider = memoryProvider();
+  provider.simulateCapture(paymentId, grandTotalPaise);
+  const verify = await server.inject({
+    method: 'POST',
+    url: `/payments/${paymentId}/verify`,
+    payload: {
+      holdId: hold.json().holdId,
+      paymentIntentId: attempt.json().paymentIntentId,
+      signature: provider.generateSignature({
+        paymentId,
+        orderId: attempt.json().paymentIntentId,
+      }),
+    },
+  });
+  return { org, orderId: verify.json().order.id as string };
+}
+
+const listOrders = (server: Server, org: string) =>
+  server.inject({
+    method: 'GET',
+    url: `/organizations/${org}/finance/orders`,
+    headers: { 'x-organization-id': org },
+  });
+
+describe('GET /organizations/:organizationId/finance/orders', () => {
+  it('lists the org orders with the event name resolved server-side', async () => {
+    const server = await buildServer();
+    const { org, orderId } = await seedPaidOrder(server);
+
+    const res = await listOrders(server, org);
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0]).toMatchObject({
+      id: orderId,
+      // Denormalized server-side: the table's Event column must not need a
+      // second client-side lookup to fill.
+      eventName: 'Sky Night',
+      ticketCount: 2,
+      status: 'paid',
+      currency: 'INR',
+      refundedPaise: 0,
+    });
+    expect(body.pageInfo.total).toBe(1);
+    expect(body.pageInfo.hasNextPage).toBe(false);
+    await server.close();
+  });
+
+  it('carries the buyer name but never their contact details', async () => {
+    const server = await buildServer();
+    const { org } = await seedPaidOrder(server);
+
+    const row = (await listOrders(server, org)).json().items[0];
+
+    expect(typeof row.buyerName).toBe('string');
+    // The narrowing is the point of this DTO: `order.contact.email`/`.phone`
+    // exist on the aggregate and must not ride along to a money screen.
+    expect(row).not.toHaveProperty('email');
+    expect(row).not.toHaveProperty('phone');
+    expect(row).not.toHaveProperty('contact');
+    await server.close();
+  });
+
+  it('omits the pricing breakdown and payment intent id', async () => {
+    const server = await buildServer();
+    const { org } = await seedPaidOrder(server);
+
+    const row = (await listOrders(server, org)).json().items[0];
+
+    expect(row).not.toHaveProperty('pricing');
+    expect(row).not.toHaveProperty('lines');
+    expect(row).not.toHaveProperty('paymentIntentId');
+    await server.close();
+  });
+
+  it('returns an empty page for an org with no orders', async () => {
+    const server = await buildServer();
+    const org = await seedOrganization(server);
+
+    const res = await listOrders(server, org);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      items: [],
+      pageInfo: { page: 0, pageSize: 20, total: 0, hasNextPage: false },
+    });
+    await server.close();
+  });
+
+  it('does not leak one org orders to another org in the same test process', async () => {
+    const server = await buildServer();
+    const { org: sellingOrg } = await seedPaidOrder(server);
+    const emptyOrg = await seedOrganization(server);
+
+    const res = await listOrders(server, emptyOrg);
+
+    // The route is `:organizationId`-scoped through `listByOrganization`, so
+    // a second org sees an empty desk rather than a neighbour's revenue.
+    expect(res.json().items).toHaveLength(0);
+    expect(res.json().pageInfo.total).toBe(0);
+    // Sanity: the seller's own list is non-empty, so this is scoping and not
+    // an empty-fixture artefact.
+    expect((await listOrders(server, sellingOrg)).json().items).toHaveLength(1);
+    await server.close();
+  });
+
+  it('rejects a cross-tenant order list as forbidden', async () => {
+    const server = await buildServer();
+    await seedPaidOrder(server);
+    const other = await seedOrganization(server);
+
+    const res = await server.inject({
+      method: 'GET',
+      url: `/organizations/${other}/finance/orders`,
+      headers: { 'x-organization-id': 'org_seed' },
+    });
+
+    expect(res.statusCode).toBe(403);
+    await server.close();
   });
 });

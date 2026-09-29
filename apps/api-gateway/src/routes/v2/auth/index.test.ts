@@ -72,8 +72,14 @@ describe('auth routes — login failure is not an account-existence oracle', () 
       payload: { email: 'partner@example.com', password: 'wrongpass1' },
     });
 
-    expect(unknownEmail.statusCode).toBe(400);
-    expect(wrongPassword.statusCode).toBe(400);
+    // Better Auth answers a bad credential with 401; the gateway forwards that
+    // status rather than collapsing it to 400, so a client can tell "wrong
+    // password" from "malformed payload". The anti-oracle guarantee is carried
+    // by the message/code, not by the status — see the next assertions.
+    expect(unknownEmail.statusCode).toBe(401);
+    expect(wrongPassword.statusCode).toBe(401);
+    expect(unknownEmail.json().code).toBe('unauthorized');
+    expect(wrongPassword.json().code).toBe('unauthorized');
     // The whole body, verbatim — message, code, status and requestId all match.
     expect(unknownEmail.body).toBe(wrongPassword.body);
     expect(unknownEmail.json().message).toBe('Authentication failed');

@@ -308,8 +308,14 @@ function createCoverWalletServiceImpl(deps: CoverWalletServiceDeps): CoverWallet
       action,
       targetType,
       targetId,
-      before: before ? { ...before } : before,
-      after: after ? { ...after } : after,
+      // Same bug as door-service.ts's `auditRecord`: `AdminAuditRecord.before`
+      // is documented `null` for a create action, but the falsy branch here
+      // returned the bare `undefined` an omitted parameter produces, and the
+      // Firestore Admin SDK rejects a literal `undefined` field outright —
+      // every wallet-charge (a create, no prior wallet-side state to diff)
+      // 500'd on writing its own audit record.
+      before: before ? { ...before } : null,
+      after: after ? { ...after } : null,
       occurredAt: Date.now(),
     };
   }
