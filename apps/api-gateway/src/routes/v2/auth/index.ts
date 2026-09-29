@@ -5,6 +5,9 @@ import {
   authBridgeResponseSchema,
   sessionSchema,
   noContentSchema,
+  forgotPasswordRequestSchema,
+  resetPasswordRequestSchema,
+  passwordResetAckSchema,
 } from '@c1rcle/contracts/client';
 
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
@@ -93,6 +96,66 @@ export default async function authRoutes(
       );
       if (result === undefined) return reply;
       const validated = validateV2Response(reply, request, authBridgeResponseSchema, result);
+      if (validated === undefined) return reply;
+      return reply.status(200).send(validated);
+    },
+  );
+
+  // Password reset (scanner/partner self-service). Both routes call the Better
+  // Auth server API directly (never `asResponse` — no cookies involved) and
+  // map thrown `APIError`s through `sendAuthError`. `requestPasswordReset` is
+  // Better Auth's own anti-oracle: unknown emails still resolve to
+  // `{status: true, message}` (verified in better-auth 1.6.26
+  // `dist/api/routes/password.mjs` — it even simulates token work), so these
+  // routes never branch on account existence. The `sendResetPassword` email
+  // callback is wired in `buildBetterAuth` (plugins/auth.ts).
+  fastify.post(
+    '/forgot-password',
+    {
+      preHandler: [
+        fastify.validateV2({ body: forgotPasswordRequestSchema }),
+        fastify.rateLimit('SENSITIVE_COMMAND'),
+      ],
+    },
+    async (request, reply) => {
+      if (!auth) return sendAuthUnavailable(reply, request);
+      const body = request.body as z.infer<typeof forgotPasswordRequestSchema>;
+      let validated: unknown;
+      try {
+        const result = await auth.api.requestPasswordReset({
+          body: { email: body.email },
+          headers: toWebHeaders(request.headers),
+        });
+        validated = validateV2Response(reply, request, passwordResetAckSchema, result);
+      } catch (error) {
+        return sendAuthError(reply, request, error);
+      }
+      if (validated === undefined) return reply;
+      return reply.status(200).send(validated);
+    },
+  );
+
+  fastify.post(
+    '/reset-password',
+    {
+      preHandler: [
+        fastify.validateV2({ body: resetPasswordRequestSchema }),
+        fastify.rateLimit('SENSITIVE_COMMAND'),
+      ],
+    },
+    async (request, reply) => {
+      if (!auth) return sendAuthUnavailable(reply, request);
+      const body = request.body as z.infer<typeof resetPasswordRequestSchema>;
+      let validated: unknown;
+      try {
+        const result = await auth.api.resetPassword({
+          body: { newPassword: body.newPassword, token: body.token },
+          headers: toWebHeaders(request.headers),
+        });
+        validated = validateV2Response(reply, request, passwordResetAckSchema, result);
+      } catch (error) {
+        return sendAuthError(reply, request, error);
+      }
       if (validated === undefined) return reply;
       return reply.status(200).send(validated);
     },
