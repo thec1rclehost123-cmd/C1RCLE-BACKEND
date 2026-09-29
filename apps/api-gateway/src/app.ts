@@ -3,7 +3,7 @@ import { createLogger, type Logger } from '@c1rcle/core';
 import cors from '@fastify/cors';
 import Fastify, { type FastifyInstance } from 'fastify';
 
-import { getGatewayConfig, type GatewayConfig } from './config/index.js';
+import { allowedBrowserOrigins, getGatewayConfig, type GatewayConfig } from './config/index.js';
 import { redactPaths } from './lib/logger-config.js';
 import { genReqId, onRequestHook } from './lib/request-tracing.js';
 import { createV2Services } from './lib/v2-services.js';
@@ -56,15 +56,22 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   app.addHook('onRequest', onRequestHook);
 
-  // B10: cookie-based sessions require CORS credentials — the frontend apps
-  // run on different ports (3000-3002) than this gateway (8080). Different
-  // ports are still "same-site" for the SameSite cookie attribute (it only
-  // considers scheme + registrable domain), so this is sufficient in local
-  // dev without SameSite=None; prod cross-domain needs revisiting (see
-  // docs/architecture/decisions.md D-001).
+  // B10: cookie-based sessions require CORS credentials, and the frontends call
+  // the gateway cross-origin (`localhost:300x` -> `:8080` in dev, Vercel ->
+  // Render in production). The allow-list is exact origins from
+  // `CORS_ALLOWED_ORIGINS` (dev frontend ports when unset outside production)
+  // — never `*`, which browsers refuse alongside credentials anyway. See
+  // docs/architecture/decisions.md D-001.
+  //
+  // Methods are explicit: @fastify/cors v11 defaults to GET,HEAD,POST only,
+  // which fails the preflight for the admin console's PUT/DELETE and the
+  // partner dashboard's PATCH. Allowed request headers are reflected from the
+  // preflight (the plugin default), so Authorization / X-Request-ID /
+  // Idempotency-Key / X-Organization-Id need no separate list.
   await app.register(cors, {
-    origin: ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:3002'],
+    origin: [...allowedBrowserOrigins(config)],
     credentials: true,
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'],
   });
 
   await app.register(validateV2Plugin);
