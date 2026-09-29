@@ -200,7 +200,7 @@ const calendarDayDtoSchema = z.object({
 export const organizationEventCardDtoSchema = z.object({
   eventId: opaqueIdSchema,
   title: z.string(),
-  startAt: z.iso.datetime(),
+  startAt: z.iso.datetime({ offset: true }),
   /** `EventStatus`, unmapped — label wording is the client's business. */
   status: z.string(),
   venueId: opaqueIdSchema.nullable(),
