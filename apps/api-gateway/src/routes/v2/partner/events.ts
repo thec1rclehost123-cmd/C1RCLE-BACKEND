@@ -7,6 +7,8 @@ import {
   eventDtoSchema,
   updateEventSchema,
   cancelEventSchema,
+  posterUploadUrlRequestSchema,
+  posterUploadUrlDtoSchema,
   eventPreviewDtoSchema,
   paginatedSchema,
 } from '@c1rcle/contracts/client';
@@ -64,6 +66,17 @@ const createEventBody = z
     startAt: z.iso.datetime(),
     endAt: z.iso.datetime().nullable().optional(),
     tags: z.array(z.string().min(1).max(40)).max(50).optional(),
+    compensation: z
+      .object({
+        model: z.enum(['standard', 'custom', 'salary']),
+        globalRatePercent: z.number().int().min(0).max(100).nullable(),
+        tierRates: z.record(z.string(), z.number().int().min(0).max(100)),
+        salaryAmountPaise: z.number().int().positive().nullable(),
+        salaryPeriod: z.enum(['per_event', 'per_day', 'per_month']).nullable(),
+        salaryNotes: z.string().max(2000).nullable(),
+      })
+      .nullable()
+      .optional(),
   })
   .strict();
 
@@ -183,6 +196,7 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
             startAt: body.startAt,
             endAt: body.endAt ?? null,
             tags: body.tags,
+            compensation: body.compensation ?? null,
           });
           const validated = validateV2Response(reply, request, eventDtoSchema, eventToDto(event));
           if (validated === undefined) throw new Error('v2 response validation failed');
@@ -197,6 +211,37 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
       });
       if (result === undefined) return reply;
       return reply.status(result.statusCode).send(result.body);
+    },
+  );
+
+  // ── POSTER UPLOAD URL (mint a pre-signed PUT grant — the gateway never
+  // sees the bytes; the client stores the returned `publicUrl` as `imageUrl`
+  // on create) ──────────────────────────────────────────────────────────────
+  fastify.post(
+    '/organizations/:organizationId/poster/upload-url',
+    {
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({
+          params: orgIdParam,
+          body: posterUploadUrlRequestSchema,
+          headers: readHeaders,
+        }),
+        fastify.requirePermission('event.create'),
+      ],
+    },
+    async (request, reply) => {
+      const { organizationId } = request.params as z.infer<typeof orgIdParam>;
+      const body = request.body as z.infer<typeof posterUploadUrlRequestSchema>;
+      const actor = services.actor(request);
+      if (requirePathOrg(reply, request, actor, organizationId) === undefined) return reply;
+      const grant = await services.events
+        .issuePosterUploadUrl(actor, body)
+        .catch((error: unknown) => mapDomainError(reply, request, organizationId, error));
+      if (grant === undefined) return reply;
+      const validated = validateV2Response(reply, request, posterUploadUrlDtoSchema, grant);
+      if (validated === undefined) return reply;
+      return reply.send(validated);
     },
   );
 
@@ -408,6 +453,7 @@ export function eventToDto(event: Event) {
     startingPricePaise: event.startingPricePaise,
     isFree: event.isFree,
     cancellationReason: event.cancellationReason,
+    compensation: event.compensation ?? null,
     version: event.version,
     createdAt: event.createdAt,
     updatedAt: event.updatedAt,
@@ -434,6 +480,8 @@ export function mapDomainError(
     'event_not_found',
     'slot_request_not_found',
     'partnership_not_found',
+    'ticket_tier_not_found',
+    'promoter_assignment_not_found',
     'onboarding_request_not_found',
     'proposal_not_found',
     // The generic `NotFoundError` (domain/errors.ts) carries this exact code —
@@ -506,6 +554,20 @@ export function mapDomainError(
           expectedVersion: known.expectedVersion,
           currentVersion: known.currentVersion,
         },
+      }),
+    );
+    return undefined;
+  }
+  // Business-rule duplicate (e.g. a second RSVP for the same user+event) —
+  // distinct from optimistic-locking (`version_conflict`) and key reuse
+  // (`idempotency_*`): the request itself is disallowed by current state.
+  if (known?.code === 'conflict') {
+    reply.status(409).send(
+      buildV2ErrorResponse({
+        status: 409,
+        message: known.message ?? 'Conflict',
+        code: 'conflict',
+        requestId: request.id,
       }),
     );
     return undefined;

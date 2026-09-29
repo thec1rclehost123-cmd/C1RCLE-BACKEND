@@ -27,6 +27,24 @@ export class FirestoreVenueRepository implements VenueRepository {
     return data ? toVenue(data) : null;
   }
 
+  async getByIds(venueIds: EntityId[]): Promise<Venue[]> {
+    const unique = [...new Set(venueIds)];
+    // `getAll` caps at 30 refs per call outside a transaction (same chunking
+    // rationale as `OrganizationRepository.getByIds`).
+    const CHUNK = 30;
+    const found: Venue[] = [];
+    for (let i = 0; i < unique.length; i += CHUNK) {
+      const snaps = await this.db.getAll(
+        ...unique.slice(i, i + CHUNK).map((id) => this.collection.doc(id)),
+      );
+      for (const snap of snaps) {
+        const data = snap.data();
+        if (snap.exists && data) found.push(toVenue(data));
+      }
+    }
+    return found;
+  }
+
   async getBySlug(slug: string, organizationId: EntityId): Promise<Venue | null> {
     const snap = await this.collection
       .where('organizationId', '==', organizationId)
@@ -41,6 +59,12 @@ export class FirestoreVenueRepository implements VenueRepository {
     const snap = await this.collection.where('public.slug', '==', slug).limit(1).get();
     const doc = snap.docs[0];
     return doc ? toVenue(doc.data()) : null;
+  }
+
+  async listActive(limit: number): Promise<Venue[]> {
+    // Single-field equality: no composite index needed (see organization repo).
+    const snap = await this.collection.where('status', '==', 'active').limit(limit).get();
+    return snap.docs.map((doc) => toVenue(doc.data()));
   }
 
   async listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Venue>> {

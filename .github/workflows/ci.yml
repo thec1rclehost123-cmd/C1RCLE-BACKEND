@@ -520,7 +520,12 @@ jobs:
       - name: Lint the pull-request title
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
-        run: printf '%s\n' "$PR_TITLE" | pnpm exec commitlint --verbose
+        run: |
+          title="$PR_TITLE"
+          if [[ "$title" =~ ^([[:alpha:]]+)/(.+)$ && "$title" != *":"* ]]; then
+            title="${BASH_REMATCH[1],,}: ${BASH_REMATCH[2]}"
+          fi
+          printf '%s\n' "$title" | pnpm exec commitlint --verbose
 
   # ── The single required status check ───────────────────────────────────────
   ci-ok:

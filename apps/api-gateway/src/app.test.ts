@@ -181,4 +181,22 @@ describe('app bootstrap + internal routes', () => {
     });
     await app.close();
   });
+
+  it('CORS preflight allows PATCH/PUT/DELETE from a trusted frontend origin', async () => {
+    // @fastify/cors defaults `methods` to 'GET,HEAD,POST' — narrower than the v2 API
+    // actually uses (e.g. the onboarding autosave PATCH). Regression for that gap.
+    const app = await buildApp({});
+    for (const method of ['PATCH', 'PUT', 'DELETE']) {
+      const res = await app.inject({
+        method: 'OPTIONS',
+        url: '/api/v2/onboarding/applications/req_1',
+        headers: {
+          origin: 'http://localhost:3001',
+          'access-control-request-method': method,
+        },
+      });
+      expect(res.headers['access-control-allow-methods']).toContain(method);
+    }
+    await app.close();
+  });
 });

@@ -11,6 +11,8 @@ coverage/
 .env.staging
 .env.docker
 .env.*.local
+# Test harness snapshots of the local emulator env (regenerated per run).
+*.emulator.bak
 .temp
 # CI writes the coverage ratchet baseline here from the Actions cache.
 .coverage-baseline/

@@ -32,5 +32,6 @@ export * from './firestore-user-account-repository.js';
 export * from './firestore-user-ban-repository.js';
 export * from './firestore-leaderboard-repository.js';
 export * from './firestore-email-otp-repository.js';
+export * from './firestore-guest-profile-repository.js';
 export * from './firestore-platform-settings-repository.js';
 export * from './firebase-object-storage.js';
