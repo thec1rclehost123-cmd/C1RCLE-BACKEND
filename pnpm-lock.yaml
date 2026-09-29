@@ -25,7 +25,7 @@ importers:
         specifier: ^9.30.0
         version: 9.39.5
       '@vitest/coverage-v8':
-        specifier: ^4.1.0
+        specifier: ^4.1.11
         version: 4.1.11(vitest@4.1.11)
       eslint:
         specifier: ^9.30.0
@@ -73,7 +73,7 @@ importers:
         specifier: ^8.40.0
         version: 8.66.0(eslint@9.39.5(jiti@2.7.0)(supports-color@7.2.0))(supports-color@7.2.0)(typescript@5.9.3)
       vitest:
-        specifier: ^4.1.0
+        specifier: ^4.1.11
         version: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(@vitest/coverage-v8@4.1.11)(vite@8.2.0(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.9)(yaml@2.9.0))
 
   apps/api-gateway:
@@ -99,6 +99,9 @@ importers:
       fastify-plugin:
         specifier: ^5.0.0
         version: 5.1.0
+      firebase-admin:
+        specifier: ^13.0.0
+        version: 13.10.0(supports-color@7.2.0)
       zod:
         specifier: ^4.2.0
         version: 4.4.3
@@ -113,7 +116,7 @@ importers:
         specifier: ^5.9.0
         version: 5.9.3
       vitest:
-        specifier: ^4.1.0
+        specifier: ^4.1.11
         version: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(@vitest/coverage-v8@4.1.11)(vite@8.2.0(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.9)(yaml@2.9.0))
 
   packages/contracts:
