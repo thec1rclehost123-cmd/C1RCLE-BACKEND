@@ -106,6 +106,7 @@ export default async function phase5ScannerRoutes(fastify: FastifyInstance) {
               deviceId: body.deviceId,
               deviceName: body.deviceName,
               sessionType: body.sessionType,
+              ...(body.deviceLocation === undefined ? {} : { deviceLocation: body.deviceLocation }),
             },
             actor,
           );

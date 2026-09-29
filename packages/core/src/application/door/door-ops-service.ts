@@ -41,6 +41,8 @@ export interface DoorOpsServiceDeps {
   eventCodes: ServiceDeps['repositories']['eventCodes'];
   doorSales: ServiceDeps['repositories']['doorSales'];
   scanLedger: ServiceDeps['repositories']['scanLedger'];
+  /** D-030: venue coordinates for the shift-open geofence check. */
+  venues: ServiceDeps['repositories']['venues'];
   adminAudit: ServiceDeps['adminAudit'];
   logger: ServiceDeps['logger'];
 }
@@ -137,12 +139,66 @@ export interface DoorGuestPage {
   truncated: boolean;
 }
 
+/**
+ * One row of the attendance report — `07-storage-sizing-caching.md` §5b's
+ * "who entered / who didn't / what time" answered per online entitlement.
+ * Deliberately scoped to `Entitlement` only, matching that doc's own
+ * definition of the report — door-sold guests (walk-in/dine-in) already
+ * have their own surface (`GET /door/sales`) and are entered by
+ * definition, so they carry no "did they show up" question to answer here.
+ */
+export interface AttendanceReportGuest {
+  entitlementId: EntityId;
+  holderName: string;
+  tierName: string;
+  status: 'entered' | 'not_entered';
+  /** People admitted on this entitlement so far (2 for a fully-used couple
+   * ticket, 1 for a half-used one, 0 for a no-show). */
+  scanCount: number;
+  scanCountAllowed: number;
+  /** ISO timestamps, one per admission, oldest first. Empty for a no-show. */
+  scannedAt: string[];
+}
+
+export interface AttendanceReportTierBreakdown {
+  tierName: string;
+  entered: number;
+  notEntered: number;
+}
+
+export interface AttendanceReport {
+  eventId: EntityId;
+  totalEntitlements: number;
+  /** Entitlements with at least one admission — NOT the same as the number
+   * of people through the door (see `admittedCount`): a half-used couple
+   * ticket counts once here despite one person having entered. */
+  enteredEntitlements: number;
+  /** The actual headcount: `sum(scanCount)` across every entitlement. A
+   * couple ticket where both seats were used contributes 2, not 1 — this is
+   * the figure "how many people entered" means, not `enteredEntitlements`. */
+  admittedCount: number;
+  /** Valid or redeemed entitlements never scanned at all. Voided tickets
+   * are excluded — a refund is not a no-show, it is a ticket that was
+   * withdrawn from the count entirely. */
+  notEntered: number;
+  voided: number;
+  byTier: AttendanceReportTierBreakdown[];
+  guests: AttendanceReportGuest[];
+  /** True when the event has more entitlements than this report scanned —
+   * see `MAX_GUEST_SCAN`. When true, every count above (as well as
+   * `guests`) is a partial tally, not a full one — same honesty convention
+   * as `listGuests`' own `truncated` flag. At the documented scale (300-500
+   * guests per event) this should never actually trigger. */
+  truncated: boolean;
+}
+
 export interface DoorOpsService {
   resolveWallet(command: ResolveWalletCommand, actor: ActorContext): Promise<WalletChargeView>;
   chargeWallet(command: ChargeWalletCommand, actor: ActorContext): Promise<WalletChargeResult>;
   listEvents(dateSpec: string, actor: ActorContext): Promise<DoorEventSummary[]>;
   startShift(command: OpenScannerSessionCommand, actor: ActorContext): Promise<StartShiftResult>;
   listGuests(eventId: EntityId, query: DoorGuestQuery, actor: ActorContext): Promise<DoorGuestPage>;
+  getAttendanceReport(eventId: EntityId, actor: ActorContext): Promise<AttendanceReport>;
   manualCheckIn(
     eventId: EntityId,
     entitlementId: EntityId,
@@ -156,6 +212,27 @@ export interface DoorOpsService {
  * door device asking for "today" at 1am is still working the previous night.
  */
 const IST_OFFSET_MINUTES = 5 * 60 + 30;
+
+/**
+ * D-030: soft geofence radius for opening a shift. Deliberately generous —
+ * this rides on top of the door code, not instead of it, and a false
+ * rejection bricks a real shift while a false acceptance costs nothing the
+ * code wasn't already protecting. GPS accuracy on a phone indoors/near a
+ * venue's own structure commonly drifts 50-150m; 500m absorbs that without
+ * meaningfully weakening the check (still rules out "redeemed from home").
+ */
+const GEOFENCE_RADIUS_METERS = 500;
+const EARTH_RADIUS_METERS = 6_371_000;
+
+function haversineMeters(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
+  const toRad = (deg: number): number => (deg * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const sinLat = Math.sin(dLat / 2);
+  const sinLng = Math.sin(dLng / 2);
+  const h = sinLat * sinLat + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * sinLng * sinLng;
+  return 2 * EARTH_RADIUS_METERS * Math.asin(Math.min(1, Math.sqrt(h)));
+}
 
 /**
  * Bounds on the roster read. These are not arbitrary: a door phone cannot
@@ -316,6 +393,35 @@ export function createDoorOpsService(deps: DoorOpsServiceDeps): DoorOpsService {
     );
   }
 
+  /**
+   * D-030: soft geofence on shift-open. Skips silently (no reject) whenever
+   * either side of the comparison is missing — a device that never sent a
+   * fix (older client, permission denied) or a venue with no pinned
+   * coordinates. This is deliberate: the door code already authorizes the
+   * redemption, so an absent GPS fix must degrade to "code-only", not to
+   * "shift blocked". Only an actual fix that is actually far away denies.
+   */
+  async function enforceGeofence(
+    deps: DoorOpsServiceDeps,
+    event: Event,
+    deviceLocation: { lat: number; lng: number } | undefined,
+  ): Promise<void> {
+    if (deviceLocation === undefined || event.venueId === null) return;
+    const venue = await deps.venues.getById(event.venueId);
+    const venueCoords = venue?.public.address;
+    if (venueCoords?.lat === undefined || venueCoords.lng === undefined) return;
+
+    const distance = haversineMeters(deviceLocation, {
+      lat: venueCoords.lat,
+      lng: venueCoords.lng,
+    });
+    if (distance > GEOFENCE_RADIUS_METERS) {
+      throw new ForbiddenError(
+        `Device is ${Math.round(distance)}m from the venue — shifts can only be opened on-site.`,
+      );
+    }
+  }
+
   async function startShift(
     command: OpenScannerSessionCommand,
     actor: ActorContext,
@@ -323,6 +429,8 @@ export function createDoorOpsService(deps: DoorOpsServiceDeps): DoorOpsService {
     const event = await deps.events.findById(command.eventId);
     if (!event) throw new NotFoundError('Event', command.eventId);
     requireOrgAccess(actor, event.organizationId);
+
+    await enforceGeofence(deps, event, command.deviceLocation);
 
     // Authorize the handset first: a session minted for a device the venue
     // then refuses would be a token that looks valid and scans nothing.
@@ -431,6 +539,105 @@ export function createDoorOpsService(deps: DoorOpsServiceDeps): DoorOpsService {
   }
 
   /**
+   * `07-storage-sizing-caching.md` §5b: who entered, who didn't, what time,
+   * how many. Confirmed there that the data already exists on `Entitlement`
+   * alone — no new field or collection. Deliberately does NOT touch
+   * `ScanLedger` for a gate/device/hour breakdown; that slice needs grouped
+   * queries the doc flags as depending on composite indexes not yet
+   * verified against this exact query shape, so it stays out of this first
+   * version rather than being built on an unconfirmed index.
+   */
+  async function getAttendanceReport(
+    eventId: EntityId,
+    actor: ActorContext,
+  ): Promise<AttendanceReport> {
+    const event = await deps.events.findById(eventId);
+    if (!event) throw new NotFoundError('Event', eventId);
+    requireOrgAccess(actor, event.organizationId);
+
+    const guests: AttendanceReportGuest[] = [];
+    const byTier = new Map<string, AttendanceReportTierBreakdown>();
+    let enteredEntitlements = 0;
+    let admittedCount = 0;
+    let notEntered = 0;
+    let voided = 0;
+    let scanned = 0;
+    let truncated = false;
+    let cursor: string | null = null;
+
+    do {
+      const page: Page<Entitlement> = await deps.entitlements.listByEvent(eventId, {
+        cursor,
+        limit: GUEST_SCAN_PAGE,
+      });
+      for (const entitlement of page.items) {
+        admittedCount += entitlement.scanCount;
+        if (entitlement.status === 'void') {
+          voided += 1;
+        } else if (entitlement.scanCount > 0) {
+          enteredEntitlements += 1;
+        } else {
+          notEntered += 1;
+        }
+
+        const tier = byTier.get(entitlement.tierName) ?? {
+          tierName: entitlement.tierName,
+          entered: 0,
+          notEntered: 0,
+        };
+        // Voided tickets are excluded from the per-tier split too — see
+        // `AttendanceReport.notEntered`'s own doc comment for why.
+        if (entitlement.status !== 'void') {
+          if (entitlement.scanCount > 0) tier.entered += 1;
+          else tier.notEntered += 1;
+          byTier.set(entitlement.tierName, tier);
+        }
+
+        // Same exclusion as the counts and tier breakdown above: a voided
+        // ticket is withdrawn, not a no-show, so it has no row here either
+        // — a guest list entry saying "not_entered" for a refunded ticket
+        // would misreport it as someone expected who never showed.
+        if (entitlement.status !== 'void') {
+          guests.push({
+            entitlementId: entitlement.id,
+            holderName: entitlement.holderName,
+            tierName: entitlement.tierName,
+            status: entitlement.scanCount > 0 ? 'entered' : 'not_entered',
+            scanCount: entitlement.scanCount,
+            scanCountAllowed: entitlement.scanCountAllowed,
+            scannedAt: entitlement.scannedAt,
+          });
+        }
+      }
+      scanned += page.items.length;
+      cursor = page.nextCursor;
+      if (scanned >= MAX_GUEST_SCAN && cursor !== null) {
+        truncated = true;
+        break;
+      }
+    } while (cursor);
+
+    // Not-entered first, then alphabetical — same convention as
+    // `listGuests`: the report exists to find who has not come in.
+    guests.sort((a, b) => {
+      if (a.status !== b.status) return a.status === 'not_entered' ? -1 : 1;
+      return a.holderName.localeCompare(b.holderName);
+    });
+
+    return {
+      eventId,
+      totalEntitlements: enteredEntitlements + notEntered + voided,
+      enteredEntitlements,
+      admittedCount,
+      notEntered,
+      voided,
+      byTier: [...byTier.values()].sort((a, b) => a.tierName.localeCompare(b.tierName)),
+      guests,
+      truncated,
+    };
+  }
+
+  /**
    * Admits a guest whose QR will not scan — a cracked screen, a dead phone, a
    * ticket forwarded as a screenshot of a screenshot.
    *
@@ -498,7 +705,15 @@ export function createDoorOpsService(deps: DoorOpsServiceDeps): DoorOpsService {
     return { guest: toOnlineGuest(entitlement), scan };
   }
 
-  return { resolveWallet, chargeWallet, listEvents, startShift, listGuests, manualCheckIn };
+  return {
+    resolveWallet,
+    chargeWallet,
+    listEvents,
+    startShift,
+    listGuests,
+    getAttendanceReport,
+    manualCheckIn,
+  };
 }
 
 function toEventSummary(event: Event): DoorEventSummary {

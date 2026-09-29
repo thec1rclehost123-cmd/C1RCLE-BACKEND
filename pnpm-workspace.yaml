@@ -23,9 +23,10 @@ overrides:
   tar: '>=7.5.21'
   # fast-uri ^3 (ajv/@fastify/ajv-compiler) and ^4 (fast-json-stringify) — pin to
   # patched releases that satisfy each dependent's declared range.
-  #   fast-uri -> 3.1.6 / 4.1.4   fixes CVE-2026-75899/75931/75975/76172 (SSRF, host confusion)
+  #   fast-uri -> 3.1.8 / 4.1.4   fixes CVE-2026-75899/75931/75975/76172 (SSRF, host confusion)
+  #                              AND CVE-2026-84292/84394 (authority injection, unbalanced-bracket host confusion; fixed in >=3.1.7)
   #   nanoid   -> 3.3.18          fixes CVE-2026-67213 (DoS via infinite loop)
-  'fast-uri@^3.0.0': '3.1.6'
+  'fast-uri@^3.0.0': '3.1.8'
   'fast-uri@^4.0.0': '4.1.4'
   'nanoid@^3.0.0': '3.3.18'
   # js-yaml -> 4.3.2 fixes GHSA-2883-xcg3-v3hh (HIGH, maxTotalMergeKeys CPU DoS).

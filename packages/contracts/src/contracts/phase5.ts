@@ -70,6 +70,16 @@ export const scannerSessionCreateBodySchema = z
     deviceId: z.string().min(1).max(128),
     deviceName: z.string().min(1).max(128),
     sessionType: z.enum(['staff', 'device']),
+    /**
+     * Additive, optional (D-030): the device's GPS fix at redeem time. A
+     * soft geofence layered on top of the door code, not a replacement for
+     * it — client GPS is spoofable, so this only ever narrows an already
+     * code-authorized redemption. Omitted entirely on older clients or a
+     * denied location permission; the server skips the check rather than
+     * blocking the shift when either this or the venue's own coordinates
+     * are absent.
+     */
+    deviceLocation: z.object({ lat: z.number(), lng: z.number() }).optional(),
   })
   .strict();
 export type ScannerSessionCreateBody = z.infer<typeof scannerSessionCreateBodySchema>;
@@ -698,6 +708,49 @@ export const doorGuestListResponseSchema = z.object({
   truncated: z.boolean(),
 });
 export type DoorGuestListResponse = z.infer<typeof doorGuestListResponseSchema>;
+
+// ── Attendance report (admin-console-facing) ─────────────────────────────
+// `07-storage-sizing-caching.md` §5b: who entered, who didn't, what time,
+// how many — answered from `Entitlement` alone, per online-ticket. Door-sold
+// guests (walk-in/dine-in) have their own surface (`GET /door/sales`) and
+// carry no "did they show up" question, so they are out of scope here.
+
+export const attendanceReportQuerySchema = z.object({ eventId: opaqueIdSchema }).strict();
+export type AttendanceReportQuery = z.infer<typeof attendanceReportQuerySchema>;
+
+export const attendanceReportGuestSchema = z.object({
+  entitlementId: opaqueIdSchema,
+  holderName: z.string(),
+  tierName: z.string(),
+  status: z.enum(['entered', 'not_entered']),
+  scanCount: z.number().int().nonnegative(),
+  scanCountAllowed: z.number().int().positive(),
+  scannedAt: z.array(z.string()),
+});
+export type AttendanceReportGuest = z.infer<typeof attendanceReportGuestSchema>;
+
+export const attendanceReportTierBreakdownSchema = z.object({
+  tierName: z.string(),
+  entered: z.number().int().nonnegative(),
+  notEntered: z.number().int().nonnegative(),
+});
+export type AttendanceReportTierBreakdown = z.infer<typeof attendanceReportTierBreakdownSchema>;
+
+export const attendanceReportDtoSchema = z.object({
+  eventId: opaqueIdSchema,
+  totalEntitlements: z.number().int().nonnegative(),
+  enteredEntitlements: z.number().int().nonnegative(),
+  /** The real headcount — sums each entitlement's `scanCount`, so a
+   * half-used couple ticket contributes 1 here and 1 to `enteredEntitlements`,
+   * while a fully-used one contributes 2 here and still 1 there. */
+  admittedCount: z.number().int().nonnegative(),
+  notEntered: z.number().int().nonnegative(),
+  voided: z.number().int().nonnegative(),
+  byTier: z.array(attendanceReportTierBreakdownSchema),
+  guests: z.array(attendanceReportGuestSchema),
+  truncated: z.boolean(),
+});
+export type AttendanceReportDto = z.infer<typeof attendanceReportDtoSchema>;
 
 export const manualCheckInBodySchema = z
   .object({ eventId: opaqueIdSchema, entitlementId: opaqueIdSchema })
