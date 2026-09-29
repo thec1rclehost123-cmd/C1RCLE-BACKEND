@@ -534,6 +534,7 @@ function disputeToDto(dispute: Dispute) {
     status: dispute.status,
     resolutionNote: dispute.resolutionNote,
     resolvedAt: dispute.resolvedAt,
+    resolution: dispute.resolution,
     createdAt: dispute.createdAt,
   };
 }

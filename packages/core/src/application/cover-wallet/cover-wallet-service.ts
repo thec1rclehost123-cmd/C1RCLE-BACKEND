@@ -1,9 +1,13 @@
+import { createHmac, timingSafeEqual } from 'node:crypto';
+
 import { InvalidOperationError, ForbiddenError, NotFoundError } from '../../domain/errors.js';
 import { createReconciliation } from '../../domain/models/cover-wallet-reconciliation.js';
 import {
   createCoverWallet,
   isWalletActive,
   isWalletTerminated,
+  priceForCharge,
+  findChargeableItem,
 } from '../../domain/models/cover-wallet.js';
 
 import type { EntityId } from '../../domain/identity.js';
@@ -15,6 +19,7 @@ import type {
 } from '../../domain/models/cover-wallet-reconciliation.js';
 import type {
   CoverWallet,
+  CoverWalletPresetItem,
   CoverWalletTxn,
   CoverWalletCreateInput,
   CoverWalletStatus,
@@ -50,6 +55,33 @@ export interface CoverWalletServiceDeps {
   adminAudit: ServiceDeps['adminAudit'];
 }
 
+/**
+ * What the scanner shows when a guest presents their tab. Deliberately NOT
+ * the whole wallet: no metadata, no transaction history, no owner id beyond a
+ * first name. A bartender needs to know who this is, what they can be charged
+ * for, and whether the money is there.
+ */
+export interface WalletChargeView {
+  walletId: EntityId;
+  eventId: EntityId;
+  /** First name only — enough to greet a guest, not enough to identify them. */
+  guestFirstName: string;
+  status: CoverWallet['status'];
+  /** Suppressed to null when the venue has turned balance display off. */
+  balancePaise: number | null;
+  presetItems: CoverWalletPresetItem[];
+  minChargePaise: number;
+  maxChargePaise: number;
+}
+
+export interface ChargePresetInput {
+  walletId: EntityId;
+  presetItemId: EntityId;
+  quantity: number;
+  idempotencyKey: string;
+  deviceId?: string;
+}
+
 export interface CoverWalletService {
   // Wallet lifecycle
   createWallet(input: CreateWalletInput, actor: ActorContext): Promise<CoverWallet>;
@@ -82,6 +114,28 @@ export interface CoverWalletService {
     input: AdjustWalletInput,
     actor: ActorContext,
   ): Promise<{ wallet: CoverWallet; txn: CoverWalletTxn }>;
+
+  // Scanner-facing: rotating QR + charge by preset item
+  /**
+   * Mints the guest's rotating wallet QR. Short-lived by design — a
+   * screenshot of a tab is worthless within a minute.
+   */
+  generateWalletQr(
+    walletId: EntityId,
+    actor: ActorContext,
+  ): Promise<{ qrPayload: string; expiresAt: string; refreshIntervalSec: number }>;
+  /** Verifies a scanned wallet QR and returns the wallet id, or null. */
+  verifyWalletQr(qrPayload: string): EntityId | null;
+  /** The bartender's view of a tab: who, how much, what can be rung up. */
+  getChargeView(walletId: EntityId, actor: ActorContext): Promise<WalletChargeView>;
+  /**
+   * Charges one preset item. The amount is computed from the venue's own
+   * price list — the caller names an item, never a number.
+   */
+  chargePreset(
+    input: ChargePresetInput,
+    actor: ActorContext,
+  ): Promise<{ wallet: CoverWallet; txn: CoverWalletTxn; item: CoverWalletPresetItem }>;
 
   // Wallet status
   terminateWallet(walletId: EntityId, reason: string, actor: ActorContext): Promise<CoverWallet>;
@@ -235,7 +289,8 @@ export interface WalletOrgStats {
 type AuditSnapshot = CoverWallet | CoverWalletReconciliation;
 
 function createCoverWalletServiceImpl(deps: CoverWalletServiceDeps): CoverWalletService {
-  const { coverWallets, coverWalletTxns, coverWalletReconciliations, events, adminAudit } = deps;
+  const { coverWallets, coverWalletTxns, coverWalletReconciliations, events, config, adminAudit } =
+    deps;
 
   function auditRecord(
     actor: ActorContext,
@@ -939,9 +994,159 @@ function createCoverWalletServiceImpl(deps: CoverWalletServiceDeps): CoverWallet
     };
   }
 
+  // ── Scanner-facing: rotating QR + charge by preset item ───────────────────
+
+  /**
+   * A tab's QR rotates on a 30-second window, exactly like a ticket QR, and is
+   * signed with the same key under a different purpose prefix (`wallet:`) so
+   * that a wallet payload can never be presented as a ticket or the reverse.
+   */
+  const WALLET_QR_WINDOW_SEC = 30;
+
+  function walletHmac(message: string): string {
+    return createHmac('sha256', config.magicTicketSecret).update(message).digest('hex');
+  }
+
+  function walletHmacMatches(candidate: string, expected: string): boolean {
+    const a = Buffer.from(candidate, 'utf8');
+    const b = Buffer.from(expected, 'utf8');
+    if (a.length !== b.length) return false;
+    return timingSafeEqual(a, b);
+  }
+
+  async function generateWalletQr(
+    walletId: EntityId,
+    actor: ActorContext,
+  ): Promise<{ qrPayload: string; expiresAt: string; refreshIntervalSec: number }> {
+    const wallet = await coverWallets.findById(walletId);
+    if (!wallet) throw new NotFoundError('Wallet', walletId);
+    // ONLY the guest whose tab this is.
+    //
+    // Venue staff were allowed here at first, for the "guest's phone died"
+    // case. That was wrong: a charge is authorized by the guest presenting
+    // this QR, so staff who can mint it can also charge a tab with nobody
+    // standing there. Anyone else — staff included — gets a 404 rather than a
+    // 403, so the endpoint cannot be used to confirm a wallet id exists
+    // either. A guest with a dead phone is a supervisor-console problem, the
+    // same as refunds and top-ups.
+    if (wallet.userId !== actor.userId) throw new NotFoundError('Wallet', walletId);
+
+    const windowStart = Math.floor(Date.now() / 1000 / WALLET_QR_WINDOW_SEC) * WALLET_QR_WINDOW_SEC;
+    return {
+      qrPayload: `cw:${walletId}:${String(windowStart)}:${walletHmac(`wallet:${walletId}:${String(windowStart)}`)}`,
+      expiresAt: new Date((windowStart + WALLET_QR_WINDOW_SEC) * 1000).toISOString(),
+      refreshIntervalSec: WALLET_QR_WINDOW_SEC,
+    };
+  }
+
+  /**
+   * `cw:<walletId>:<window>:<hmac>`. The `cw:` prefix is what lets the scanner
+   * tell a tab from a ticket before it hits the network, and the signature is
+   * what stops anyone minting one. Accepts the current and previous window
+   * (clock drift); anything older is a replayed screenshot.
+   */
+  function verifyWalletQr(qrPayload: string): EntityId | null {
+    const parts = qrPayload.split(':');
+    if (parts.length !== 4) return null;
+    const [prefix, walletId, windowStr, signature] = parts as [string, string, string, string];
+    if (prefix !== 'cw' || !walletId || !signature) return null;
+    const windowStart = Number.parseInt(windowStr, 10);
+    if (!Number.isFinite(windowStart)) return null;
+
+    const current = walletHmacMatches(
+      signature,
+      walletHmac(`wallet:${walletId}:${String(windowStart)}`),
+    );
+    const previous = walletHmacMatches(
+      signature,
+      walletHmac(`wallet:${walletId}:${String(windowStart - WALLET_QR_WINDOW_SEC)}`),
+    );
+    if (!current && !previous) return null;
+
+    const nowWindow = Math.floor(Date.now() / 1000 / WALLET_QR_WINDOW_SEC) * WALLET_QR_WINDOW_SEC;
+    if (Math.abs(nowWindow - windowStart) > WALLET_QR_WINDOW_SEC * 2) return null;
+    return walletId;
+  }
+
+  async function getChargeView(walletId: EntityId, actor: ActorContext): Promise<WalletChargeView> {
+    const wallet = await coverWallets.findById(walletId);
+    if (!wallet) throw new NotFoundError('Wallet', walletId);
+    requireOrgAccess(actor, wallet.organizationId);
+    return chargeView(wallet);
+  }
+
+  function chargeView(wallet: CoverWallet): WalletChargeView {
+    const holder = (wallet.metadata.guestName ?? wallet.metadata.holderName) as string | undefined;
+    return {
+      walletId: wallet.id,
+      eventId: wallet.eventId,
+      // First name only: enough to greet a guest, not enough to identify them
+      // to whoever is holding the scanner.
+      guestFirstName: (holder ?? 'Guest').trim().split(/\s+/)[0] ?? 'Guest',
+      status: wallet.status,
+      balancePaise: wallet.rules.showBalanceToGuest ? wallet.balance : null,
+      presetItems: wallet.rules.presetItems.filter((item) => item.isAvailable),
+      minChargePaise: wallet.rules.minChargePaise,
+      maxChargePaise: wallet.rules.maxChargePaise,
+    };
+  }
+
+  /**
+   * Charges one preset item against a tab.
+   *
+   * The caller names an item and a quantity; the amount comes from the
+   * venue's own price list. A scanner that could send an amount is a scanner
+   * that could take ₹5,000 for a ₹500 drink, and the guest has no way to
+   * check the screen before it happens.
+   *
+   * Everything below `priceForCharge` — active wallet, sufficient balance,
+   * velocity limit, idempotency — is `debitWallet`'s existing job and is not
+   * reimplemented here.
+   */
+  async function chargePreset(
+    input: ChargePresetInput,
+    actor: ActorContext,
+  ): Promise<{ wallet: CoverWallet; txn: CoverWalletTxn; item: CoverWalletPresetItem }> {
+    const wallet = await coverWallets.findById(input.walletId);
+    if (!wallet) throw new NotFoundError('Wallet', input.walletId);
+    requireOrgAccess(actor, wallet.organizationId);
+
+    const item = findChargeableItem(wallet.rules, input.presetItemId);
+    if (!item) {
+      throw new InvalidOperationError('That item is not available on this tab');
+    }
+    const amount = priceForCharge(wallet.rules, input.presetItemId, input.quantity);
+    if (amount === null) {
+      throw new InvalidOperationError('That charge is outside the limits set for this tab');
+    }
+    // Checked before the debit so the guest is told "not enough left" rather
+    // than watching a charge fail somewhere deeper.
+    if (wallet.balance < amount) {
+      throw new InvalidOperationError('Not enough balance left on this tab');
+    }
+
+    const result = await debitWallet(
+      {
+        walletId: input.walletId,
+        amount,
+        referenceType: 'cover_preset_item',
+        referenceId: item.id,
+        description: `${String(input.quantity)} x ${item.label}`,
+        idempotencyKey: input.idempotencyKey,
+        ...(input.deviceId === undefined ? {} : { deviceId: input.deviceId }),
+      },
+      actor,
+    );
+    return { ...result, item };
+  }
+
   return {
     createWallet,
     getWallet,
+    generateWalletQr,
+    verifyWalletQr,
+    getChargeView,
+    chargePreset,
     getWalletByEventAndUser,
     listWallets,
     creditWallet,

@@ -179,6 +179,29 @@ export function updateVenue(venue: Venue, update: VenueUpdate, now?: Date): Venu
 }
 
 /**
+ * Suspends a venue (admin resolution for `VENUE_SUSPEND`). Mirrors
+ * `suspendOrganization`'s shape.
+ */
+export function suspendVenue(venue: Venue, now?: Date): Venue {
+  if (venue.status === 'suspended') return venue;
+  const ts = (now ?? new Date()).toISOString();
+  return { ...venue, status: 'suspended', version: venue.version + 1, updatedAt: ts };
+}
+
+/**
+ * Reinstates a suspended venue (admin resolution for `VENUE_REINSTATE`).
+ * Always restores the single literal `'active'` status — v1's console
+ * wrote a divergent `'reinstated'` string on this path, which silently
+ * dropped the venue from every query filtering on `status === 'active'`.
+ * No-op if already active.
+ */
+export function reinstateVenue(venue: Venue, now?: Date): Venue {
+  if (venue.status === 'active') return venue;
+  const ts = (now ?? new Date()).toISOString();
+  return { ...venue, status: 'active', version: venue.version + 1, updatedAt: ts };
+}
+
+/**
  * ─── Venue slots ──────────────────────────────────────────────────────────────
  * A slot is an offered time window (recurring intents handled upstream).
  */
@@ -217,6 +240,71 @@ export function createVenueBlock(input: {
     capacityFor: null,
     ...newVersionedEntity(input.now ?? new Date()),
   };
+}
+
+/**
+ * ─── Unblock ────────────────────────────────────────────────────────────────
+ * Unblocking is a soft-cancel: the slot stays in storage with status
+ * `cancelled` so availability derivations (which already exclude cancelled
+ * slots) and audit trails stay consistent. Calendar reads filter cancelled
+ * slots out, so an unblocked date immediately reads as open again.
+ *
+ * Only `blocked` slots can be unblocked — unblocking an `open`/`booked`
+ * slot would silently destroy bookable inventory, and re-unblocking an
+ * already-`cancelled` slot is a no-op that must surface as a 400 rather
+ * than silently succeeding.
+ */
+export function cancelVenueBlock(slot: VenueSlot, now?: Date): VenueSlot {
+  if (slot.status !== 'blocked') {
+    throw new InvalidOperationError('Only blocked slots can be unblocked');
+  }
+  return bumpVersion({ ...slot, status: 'cancelled' }, now ?? new Date());
+}
+
+/**
+ * ─── Overlap guard ──────────────────────────────────────────────────────────
+ * A venue's timeline is a single track: two live slots may never occupy the
+ * same minutes. Half-open comparison `[start, end)` — a block ending exactly
+ * when the next begins is adjacent, not overlapping. Overnight ranges
+ * (end date after start date) compare the same way; there is no same-day
+ * assumption anywhere here.
+ */
+export function doSlotRangesOverlap(
+  aStart: string,
+  aEnd: string,
+  bStart: string,
+  bEnd: string,
+): boolean {
+  const s1 = Date.parse(aStart);
+  const e1 = Date.parse(aEnd);
+  const s2 = Date.parse(bStart);
+  const e2 = Date.parse(bEnd);
+  // Fail closed on unparseable input — a range we cannot place must never
+  // silently slip past the timeline guard.
+  if (Number.isNaN(s1) || Number.isNaN(e1) || Number.isNaN(s2) || Number.isNaN(e2)) {
+    return true;
+  }
+  return s1 < e2 && s2 < e1;
+}
+
+/**
+ * Throws `InvalidOperationError` (mapped to HTTP 400) when the proposed
+ * range touches any live slot. `cancelled` slots are tombstones from
+ * unblock and never collide with anything.
+ */
+export function assertSlotRangeFree(
+  slots: readonly VenueSlot[],
+  startTime: string,
+  endTime: string,
+): void {
+  const clash = slots
+    .filter((slot) => slot.status !== 'cancelled')
+    .find((slot) => doSlotRangesOverlap(slot.startTime, slot.endTime, startTime, endTime));
+  if (clash) {
+    throw new InvalidOperationError(
+      `Block overlaps the existing ${clash.status} slot "${clash.label}" (${clash.startTime} – ${clash.endTime})`,
+    );
+  }
 }
 
 /**

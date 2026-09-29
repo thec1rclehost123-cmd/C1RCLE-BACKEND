@@ -16,7 +16,7 @@ function input(overrides: Partial<DoorSaleCreateInput> = {}): DoorSaleCreateInpu
     guestPhone: null,
     guestAge: null,
     gender: null,
-    contact: null,
+    guestEmail: null,
     totalGuests: 2,
     tableNumber: null,
     gate: null,

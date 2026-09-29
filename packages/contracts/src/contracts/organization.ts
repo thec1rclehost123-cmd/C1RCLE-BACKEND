@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
-import { opaqueIdSchema } from './shared.js';
+import { eventDtoSchema } from './event.js';
+import { opaqueIdSchema, paginatedSchema } from './shared.js';
 
 /**
  * ─── Organization + Venue + Member Contracts ─────────────────────────────────
@@ -183,6 +184,33 @@ export const createSlotRequestSchema = z
   })
   .strict();
 export type CreateSlotRequestInput = z.infer<typeof createSlotRequestSchema>;
+
+/** `GET /venues/:venueId/slot-requests` and `GET /organizations/:organizationId/slot-requests`. */
+export const slotRequestListResponseSchema = paginatedSchema(slotRequestDtoSchema);
+export type SlotRequestListResponse = z.infer<typeof slotRequestListResponseSchema>;
+
+/** Minimal counterpart summary (a venue or a requester org). */
+export const slotRequestActorSchema = z.object({
+  id: opaqueIdSchema,
+  name: z.string().min(1).max(200),
+});
+export type SlotRequestActor = z.infer<typeof slotRequestActorSchema>;
+
+/**
+ * `GET /venues/:venueId/slot-requests/:slotRequestId` — venue-owner-scoped
+ * review payload: the request, the linked event the host drafted (nullable —
+ * the host always submits with an `eventId` today, but the wire allows a bare
+ * request), the target venue, and the requesting host org.
+ */
+export const slotRequestDetailDtoSchema = z
+  .object({
+    request: slotRequestDtoSchema,
+    event: eventDtoSchema.nullable(),
+    venue: slotRequestActorSchema,
+    host: slotRequestActorSchema.nullable(),
+  })
+  .strict();
+export type SlotRequestDetailDto = z.infer<typeof slotRequestDetailDtoSchema>;
 
 /* ─── Organization invitations ─────────────────────────────────────────────── */
 

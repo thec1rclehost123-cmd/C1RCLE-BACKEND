@@ -15,10 +15,11 @@ import type { FastifyInstance } from 'fastify';
 /**
  * ─── V2 partner analytics (Phase 1) ──────────────────────────────────────────
  *
- * Read-model only. Every number here was precomputed by a projection at write
- * time — these routes echo the cached model and never scan collections per
- * request, which is the rule that keeps a dashboard load cheap as an
- * organization's history grows.
+ * Read model first, compute-on-request fallback: the cached model stays the
+ * fast path, and when the projection that fills it has not run yet these routes
+ * do a bounded scan of source aggregates instead of returning fabricated
+ * zeroes (see `AnalyticsService`'s doc comment). A dashboard load is still
+ * cheap — the fallback is bounded by a per-collection scan cap.
  *
  * Both routes are cached: the read model is already slightly behind by design,
  * so a short TTL costs nothing in freshness that the projection lag has not

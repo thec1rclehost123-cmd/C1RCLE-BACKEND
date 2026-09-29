@@ -168,16 +168,19 @@ describe('GET /door/stats', () => {
 });
 
 describe('GET /door/stats/ws', () => {
-  it('returns a flat V2 error envelope, not a raw { error } body (honest 501)', async () => {
+  it('no longer exists — live push is Server-Sent Events, and a stub is not a route', async () => {
+    // The WebSocket endpoint was an honest 501 for as long as there was no
+    // live push at all. There is one now (`/door/stats/stream`, SSE — see
+    // `phase5-routes.ts` for why not WebSocket), so the placeholder is gone
+    // rather than left behind as a stub: D-006 says a route that cannot serve
+    // is absent, never a 501.
     const server = await buildServer();
     const response = await server.inject({
       method: 'GET',
       url: '/door/stats/ws',
       headers: HEADERS,
     });
-    expect(response.statusCode).toBe(501);
-    expect(response.json()).toMatchObject({ code: 'server', status: 501 });
-    expect(response.json()).toHaveProperty('requestId');
+    expect(response.statusCode).toBe(404);
     await server.close();
   });
 });

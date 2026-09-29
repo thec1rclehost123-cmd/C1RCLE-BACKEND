@@ -36,3 +36,23 @@ export async function paginateQuery<TItem>(
   const nextCursor = start + items.length < total ? String(start + items.length) : null;
   return { items, total, nextCursor };
 }
+
+/**
+ * Offset-based pagination over an UNORDERED Firestore query — no `orderBy`,
+ * so only the automatic single-field index is ever needed and no composite
+ * index must be provisioned (repo convention: filtering happens in code, not
+ * in new composite indexes). The fetched page is sorted newest-first
+ * (`createdAt` desc) in code. Cross-page ordering is approximate for very
+ * large sets; fine for wallet/door reads. Port parity note: the memory
+ * adapter returns insertion order, so cross-adapter page order differs —
+ * callers must not depend on global order beyond one page.
+ */
+export async function paginateUnordered<TItem extends { createdAt: string }>(
+  base: Query,
+  query: PaginationQuery,
+  map: (data: DocumentData) => TItem,
+): Promise<Page<TItem>> {
+  const page = await paginateQuery(base, query, map);
+  page.items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return page;
+}

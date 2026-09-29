@@ -1,6 +1,7 @@
 import {
   VenueNotFoundError,
   SlotRequestNotFoundError,
+  NotFoundError,
   VersionConflictError,
 } from '../../domain/errors.js';
 import {
@@ -8,6 +9,7 @@ import {
   updateVenue,
   createSlotRequest,
   createVenueBlock,
+  cancelVenueBlock,
   transitionSlotRequest,
   computeVenueAvailability,
   updateVenueMenu,
@@ -15,6 +17,7 @@ import {
 import { requireOrgAccess, emit } from '../context.js';
 
 import type { EntityId } from '../../domain/identity.js';
+import type { Event } from '../../domain/models/event.js';
 import type {
   Venue,
   VenueUpdate,
@@ -52,6 +55,14 @@ export interface CreateSlotRequestCommand {
   eventId: EntityId | null;
   hostId: EntityId;
   message?: string;
+}
+
+/** Venue-owner review of one slot request (see `VenueSlotRequestService.getDetailForVenue`). */
+export interface SlotRequestDetail {
+  request: SlotRequest;
+  event: Event | null;
+  venue: { id: EntityId; name: string };
+  host: { id: EntityId; name: string } | null;
 }
 
 export interface CreateVenueBlockCommand {
@@ -177,7 +188,49 @@ export class VenueCalendarService {
     if (!venue || venue.organizationId !== actor.organizationId) {
       throw new VenueNotFoundError(venueId);
     }
-    return this.deps.repositories.venueSlots.listSlots(venueId, from, to);
+    const slots = await this.deps.repositories.venueSlots.listSlots(venueId, from, to);
+    // Cancelled slots are tombstones from unblock — never surface them as
+    // calendar content, otherwise an unblocked date still reads as blocked.
+    return slots.filter((slot) => slot.status !== 'cancelled');
+  }
+
+  async block(actor: ActorContext, command: CreateVenueBlockCommand) {
+    const venues = this.deps.repositories.venues;
+    const venue = await venues.getById(command.venueId);
+    if (!venue || venue.organizationId !== actor.organizationId) {
+      throw new VenueNotFoundError(command.venueId);
+    }
+    const block = createVenueBlock({
+      id: this.deps.config.ids(),
+      venueId: command.venueId,
+      label: command.label,
+      startTime: command.startTime,
+      endTime: command.endTime,
+      now: this.deps.config.clock.now(),
+    });
+    // Single-track timeline: a new block must not touch any live slot — this
+    // also covers overnight ranges, which compare as plain datetimes. The
+    // overlap guard and the insert share one storage transaction (see the
+    // `createBlockIfFree` contract), so two simultaneous block requests for
+    // the same minutes can't both win.
+    return this.deps.repositories.venueSlots.createBlockIfFree(block);
+  }
+
+  async unblock(actor: ActorContext, venueId: EntityId, blockId: EntityId) {
+    const venues = this.deps.repositories.venues;
+    const venue = await venues.getById(venueId);
+    if (!venue || venue.organizationId !== actor.organizationId) {
+      throw new VenueNotFoundError(venueId);
+    }
+    const slot = await this.deps.repositories.venueSlots.getSlotById(blockId);
+    // Hide cross-venue existence (IDOR guard): a block from another venue
+    // reads as missing, never as someone else's.
+    if (!slot || slot.venueId !== venueId) {
+      throw new NotFoundError('Venue slot', blockId);
+    }
+    const cancelled = cancelVenueBlock(slot, this.deps.config.clock.now());
+    await this.deps.repositories.venueSlots.saveSlots([cancelled]);
+    return cancelled;
   }
 
   async block(actor: ActorContext, command: CreateVenueBlockCommand) {
@@ -291,6 +344,48 @@ export class VenueSlotRequestService {
     return this.repo.listByVenue(venueId, query);
   }
 
+  /** Outgoing (host) view: every slot request this organization submitted. */
+  async listForHost(actor: ActorContext, organizationId: EntityId, query: PaginationQuery) {
+    requireOrgAccess(actor, organizationId);
+    return this.repo.listByHost(actor.organizationId, query);
+  }
+
+  /**
+   * Venue-owner review payload for one request: the request plus the linked
+   * event the host drafted, the target venue and the requesting host org.
+   * The event is read via the repository directly — authorization to read the
+   * *host's* event comes from the venue-owner slot-request check above, not
+   * `EventService.get` (which is org-scoped and would 404 on a cross-tenant
+   * event). A missing linked event is legal (the wire allows a bare request).
+   */
+  async getDetailForVenue(
+    actor: ActorContext,
+    venueId: EntityId,
+    slotRequestId: EntityId,
+  ): Promise<SlotRequestDetail> {
+    const venues = this.deps.repositories.venues;
+    const venue = await venues.getById(venueId);
+    if (!venue || venue.organizationId !== actor.organizationId) {
+      throw new VenueNotFoundError(venueId);
+    }
+    const request = await this.repo.getById(slotRequestId);
+    if (!request || request.venueId !== venueId) {
+      throw new SlotRequestNotFoundError(slotRequestId);
+    }
+
+    const event = request.eventId
+      ? await this.deps.repositories.events.getById(request.eventId)
+      : null;
+    const hostOrganization = await this.deps.repositories.organizations.getById(request.hostId);
+
+    return {
+      request,
+      event,
+      venue: { id: venue.id, name: venue.public.name },
+      host: hostOrganization ? { id: hostOrganization.id, name: hostOrganization.name } : null,
+    };
+  }
+
   async accept(actor: ActorContext, slotRequestId: EntityId): Promise<SlotRequest> {
     const request = await this.assertOwnedRequest(actor, slotRequestId);
     const updated = transitionSlotRequest(request, 'accepted', this.deps.config.clock.now());
@@ -301,6 +396,24 @@ export class VenueSlotRequestService {
   async reject(actor: ActorContext, slotRequestId: EntityId): Promise<SlotRequest> {
     const request = await this.assertOwnedRequest(actor, slotRequestId);
     const updated = transitionSlotRequest(request, 'rejected', this.deps.config.clock.now());
+    await this.repo.save(updated);
+    return updated;
+  }
+
+  /**
+   * The host withdraws an outgoing request (mirror-behaviour is handled by the
+   * same state machine — `pending`/`accepted` → `cancelled`). Authorization is
+   * the *host* side: only the org that sent the request may cancel it. A
+   * venue owner calling this gets a `SlotRequestNotFoundError`, matching the
+   * accept/reject tenant-check posture (never leak whether the request
+   * exists across tenants).
+   */
+  async cancel(actor: ActorContext, slotRequestId: EntityId): Promise<SlotRequest> {
+    const request = await this.repo.getById(slotRequestId);
+    if (!request || request.hostId !== actor.organizationId) {
+      throw new SlotRequestNotFoundError(slotRequestId);
+    }
+    const updated = transitionSlotRequest(request, 'cancelled', this.deps.config.clock.now());
     await this.repo.save(updated);
     return updated;
   }

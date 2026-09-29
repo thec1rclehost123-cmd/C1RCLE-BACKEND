@@ -1,6 +1,6 @@
 # Phase 5 — Door / Scanner / Cover-wallet
 
-**Status:** done (verified 2026-09-07) — 2 honest, by-design 501s remain (stats/ws needs `@fastify/websocket`; scanner manifest-signing has no signing service). Domain-model unit test files landed in `3f48069`. · **Depends on:** Phase 4 (entitlements must exist)
+**Status:** done, hardened 2026-09-11 — 1 honest 501 remains (`/door/stats/ws`, needs `@fastify/websocket`). The offline manifest is now real. See the 2026-09-11 session log for the six security findings closed. · **Depends on:** Phase 4 (entitlements must exist)
 
 ## v1 proven logic to port (`thec1rcle`)
 
@@ -131,3 +131,172 @@ Phase 5 now has 2 honest 501s by design:
   Tasks A2 + B1 + B2), and **5 domain-model unit test files**. **All completed
   as of 2026-09-07** — see session log entry above. Only 2 honest 501s remain
   (stats/ws, scanner manifest-signing).
+
+### 2026-09-11 — Scanner hardening: the door is now safe for multiple clubs
+
+Phase 5 was wired but not deployable in front of real venues. Six findings,
+all closed this session; full reasoning in `docs/architecture/decisions.md`
+D-025, and a plain-language account in
+`docs/Sagar_code_Changes/WORK-DONE-BY-SAGAR-2026-09-11.md`.
+
+**What was wrong, and what it now does:**
+
+1. **No way to authorize a scanner.** `createEventCode` was registered on no
+   route. New `door/event-code-routes.ts`: `POST|GET /events/:eventId/door-codes`,
+   `POST /door-codes/:codeId/revoke`, `GET /door-codes/:codeId/sessions`,
+   `POST /door/sessions/:sessionId/revoke` — all under a new `door.manage`
+   RBAC permission (owner/admin/manager). Revoking a code also revokes every
+   live session it opened.
+2. **Device identity was a body field.** Scans now require
+   `X-Scanner-Session-Token` (minted once by `POST /door/sessions`, stored
+   only as a SHA-256 hash). `scannedBy`/`deviceId` are gone from the wire;
+   the ledger's operator is the authenticated actor.
+3. **The entitlement was never spent.** `scanTicket` read but never wrote, so
+   `scanCount` stayed 0 and a couple ticket was refused on its second guest.
+   Admission now goes through `EntitlementRepository.claimAdmission`.
+4. **Two scanners could both be admitted.** `claimAdmission` is one Firestore
+   `runTransaction` (memory adapter: no `await` between read and write).
+   Pinned by a concurrency test.
+5. **Rotating QRs were signed with a published constant.** `MAGIC_TICKET_SECRET`
+   is wired through and is a production boot requirement (32+ chars); HMACs
+   compare with `timingSafeEqual`; stale windows are refused as replays.
+6. **`Math.random()` credentials, raw token at rest.** Door codes and session
+   tokens are CSPRNG (codes use an unambiguous alphabet staff can read in a
+   dark room), and the raw token never touches the stored entity.
+
+**Also fixed:** the scan-ledger id derived from `Date.now()` alone, so two
+scans of one ticket inside a millisecond collided and door staff saw a 409 on
+an ordinary second scan; the check-in detail DTO omitted `overridden` and
+500'd when reading back an overridden scan; previews reported `consumed`,
+which reads as "admitted", when nothing had been consumed.
+
+**New:** `GET /door/offline-manifest` is real (signed, and the sync path
+verifies), `SCANNER_COMMAND` rate class (300/min — a club door genuinely
+scans faster than `STANDARD_COMMAND` allows), `X-Scanner-Session-Token` added
+to the pino redaction list.
+
+**Still open, deliberately:** `GET /door/stats/ws` (no `@fastify/websocket`);
+an override does not credit a scan back to the ticket.
+
+**Verified:** `pnpm check` fully green — format, lint, typecheck, boundaries,
+825 tests (core 470, gateway 342, contracts 13) + 2 end-to-end scenarios,
+build.
+
+### 2026-09-15 — Scanner-app backend: devices, shift start, couple flow, roster
+
+Built the rest of the dedicated door app's backend (the 11 Sep entry covered
+the admission path's security). Full reasoning in
+`docs/architecture/decisions.md` D-026; plain-language account in
+`docs/Sagar_code_Changes/WORK-DONE-BY-SAGAR-2026-09-15.md`.
+
+**Built:**
+- **Bound devices** — `ScannerDevice` aggregate (`v2_scanner_devices`, keyed
+  `${organizationId}_${deviceId}`) + ports + memory/Firestore adapters. A scan
+  now requires a bound, active handset in addition to a valid session token,
+  so unbinding a lost phone stops it on the very next scan. Unbinding also
+  closes that handset's live sessions. Routes: `POST|GET /door/devices`,
+  `POST /door/devices/:deviceId/unbind`, `POST /door/heartbeat`.
+- **Event picker + one-call shift start** — `GET /door/events?date=today`
+  (IST-resolved, drafts/cancelled hidden, org-scoped) and an enriched
+  `POST /door/sessions` returning session + event + tiers + gate + opening
+  stats. New `DoorOpsService` composes scanner + stats + catalog so routes
+  stay one call.
+- **Couple tickets, two-step** — an untouched `scanCountAllowed: 2` ticket
+  returns `confirmation_required` with a 30s signed token bound to ticket +
+  event + session + device + expected scan count, writing nothing.
+  `POST /door/check-ins/confirm` then takes **both seats in one claim**
+  (`claimAdmission({ seats, expectedScansUsed })`), or records a real denial
+  on "no".
+- **Staff deny** (`POST /door/staff-deny`) — records the refusal, does NOT
+  consume the ticket.
+- **Guest roster + manual check-in** — `GET /door/guests` merges entitlements
+  with door sales (entered-ness read from the ticket, not the ledger);
+  `POST /door/guests/check-in` runs the same atomic claim as the camera.
+- **Real occupancy** — `Event.capacity` (nullable — no fabricated default) and
+  a `sum(admittedCount)` aggregate, because a confirmed couple row admits two
+  and a denial admits nobody.
+- **Server-side door-guest validation** — 10-digit phone, 18+, enumerated
+  gender, real email. These rules previously existed only in the app's submit
+  button.
+
+**Also:** `DeviceNotAuthorizedError` (403, never masked as 404 — door staff
+need to be told the handset is deauthorized, and there is nothing to hide
+from a caller who already proved tenancy and a live session).
+
+**NOT built, tracked not hidden:** Cover-Wallet charging on the Scan tab
+(wallet-QR recognition + preset items + charge-by-item — the wallet itself
+exists, the scanner-facing surface does not); the paid walk-up ticket sale
+(tier + quantity + payment creating a real order/tickets/ledger trail);
+`GET /door/stats/ws` (still an honest 501, needs `@fastify/websocket`) and the
+realtime dashboard broadcast that depends on it.
+
+**Verified:** `pnpm check` fully green — 873 tests (core 488, gateway 372,
+contracts 13) + 2 end-to-end scenarios.
+
+### 2026-09-15 (part 2) — Door commerce: cover-wallet tabs + paid walk-up sale
+
+The two remaining items from the scanner app's feature list. Reasoning in
+`docs/architecture/decisions.md` D-027.
+
+**Cover wallet on the Scan tab:**
+- `CoverWalletRules` on the wallet — the venue's preset item list
+  (`{id, label, amountPaise, isAvailable}`), min/max charge bounds, and a
+  `showBalanceToGuest` switch. `priceForCharge`/`findChargeableItem` are pure
+  and fail closed.
+- Rotating tab QR (`cw:<walletId>:<window>:<hmac>`, 30s, same key as ticket
+  QRs under a `wallet:` purpose prefix). Guest-facing mint:
+  `GET /cover-wallets/:walletId/qr`.
+- `POST /door/wallet-qr` — scanner reads a tab: first name, balance, available
+  items. Requires a `charge`-type session.
+- `POST /door/wallet-charge` — charges one preset item by id + quantity. The
+  amount is never on the wire. Idempotent, velocity-limited (existing 3/min
+  per device), refuses frozen/insufficient tabs without partial effect.
+
+**Paid walk-up ticket sale** — `POST /door/ticket-sale`, new
+`DoorTicketSaleService`:
+- price recalculated from the tier (no amount field exists on the wire)
+- inventory checked first — the door will not oversell
+- creates a real paid order walking `pending → awaiting_payment → paid`,
+  issues tickets, admits each through the same atomic claim as a camera scan,
+  and settles via `CheckoutService.settleOrder` (made public — one writer for
+  all revenue, not two)
+- cash sale carries no gateway fee/GST-on-fees; face value is the total
+- order id derived from the idempotency key, so a retry replays instead of
+  charging twice
+- requires a `full` (door-entry) session — selling entry is a stronger right
+  than scanning it
+
+**Verified:** `pnpm check` green — 893 tests (core 488, gateway 392,
+contracts 13) + 2 end-to-end scenarios.
+
+**Phase 5 scanner scope is now complete.**
+
+### 2026-09-15 (part 3) — Live stats push + security review
+
+**Live push shipped as Server-Sent Events**, not WebSocket — see D-028 for the
+full reasoning (one-way data; SSE inherits the existing auth/CORS/rate-limit
+controls instead of needing a token in a query string; correct on more than
+one instance with no Redis fan-out). `GET /door/stats/stream` with a per-actor
+and global connection budget, authorization before the first byte,
+re-authorization every tick, a 15-minute lifetime cap, heartbeats inside
+nginx's idle timeout, and close-on-backpressure. nginx gained a matching
+`proxy_buffering off` location. `GET /door/stats/ws` is now **absent** rather
+than a 501, per D-006.
+
+**Security review of the whole scanner surface** —
+`docs/architecture/scanner-threat-model.md`. Two real holes found and fixed
+(D-029):
+1. `POST /door/devices` reactivated unbound handsets, so a manager's
+   revocation of a stolen phone could be walked back by anyone. Reactivation
+   is now its own `door.manage` route.
+2. Venue staff could mint a guest's cover-wallet QR, and therefore charge a
+   tab with the guest absent. Now owner-only.
+
+Two scale/correctness fixes in the same pass: the guest roster no longer pages
+an entire festival's entitlements into memory (bounded, server-side filtering,
+honest `truncated` flag), and the admissions breakdown is exact at any scale
+(one `sum()` aggregate per tier) rather than sampling 5,000 rows and silently
+understating categories.
+
+**Verified:** `pnpm check` green — 906 tests (core 488, gateway 405, contracts
+13) + 2 end-to-end scenarios, boundaries clean.

@@ -21,6 +21,14 @@ export interface UploadUrlRequest {
   readonly maxBytes: number;
   /** Absolute expiry, epoch ms — computed by the caller from the injected clock. */
   readonly expiresAt: number;
+  /**
+   * Whether the uploaded object must be readable by guests with no
+   * credential. `'public'` makes the signed `PUT` set the *object's* ACL to
+   * `public-read` (never the bucket's), so `toPublicUrl` actually resolves —
+   * used for event posters rendered in guest UIs. Defaults to `'private'` so
+   * KYC images and every other upload stay unreadable without a credential.
+   */
+  readonly visibility?: 'private' | 'public';
 }
 
 export interface UploadUrlGrant {
@@ -31,6 +39,20 @@ export interface UploadUrlGrant {
   readonly headers: Readonly<Record<string, string>>;
   /** What the client passes back to `POST .../documents` as `storagePath`. */
   readonly storagePath: string;
+  /** Echoes the request's `expiresAt`, epoch ms. */
+  readonly expiresAt: number;
+}
+
+export interface ReadUrlRequest {
+  /** The exact same object key an `issueUploadUrl` call wrote to. */
+  readonly key: string;
+  /** Absolute expiry, epoch ms. Short-lived — minted per admin view, not cached. */
+  readonly expiresAt: number;
+}
+
+export interface ReadUrlGrant {
+  /** Where to `GET` the file. Opaque; never logged in full. */
+  readonly readUrl: string;
   /** Echoes the request's `expiresAt`, epoch ms. */
   readonly expiresAt: number;
 }
@@ -46,6 +68,15 @@ export interface ObjectStoragePort {
    * on the memory driver it hands back a non-routable placeholder host.
    */
   toPublicUrl(storagePath: string): string;
+  /**
+   * Admin-side signed read — lets a platform admin actually view a KYC
+   * document before approving/rejecting an application. v1 had the same
+   * idea (`kyc/[uid]/route.js` signed-URL helper) but allowlisted by path
+   * prefix since it took an arbitrary collection field as the key; this
+   * port only ever signs a key the caller derived from an `OnboardingRequest`
+   * it already loaded, so the prefix allowlist has no separate job to do here.
+   */
+  issueReadUrl(request: ReadUrlRequest): Promise<ReadUrlGrant>;
 }
 
 /**
@@ -58,10 +89,16 @@ export class EchoObjectStorage implements ObjectStoragePort {
   readonly name = 'echo-dev';
 
   async issueUploadUrl(request: UploadUrlRequest): Promise<UploadUrlGrant> {
+    const headers: Record<string, string> = { 'content-type': request.contentType };
+    // Mirrors the real provider's `x-goog-acl` handling so the caller always
+    // receives the same PUT headers regardless of driver.
+    if (request.visibility === 'public') {
+      headers['x-goog-acl'] = 'public-read';
+    }
     return {
       uploadUrl: `memory://uploads/${request.key}`,
       method: 'PUT',
-      headers: { 'content-type': request.contentType },
+      headers,
       storagePath: request.key,
       expiresAt: request.expiresAt,
     };
@@ -71,5 +108,12 @@ export class EchoObjectStorage implements ObjectStoragePort {
     // Non-routable reserved host, but a valid URL for `z.url()` — matches the
     // `memory://` upload URL convention of this dev provider.
     return `https://uploads.invalid/${storagePath}`;
+  }
+
+  async issueReadUrl(request: ReadUrlRequest): Promise<ReadUrlGrant> {
+    return {
+      readUrl: `memory://reads/${request.key}`,
+      expiresAt: request.expiresAt,
+    };
   }
 }

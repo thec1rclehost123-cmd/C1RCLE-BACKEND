@@ -14,6 +14,12 @@ export const partnershipStatusSchema = z.enum([
   'ended',
 ]);
 
+/**
+ * Whole-number percent, matching v1's `venueCommissionRate` convention (NOT a
+ * 0..1 ratio). `null` = not yet negotiated. Capped at 50 by the domain.
+ */
+const venueShareRateSchema = z.number().int().min(0).max(50);
+
 export const partnershipDtoSchema = z.object({
   id: opaqueIdSchema,
   hostOrganizationId: opaqueIdSchema,
@@ -22,6 +28,7 @@ export const partnershipDtoSchema = z.object({
   initiatedBy: z.enum(['host', 'venue']),
   status: partnershipStatusSchema,
   message: z.string().nullable(),
+  venueShareRate: venueShareRateSchema.nullable(),
   resolutionReason: z.string().nullable(),
   resolvedAt: z.iso.datetime().nullable(),
   version: z.number().int().positive(),
@@ -50,6 +57,7 @@ export const requestPartnershipSchema = z
     initiatedBy: z.enum(['host', 'venue']),
     hostOrganizationId: opaqueIdSchema.optional(),
     message: z.string().max(1000).optional(),
+    venueShareRate: venueShareRateSchema.optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -67,6 +75,12 @@ export const resolvePartnershipSchema = z
   .object({ reason: z.string().min(1).max(500).optional() })
   .strict();
 export type ResolvePartnershipRequest = z.infer<typeof resolvePartnershipSchema>;
+
+/** Negotiate (or clear) the venue's share on a live partnership. */
+export const setVenueShareRequestSchema = z
+  .object({ venueShareRate: venueShareRateSchema.nullable() })
+  .strict();
+export type SetVenueShareRequest = z.infer<typeof setVenueShareRequestSchema>;
 
 /* ─── Partner access context ─────────────────────────────────────────────── */
 
@@ -119,8 +133,9 @@ export const topEventDtoSchema = z.object({
 });
 
 /**
- * Read-model only: every value is precomputed at write time. Nothing here is
- * scanned per request, which is why a dashboard can load it cheaply.
+ * Read model first, compute-on-request fallback: cached values when the
+ * projection has run, otherwise a bounded scan of source aggregates. Nothing
+ * here is an unbounded per-request collection reduce.
  */
 export const organizationOverviewDtoSchema = z.object({
   organizationId: opaqueIdSchema,
@@ -190,6 +205,29 @@ export const createReferralLinkSchema = z
   })
   .strict();
 export type CreateReferralLinkRequest = z.infer<typeof createReferralLinkSchema>;
+
+/* ─── Promoter Compensation Models ───────────────────────────────────────── */
+
+export const promoterRateTypeSchema = z.enum(['percentage', 'fixed']);
+export type PromoterRateType = z.infer<typeof promoterRateTypeSchema>;
+
+export const promoterCompensationModelSchema = z.enum(['standard', 'custom', 'salary']);
+export type PromoterCompensationModel = z.infer<typeof promoterCompensationModelSchema>;
+
+export const promoterCompensationRateSchema = z.object({
+  rateType: promoterRateTypeSchema,
+  rateValue: z.number().nonnegative(),
+});
+export type PromoterCompensationRate = z.infer<typeof promoterCompensationRateSchema>;
+
+export const promoterCompensationConfigSchema = z.object({
+  model: promoterCompensationModelSchema,
+  globalCommission: promoterCompensationRateSchema,
+  tierCommissions: z.record(z.string(), promoterCompensationRateSchema).optional(),
+  salaryAmount: z.number().nonnegative().optional(),
+  salaryNotes: z.string().optional(),
+});
+export type PromoterCompensationConfig = z.infer<typeof promoterCompensationConfigSchema>;
 
 /* ─── Promoter connections ───────────────────────────────────────────────── */
 

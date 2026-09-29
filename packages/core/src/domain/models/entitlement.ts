@@ -6,6 +6,7 @@ import { bumpVersion, newVersionedEntity } from '../identity.js';
 
 import type { EntityId, VersionedEntity } from '../identity.js';
 import type { Order } from './order.js';
+import type { ScanDenyReason } from './scan-ledger.js';
 
 /**
  * ─── Entitlements (Phase 4) ──────────────────────────────────────────────────
@@ -188,4 +189,158 @@ export function canAdmit(entitlement: Entitlement): boolean {
 export function remainingAdmissions(entitlement: Entitlement): number {
   if (entitlement.status === 'void') return 0;
   return Math.max(0, entitlement.scanCountAllowed - entitlement.scanCount);
+}
+
+/**
+ * ─── Admission decision (Phase 5 door scanning) ─────────────────────────────
+ *
+ * The single place that answers "may this ticket admit one more person right
+ * now?". Pure, so the *same* rule can run inside a Firestore transaction (the
+ * adapter's `claimAdmission`) and inside a read-only preview
+ * (`ScannerService.resolveTicket`) without the two ever drifting apart.
+ *
+ * Ordering matters and is deliberate: `wrong_event` is answered before
+ * `void_ticket`, so a ticket presented at the wrong club is never told
+ * anything about its own state — a scanner at venue B must not be able to
+ * enumerate whether a venue-A ticket is valid, refunded, or already used.
+ */
+export interface AdmissionDecision {
+  admitted: boolean;
+  denyReason: ScanDenyReason | null;
+  denyMessage: string | null;
+  scansUsed: number;
+  scansAllowed: number;
+}
+
+export function evaluateAdmission(
+  entitlement: Entitlement | null,
+  eventId: EntityId,
+): AdmissionDecision {
+  if (!entitlement) {
+    return {
+      admitted: false,
+      denyReason: 'invalid_signature',
+      denyMessage: 'Ticket not found',
+      scansUsed: 0,
+      scansAllowed: 0,
+    };
+  }
+  const scansUsed = entitlement.scanCount;
+  const scansAllowed = entitlement.scanCountAllowed;
+  if (entitlement.eventId !== eventId) {
+    return {
+      admitted: false,
+      denyReason: 'wrong_event',
+      denyMessage: 'Ticket is for a different event',
+      scansUsed: 0,
+      scansAllowed: 0,
+    };
+  }
+  if (entitlement.status === 'void') {
+    return {
+      admitted: false,
+      denyReason: 'void_ticket',
+      denyMessage: 'Ticket has been voided',
+      scansUsed,
+      scansAllowed,
+    };
+  }
+  if (scansUsed >= scansAllowed) {
+    return {
+      admitted: false,
+      denyReason: 'already_used',
+      denyMessage: 'All admissions on this ticket have been used',
+      scansUsed,
+      scansAllowed,
+    };
+  }
+  return { admitted: true, denyReason: null, denyMessage: null, scansUsed, scansAllowed };
+}
+
+/**
+ * The outcome of an admission attempt. `admitted: true` means this call — and
+ * no other concurrent call — consumed the seats; `entitlement` is the
+ * post-state the adapter must persist.
+ */
+export interface AdmissionClaim {
+  admitted: boolean;
+  denyReason: ScanDenyReason | null;
+  denyMessage: string | null;
+  entitlement: Entitlement | null;
+  scansUsed: number;
+  scansAllowed: number;
+}
+
+export interface AdmitSeatsOptions {
+  seats?: number;
+  expectedScansUsed?: number;
+  now?: Date;
+}
+
+/**
+ * Decides and applies an admission of one or more seats.
+ *
+ * Lives here, in the domain, because BOTH storage adapters call it from
+ * inside their own atomic section — Firestore inside `runTransaction`, memory
+ * with no `await` between read and write. Keeping the rule in one pure
+ * function is what stops the transactional path and the preview path from
+ * ever disagreeing about what is admissible.
+ *
+ * Multi-seat is one decision, not a loop: a confirmed couple ticket consumes
+ * both seats or neither. Claiming twice would let the two halves land either
+ * side of a concurrent scan and admit three people on a two-person ticket.
+ */
+export function admitSeats(
+  entitlement: Entitlement | null,
+  eventId: EntityId,
+  options: AdmitSeatsOptions = {},
+): AdmissionClaim {
+  const seats = options.seats ?? 1;
+  const decision = evaluateAdmission(entitlement, eventId);
+  if (!decision.admitted || !entitlement) {
+    return {
+      admitted: false,
+      denyReason: decision.denyReason,
+      denyMessage: decision.denyMessage,
+      entitlement,
+      scansUsed: decision.scansUsed,
+      scansAllowed: decision.scansAllowed,
+    };
+  }
+  // The confirmation token was minted against a state a staff member saw. If
+  // anything consumed a seat since, the confirmation must fail rather than
+  // admit against a target that moved underneath it.
+  if (
+    options.expectedScansUsed !== undefined &&
+    entitlement.scanCount !== options.expectedScansUsed
+  ) {
+    return {
+      admitted: false,
+      denyReason: 'already_used',
+      denyMessage: 'This ticket changed since the confirmation was requested',
+      entitlement,
+      scansUsed: entitlement.scanCount,
+      scansAllowed: entitlement.scanCountAllowed,
+    };
+  }
+  if (entitlement.scanCount + seats > entitlement.scanCountAllowed) {
+    return {
+      admitted: false,
+      denyReason: 'already_used',
+      denyMessage: `This ticket cannot admit ${String(seats)} more`,
+      entitlement,
+      scansUsed: entitlement.scanCount,
+      scansAllowed: entitlement.scanCountAllowed,
+    };
+  }
+  let admitted = entitlement;
+  for (let i = 0; i < seats; i += 1) admitted = scanEntitlement(admitted, options.now);
+  return {
+    admitted: true,
+    denyReason: null,
+    denyMessage: null,
+    entitlement: admitted,
+    scansUsed: admitted.scanCount,
+    scansAllowed: admitted.scanCountAllowed,
+  };
 }

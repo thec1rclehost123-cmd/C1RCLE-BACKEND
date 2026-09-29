@@ -10,6 +10,8 @@ export const redactPaths = [
   'req.headers.authorization',
   'req.headers.cookie',
   'req.headers["x-api-key"]',
+  // Phase 5: the scanner-session bearer a door device presents on every scan.
+  'req.headers["x-scanner-session-token"]',
   // Payment + webhook secrets travelling in request/response bodies
   '*.razorpay_signature',
   '*.razorpay_payment_id',

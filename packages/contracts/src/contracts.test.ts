@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   eventDtoSchema,
+  guestProfileDtoSchema,
   idempotencyKeySchema,
   noContentSchema,
   opaqueIdSchema,
@@ -11,6 +12,10 @@ import {
   paginationQuerySchema,
   roleSchema,
   sessionSchema,
+  upsertGuestProfileSchema,
+  submitSupportTicketSchema,
+  supportTicketDtoSchema,
+  supportTicketQuerySchema,
   userSchema,
   venueDtoSchema,
   versionHeaderSchema,
@@ -133,6 +138,8 @@ describe('client schemas — canonical fixtures', () => {
         startingPricePaise: 0,
         isFree: true,
         cancellationReason: null,
+        compensation: null,
+        capacity: null,
         ...base,
       }).success,
     ).toBe(true);
@@ -140,6 +147,29 @@ describe('client schemas — canonical fixtures', () => {
 
   it('rejects an unknown event status', () => {
     expect(eventDtoSchema.safeParse({ status: 'live' }).success).toBe(false);
+  });
+
+  it('parses a guest profile upsert and dto, rejecting short tastes', () => {
+    const body = {
+      displayName: 'Aayush',
+      dateOfBirth: '2000-01-01',
+      city: 'Pune',
+      tastes: ['Rooftops', 'Live music', 'Art & culture'],
+      intents: ['Find events'],
+    };
+    expect(upsertGuestProfileSchema.parse(body)).toEqual(body);
+    expect(
+      guestProfileDtoSchema.parse({
+        ...body,
+        userId: 'user_1',
+        createdAt: '2026-09-08T00:00:00.000Z',
+        updatedAt: '2026-09-08T00:00:00.000Z',
+      }).userId,
+    ).toBe('user_1');
+    expect(upsertGuestProfileSchema.safeParse({ ...body, tastes: ['Rooftops'] }).success).toBe(
+      false,
+    );
+    expect(upsertGuestProfileSchema.safeParse({ ...body, extra: 1 }).success).toBe(false);
   });
 });
 
@@ -194,5 +224,122 @@ describe('error envelope', () => {
       title: ['Required', 'Too short'],
       _root: ['Unrecognized key'],
     });
+  });
+});
+
+describe('Phase 7 support tickets — canonical fixtures', () => {
+  const VALID_TICKET = {
+    id: 'tkt_1',
+    subject: 'Door scan failed for my second ticket',
+    description: 'Only one of the two tickets scanned at entry tonight.',
+    category: 'order',
+    status: 'in_progress',
+    priority: 'high',
+    requester: { userId: 'usr_1', email: 'guest@example.com', organizationId: null },
+    assignee: { userId: 'adm_1', name: 'Support Agent' },
+    messages: [
+      {
+        id: 'msg_1',
+        senderRole: 'customer',
+        senderId: 'usr_1',
+        senderName: 'guest@example.com',
+        content: 'Please look into this.',
+        createdAt: '2026-08-14T12:00:00.000Z',
+      },
+    ],
+    internalNotes: [],
+    timeline: [
+      {
+        id: 'ev_1',
+        type: 'created',
+        message: 'Ticket Created',
+        detail: 'Category: order, priority: high',
+        actorId: 'usr_1',
+        at: '2026-08-14T12:00:00.000Z',
+      },
+    ],
+    links: {
+      venueId: null,
+      eventId: null,
+      orderId: 'ord_9',
+      organizationId: null,
+      userId: null,
+    },
+    sla: {
+      responseDueAt: '2026-08-14T16:00:00.000Z',
+      resolutionDueAt: '2026-08-15T12:00:00.000Z',
+      responseBreachedAt: null,
+      resolutionBreachedAt: null,
+    },
+    mergedInto: null,
+    mergedFrom: [],
+    resolvedAt: null,
+    resolvedBy: null,
+    closedAt: null,
+    closedBy: null,
+    deletedAt: null,
+    deletedBy: null,
+    createdAt: '2026-08-14T12:00:00.000Z',
+    updatedAt: '2026-08-14T12:00:00.000Z',
+  };
+
+  it('parses the canonical ticket and the intake command', () => {
+    expect(supportTicketDtoSchema.parse(VALID_TICKET)).toMatchObject({
+      category: 'order',
+      priority: 'high',
+    });
+    expect(
+      submitSupportTicketSchema.parse({
+        subject: 'Door scan failed',
+        description: 'Only one ticket scanned at entry.',
+        category: 'order',
+        priority: 'urgent',
+      }),
+    ).toMatchObject({ category: 'order', priority: 'urgent' });
+    // The intake command defaults priority and tolerates an admitted org id.
+    expect(
+      submitSupportTicketSchema.safeParse({
+        subject: 'Door scan failed',
+        description: 'Only one ticket scanned at entry.',
+        category: 'order',
+      }).data?.priority,
+    ).toBe('medium');
+  });
+
+  it('rejects corrupt ticket fixtures', () => {
+    expect(supportTicketDtoSchema.safeParse({ ...VALID_TICKET, priority: 'instant' }).success).toBe(
+      false,
+    );
+    expect(supportTicketDtoSchema.safeParse({ ...VALID_TICKET, status: 'abandoned' }).success).toBe(
+      false,
+    );
+    expect(
+      supportTicketDtoSchema.safeParse({
+        ...VALID_TICKET,
+        requester: { ...VALID_TICKET.requester, email: 'nope' },
+      }).success,
+    ).toBe(false);
+    expect(
+      supportTicketDtoSchema.safeParse({
+        ...VALID_TICKET,
+        messages: [{ ...VALID_TICKET.messages[0], senderRole: 'machine' }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('queries the desk with status/priority/category and strict body dicts', () => {
+    const parsed = supportTicketQuerySchema.parse({ status: 'open', priority: 'urgent' });
+    expect(parsed).toMatchObject({ status: 'open', priority: 'urgent' });
+    expect(
+      supportTicketQuerySchema.safeParse({ status: 'open', includeDeleted: 'true' }).success,
+    ).toBe(true);
+    expect(
+      submitSupportTicketSchema.safeParse({
+        subject: 'Door scan failed',
+        description: 'Only one ticket scanned at entry.',
+        category: 'order',
+        unexpected: true,
+      }).success,
+    ).toBe(false); // strict() body — no unknown keys
   });
 });

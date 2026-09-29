@@ -59,7 +59,7 @@ describe('V2 partners events slice — validation layers', () => {
       payload: {
         title: 'Night',
         venueId: 'ven_1',
-        startAt: '2026-08-01T18:00:00Z',
+        startAt: '2026-08-02T18:00:00Z',
         hackerField: 'leak',
       },
     });
@@ -122,6 +122,59 @@ describe('V2 partners events slice — validation layers', () => {
       version: 1,
     });
     expect(typeof body.id).toBe('string');
+    await server.close();
+  });
+
+  it('accepts a numeric salary payout and preserves its period', async () => {
+    const server = await buildServer();
+    const response = await server.inject({
+      method: 'POST',
+      url: '/organizations/org_1/events',
+      headers: { 'x-organization-id': 'org_1', 'idempotency-key': 'salary-event-1' },
+      payload: {
+        title: 'Salary Night',
+        venueId: 'ven_1',
+        startAt: '2026-08-02T18:00:00Z',
+        compensation: {
+          model: 'salary',
+          globalRatePercent: null,
+          tierRates: {},
+          salaryAmountPaise: 125050,
+          salaryPeriod: 'per_event',
+          salaryNotes: 'Flat promoter payout',
+        },
+      },
+    });
+    expect(response.statusCode).toBe(201);
+    expect(response.json().compensation).toMatchObject({
+      model: 'salary',
+      salaryAmountPaise: 125050,
+      salaryPeriod: 'per_event',
+    });
+    await server.close();
+  });
+
+  it('rejects a zero salary payout at the API boundary', async () => {
+    const server = await buildServer();
+    const response = await server.inject({
+      method: 'POST',
+      url: '/organizations/org_1/events',
+      headers: { 'x-organization-id': 'org_1', 'idempotency-key': 'salary-invalid-1' },
+      payload: {
+        title: 'Invalid Salary',
+        venueId: 'ven_1',
+        startAt: '2026-08-01T18:00:00Z',
+        compensation: {
+          model: 'salary',
+          globalRatePercent: null,
+          tierRates: {},
+          salaryAmountPaise: 0,
+          salaryPeriod: 'per_event',
+          salaryNotes: null,
+        },
+      },
+    });
+    expect(response.statusCode).toBe(422);
     await server.close();
   });
 
@@ -254,6 +307,10 @@ describe('V2 partners events slice — poster upload URLs', () => {
     expect(grant.method).toBe('PUT');
     expect(grant.uploadUrl).toEqual(expect.any(String));
     expect(grant.headers['content-type']).toBe('image/jpeg');
+    // The signed PUT must set the *object's* ACL to public-read so the
+    // returned `publicUrl` actually resolves on the guest surface (the bucket
+    // and every KYC/private object stay credential-only).
+    expect(grant.headers['x-goog-acl']).toBe('public-read');
     expect(grant.storagePath).toMatch(/^posters\/org_1\/[0-9a-f-]+\.jpg$/);
     expect(grant.publicUrl).toBe(`https://uploads.invalid/${grant.storagePath}`);
     expect(grant.expiresAt).toBeGreaterThan(Date.now());
