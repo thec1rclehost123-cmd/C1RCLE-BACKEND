@@ -233,24 +233,6 @@ export class VenueCalendarService {
     return cancelled;
   }
 
-  async block(actor: ActorContext, command: CreateVenueBlockCommand) {
-    const venues = this.deps.repositories.venues;
-    const venue = await venues.getById(command.venueId);
-    if (!venue || venue.organizationId !== actor.organizationId) {
-      throw new VenueNotFoundError(command.venueId);
-    }
-    const block = createVenueBlock({
-      id: this.deps.config.ids(),
-      venueId: command.venueId,
-      label: command.label,
-      startTime: command.startTime,
-      endTime: command.endTime,
-      now: this.deps.config.clock.now(),
-    });
-    await this.deps.repositories.venueSlots.saveSlots([block]);
-    return block;
-  }
-
   /**
    * Derived availability for a window. Deliberately computed from the same
    * slots `getSlots` returns rather than stored separately — one source of
@@ -403,10 +385,8 @@ export class VenueSlotRequestService {
   /**
    * The host withdraws an outgoing request (mirror-behaviour is handled by the
    * same state machine — `pending`/`accepted` → `cancelled`). Authorization is
-   * the *host* side: only the org that sent the request may cancel it. A
-   * venue owner calling this gets a `SlotRequestNotFoundError`, matching the
-   * accept/reject tenant-check posture (never leak whether the request
-   * exists across tenants).
+   * the *host* side: only the org that sent the request may cancel it. A venue owner calling this gets a `SlotRequestNotFoundError`, matching the
+   * accept/reject tenant-check posture (never leak whether the request exists across tenants).
    */
   async cancel(actor: ActorContext, slotRequestId: EntityId): Promise<SlotRequest> {
     const request = await this.repo.getById(slotRequestId);
