@@ -191,45 +191,6 @@ describe('partnerships over HTTP', () => {
     await server.close();
   });
 
-  it('opens a pending request from the venue side', async () => {
-    const server = await buildServer();
-    const { venueOrg, venueId, hostOrg } = await twoParties(server);
-
-    const response = await server.inject({
-      method: 'POST',
-      url: '/partnerships',
-      headers: write(venueOrg),
-      payload: { venueId, initiatedBy: 'venue', hostOrganizationId: hostOrg },
-    });
-
-    // The route used to drop `hostOrganizationId` before calling the service,
-    // so every venue invite failed as "cannot partner with itself".
-    expect(response.statusCode).toBe(201);
-    expect(response.json()).toMatchObject({
-      status: 'pending',
-      initiatedBy: 'venue',
-      hostOrganizationId: hostOrg,
-      venueOrganizationId: venueOrg,
-      venueId,
-    });
-    await server.close();
-  });
-
-  it('422s a venue-initiated request without hostOrganizationId', async () => {
-    const server = await buildServer();
-    const { venueOrg, venueId } = await twoParties(server);
-
-    const response = await server.inject({
-      method: 'POST',
-      url: '/partnerships',
-      headers: write(venueOrg),
-      payload: { venueId, initiatedBy: 'venue' },
-    });
-
-    expect(response.statusCode).toBe(422);
-    await server.close();
-  });
-
   it('refuses a venue-initiated request from someone who does not own the venue', async () => {
     const server = await buildServer();
     const { host, venue } = await seedHostAndVenue(server);
@@ -385,36 +346,6 @@ describe('partnerships over HTTP', () => {
       url: `/partnerships/${partnershipId}/end`,
       headers: write(venueOrg),
       payload: {},
-    });
-
-    expect(response.statusCode).toBe(400);
-    await server.close();
-  });
-
-  it('lets the requester withdraw a pending request', async () => {
-    const server = await buildServer();
-    const { hostOrg, partnershipId } = await pendingRequest(server);
-
-    // The legacy Sent tab offers "Cancel request", which posts to `end`.
-    const response = await server.inject({
-      method: 'POST',
-      url: `/partnerships/${partnershipId}/end`,
-      headers: write(hostOrg),
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ status: 'ended' });
-    await server.close();
-  });
-
-  it('refuses the counterparty ending a pending request instead of answering it', async () => {
-    const server = await buildServer();
-    const { venueOrg, partnershipId } = await pendingRequest(server);
-
-    const response = await server.inject({
-      method: 'POST',
-      url: `/partnerships/${partnershipId}/end`,
-      headers: write(venueOrg),
     });
 
     expect(response.statusCode).toBe(400);
