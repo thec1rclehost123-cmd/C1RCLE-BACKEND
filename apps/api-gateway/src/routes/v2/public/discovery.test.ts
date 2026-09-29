@@ -342,6 +342,69 @@ describe('V2 public/discovery routes', () => {
     await server.close();
   });
 
+  it('fetches venue detail by id for event venue resolution', async () => {
+    const server = await buildServer();
+    await seedPublishedEvent({
+      eventId: 'evt_pub_8',
+      slug: 'sky-night-8',
+      title: 'Sky Night 8',
+      organizationId: 'org_pub_8',
+      venueId: 'ven_pub_8',
+    });
+
+    const response = await server.inject({ method: 'GET', url: '/venues/by-id/ven_pub_8' });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ id: 'ven_pub_8', name: 'Seed Venue' });
+    await server.close();
+  });
+
+  it('venue by-id returns 404 for an unknown id', async () => {
+    const server = await buildServer();
+    const response = await server.inject({ method: 'GET', url: '/venues/by-id/ven_missing' });
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toMatchObject({ code: 'not_found', status: 404 });
+    await server.close();
+  });
+
+  it('rejects a bad venueId param with 422 + fieldErrors', async () => {
+    const server = await buildServer();
+    const response = await server.inject({ method: 'GET', url: '/venues/by-id/not%20valid' });
+    expect(response.statusCode).toBe(422);
+    expect(response.json().fieldErrors).toHaveProperty('venueId');
+    await server.close();
+  });
+
+  it('fetches host public profile by id for event host resolution', async () => {
+    const server = await buildServer();
+    await seedPublishedEvent({
+      eventId: 'evt_pub_9',
+      slug: 'sky-night-9',
+      title: 'Sky Night 9',
+      organizationId: 'org_pub_9',
+      venueId: 'ven_pub_9',
+    });
+
+    const response = await server.inject({ method: 'GET', url: '/hosts/by-id/org_pub_9' });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ id: 'org_pub_9', name: 'Seed Host' });
+    await server.close();
+  });
+
+  it('host by-id returns 404 for an unknown id', async () => {
+    const server = await buildServer();
+    const response = await server.inject({ method: 'GET', url: '/hosts/by-id/org_missing' });
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toMatchObject({ code: 'not_found', status: 404 });
+    await server.close();
+  });
+
+  it('rejects a bad organizationId param with 422 + fieldErrors', async () => {
+    const server = await buildServer();
+    const response = await server.inject({ method: 'GET', url: '/hosts/by-id/not%20valid' });
+    expect(response.statusCode).toBe(422);
+    expect(response.json().fieldErrors).toHaveProperty('organizationId');
+    await server.close();
+  });
   it('venue detail returns 404 for a suspended venue', async () => {
     const server = await buildServer();
     const { venueSlug } = await seedPublishedEvent({

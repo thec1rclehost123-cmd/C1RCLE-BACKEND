@@ -9,6 +9,7 @@ import {
 } from '@c1rcle/contracts/client';
 import { z } from 'zod';
 
+import type { PromoterConnectionWithNames } from '@c1rcle/core/application';
 import type { PromoterConnection } from '@c1rcle/core/domain';
 
 import { isIdempotencyConflict, runIdempotent } from '../../../lib/v2-idempotency.js';
@@ -56,7 +57,7 @@ export default async function promoterConnectionRoutes(fastify: FastifyInstance)
       const query = request.query as z.infer<typeof paginationQuerySchema>;
       const actor = services.actor(request);
       const page = await services.promoterConnections
-        .listForOrganization(actor, organizationId, {
+        .listWithNames(actor, organizationId, {
           limit: query.limit,
           cursor: query.cursor ?? null,
         })
@@ -64,7 +65,7 @@ export default async function promoterConnectionRoutes(fastify: FastifyInstance)
       if (page === undefined) return reply;
 
       const payload = {
-        items: page.items.map(connectionToDto),
+        items: page.items.map(enrichedConnectionToDto),
         pageInfo: {
           page: 1,
           pageSize: query.limit,
@@ -198,7 +199,23 @@ function registerAction(
   );
 }
 
-function connectionToDto(connection: PromoterConnection) {
+interface PromoterConnectionNames {
+  promoterName: string | null;
+  promoterSlug: string | null;
+  targetName: string | null;
+  targetSlug: string | null;
+  targetCity: string | null;
+}
+
+/**
+ * Serializes a connection. List reads pass the names `listWithNames`
+ * resolved; single-item writes carry `null` (the dashboard refetches the
+ * list afterwards, so these are never rendered).
+ */
+function connectionToDto(
+  connection: PromoterConnection,
+  names: PromoterConnectionNames | null = null,
+) {
   return {
     id: connection.id,
     promoterId: connection.promoterId,
@@ -212,5 +229,14 @@ function connectionToDto(connection: PromoterConnection) {
     version: connection.version,
     createdAt: connection.createdAt,
     updatedAt: connection.updatedAt,
+    promoterName: names?.promoterName ?? null,
+    promoterSlug: names?.promoterSlug ?? null,
+    targetName: names?.targetName ?? null,
+    targetSlug: names?.targetSlug ?? null,
+    targetCity: names?.targetCity ?? null,
   };
+}
+
+function enrichedConnectionToDto({ connection, ...names }: PromoterConnectionWithNames) {
+  return connectionToDto(connection, names);
 }

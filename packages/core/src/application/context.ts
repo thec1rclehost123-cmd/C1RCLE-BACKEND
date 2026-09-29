@@ -50,6 +50,7 @@ import type {
   DisputeRepository,
   LeaderboardRepository,
   EmailOtpRepository,
+  GuestProfileRepository,
   AdminRefundRequestRepository,
   UserAccountRepository,
   UserBanRepository,
@@ -137,6 +138,7 @@ export interface ServiceDeps {
     disputes: DisputeRepository;
     leaderboard: LeaderboardRepository;
     emailOtp: EmailOtpRepository;
+    guestProfiles: GuestProfileRepository;
     refundRequests: AdminRefundRequestRepository;
     /** Platform support tickets (guest intake + admin desk). */
     supportTickets: SupportTicketRepository;

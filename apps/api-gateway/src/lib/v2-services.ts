@@ -3,6 +3,7 @@ import {
   OrganizationService,
   VenueService,
   PartnershipService,
+  PartnerDiscoveryService,
   PublicService,
   ReferralLinkService,
   PromoterConnectionService,
@@ -40,6 +41,7 @@ import {
   AdminSupportService,
   createLeaderboardService,
   createEmailOtpService,
+  createGuestProfileService,
   type ScannerService,
   type DoorService,
   type CoverWalletService,
@@ -52,6 +54,7 @@ import {
   type DisputeService,
   type LeaderboardService,
   type EmailOtpService,
+  type GuestProfileService,
   type ServiceDeps,
   type ActorContext,
 } from '@c1rcle/core/application';
@@ -103,6 +106,8 @@ export interface PartnerV2Services {
   organizations: OrganizationService;
   venues: VenueService;
   partnerships: PartnershipService;
+  /** Partner-network browse behind `GET /organizations/:id/discover-partners`. */
+  discovery: PartnerDiscoveryService;
   referralLinks: ReferralLinkService;
   promoterConnections: PromoterConnectionService;
   venueCalendar: VenueCalendarService;
@@ -179,6 +184,8 @@ export interface PartnerV2Services {
   leaderboard: LeaderboardService;
   /** Email OTP (signup verification). */
   emailOtp: EmailOtpService;
+  /** Guest-portal signup onboarding profile (session-scoped, no org). */
+  guestProfile: GuestProfileService;
 }
 
 // Each route module calls `createV2Services()` independently at import time
@@ -452,10 +459,16 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     config: coreConfig,
   });
 
+  const guestProfile = createGuestProfileService({
+    guestProfiles: repositories.guestProfiles,
+    config: coreConfig,
+  });
+
   return {
     organizations: new OrganizationService(deps),
     venues: new VenueService(deps),
     partnerships: new PartnershipService(deps),
+    discovery: new PartnerDiscoveryService(deps),
     referralLinks: new ReferralLinkService(deps),
     promoterConnections: new PromoterConnectionService(deps),
     venueCalendar: new VenueCalendarService(deps),
@@ -499,5 +512,6 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     adminSupport,
     leaderboard,
     emailOtp,
+    guestProfile,
   };
 }

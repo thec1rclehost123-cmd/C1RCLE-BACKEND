@@ -17,7 +17,11 @@ export {
   VenueCalendarService,
   VenueSlotRequestService,
 } from './venues/venue-service.js';
-export type { CreateVenueCommand, UpdateVenueCommand } from './venues/venue-service.js';
+export type {
+  CreateVenueCommand,
+  UpdateVenueCommand,
+  CreateVenueBlockCommand,
+} from './venues/venue-service.js';
 export { EventService } from './events/event-service.js';
 export type { CreateEventCommand, UpdateEventCommand } from './events/event-service.js';
 export { EventCatalogService } from './event-catalog/event-catalog-service.js';
@@ -29,11 +33,24 @@ export type {
   CommissionTerms,
 } from './event-catalog/event-catalog-service.js';
 export { PromoterConnectionService } from './promoters/promoter-connection-service.js';
-export type { RequestConnectionCommand } from './promoters/promoter-connection-service.js';
+export type {
+  PromoterConnectionWithNames,
+  RequestConnectionCommand,
+} from './promoters/promoter-connection-service.js';
 export { ReferralLinkService } from './promoters/referral-link-service.js';
 export type { CreateReferralLinkCommand } from './promoters/referral-link-service.js';
 export { PartnershipService } from './partnerships/partnership-service.js';
-export type { RequestPartnershipCommand } from './partnerships/partnership-service.js';
+export type {
+  PartnershipWithNames,
+  RequestPartnershipCommand,
+} from './partnerships/partnership-service.js';
+export { PartnerDiscoveryService } from './partnerships/partner-discovery-service.js';
+export type {
+  DiscoverPartnerKind,
+  DiscoveredPartner,
+  DiscoverPartnersPage,
+  DiscoverPartnersQuery,
+} from './partnerships/partner-discovery-service.js';
 export { PublicService } from './public/public-service.js';
 export { AdminAuthorityService } from './admin/admin-authority-service.js';
 export type { ProposeCommand, AuditInput } from './admin/admin-authority-service.js';
@@ -53,7 +70,7 @@ export type { EventHandler } from './events/event-bus.js';
 export { createAuditConsumer, createProjectionConsumer } from './events/audit-consumers.js';
 
 // Phase 4: Checkout, Inventory, Payments
-export { CheckoutService } from './checkout/checkout-service.js';
+export { CheckoutService, rsvpOrderId } from './checkout/checkout-service.js';
 export { InventoryService } from './inventory/inventory-service.js';
 export { PricingService } from './pricing/pricing-service.js';
 export { OrderService } from './orders/order-service.js';
@@ -170,3 +187,8 @@ export type { LeaderboardService, LeaderboardServiceDeps } from './finance/leade
 export { createLeaderboardService } from './finance/leaderboard-service.js';
 export type { EmailOtpService, EmailOtpServiceDeps } from './auth/email-otp-service.js';
 export { createEmailOtpService } from './auth/email-otp-service.js';
+export type {
+  GuestProfileService,
+  GuestProfileServiceDeps,
+} from './guest-profile/guest-profile-service.js';
+export { createGuestProfileService } from './guest-profile/guest-profile-service.js';

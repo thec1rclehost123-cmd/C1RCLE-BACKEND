@@ -59,6 +59,18 @@ export interface TicketTierRef {
   quantity: number;
 }
 
+export type CompensationModel = 'standard' | 'custom' | 'salary';
+export type SalaryPeriod = 'per_event' | 'per_day' | 'per_month';
+
+export interface EventCompensation {
+  model: CompensationModel;
+  globalRatePercent: number | null;
+  tierRates: Record<string, number>;
+  salaryAmountPaise: number | null;
+  salaryPeriod: SalaryPeriod | null;
+  salaryNotes: string | null;
+}
+
 export interface Event extends VersionedEntity {
   id: EntityId;
   organizationId: EntityId;
@@ -88,6 +100,7 @@ export interface Event extends VersionedEntity {
   isFree: boolean;
   /** Reason/meta recorded when CANCELLED. */
   cancellationReason: string | null;
+  compensation?: EventCompensation | null;
   /**
    * Total people the room legally holds, for the door's occupancy gauge.
    *
@@ -121,6 +134,7 @@ export interface CreateEventInput {
   startAt: string;
   endAt?: string | null;
   tags?: string[];
+  compensation?: EventCompensation | null;
   capacity?: number | null;
   now?: Date;
 }
@@ -154,6 +168,7 @@ export function createEvent(input: CreateEventInput): Event {
     startingPricePaise: 0,
     isFree: true,
     cancellationReason: null,
+    compensation: input.compensation ?? null,
     capacity: input.capacity ?? null,
     adminOverride: false,
     ...newVersionedEntity(now),
@@ -171,6 +186,7 @@ interface EventChanges {
   tags?: string[];
   startingPricePaise?: number;
   isFree?: boolean;
+  compensation?: EventCompensation | null;
   capacity?: number | null;
 }
 
