@@ -21,14 +21,16 @@ overrides:
   # tar: remediate CVE-2026-73566 (tar < 7.5.21). Primary fix is the pnpm
   # version bump + Dockerfile apt/sed patch; this is the npm-layer backstop.
   tar: '>=7.5.21'
-  # fast-uri ^3 (ajv/@fastify/ajv-compiler) and ^4 (fast-json-stringify) — pin to
+  # fast-uri ^3 (ajv) and ^4 (fast-json-stringify/@fastify/ajv-compiler) — pin to
   # patched releases that satisfy each dependent's declared range.
   #   fast-uri -> 3.1.8 / 4.1.4   fixes CVE-2026-75899/75931/75975/76172 (SSRF, host confusion)
-  #                              AND CVE-2026-84292/84394 (authority injection, unbalanced-bracket host confusion; fixed in >=3.1.7)
+  #             + CVE-2026-84292 (authority injection via unvalidated port) + CVE-2026-84394
+  #             (host confusion via unbalanced URI brackets) — 3.1.6 is vulnerable, 3.1.7/4.1.4 are fixed,
+  #             3.1.8 is the newest patched 3.x (matches origin/staging so #48 merges without downgrading it).
   #   nanoid   -> 3.3.18          fixes CVE-2026-67213 (DoS via infinite loop)
   'fast-uri@^3.0.0': '3.1.8'
   'fast-uri@^4.0.0': '4.1.4'
   'nanoid@^3.0.0': '3.3.18'
-  # js-yaml -> 4.3.2 fixes GHSA-2883-xcg3-v3hh (HIGH, maxTotalMergeKeys CPU DoS).
-  # Pulled in by @eslint/eslintrc and cosmiconfig (both declare ^4.1.0).
-  'js-yaml@^4.1.0': '4.3.2'
+  # js-yaml >= 4.3.2 fixes GHSA-2883-xcg3-v3hh (CPU exhaustion via empty merge
+  # sources in YAML). Affects @commitlint, eslint, and 29 other transitive paths.
+  js-yaml: '>=4.3.2'

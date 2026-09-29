@@ -385,10 +385,8 @@ export class VenueSlotRequestService {
   /**
    * The host withdraws an outgoing request (mirror-behaviour is handled by the
    * same state machine — `pending`/`accepted` → `cancelled`). Authorization is
-   * the *host* side: only the org that sent the request may cancel it. A
-   * venue owner calling this gets a `SlotRequestNotFoundError`, matching the
-   * accept/reject tenant-check posture (never leak whether the request
-   * exists across tenants).
+   * the *host* side: only the org that sent the request may cancel it. A venue owner calling this gets a `SlotRequestNotFoundError`, matching the
+   * accept/reject tenant-check posture (never leak whether the request exists across tenants).
    */
   async cancel(actor: ActorContext, slotRequestId: EntityId): Promise<SlotRequest> {
     const request = await this.repo.getById(slotRequestId);
