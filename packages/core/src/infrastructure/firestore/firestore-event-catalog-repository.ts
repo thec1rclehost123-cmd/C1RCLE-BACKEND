@@ -126,7 +126,11 @@ export class FirestoreEventCatalogRepository implements EventCatalogRepository {
   // ── Promoter assignments ──────────────────────────────────────────────────
   async getAssignmentById(assignmentId: EntityId): Promise<PromoterAssignment | null> {
     const snap = await this.db.collection(ASSIGNMENTS).doc(assignmentId).get();
-    return snap.exists ? toAssignment(snap.data() as DocumentData) : null;
+    // Narrow on the data rather than on `snap.exists`: the assertion form
+    // (`as DocumentData` or `!`) is rejected by the lint pair
+    // `non-nullable-type-assertion-style` / `no-non-null-assertion`.
+    const data = snap.data();
+    return data ? toAssignment(data) : null;
   }
   async listAssignments(eventId: EntityId): Promise<PromoterAssignment[]> {
     const snap = await this.db.collection(ASSIGNMENTS).where('eventId', '==', eventId).get();
