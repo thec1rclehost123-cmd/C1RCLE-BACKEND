@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createTrustedProxyMatcher,
@@ -97,5 +97,71 @@ describe('gateway configuration', () => {
         }),
       ),
     ).toThrow(/FIREBASE_CLIENT_EMAIL: Required when STORAGE_DRIVER=firestore/);
+  });
+});
+
+describe('allowedBrowserOrigins (CORS_ALLOWED_ORIGINS)', () => {
+  const ADMIN = 'https://c1rcle-v2-admin-console.vercel.app';
+
+  /**
+   * `getGatewayConfig` caches the first successful parse, so each case re-imports
+   * the module to get a fresh cache. The base is staging's `productionEnvironment`
+   * (firestore + the production secrets), because the memory-in-production
+   * escape hatch is staging's shape and `BASE` no longer exists here.
+   */
+  const BASE = productionEnvironment();
+
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  async function loadConfig() {
+    vi.resetModules();
+    return import('./index.js');
+  }
+
+  it('parses a comma-separated list, trimming whitespace and trailing slashes', async () => {
+    const { getGatewayConfig, allowedBrowserOrigins } = await loadConfig();
+    const config = getGatewayConfig({
+      ...BASE,
+      CORS_ALLOWED_ORIGINS: ` ${ADMIN}/ , https://partners.example.com,${ADMIN}`,
+    });
+    expect(allowedBrowserOrigins(config)).toEqual([ADMIN, 'https://partners.example.com']);
+  });
+
+  it('allows no cross-origin browsers in production when unset', async () => {
+    const { getGatewayConfig, allowedBrowserOrigins } = await loadConfig();
+    // Fails closed: the dev localhost ports must never leak into production.
+    expect(allowedBrowserOrigins(getGatewayConfig({ ...BASE }))).toEqual([]);
+  });
+
+  it('defaults to the local dev frontends outside production', async () => {
+    const { getGatewayConfig, allowedBrowserOrigins } = await loadConfig();
+    const config = getGatewayConfig({ NODE_ENV: 'development' });
+    expect(allowedBrowserOrigins(config)).toEqual([
+      'http://localhost:3000',
+      'http://localhost:3001',
+      'http://localhost:3002',
+    ]);
+  });
+
+  it.each([
+    ['a wildcard', '*'],
+    ['a wildcard subdomain', 'https://*.vercel.app'],
+    ['a path', `${ADMIN}/login`],
+    ['a non-http scheme', 'ftp://example.com'],
+    ['garbage', 'not a url'],
+  ])('rejects %s', async (_label, value) => {
+    const { getGatewayConfig } = await loadConfig();
+    expect(() => getGatewayConfig({ ...BASE, CORS_ALLOWED_ORIGINS: value })).toThrow(
+      /CORS_ALLOWED_ORIGINS/,
+    );
+  });
+
+  it('rejects an http:// origin in production', async () => {
+    const { getGatewayConfig } = await loadConfig();
+    expect(() =>
+      getGatewayConfig({ ...BASE, CORS_ALLOWED_ORIGINS: 'http://admin.example.com' }),
+    ).toThrow(/must be https/);
   });
 });
