@@ -93,6 +93,13 @@
       "why": "tar < 7.5.21. The primary fix is the pnpm version bump plus an apt/sed patch in the Dockerfile; this npm-layer override is the backstop.",
       "overrides": { "tar": ">=7.5.21" },
       "minResolved": "7.5.21"
+    },
+    {
+      "name": "@grpc/grpc-js",
+      "advisories": ["GHSA-m9gg-hp2v-232j"],
+      "why": "getAuthContext can return unauthorized certificates as though they were authorized, in 1.14.0-1.14.4. Pulled in via firebase-admin -> @google-cloud/firestore -> google-gax.",
+      "overrides": { "@grpc/grpc-js": ">=1.14.5" },
+      "minResolved": "1.14.5"
     }
   ]
 }
