@@ -12,7 +12,10 @@ import { opaqueIdSchema, paginatedSchema } from './shared.js';
  */
 export const adminOrderContactDtoSchema = z.object({
   name: z.string(),
-  email: z.email(),
+  // Phone-only guest checkout stores an empty string, not null -- OrderContact
+  // has no way to represent "no email" otherwise, and that's a legitimate,
+  // common state here (not malformed data), so the empty string must validate.
+  email: z.union([z.email(), z.literal('')]),
   phone: z.string(),
 });
 export type AdminOrderContactDto = z.infer<typeof adminOrderContactDtoSchema>;

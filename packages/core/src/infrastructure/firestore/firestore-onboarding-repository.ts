@@ -313,7 +313,7 @@ function toAdminAudit(data: DocumentData): AdminAuditRecord {
   return {
     id: data.id as string,
     adminId: data.adminId as string,
-    adminRole: data.adminRole as string,
+    adminRole: (data.adminRole ?? null) as string | null,
     action: data.action as string,
     targetType: data.targetType as string,
     targetId: data.targetId as string,
