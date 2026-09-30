@@ -31,7 +31,6 @@ export class PricingService {
     const tierMap = new Map(catalog.map((t) => [t.id, t]));
 
     const now = Date.now();
-    const now = Date.now();
     const pricingLines = lines.map((l) => {
       const tier = tierMap.get(l.tierId);
       if (!tier) throw new InvalidOperationError(`Tier ${l.tierId} not found for event ${eventId}`);

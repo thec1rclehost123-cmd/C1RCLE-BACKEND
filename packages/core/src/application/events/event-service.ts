@@ -12,7 +12,6 @@ import {
   type EventStatus,
   type Event,
   type EventCompensation,
-  type EventCompensation,
 } from '../../domain/models/event.js';
 import { requireOrgAccess, emit } from '../context.js';
 
@@ -30,7 +29,6 @@ export interface CreateEventCommand {
   endAt?: string | null;
   tags?: string[];
   compensation?: EventCompensation | null;
-  compensation?: EventCompensation | null;
 }
 
 export interface UpdateEventCommand {
@@ -47,7 +45,6 @@ export interface UpdateEventCommand {
     tags?: string[];
     startingPricePaise?: number;
     isFree?: boolean;
-    compensation?: EventCompensation | null;
     compensation?: EventCompensation | null;
   };
 }
@@ -88,7 +85,6 @@ export class EventService {
       startAt: command.startAt,
       endAt: command.endAt ?? null,
       tags: command.tags ?? [],
-      compensation: command.compensation ?? null,
       compensation: command.compensation ?? null,
       now: this.deps.config.clock.now(),
     });
@@ -136,10 +132,6 @@ export class EventService {
       contentType: command.contentType,
       maxBytes: MAX_POSTER_BYTES,
       expiresAt,
-      // Posters must render on the guest surface with no credential, so the
-      // signed PUT sets the object ACL to public-read. KYC stays private by
-      // default — see object-storage port.
-      visibility: 'public',
       // Posters must render on the guest surface with no credential, so the
       // signed PUT sets the object ACL to public-read. KYC stays private by
       // default — see object-storage port.

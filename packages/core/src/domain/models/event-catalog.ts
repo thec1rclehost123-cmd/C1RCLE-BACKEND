@@ -142,25 +142,7 @@ export interface TicketTier extends VersionedEntity {
   salesStartAt: string | null;
   salesEndAt: string | null;
   /** Maximum tickets that can be purchased per order. */
-  /** Maximum tickets that can be purchased per order. */
   maxPerOrder: number | null;
-  accessType?: TicketAccessType;
-  audienceType?: TicketAudienceType;
-  guestCount?: number;
-  pricingPhases?: TicketPricingPhase[];
-  doorPriceInPaise?: number | null;
-  benefits?: string[];
-  minAge?: number | null;
-  maxAge?: number | null;
-  minPerOrder?: number | null;
-  maxPerUser?: number | null;
-  tableConfig?: {
-    capacity: number;
-    minimumSpendPaise: number;
-    redeemableAmountPaise: number;
-    tableCount: number;
-  } | null;
-  commissionEligible?: boolean;
   accessType?: TicketAccessType;
   audienceType?: TicketAudienceType;
   guestCount?: number;
@@ -202,9 +184,6 @@ export interface CreateTicketTierInput {
   minAge?: number | null;
   maxAge?: number | null;
   minPerOrder?: number | null;
-  maxPerUser?: number | null;
-  tableConfig?: TicketTier['tableConfig'];
-  commissionEligible?: boolean;
   maxPerUser?: number | null;
   tableConfig?: TicketTier['tableConfig'];
   commissionEligible?: boolean;
@@ -488,7 +467,6 @@ export interface CommissionTerms {
   ratePercent: number;
   /** Optional fixed fee (paise). */
   flatPaise: number;
-  tierRates?: Record<string, { ratePercent: number; flatPaise: number }>;
   tierRates?: Record<string, { ratePercent: number; flatPaise: number }>;
 }
 

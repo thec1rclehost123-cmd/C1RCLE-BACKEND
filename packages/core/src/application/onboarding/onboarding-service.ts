@@ -210,10 +210,6 @@ export class OnboardingService {
       {
         label: command.label,
         storagePath: command.storagePath,
-        status: 'pending',
-        reviewedBy: null,
-        reviewedAt: null,
-        rejectionReason: null,
       },
       this.deps.config.clock.now(),
     );

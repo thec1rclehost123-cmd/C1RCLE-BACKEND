@@ -179,17 +179,6 @@ export function addOnboardingDocument(
         rejectionReason: null,
       },
     ],
-    documents: [
-      ...documents,
-      {
-        ...document,
-        uploadedAt: at.toISOString(),
-        status: 'pending',
-        reviewedBy: null,
-        reviewedAt: null,
-        rejectionReason: null,
-      },
-    ],
   };
 }
 

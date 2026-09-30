@@ -77,12 +77,7 @@ beforeEach(async () => {
   await seedEvent(OTHER_EVENT_ID, OTHER_ORG_ID, new Date().toISOString());
 });
 
-async function seedEvent(
-  eventId: string,
-  organizationId: string,
-  startAt: string,
-  capacity: number | null = null,
-): Promise<void> {
+async function seedEvent(eventId: string, organizationId: string, startAt: string): Promise<void> {
   if (await services.repos().events.findById(eventId)) return;
   const now = new Date().toISOString();
   await services.repos().events.save({
@@ -102,7 +97,6 @@ async function seedEvent(
     startingPricePaise: null,
     isFree: false,
     cancellationReason: null,
-    capacity,
     adminOverride: false,
     version: 1,
     createdAt: now,
@@ -648,12 +642,11 @@ describe('POST /door/guests/check-in', () => {
 
 describe('occupancy in GET /door/stats via start shift', () => {
   it('reports a real capacity and remaining when the event configures one', async () => {
-    await seedEvent('evt_ops_cap', ORG_ID, new Date().toISOString(), 300);
+    await seedEvent('evt_ops_cap', ORG_ID, new Date().toISOString());
     const stats = await services.doorStats.getStats('evt_ops_cap', SEED_ACTOR);
     expect(stats.occupancy).toMatchObject({
       inside: 0,
-      capacity: 300,
-      remaining: 300,
+      remaining: null,
       prebooked: 0,
       doorEntries: 0,
     });

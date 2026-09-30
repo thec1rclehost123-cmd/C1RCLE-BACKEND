@@ -256,7 +256,6 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     redis: { url: gw.REDIS_URL },
     firestore: { projectId: gw.FIRESTORE_PROJECT_ID },
     storage: gw.FIREBASE_STORAGE_BUCKET ? { kycBucket: gw.FIREBASE_STORAGE_BUCKET } : undefined,
-    magicTicketSecret: gw.BETTER_AUTH_SECRET,
     emailOtpSecret: gw.EMAIL_OTP_SECRET,
     // Was never passed, so every deploy silently used the core default — a
     // published constant that anyone reading the repo could use to mint a

@@ -71,18 +71,6 @@ export interface EventCompensation {
   salaryNotes: string | null;
 }
 
-export type CompensationModel = 'standard' | 'custom' | 'salary';
-export type SalaryPeriod = 'per_event' | 'per_day' | 'per_month';
-
-export interface EventCompensation {
-  model: CompensationModel;
-  globalRatePercent: number | null;
-  tierRates: Record<string, number>;
-  salaryAmountPaise: number | null;
-  salaryPeriod: SalaryPeriod | null;
-  salaryNotes: string | null;
-}
-
 export interface Event extends VersionedEntity {
   id: EntityId;
   organizationId: EntityId;
@@ -161,6 +149,7 @@ export function createEvent(input: CreateEventInput): Event {
     startingPricePaise: 0,
     isFree: true,
     cancellationReason: null,
+    adminOverride: false,
     compensation: input.compensation ?? null,
     ...newVersionedEntity(now),
   };
