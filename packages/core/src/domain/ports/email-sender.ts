@@ -12,6 +12,8 @@ import type { Logger } from '../../telemetry/logger.js';
 export interface EmailSender {
   readonly name: string;
   sendOtpEmail(recipient: string, code: string): Promise<void>;
+  /** Sends the password-reset link (Better Auth `sendResetPassword` callback). */
+  sendPasswordResetEmail(recipient: string, resetUrl: string): Promise<void>;
 }
 
 /**
@@ -27,5 +29,9 @@ export class LoggingEmailSender implements EmailSender {
 
   async sendOtpEmail(recipient: string, code: string): Promise<void> {
     this.logger.info('dev_email_otp', { recipient, code });
+  }
+
+  async sendPasswordResetEmail(recipient: string, resetUrl: string): Promise<void> {
+    this.logger.info('dev_email_password_reset', { recipient, resetUrl });
   }
 }

@@ -72,3 +72,31 @@ export const otpAckResponseSchema = z.object({
   message: z.string(),
 });
 export type OtpAckResponse = z.infer<typeof otpAckResponseSchema>;
+
+/* ─── Password reset (forgot / reset) ─────────────────────────────────────── */
+
+export const forgotPasswordRequestSchema = z
+  .object({
+    email: z.email(),
+  })
+  .strict();
+export type ForgotPasswordRequest = z.infer<typeof forgotPasswordRequestSchema>;
+
+export const resetPasswordRequestSchema = z
+  .object({
+    newPassword: z.string().min(8).max(128),
+    token: z.string().min(1),
+  })
+  .strict();
+export type ResetPasswordRequest = z.infer<typeof resetPasswordRequestSchema>;
+
+/**
+ * Better Auth's reset endpoints answer `{status: true}` (requestPasswordReset
+ * also carries a constant anti-oracle message). The gateway validates that
+ * exact shape on the wire.
+ */
+export const passwordResetAckSchema = z.object({
+  status: z.literal(true),
+  message: z.string().optional(),
+});
+export type PasswordResetAck = z.infer<typeof passwordResetAckSchema>;
