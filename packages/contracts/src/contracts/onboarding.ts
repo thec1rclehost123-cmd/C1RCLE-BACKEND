@@ -345,7 +345,10 @@ export type ResolveProposalRequest = z.infer<typeof resolveProposalSchema>;
 export const adminAuditRecordDtoSchema = z.object({
   id: opaqueIdSchema,
   adminId: opaqueIdSchema,
-  adminRole: z.string(),
+  // Absent on records written before adminRole existed on this trail --
+  // never backfilled, since a role change since then would misrepresent
+  // what the actor's role actually was at the time of the action.
+  adminRole: z.string().nullable(),
   action: z.string(),
   targetType: z.string(),
   targetId: opaqueIdSchema,
