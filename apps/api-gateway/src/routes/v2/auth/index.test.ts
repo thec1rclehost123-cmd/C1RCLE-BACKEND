@@ -28,11 +28,17 @@ function jsonResponse(status: number, body: unknown): Response {
 function fakeAuth(overrides: {
   signInEmail?: () => Promise<Response>;
   signUpEmail?: () => Promise<Response>;
+  requestPasswordReset?: () => Promise<{ status: true; message: string }>;
+  resetPassword?: () => Promise<{ status: true }>;
 }): BetterAuthInstance {
   return {
     api: {
       signInEmail: overrides.signInEmail ?? (() => Promise.resolve(jsonResponse(401, {}))),
       signUpEmail: overrides.signUpEmail ?? (() => Promise.resolve(jsonResponse(400, {}))),
+      requestPasswordReset:
+        overrides.requestPasswordReset ??
+        (() => Promise.resolve({ status: true, message: 'If this email exists in our system' })),
+      resetPassword: overrides.resetPassword ?? (() => Promise.resolve({ status: true })),
     },
   } as unknown as BetterAuthInstance;
 }
@@ -120,6 +126,96 @@ describe('auth routes — login failure is not an account-existence oracle', () 
     });
     expect(res.statusCode).toBe(400);
     expect(res.json().message).toBe('Email already registered');
+    await app.close();
+  });
+});
+
+describe('auth routes — password reset', () => {
+  it('POST /forgot-password returns the constant ack (no account-existence oracle)', async () => {
+    let receivedEmail: string | undefined;
+    const app = await buildTestApp(
+      fakeAuth({
+        requestPasswordReset: () => {
+          receivedEmail = 'partner@example.com';
+          return Promise.resolve({ status: true, message: 'If this email exists in our system' });
+        },
+      }),
+    );
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v2/auth/forgot-password',
+      payload: { email: 'partner@example.com' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      status: true,
+      message: 'If this email exists in our system',
+    });
+    expect(receivedEmail).toBe('partner@example.com');
+    await app.close();
+  });
+
+  it('POST /forgot-password forwards a thrown Better Auth error (e.g. RESET_PASSWORD_DISABLED)', async () => {
+    const app = await buildTestApp(
+      fakeAuth({
+        requestPasswordReset: () =>
+          Promise.reject(
+            Object.assign(new Error('Reset password is not enabled'), { status: 400 }),
+          ),
+      }),
+    );
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v2/auth/forgot-password',
+      payload: { email: 'nobody@example.com' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().message).toBe('Reset password is not enabled');
+    await app.close();
+  });
+
+  it('POST /reset-password returns { status: true } on success', async () => {
+    const app = await buildTestApp(
+      fakeAuth({
+        resetPassword: () => Promise.resolve({ status: true }),
+      }),
+    );
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v2/auth/reset-password',
+      payload: { newPassword: 'newsecret1', token: 'tok123' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: true });
+    await app.close();
+  });
+
+  it('POST /reset-password forwards a thrown Better Auth INVALID_TOKEN error', async () => {
+    const app = await buildTestApp(
+      fakeAuth({
+        resetPassword: () =>
+          Promise.reject(Object.assign(new Error('INVALID_TOKEN'), { status: 400 })),
+      }),
+    );
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v2/auth/reset-password',
+      payload: { newPassword: 'newsecret1', token: 'expired' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().message).toBe('INVALID_TOKEN');
+    await app.close();
+  });
+
+  it('rejects malformed payloads with 422 (min password length enforced by schema)', async () => {
+    const app = await buildTestApp(fakeAuth({}));
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v2/auth/reset-password',
+      payload: { newPassword: 'short', token: 'tok123' },
+    });
+    expect(res.statusCode).toBe(422);
     await app.close();
   });
 });

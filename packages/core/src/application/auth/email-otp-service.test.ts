@@ -19,8 +19,12 @@ class FakeClock {
 class CapturingEmailSender implements EmailSender {
   readonly name = 'capturing';
   sent: { recipient: string; code: string }[] = [];
+  resetLinks: { recipient: string; resetUrl: string }[] = [];
   async sendOtpEmail(recipient: string, code: string): Promise<void> {
     this.sent.push({ recipient, code });
+  }
+  async sendPasswordResetEmail(recipient: string, resetUrl: string): Promise<void> {
+    this.resetLinks.push({ recipient, resetUrl });
   }
 }
 

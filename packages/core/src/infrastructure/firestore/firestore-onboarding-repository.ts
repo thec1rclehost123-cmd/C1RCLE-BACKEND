@@ -10,6 +10,7 @@ import type {
 } from '../../domain/models/admin-authority.js';
 import type {
   OnboardingDocument,
+  OnboardingDocumentStatus,
   OnboardingPlan,
   OnboardingProfile,
   OnboardingRequest,
@@ -175,6 +176,30 @@ export class FirestoreVerificationAttemptRepository implements VerificationAttem
       .get();
     return snap.docs.map((doc) => toAttempt(doc.data()));
   }
+}
+
+/**
+ * Documents are written at upload time with only `label`/`storagePath`/
+ * `uploadedAt` — `status`/`reviewedBy`/`reviewedAt`/`rejectionReason` are
+ * added later, by a KYC reviewer's verify/reject call. A never-reviewed
+ * document has no such fields in Firestore at all (not `null` — absent),
+ * so the raw read must default them here or the response schema (which
+ * requires a real `OnboardingDocumentStatus`, not `undefined`) rejects the
+ * whole request with an "Internal response validation failure".
+ */
+function toDocuments(raw: unknown): OnboardingDocument[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw.map((doc: DocumentData) => ({
+    label: doc.label as string,
+    storagePath: doc.storagePath as string,
+    uploadedAt: doc.uploadedAt as string,
+    status: (doc.status ?? 'pending') as OnboardingDocumentStatus,
+    reviewedBy: (doc.reviewedBy ?? null) as string | null,
+    reviewedAt: (doc.reviewedAt ?? null) as string | null,
+    rejectionReason: (doc.rejectionReason ?? null) as string | null,
+  }));
 }
 
 function toRequest(data: DocumentData): OnboardingRequest {
