@@ -9,19 +9,21 @@
 FIXTURE = frontend uses sample data; MISSING = no endpoint yet;
 LIVE = endpoint exists and is tested; BLOCKED = 404 by absence (a later phase).
 
-## Live vs blocked (backend, as of 2026-08-29)
+## Live vs blocked (backend, as of 2026-09-07)
 
 - **LIVE:** `/api/v2/auth/*`, `/api/v2/onboarding/*`, `/api/v2/organizations*`
   (+ `/members`, `/invitations`, `/access`), `/api/v2/venues*`,
   `/api/v2/events*` (+ lifecycle), `/api/v2/events/:id/{ticket-tiers,
   promo-codes,table-packages,promoter-assignments}`,
   `/api/v2/organizations/:id/{partnerships,promoter-connections,analytics/overview}`,
-  `/api/v2/events/:id/{analytics,referral-links}`, `/api/v2/admin/*`, and the
+  `/api/v2/events/:id/{analytics,referral-links}`, `/api/v2/admin/*`, Phase 4
+  guest checkout (`/api/v2/checkout/*`, `/api/v2/orders/*`,
+  `/api/v2/payments/*`, `/api/v2/tickets/*`, `/api/v2/wallet/*`,
+  `/api/v2/public/*`, Razorpay webhook) and the
   Phase 5 door/scanner/cover-wallet routes (`/api/v2/door/*`,
   `/api/v2/cover-wallets/*`, `/api/v2/tickets/:id/qr`).
-- **BLOCKED (404 — no route):** checkout, orders, payments, refunds, payouts,
-  entitlement/ticket lists, `/api/v2/public/*` discovery, webhooks. Guest-portal
-  and partner finance/orders screens stay FIXTURE until those land.
+- **BLOCKED (404 — no route):** refunds, payouts. Partner finance/orders
+  screens stay FIXTURE until those land (Phase 6).
 
 ## Shared transport and session
 

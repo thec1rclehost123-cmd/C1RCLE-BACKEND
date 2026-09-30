@@ -29,7 +29,12 @@ function walk(dir, cb) {
     const full = join(dir, entry);
     const stat = statSync(full);
     if (stat.isDirectory()) {
-      if (entry === 'dist' || entry === 'node_modules' || entry === '.turbo') continue;
+      // `scripts/` holds standalone manual e2e/seed tools that call the
+      // gateway as an external HTTP client would (raw fetch by design) —
+      // never imported by the running app, so the transport-layer rule
+      // doesn't apply to them.
+      if (entry === 'dist' || entry === 'node_modules' || entry === '.turbo' || entry === 'scripts')
+        continue;
       walk(full, cb);
     } else if (extname(full) === '.ts' && !full.endsWith('.test.ts') && !full.endsWith('.d.ts')) {
       cb(full);

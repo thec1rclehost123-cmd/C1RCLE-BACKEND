@@ -28,8 +28,19 @@ export interface CreateTierCommand {
   quantity: number;
   salesStartAt?: string | null;
   salesEndAt?: string | null;
-  minPerOrder?: number | null;
   maxPerOrder?: number | null;
+  accessType?: TicketTier['accessType'];
+  audienceType?: TicketTier['audienceType'];
+  guestCount?: number;
+  pricingPhases?: TicketTier['pricingPhases'];
+  doorPriceInPaise?: number | null;
+  benefits?: string[];
+  minAge?: number | null;
+  maxAge?: number | null;
+  minPerOrder?: number | null;
+  maxPerUser?: number | null;
+  tableConfig?: TicketTier['tableConfig'];
+  commissionEligible?: boolean;
 }
 
 export interface CreatePromotionCommand {
@@ -92,8 +103,19 @@ export class EventCatalogService {
       quantity: command.quantity,
       salesStartAt: command.salesStartAt ?? null,
       salesEndAt: command.salesEndAt ?? null,
-      minPerOrder: command.minPerOrder ?? null,
       maxPerOrder: command.maxPerOrder ?? null,
+      accessType: command.accessType,
+      audienceType: command.audienceType,
+      guestCount: command.guestCount,
+      pricingPhases: command.pricingPhases,
+      doorPriceInPaise: command.doorPriceInPaise,
+      benefits: command.benefits,
+      minAge: command.minAge,
+      maxAge: command.maxAge,
+      minPerOrder: command.minPerOrder,
+      maxPerUser: command.maxPerUser,
+      tableConfig: command.tableConfig,
+      commissionEligible: command.commissionEligible,
       now: this.deps.config.clock.now(),
     });
     await this.repo.saveTier(tier);

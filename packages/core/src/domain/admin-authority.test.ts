@@ -5,11 +5,13 @@ import {
   approveProposal,
   cancelProposal,
   canInitiate,
+  createPlatformAdmin,
   isExecutable,
   proposeAction,
   rejectProposal,
   requiresDualControl,
   tierOf,
+  updatePlatformAdminRole,
 } from './models/admin-authority.js';
 
 /**
@@ -55,6 +57,17 @@ describe('tiers', () => {
   it('requires dual control only at TIER3', () => {
     expect(requiresDualControl('ADMIN_PROVISION')).toBe(true);
     expect(requiresDualControl('ONBOARDING_APPROVE')).toBe(false);
+  });
+
+  it('ranks promoter suspension at TIER2 (not support-executable)', () => {
+    expect(tierOf('PROMOTER_SUSPEND')).toBe(2);
+    expect(tierOf('PROMOTER_REINSTATE')).toBe(2);
+    for (const role of ['super', 'admin', 'ops', 'finance'] as const) {
+      expect(canInitiate(role, 'PROMOTER_SUSPEND')).toBe(true);
+      expect(canInitiate(role, 'PROMOTER_REINSTATE')).toBe(true);
+    }
+    expect(canInitiate('support', 'PROMOTER_SUSPEND')).toBe(false);
+    expect(canInitiate('support', 'PROMOTER_REINSTATE')).toBe(false);
   });
 });
 
@@ -168,5 +181,30 @@ describe('dual control', () => {
   it('lets only the proposer cancel', () => {
     expect(cancelProposal(proposal('admin_a'), 'admin_a', NOW).status).toBe('cancelled');
     expect(() => cancelProposal(proposal('admin_a'), 'admin_b', NOW)).toThrow(ForbiddenError);
+  });
+});
+
+describe('updatePlatformAdminRole', () => {
+  const admin = () =>
+    createPlatformAdmin({ id: 'admin_a', email: 'a@c1rcle.test', role: 'ops', now: NOW });
+
+  it('changes the role and bumps the version', () => {
+    const before = admin();
+    const after = updatePlatformAdminRole(before, 'super', NOW);
+    expect(after.role).toBe('super');
+    expect(after.version).toBe(before.version + 1);
+  });
+
+  it('setting the same role is a no-op', () => {
+    const before = admin();
+    const after = updatePlatformAdminRole(before, 'ops', NOW);
+    expect(after).toBe(before);
+  });
+
+  it('rejects an unknown role', () => {
+    const before = admin();
+    expect(() => updatePlatformAdminRole(before, 'owner' as never, NOW)).toThrow(
+      InvalidOperationError,
+    );
   });
 });

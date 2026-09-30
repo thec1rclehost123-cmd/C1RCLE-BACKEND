@@ -32,6 +32,11 @@ export class FirestoreSlotRequestRepository implements SlotRequestRepository {
     return paginateQuery(base, query, toSlotRequest);
   }
 
+  async listByHost(hostId: EntityId, query: PaginationQuery): Promise<Page<SlotRequest>> {
+    const base = this.collection.where('hostId', '==', hostId);
+    return paginateQuery(base, query, toSlotRequest);
+  }
+
   async save(request: SlotRequest, _tx?: TxContext | null): Promise<void> {
     // Compare-and-set: a write of version N must find N-1 (see compare-and-set.ts).
     await compareAndSet(this.db, this.collection, request, toDoc);

@@ -1,5 +1,9 @@
 import { VersionConflictError } from '../../domain/errors.js';
-import { createEventCode, createScannerSession } from '../../domain/models/event-code.js';
+import {
+  createEventCode,
+  createScannerSession,
+  hashSessionToken,
+} from '../../domain/models/event-code.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type {
@@ -155,8 +159,7 @@ export class MemoryScannerSessionRepository implements ScannerSessionRepository 
   }> {
     const result = createScannerSession(input);
     this.sessions.set(result.session.id, result.session);
-    const crypto = await import('crypto');
-    const tokenHash = crypto.createHash('sha256').update(result.sessionToken).digest('hex');
+    const tokenHash = hashSessionToken(result.sessionToken);
     this.byTokenHash.set(tokenHash, result.session.id);
     return result;
   }

@@ -9,7 +9,13 @@
  *   node scripts/ci/smoke.mjs --url https://circle-v2-backend.onrender.com
  *                             [--timeout 20000] [--retries 3]
  *
- * Exit codes: 0 all checks pass · 1 one or more checks failed.
+ * The readiness and version endpoints sit behind an nginx gate that answers
+ * 404 without an X-Readiness-Token header. Wire the value via the
+ * NGINX_READINESS_TOKEN env var (CI repo secret) or --token; without it those
+ * two checks are skipped with a warning rather than failed, so the script
+ * still exercises the 4 un-gated checks.
+ *
+ * Exit codes: 0 all non-skipped checks pass · 1 one or more checks failed.
  */
 
 const args = process.argv;
@@ -21,6 +27,7 @@ const arg = (name, fallback) => {
 const baseUrl = (arg('url') ?? '').replace(/\/+$/, '');
 const timeoutMs = Number(arg('timeout', '20000'));
 const retries = Number(arg('retries', '3'));
+const readinessToken = process.env.NGINX_READINESS_TOKEN ?? arg('token', '');
 
 if (!baseUrl) {
   console.error('::error::smoke needs --url');
@@ -38,23 +45,35 @@ async function request(path, init = {}) {
       const response = await fetch(`${baseUrl}${path}`, {
         ...init,
         signal: controller.signal,
-        headers: { accept: 'application/json', ...(init.headers ?? {}) },
+        headers: {
+          accept: 'application/json',
+          ...(readinessToken ? { 'x-readiness-token': readinessToken } : {}),
+          ...(init.headers ?? {}),
+        },
       });
-      const text = await response.text();
-      let body = null;
-      try {
-        body = JSON.parse(text);
-      } catch {
-        body = text;
+      if (response.status >= 500) {
+        // Transient 5xx is the free-tier cold-start window (the instance spins
+        // up on first request and readiness can probe Firestore mid-startup).
+        // Retry with backoff like an external health checker would.
+        lastError = new Error(`HTTP ${response.status}`);
+      } else {
+        const text = await response.text();
+        let body = null;
+        try {
+          body = JSON.parse(text);
+        } catch {
+          body = text;
+        }
+        return { status: response.status, headers: response.headers, body };
       }
-      return { status: response.status, headers: response.headers, body };
     } catch (error) {
       lastError = error;
-      // Render free/starter instances cold-start; the first request can time out.
-      if (attempt < retries) await sleep(attempt * 3000);
     } finally {
       clearTimeout(timer);
     }
+    // Render free/starter instances cold-start; the first request can time out
+    // or return a transient 5xx. Back off and retry.
+    if (attempt < retries) await sleep(attempt * 3000);
   }
   throw lastError;
 }
@@ -86,8 +105,21 @@ await check('GET /api/v2/internal/health returns 200 {ok:true}', async () => {
   assert(typeof body.uptimeMs === 'number', 'expected numeric uptimeMs');
 });
 
+// Checks 2 and 3 sit behind the nginx readiness gate: without the token the
+// gate itself returns 404, so reporting that as a failure would be a
+// misdiagnosis. Skip them with a visible warning when no token is configured;
+// CI always provides one via the repo secret.
+const gated = (name, fn) => {
+  if (!readinessToken) {
+    console.warn(`  SKIP  ${name} — set NGINX_READINESS_TOKEN to enable this check`);
+    results.push({ name, ok: true, skipped: true });
+    return;
+  }
+  return check(name, fn);
+};
+
 // 2. Readiness — dependency roll-up.
-await check('GET /api/v2/internal/readiness reports gateway up', async () => {
+await gated('GET /api/v2/internal/readiness reports gateway up', async () => {
   const { status, body } = await request('/api/v2/internal/readiness');
   assert(status === 200, `expected 200, got ${status}`);
   assert(body?.ok === true, `expected ok:true, got ${JSON.stringify(body)}`);
@@ -98,7 +130,7 @@ await check('GET /api/v2/internal/readiness reports gateway up', async () => {
 });
 
 // 3. Version — must be a semver-shaped string.
-await check('GET /api/v2/internal/version returns a semantic version', async () => {
+await gated('GET /api/v2/internal/version returns a semantic version', async () => {
   const { status, body } = await request('/api/v2/internal/version');
   assert(status === 200, `expected 200, got ${status}`);
   assert(/^\d+\.\d+\.\d+/.test(String(body?.version)), `expected semver, got ${body?.version}`);
@@ -131,12 +163,17 @@ await check('each response carries a unique requestId', async () => {
 });
 
 const failed = results.filter((r) => !r.ok);
+const skipped = results.filter((r) => r.skipped);
 const summary = [
   `### Smoke tests — \`${baseUrl}\``,
   '',
   '| Check | Result |',
   '| --- | :--- |',
-  ...results.map((r) => `| ${r.name} | ${r.ok ? '✅ pass' : `❌ ${r.error}`} |`),
+  ...results.map((r) =>
+    r.skipped
+      ? `| ${r.name} | ⏭️ skipped (no readiness token) |`
+      : `| ${r.name} | ${r.ok ? '✅ pass' : `❌ ${r.error}`} |`,
+  ),
   '',
 ].join('\n');
 
@@ -145,7 +182,11 @@ if (process.env.GITHUB_STEP_SUMMARY) {
   appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${summary}\n`);
 }
 
-console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
+const ran = results.length - skipped.length;
+console.log(
+  `\n${ran - failed.length}/${ran} checks passed` +
+    (skipped.length > 0 ? ` (${skipped.length} skipped — no readiness token)` : ''),
+);
 if (failed.length > 0) {
   console.error(`::error::Smoke tests failed: ${failed.map((f) => f.name).join('; ')}`);
   process.exit(1);

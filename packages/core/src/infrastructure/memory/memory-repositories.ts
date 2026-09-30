@@ -1,4 +1,7 @@
 import { VersionConflictError } from '../../domain/errors.js';
+import { admitSeats } from '../../domain/models/entitlement.js';
+import { DEFAULT_PLATFORM_SETTINGS } from '../../domain/models/platform-settings.js';
+import { doSlotRangesOverlap, assertSlotRangeFree } from '../../domain/models/venue.js';
 
 /**
  * ─── In-memory repository implementations (Core domains for tests) ──────────────
@@ -18,8 +21,11 @@ import type {
 import type { Event } from '../../domain/models/event.js';
 import type { Order } from '../../domain/models/order.js';
 import type { Organization, OrganizationMember } from '../../domain/models/organization.js';
+import type { PlatformSettings } from '../../domain/models/platform-settings.js';
 import type { Venue, VenueSlot, SlotRequest } from '../../domain/models/venue.js';
 import type {
+  AdmissionClaim,
+  ClaimAdmissionOptions,
   EventRepository,
   OrganizationRepository,
   VenueRepository,
@@ -36,6 +42,7 @@ import type {
   Page,
   PaginationQuery,
   TxContext,
+  PlatformSettingsRepository,
 } from '../../domain/ports/repositories.js';
 
 /**
@@ -115,6 +122,10 @@ export class MemoryEventRepository implements EventRepository {
     return serializeSlice(all, query);
   }
 
+  async listAll(query: PaginationQuery): Promise<Page<Event>> {
+    return serializeSlice([...this.events.values()], query);
+  }
+
   async save(event: Event, _tx?: TxContext | null): Promise<void> {
     casSet(this.events, event);
   }
@@ -132,6 +143,13 @@ export class MemoryOrganizationRepository implements OrganizationRepository {
     return this.organizations.get(organizationId) ?? null;
   }
 
+  async getByIds(organizationIds: EntityId[]): Promise<Organization[]> {
+    return organizationIds
+      .filter((id, index, all) => all.indexOf(id) === index) // dedupe
+      .map((id) => this.organizations.get(id))
+      .filter((org): org is Organization => org !== undefined);
+  }
+
   async getBySlug(slug: string): Promise<Organization | null> {
     for (const org of this.organizations.values()) {
       if (org.slug === slug) return org;
@@ -139,11 +157,21 @@ export class MemoryOrganizationRepository implements OrganizationRepository {
     return null;
   }
 
+  async listActive(limit: number): Promise<Organization[]> {
+    return [...this.organizations.values()]
+      .filter((org) => org.status === 'active')
+      .slice(0, limit);
+  }
+
   async listForMember(userId: EntityId, query: PaginationQuery): Promise<Page<Organization>> {
     const all = [...this.organizations.values()].filter((org) =>
       org.members?.some((m) => m.userId === userId),
     );
     return serializeSlice(all, query);
+  }
+
+  async listAll(query: PaginationQuery): Promise<Page<Organization>> {
+    return serializeSlice([...this.organizations.values()], query);
   }
 
   async listMembers(
@@ -185,6 +213,13 @@ export class MemoryVenueRepository implements VenueRepository {
     return this.venues.get(venueId) ?? null;
   }
 
+  async getByIds(venueIds: EntityId[]): Promise<Venue[]> {
+    return venueIds
+      .filter((id, index, all) => all.indexOf(id) === index) // dedupe
+      .map((id) => this.venues.get(id))
+      .filter((venue): venue is Venue => venue !== undefined);
+  }
+
   async getBySlug(slug: string, organizationId: EntityId): Promise<Venue | null> {
     for (const venue of this.venues.values()) {
       if (venue.public.slug === slug && venue.organizationId === organizationId) return venue;
@@ -199,9 +234,17 @@ export class MemoryVenueRepository implements VenueRepository {
     return null;
   }
 
+  async listActive(limit: number): Promise<Venue[]> {
+    return [...this.venues.values()].filter((v) => v.status === 'active').slice(0, limit);
+  }
+
   async listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Venue>> {
     const all = [...this.venues.values()].filter((v) => v.organizationId === organizationId);
     return serializeSlice(all, query);
+  }
+
+  async listAll(query: PaginationQuery): Promise<Page<Venue>> {
+    return serializeSlice([...this.venues.values()], query);
   }
 
   async save(venue: Venue, _tx?: TxContext | null): Promise<void> {
@@ -218,6 +261,11 @@ export class MemorySlotRequestRepository implements SlotRequestRepository {
 
   async listByVenue(venueId: EntityId, query: PaginationQuery): Promise<Page<SlotRequest>> {
     const all = [...this.requests.values()].filter((r) => r.venueId === venueId);
+    return serializeSlice(all, query);
+  }
+
+  async listByHost(hostId: EntityId, query: PaginationQuery): Promise<Page<SlotRequest>> {
+    const all = [...this.requests.values()].filter((r) => r.hostId === hostId);
     return serializeSlice(all, query);
   }
 
@@ -242,6 +290,34 @@ export class MemoryVenueSlotRepository implements VenueSlotRepository {
     const byId = new Map(existing.map((s) => [s.id, s] as const));
     for (const slot of slots) byId.set(slot.id, slot);
     this.slots.set(first.venueId, [...byId.values()]);
+  }
+
+  async getSlotById(slotId: EntityId): Promise<VenueSlot | null> {
+    for (const venueSlots of this.slots.values()) {
+      const found = venueSlots.find((slot) => slot.id === slotId);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  async listOverlappingSlots(
+    venueId: EntityId,
+    startTime: string,
+    endTime: string,
+  ): Promise<VenueSlot[]> {
+    return (this.slots.get(venueId) ?? []).filter((slot) =>
+      doSlotRangesOverlap(slot.startTime, slot.endTime, startTime, endTime),
+    );
+  }
+
+  async createBlockIfFree(block: VenueSlot): Promise<VenueSlot> {
+    // Read-check-write with no `await` between the guard and the push: within
+    // one synchronous turn no concurrent caller can interleave, which is the
+    // memory driver's analogue of the Firestore transaction (TOCTOU-closed).
+    const existing = this.slots.get(block.venueId) ?? [];
+    assertSlotRangeFree(existing, block.startTime, block.endTime);
+    this.slots.set(block.venueId, [...existing, block]);
+    return block;
   }
 }
 
@@ -295,6 +371,10 @@ export class MemoryEventCatalogRepository implements EventCatalogRepository {
     return serializeSlice(all, query);
   }
 
+  async listAllPromos(query: PaginationQuery): Promise<Page<PromoCode>> {
+    return serializeSlice([...this.promos.values()], query);
+  }
+
   async savePromo(promo: PromoCode, _tx?: TxContext | null): Promise<void> {
     casSet(this.promos, promo);
   }
@@ -319,8 +399,29 @@ export class MemoryEventCatalogRepository implements EventCatalogRepository {
     return [...this.assignments.values()].filter((a) => a.eventId === eventId);
   }
 
+  async listAssignmentsByPromoter(promoterId: EntityId): Promise<PromoterAssignment[]> {
+    return [...this.assignments.values()].filter((a) => a.promoterId === promoterId);
+  }
+
+  async listAllAssignments(query: PaginationQuery): Promise<Page<PromoterAssignment>> {
+    return serializeSlice([...this.assignments.values()], query);
+  }
+
   async saveAssignment(assignment: PromoterAssignment, _tx?: TxContext | null): Promise<void> {
     casSet(this.assignments, assignment);
+  }
+}
+
+/** In-memory singleton for `PlatformSettingsRepository`. */
+export class MemoryPlatformSettingsRepository implements PlatformSettingsRepository {
+  settings: PlatformSettings = { ...DEFAULT_PLATFORM_SETTINGS };
+
+  async get(): Promise<PlatformSettings> {
+    return { ...this.settings };
+  }
+
+  async save(settings: PlatformSettings): Promise<void> {
+    this.settings = { ...settings };
   }
 }
 
@@ -393,6 +494,19 @@ export class MemoryCartReservationRepository implements CartReservationRepositor
         r.eventId === eventId && r.status === 'active' && Date.parse(r.expiresAt) > now.getTime(),
     );
   }
+
+  async countActiveQuantity(
+    userId: EntityId,
+    eventId: EntityId,
+    tierId: EntityId,
+    now: Date,
+  ): Promise<number> {
+    return [...this.reservations.values()].reduce((sum, r) => {
+      if (r.eventId !== eventId || r.userId !== userId) return sum;
+      if (r.status !== 'active' || Date.parse(r.expiresAt) <= now.getTime()) return sum;
+      return sum + r.lines.reduce((s, line) => s + (line.tierId === tierId ? line.quantity : 0), 0);
+    }, 0);
+  }
 }
 
 export class MemoryOrderRepository implements OrderRepository {
@@ -427,6 +541,26 @@ export class MemoryOrderRepository implements OrderRepository {
   async listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<Order>> {
     const all = [...this.orders.values()].filter((o) => o.eventId === eventId);
     return serializeSlice(all, query);
+  }
+
+  async countPaidQuantityByUserAndEvent(
+    userId: EntityId,
+    eventId: EntityId,
+    tierId: EntityId,
+  ): Promise<number> {
+    return [...this.orders.values()].reduce((sum, order) => {
+      // Only money-captured orders consume the per-user cap.
+      if (order.eventId !== eventId || order.userId !== userId || order.status !== 'paid') {
+        return sum;
+      }
+      return (
+        sum + order.lines.reduce((s, line) => s + (line.tierId === tierId ? line.quantity : 0), 0)
+      );
+    }, 0);
+  }
+
+  async listAll(query: PaginationQuery): Promise<Page<Order>> {
+    return serializeSlice([...this.orders.values()], query);
   }
 
   async save(order: Order, _tx?: TxContext | null): Promise<void> {
@@ -468,12 +602,36 @@ export class MemoryEntitlementRepository implements EntitlementRepository {
     return serializeSlice(all, query);
   }
 
+  async listAll(query: PaginationQuery): Promise<Page<Entitlement>> {
+    return serializeSlice([...this.entitlements.values()], query);
+  }
+
   async save(entitlement: Entitlement, _tx?: TxContext | null): Promise<void> {
     casSet(this.entitlements, entitlement);
   }
 
   async saveMany(entitlements: Entitlement[], _tx?: TxContext | null): Promise<void> {
     for (const e of entitlements) casSet(this.entitlements, e);
+  }
+
+  /**
+   * The same rule as the Firestore adapter, with the same atomicity
+   * guarantee: there is no `await` between the read and the write, so no
+   * other task can interleave. A memory adapter that quietly allowed a
+   * double admission would make every test that passes on it worthless as
+   * evidence about production.
+   */
+  async claimAdmission(
+    entitlementId: EntityId,
+    eventId: EntityId,
+    options?: ClaimAdmissionOptions,
+  ): Promise<AdmissionClaim> {
+    const current = this.entitlements.get(entitlementId) ?? null;
+    const decision = admitSeats(current, eventId, options);
+    if (decision.admitted && decision.entitlement) {
+      this.entitlements.set(entitlementId, decision.entitlement);
+    }
+    return decision;
   }
 
   async countValidByTier(tierId: EntityId): Promise<number> {

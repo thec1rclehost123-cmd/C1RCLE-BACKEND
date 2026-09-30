@@ -38,19 +38,32 @@ export type OrderStatus =
   | 'cancelled'
   /** Provider reported a failure. */
   | 'failed'
-  /** Paid, then refunded (Phase 6 owns the money movement). */
+  /**
+   * A refund is in flight against this order — locked so a second refund
+   * request and a door scan can't race the first one's settlement. Always
+   * entered from `paid` and always left back to `paid` (still has a
+   * refundable remainder) or `refunded` (fully refunded). Never a terminal
+   * state, never entered/left any other way — restoring to `paid` on
+   * failure is therefore never a hardcoded guess, it's the FSM's only valid
+   * predecessor. (v1's admin console hardcoded the restore value on refund
+   * rejection and reopened an already-scanned ticket for re-entry — see
+   * `refund-request.ts`'s header comment for the full story.)
+   */
+  | 'refund_requested'
+  /** Fully refunded (`refundedPaise === grandTotalPaise`). Terminal. */
   | 'refunded';
 
 const ORDER_TRANSITIONS: Readonly<Record<OrderStatus, readonly OrderStatus[]>> = {
   pending: ['awaiting_payment', 'cancelled', 'expired'],
   // A payment can still lapse or fail after the intent exists.
   awaiting_payment: ['paid', 'failed', 'cancelled', 'expired'],
-  paid: ['refunded'],
+  paid: ['refund_requested'],
   expired: [],
   cancelled: [],
   // A retry after failure is a NEW order: reusing this one would make the
   // provider's payment id ambiguous across two attempts.
   failed: [],
+  refund_requested: ['paid', 'refunded'],
   refunded: [],
 };
 
@@ -114,6 +127,13 @@ export interface Order extends VersionedEntity {
   reservationExpiresAt: string;
   /** Why the order ended, when it ended unhappily. */
   failureReason: string | null;
+
+  /**
+   * Cumulative amount refunded so far (Phase 6 admin refunds). A partial
+   * refund keeps the order at `paid`; the order only reaches the terminal
+   * `refunded` status once this equals `grandTotalPaise`.
+   */
+  refundedPaise: number;
 }
 
 export interface CreateOrderInput {
@@ -160,6 +180,7 @@ export function createOrder(input: CreateOrderInput): Order {
     paidAt: null,
     reservationExpiresAt: new Date(now.getTime() + ttl).toISOString(),
     failureReason: null,
+    refundedPaise: 0,
     ...newVersionedEntity(now),
   };
 }
@@ -260,13 +281,73 @@ export function expireOrder(order: Order, now?: Date): Order {
   };
 }
 
-export function refundOrder(order: Order, reason: string, now?: Date): Order {
-  if (order.status === 'refunded') return order;
+/** How much of this order can still be refunded. */
+export function refundableBalance(order: Order): number {
+  return order.grandTotalPaise - order.refundedPaise;
+}
+
+/**
+ * Locks the order while a refund is being settled with the payment
+ * provider. Refuses anything but `paid` — an order already mid-refund, not
+ * yet paid, or already fully refunded has no business entering this state
+ * a second way.
+ */
+export function lockOrderForRefund(order: Order, now?: Date): Order {
+  // Idempotent, like markPaid: a caller retrying an already-locked order
+  // (the second of two racing lock attempts) must not fail an optimistic-lock
+  // check just for being second.
+  if (order.status === 'refund_requested') return order;
   const at = now ?? new Date();
   return {
     ...bumpVersion(order, at),
-    status: transitionStatus(order.status, 'refunded', ORDER_TRANSITIONS),
-    failureReason: reason,
+    status: transitionStatus(order.status, 'refund_requested', ORDER_TRANSITIONS),
+  };
+}
+
+/**
+ * Restores the order after a refund fails to settle (provider error,
+ * rejection). Always goes back to `paid` — the FSM's only valid
+ * predecessor of `refund_requested` — never a value chosen by the caller.
+ * This is the fix for v1's admin console bug: it hardcoded the restore
+ * status on refund rejection, which would have reopened an already-scanned
+ * ticket for re-entry had the order actually reached a checked-in state by
+ * then.
+ */
+export function restoreOrderAfterRefundFailure(order: Order, now?: Date): Order {
+  if (order.status !== 'refund_requested') {
+    throw new InvalidOperationError(
+      `Cannot restore order ${order.id}: not currently locked for refund`,
+    );
+  }
+  const at = now ?? new Date();
+  return {
+    ...bumpVersion(order, at),
+    status: transitionStatus(order.status, 'paid', ORDER_TRANSITIONS),
+  };
+}
+
+/**
+ * Applies a settled refund. Partial refunds return the order to `paid`
+ * with the remainder still refundable; a refund that exhausts the balance
+ * moves the order to the terminal `refunded` status.
+ */
+export function applyOrderRefund(order: Order, amountPaise: number, now?: Date): Order {
+  if (order.status !== 'refund_requested') {
+    throw new InvalidOperationError(`Cannot apply a refund to order ${order.id}: not locked`);
+  }
+  if (amountPaise <= 0) {
+    throw new InvalidOperationError('Refund amount must be positive');
+  }
+  const refundedPaise = order.refundedPaise + amountPaise;
+  if (refundedPaise > order.grandTotalPaise) {
+    throw new InvalidOperationError(`Refund of ${amountPaise} exceeds order ${order.id}'s balance`);
+  }
+  const at = now ?? new Date();
+  const nextStatus = refundedPaise === order.grandTotalPaise ? 'refunded' : 'paid';
+  return {
+    ...bumpVersion(order, at),
+    status: transitionStatus(order.status, nextStatus, ORDER_TRANSITIONS),
+    refundedPaise,
   };
 }
 

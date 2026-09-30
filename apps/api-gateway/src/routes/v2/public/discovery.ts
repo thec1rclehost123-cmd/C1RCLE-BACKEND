@@ -1,14 +1,18 @@
 import {
   paginationQuerySchema,
   eventDtoSchema,
+  eventPublicDetailDtoSchema,
   venueDtoSchema,
+  venuePublicDetailDtoSchema,
   hostPublicDtoSchema,
   discoveryFeedDtoSchema,
+  publicTicketTierListResponseSchema,
   paginatedSchema,
 } from '@c1rcle/contracts/client';
+import { effectiveTierPricePaise } from '@c1rcle/core/domain';
 import { z } from 'zod';
 
-import type { Organization } from '@c1rcle/core/domain';
+import type { Organization, TicketTier, Venue } from '@c1rcle/core/domain';
 
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
@@ -45,6 +49,22 @@ const slugParam = z.object({
     .min(1)
     .max(60)
     .regex(/^[a-z0-9][a-z0-9-]*$/, 'Invalid slug format'),
+});
+
+const venueIdParam = z.object({
+  venueId: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/, 'Invalid venue id format'),
+});
+
+const organizationIdParam = z.object({
+  organizationId: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/, 'Invalid organization id format'),
 });
 
 const searchQuerySchema = paginationQuerySchema.extend({
@@ -92,11 +112,38 @@ export default async function publicDiscoveryRoutes(fastify: FastifyInstance) {
     },
     async (request, reply) => {
       const { idOrSlug } = request.params as z.infer<typeof idOrSlugParam>;
-      const event = await services.public
+      const detail = await services.public
         .getEvent(idOrSlug)
         .catch((error: unknown) => mapDomainError(reply, request, idOrSlug, error));
-      if (event === undefined) return reply;
-      const validated = validateV2Response(reply, request, eventDtoSchema, eventToDto(event));
+      if (detail === undefined) return reply;
+      const payload = {
+        ...eventToDto(detail.event),
+        venue: detail.venue === null ? null : eventVenueToDto(detail.venue),
+        organizer: detail.organizer === null ? null : hostToDto(detail.organizer),
+      };
+      const validated = validateV2Response(reply, request, eventPublicDetailDtoSchema, payload);
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  // ── VENUE DETAIL BY ID ───────────────────────────────────────────────────
+  // Registered BEFORE `/venues/:slug`: the literal `by-id` matches the slug
+  // char class, so order is what keeps `/venues/by-id/:venueId` from being
+  // captured as a slug lookup. Guests resolve an event's `venueId` (events
+  // carry the id, not the slug) to display the venue name + city.
+  fastify.get(
+    '/venues/by-id/:venueId',
+    {
+      preHandler: [fastify.rateLimit('PUBLIC_READ'), fastify.validateV2({ params: venueIdParam })],
+    },
+    async (request, reply) => {
+      const { venueId } = request.params as z.infer<typeof venueIdParam>;
+      const venue = await services.public
+        .getVenueById(venueId)
+        .catch((error: unknown) => mapDomainError(reply, request, venueId, error));
+      if (venue === undefined) return reply;
+      const validated = validateV2Response(reply, request, venueDtoSchema, venueToDto(venue));
       if (validated === undefined) return reply;
       return reply.send(validated);
     },
@@ -114,7 +161,35 @@ export default async function publicDiscoveryRoutes(fastify: FastifyInstance) {
         .getVenue(slug)
         .catch((error: unknown) => mapDomainError(reply, request, slug, error));
       if (venue === undefined) return reply;
-      const validated = validateV2Response(reply, request, venueDtoSchema, venueToDto(venue));
+      const validated = validateV2Response(
+        reply,
+        request,
+        venuePublicDetailDtoSchema,
+        publicVenueToDto(venue),
+      );
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  // ── HOST / ORGANIZATION PUBLIC PROFILE BY ID ─────────────────────────────
+  // Registered BEFORE `/hosts/:slug` for the same capture reason as the
+  // venue by-id route above: guests resolve an event's `organizationId`.
+  fastify.get(
+    '/hosts/by-id/:organizationId',
+    {
+      preHandler: [
+        fastify.rateLimit('PUBLIC_READ'),
+        fastify.validateV2({ params: organizationIdParam }),
+      ],
+    },
+    async (request, reply) => {
+      const { organizationId } = request.params as z.infer<typeof organizationIdParam>;
+      const org = await services.public
+        .getHostById(organizationId)
+        .catch((error: unknown) => mapDomainError(reply, request, organizationId, error));
+      if (org === undefined) return reply;
+      const validated = validateV2Response(reply, request, hostPublicDtoSchema, hostToDto(org));
       if (validated === undefined) return reply;
       return reply.send(validated);
     },
@@ -180,6 +255,36 @@ export default async function publicDiscoveryRoutes(fastify: FastifyInstance) {
       return reply.send(validated);
     },
   );
+
+  // ── EVENT TIERS (public sell surface) ─────────────────────────────────────
+  // Active tiers for a public event with live availability. Non-public events
+  // 404 here exactly like `GET /events/:idOrSlug` (no existence oracle).
+  // Registered AFTER `/events/:idOrSlug` — no capture conflict (`/tiers`
+  // suffix), but kept adjacent for readability.
+  fastify.get(
+    '/events/:idOrSlug/tiers',
+    {
+      preHandler: [fastify.rateLimit('PUBLIC_READ'), fastify.validateV2({ params: idOrSlugParam })],
+    },
+    async (request, reply) => {
+      const { idOrSlug } = request.params as z.infer<typeof idOrSlugParam>;
+      const rows = await services.public
+        .listEventTiers(idOrSlug)
+        .catch((error: unknown) => mapDomainError(reply, request, idOrSlug, error));
+      if (rows === undefined) return reply;
+      const payload = {
+        items: rows.map(({ tier, availableQuantity }) => publicTierToDto(tier, availableQuantity)),
+      };
+      const validated = validateV2Response(
+        reply,
+        request,
+        publicTicketTierListResponseSchema,
+        payload,
+      );
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
 }
 
 /** Public-safe host DTO: no `role` (that's the caller's membership, and
@@ -189,5 +294,51 @@ function hostToDto(org: Organization) {
     id: org.id,
     name: org.name,
     slug: org.slug,
+  };
+}
+
+/**
+ * Small event-location projection for the event-detail `venue` field: just
+ * enough to identify and describe the authoritative venue, never its tenant
+ * or private profile.
+ */
+function eventVenueToDto(venue: Venue) {
+  return {
+    id: venue.id,
+    name: venue.public.name,
+    slug: venue.public.slug,
+    photoUrl: venue.public.photoUrl,
+    address: venue.public.address,
+  };
+}
+
+/**
+ * Full public venue detail: the canonical venue fields plus the explicitly
+ * public profile fields. Owner/contact/internal-note data never leaves the
+ * private profile.
+ */
+function publicVenueToDto(venue: Venue) {
+  return {
+    ...venueToDto(venue),
+    photoUrl: venue.public.photoUrl,
+    address: venue.public.address,
+    facilities: venue.public.facilities,
+  };
+}
+
+/**
+ * Public-safe tier projection: identity + display + effective price + live
+ * availability. No purchase bounds, no sales windows, no version stamps.
+ * Legacy tiers without `priceInPaise` price via `effectiveTierPricePaise`.
+ */
+function publicTierToDto(tier: TicketTier, availableQuantity: number) {
+  return {
+    id: tier.id,
+    eventId: tier.eventId,
+    name: tier.name,
+    description: tier.description,
+    priceInPaise: effectiveTierPricePaise(tier),
+    currency: tier.currency,
+    availableQuantity,
   };
 }

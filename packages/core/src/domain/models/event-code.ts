@@ -1,3 +1,5 @@
+import { createHash, randomBytes, randomInt } from 'node:crypto';
+
 import { newVersionedEntity } from '../identity.js';
 
 import type { EntityId, VersionedEntity } from '../identity.js';
@@ -14,6 +16,18 @@ import type { EntityId, VersionedEntity } from '../identity.js';
  * Scanner sessions are short-lived tokens issued to staff devices after code validation.
  * They scope permissions to specific event/gate/device and expire after shift.
  */
+
+/** A shift, not a day: a device left unattended overnight cannot still scan. */
+export const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+
+/**
+ * The only place a scanner session token is turned into its stored form.
+ * Adapters and the service both call this, so a change of algorithm can
+ * never leave the writer and the reader disagreeing.
+ */
+export function hashSessionToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
 
 export type EventCodeType = 'full' | 'scan_only' | 'charge';
 
@@ -80,12 +94,35 @@ export interface EventCodeCreateInput {
   now?: Date;
 }
 
+/**
+ * Human-typeable door code. Two properties matter and neither is cosmetic:
+ *
+ *  - **CSPRNG, not `Math.random()`.** This string IS the door's credential —
+ *    anyone holding it can open a scanner session for the event. `Math.random`
+ *    is seeded predictably and is not a security primitive; a guessable door
+ *    code is a guessable door.
+ *  - **Unambiguous alphabet** (no `O/0`, `I/1`, `S/5`, `B/8`). Door staff read
+ *    these off a phone screen in a dark club and type them into another
+ *    phone. A collision-free code that gets mistyped is a support call.
+ *
+ * 8 characters of a 26-symbol alphabet ≈ 2^37.6 — far beyond guessing at the
+ * `SENSITIVE_COMMAND` rate limit that fronts session creation, and every code
+ * is additionally scoped to one organization and one event.
+ */
+const CODE_ALPHABET = 'ACDEFGHJKLMNPQRTUVWXYZ2346789';
+
+function humanDoorCode(): string {
+  const chars = Array.from({ length: 8 }, () =>
+    CODE_ALPHABET.charAt(randomInt(CODE_ALPHABET.length)),
+  );
+  return `C1R-${chars.join('')}`;
+}
+
 export function createEventCode(input: EventCodeCreateInput): EventCode {
   const now = input.now ?? new Date();
-  const randomPart = Math.random().toString(36).substring(2, 8).toUpperCase();
-  const code = `C1R-${randomPart}`;
+  const code = humanDoorCode();
   return {
-    id: `CODE-${now.getTime()}-${Math.random().toString(36).substring(2, 8)}`,
+    id: `CODE-${randomBytes(16).toString('hex')}`,
     code,
     eventId: input.eventId,
     organizationId: input.organizationId,
@@ -173,6 +210,15 @@ export interface SessionPermissions {
 
 export interface ScannerSessionCreateInput {
   codeId: EntityId;
+  /**
+   * The organization the session belongs to — the event code's owner, NOT the
+   * staff member who opened it. This used to be set to `createdBy` (a user
+   * id), which meant `session.organizationId` never matched any real tenant
+   * and could not be used for a scope check; callers had to work around it at
+   * the route layer. Now it is the real tenant, so a session read is
+   * org-scopable on its own.
+   */
+  organizationId: EntityId;
   codeData: {
     id: EntityId;
     code: string;
@@ -202,9 +248,12 @@ export function createScannerSession(input: ScannerSessionCreateInput): {
   sessionId: string;
 } {
   const now = input.now ?? new Date();
-  const sessionToken = `sess_${input.codeData.code}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-  const sessionId = `SESS-${input.codeId}-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
-  const expiresAt = new Date(now.getTime() + 12 * 60 * 60 * 1000).toISOString(); // 12 hours
+  // CSPRNG, and the token deliberately does NOT embed the door code: a token
+  // that leaks (a log line, a screenshot of a device) must not also hand over
+  // the code that mints unlimited further sessions.
+  const sessionToken = `scn_${randomBytes(32).toString('base64url')}`;
+  const sessionId = `SESS-${randomBytes(16).toString('hex')}`;
+  const expiresAt = new Date(now.getTime() + SESSION_TTL_MS).toISOString();
 
   const codeType = input.codeData.type;
   const permissions: SessionPermissions = {
@@ -216,10 +265,15 @@ export function createScannerSession(input: ScannerSessionCreateInput): {
 
   const session = {
     id: sessionId,
-    sessionToken,
+    // NEVER carried on the stored entity. The raw token is returned exactly
+    // once, alongside this object, and thereafter only its SHA-256 hash
+    // exists anywhere — so a database read (or a leaked backup) cannot
+    // impersonate a scanner. `GET /door/sessions/:id` consequently always
+    // reports `null` here.
+    sessionToken: null,
     codeId: input.codeId,
     eventId: input.codeData.eventId,
-    organizationId: input.createdBy,
+    organizationId: input.organizationId,
     venueId: input.codeData.venueId,
     type: input.sessionType,
     deviceId: input.deviceId,

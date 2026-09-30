@@ -30,10 +30,30 @@ export class PricingService {
     const catalog = await this.deps.eventCatalog.listTiers(eventId);
     const tierMap = new Map(catalog.map((t) => [t.id, t]));
 
+    const now = Date.now();
     const pricingLines = lines.map((l) => {
       const tier = tierMap.get(l.tierId);
       if (!tier) throw new InvalidOperationError(`Tier ${l.tierId} not found for event ${eventId}`);
-      return { tier, quantity: l.quantity };
+      if (tier.status !== 'active')
+        throw new InvalidOperationError(`Tier ${tier.name} is not available`);
+      if (tier.salesStartAt && Date.parse(tier.salesStartAt) > now)
+        throw new InvalidOperationError(`${tier.name} sales have not started`);
+      if (tier.salesEndAt && Date.parse(tier.salesEndAt) <= now)
+        throw new InvalidOperationError(`${tier.name} sales have ended`);
+      if (
+        tier.minPerOrder !== null &&
+        tier.minPerOrder !== undefined &&
+        l.quantity < tier.minPerOrder
+      ) {
+        throw new InvalidOperationError(
+          `${tier.name} requires at least ${tier.minPerOrder} ticket(s)`,
+        );
+      }
+      const phase = (tier.pricingPhases ?? []).find(
+        (candidate) => Date.parse(candidate.startsAt) <= now && Date.parse(candidate.endsAt) > now,
+      );
+      const resolvedTier = phase ? { ...tier, priceInPaise: phase.priceInPaise } : tier;
+      return { tier: resolvedTier, quantity: l.quantity };
     });
 
     let promo: PromoCode | null = null;

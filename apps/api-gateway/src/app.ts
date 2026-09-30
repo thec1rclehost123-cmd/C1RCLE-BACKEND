@@ -1,22 +1,33 @@
 import { buildV2ErrorResponse } from '@c1rcle/contracts';
 import { createLogger, type Logger } from '@c1rcle/core';
 import cors from '@fastify/cors';
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { LogController, type FastifyInstance } from 'fastify';
 
-import { allowedBrowserOrigins, getGatewayConfig, type GatewayConfig } from './config/index.js';
+import {
+  allowedBrowserOrigins,
+  createTrustedProxyMatcher,
+  getAllowedOrigins,
+  getGatewayConfig,
+  getTrustedProxyCidrs,
+  type GatewayConfig,
+} from './config/index.js';
 import { redactPaths } from './lib/logger-config.js';
-import { genReqId, onRequestHook } from './lib/request-tracing.js';
+import { createReadinessChecks } from './lib/readiness.js';
+import { createRequestIdGenerator, onRequestHook } from './lib/request-tracing.js';
+import { createGatewayRuntimeState, type GatewayRuntimeState } from './lib/runtime-state.js';
 import { createV2Services } from './lib/v2-services.js';
 import cachePlugin from './plugins/cache.js';
 import { errorHandler } from './plugins/error-handler.js';
 import rateLimitPlugin from './plugins/rate-limit.js';
 import rbacPlugin from './plugins/rbac.js';
 import validateV2Plugin from './plugins/validate-v2.js';
-import { registerV2Routes } from './routes/v2/route-manifest.js';
+import { registerV2Routes, type ReadinessChecks } from './routes/v2/route-manifest.js';
 
 export interface BuildAppOptions {
   config?: GatewayConfig;
   logger?: Logger;
+  runtimeState?: GatewayRuntimeState;
+  readinessChecks?: ReadinessChecks;
 }
 
 /**
@@ -29,10 +40,14 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   const config = options.config ?? getGatewayConfig();
   const injectedLogger: Logger | undefined = options.logger;
   const logLevel = config.LOG_LEVEL === 'silent' ? 'silent' : config.LOG_LEVEL;
+  const runtimeState = options.runtimeState ?? createGatewayRuntimeState();
+  const trustedProxyMatcher = createTrustedProxyMatcher(getTrustedProxyCidrs(config));
+  const readinessChecks = options.readinessChecks ?? createReadinessChecks(config);
 
   const app = Fastify({
-    genReqId,
-    disableRequestLogging: true,
+    trustProxy: (address) => trustedProxyMatcher(address),
+    genReqId: createRequestIdGenerator(trustedProxyMatcher),
+    logController: new LogController({ disableRequestLogging: true }),
     logger: {
       level: logLevel,
       redact: redactPaths,
@@ -58,20 +73,35 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   // B10: cookie-based sessions require CORS credentials, and the frontends call
   // the gateway cross-origin (`localhost:300x` -> `:8080` in dev, Vercel ->
-  // Render in production). The allow-list is exact origins from
-  // `CORS_ALLOWED_ORIGINS` (dev frontend ports when unset outside production)
-  // — never `*`, which browsers refuse alongside credentials anyway. See
+  // Render in production). Both origin sources are honoured: `ALLOWED_ORIGINS`
+  // (server-side allow-list) and `CORS_ALLOWED_ORIGINS` (browser allow-list,
+  // falling back to the 3 dev frontend ports outside production). Exact origins
+  // only — never `*`, which browsers refuse alongside credentials anyway. See
   // docs/architecture/decisions.md D-001.
   //
-  // Methods are explicit: @fastify/cors v11 defaults to GET,HEAD,POST only,
-  // which fails the preflight for the admin console's PUT/DELETE and the
-  // partner dashboard's PATCH. Allowed request headers are reflected from the
-  // preflight (the plugin default), so Authorization / X-Request-ID /
-  // Idempotency-Key / X-Organization-Id need no separate list.
+  // Methods and headers are explicit: @fastify/cors v11 defaults to GET,HEAD,POST
+  // only, which fails the preflight for the admin console's PUT/DELETE and the
+  // partner dashboard's PATCH.
   await app.register(cors, {
-    origin: [...allowedBrowserOrigins(config)],
+    origin: [...new Set([...getAllowedOrigins(config), ...allowedBrowserOrigins(config)])],
     credentials: true,
-    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'],
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: [
+      'Authorization',
+      'Content-Type',
+      'X-Organization-Id',
+      'X-Request-Id',
+      'X-Client-Request-Id',
+      'Idempotency-Key',
+      'If-Match',
+      // Every authenticated door/scanner call carries this (see
+      // `scanner-routes.ts`'s `sessionTokenFrom`) — missing from this list
+      // means every such call fails CORS preflight from a browser (the
+      // scanner-app web target), even though native RN callers, which don't
+      // enforce CORS, never surfaced it.
+      'X-Scanner-Session-Token',
+    ],
+    exposedHeaders: ['X-Request-Id'],
   });
 
   await app.register(validateV2Plugin);
@@ -109,7 +139,38 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     void reply.status(404).send(body);
   });
 
-  await registerV2Routes(app);
+  await registerV2Routes(app, {
+    config,
+    runtimeState,
+    readinessChecks,
+  });
+
+  // v1 relied on Firebase Cloud Functions (`sweepExpiredCoverWallets`,
+  // `cleanupReservations`) to physically clear expired cart holds and
+  // scanner-session tokens. v2 has no Cloud Functions runtime, and both
+  // repositories' `cleanupExpired` methods (explicitly documented as
+  // "called by a worker") had no caller anywhere — correctness never
+  // depended on it (every reader filters by `expiresAt`), but the documents
+  // never got swept, so this restores the hygiene v1 had. Firestore-only:
+  // the memory driver (tests) never spawns a timer.
+  if (config.STORAGE_DRIVER === 'firestore') {
+    const repos = v2Services.repos();
+    const sweepIntervalMs = 5 * 60 * 1000;
+    const sweepTimer = setInterval(() => {
+      const now = new Date();
+      void repos.cartReservations.cleanupExpired(now).catch((error: unknown) => {
+        logger.error('cart reservation sweep failed', { error });
+      });
+      void repos.scannerSessions.cleanupExpired().catch((error: unknown) => {
+        logger.error('scanner session sweep failed', { error });
+      });
+    }, sweepIntervalMs);
+    sweepTimer.unref();
+    app.addHook('onClose', (_instance, done) => {
+      clearInterval(sweepTimer);
+      done();
+    });
+  }
 
   return app;
 }

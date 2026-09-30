@@ -5,7 +5,8 @@ import {
   paymentConfirmResponseSchema,
   idempotencyKeySchema,
 } from '@c1rcle/contracts/client';
-import { InvalidOperationError } from '@c1rcle/core/domain';
+import { isSystemActor } from '@c1rcle/core/application';
+import { InvalidOperationError, UnauthorizedError } from '@c1rcle/core/domain';
 import { z } from 'zod';
 
 import { getGatewayConfig } from '../../../config/index.js';
@@ -66,6 +67,15 @@ export default async function paymentRoutes(fastify: FastifyInstance) {
       const actor = services.actor(request);
       const v2Headers = request.v2Headers ?? {};
       const idempotencyKey = requiredIdempotencyKey(v2Headers);
+      if (!actor.userId || isSystemActor(actor)) {
+        mapDomainError(
+          reply,
+          request,
+          body.holdId,
+          new UnauthorizedError('Authentication is required to book tickets'),
+        );
+        return reply;
+      }
 
       const result = await runIdempotent({
         idempotency: services.idempotency,
@@ -130,6 +140,15 @@ export default async function paymentRoutes(fastify: FastifyInstance) {
       const actor = services.actor(request);
       const v2Headers = request.v2Headers ?? {};
       const idempotencyKey = v2Headers['idempotency-key'];
+      if (!actor.userId || isSystemActor(actor)) {
+        mapDomainError(
+          reply,
+          request,
+          paymentId,
+          new UnauthorizedError('Authentication is required to book tickets'),
+        );
+        return reply;
+      }
 
       const result = await runIdempotent({
         idempotency: services.idempotency,

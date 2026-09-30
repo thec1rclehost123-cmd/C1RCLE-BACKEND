@@ -13,6 +13,9 @@ import type { EntityId, VersionedEntity } from '../identity.js';
 
 export type DisputeStatus = 'open' | 'under_review' | 'resolved';
 
+/** Set only by the admin resolution desk — the partner-side `resolveDispute` never sets this. */
+export type DisputeResolutionOutcome = 'upheld' | 'denied';
+
 export interface Dispute extends VersionedEntity {
   id: EntityId;
   organizationId: EntityId;
@@ -24,6 +27,8 @@ export interface Dispute extends VersionedEntity {
   status: DisputeStatus;
   resolutionNote: string | null;
   resolvedAt: string | null;
+  /** Non-null only when resolved by an admin, not the partner-side `resolveDispute`. */
+  resolution: DisputeResolutionOutcome | null;
 }
 
 export interface DisputeCreateInput {
@@ -52,6 +57,7 @@ export function createDispute(input: DisputeCreateInput): Dispute {
     status: 'open',
     resolutionNote: null,
     resolvedAt: null,
+    resolution: null,
     ...newVersionedEntity(now),
   };
 }
@@ -78,5 +84,31 @@ export function resolveDispute(
     status: 'resolved',
     resolutionNote,
     resolvedAt: now.toISOString(),
+  };
+}
+
+/**
+ * Admin resolution — same terminal transition as `resolveDispute`, but
+ * records an `outcome`, which the application layer uses to decide whether
+ * to write a correcting ledger entry (`upheld`) or leave the ledger
+ * untouched (`denied`). The ledger mutation itself lives in
+ * `admin-dispute-service.ts`, not here — this function only owns the
+ * dispute's own state.
+ */
+export function adminResolveDispute(
+  dispute: Dispute,
+  outcome: DisputeResolutionOutcome,
+  resolutionNote: string,
+  now: Date = new Date(),
+): Dispute {
+  if (dispute.status === 'resolved') {
+    throw new InvalidOperationError('Dispute is already resolved');
+  }
+  return {
+    ...bumpVersion(dispute, now),
+    status: 'resolved',
+    resolutionNote,
+    resolvedAt: now.toISOString(),
+    resolution: outcome,
   };
 }

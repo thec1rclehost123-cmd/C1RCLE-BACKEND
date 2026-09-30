@@ -17,10 +17,19 @@ import { bearer } from 'better-auth/plugins';
 import { firestoreAdapter } from 'better-auth-firestore';
 import fp from 'fastify-plugin';
 
-import type { OrganizationRepository, OrganizationRole, Capability } from '@c1rcle/core/domain';
+import type {
+  Capability,
+  EmailSender,
+  OrganizationRepository,
+  OrganizationRole,
+} from '@c1rcle/core/domain';
 import type { Firestore } from '@c1rcle/core/infrastructure';
 
-import { allowedBrowserOrigins, type GatewayConfig } from '../config/index.js';
+import {
+  allowedBrowserOrigins,
+  getBetterAuthTrustedOrigins,
+  type GatewayConfig,
+} from '../config/index.js';
 
 import type { FastifyInstance } from 'fastify';
 
@@ -40,13 +49,15 @@ export type BetterAuthInstance = ReturnType<typeof buildBetterAuth>;
  *   - session lifetime: `expiresIn` 7 days, `updateAge` 1 day — a read inside the
  *     updateAge window extends expiry in place; the token string is NOT rotated
  *     (see `routes/v2/auth/index.ts` `/refresh`, and phase-00 Session Log).
- *   - `trustedOrigins`: the same exact-origin list the CORS allow-list uses
- *     (`allowedBrowserOrigins` — `CORS_ALLOWED_ORIGINS`, or the 3 frontend
- *     dev origins when unset outside production).
+ *   - `trustedOrigins`: the union of the explicit environment-driven origins
+ *     (`BETTER_AUTH_TRUSTED_ORIGINS` or `ALLOWED_ORIGINS`) and the CORS
+ *     allow-list (`allowedBrowserOrigins` — `CORS_ALLOWED_ORIGINS`, or the 3
+ *     frontend dev origins when unset outside production), so a browser origin
+ *     allowed by CORS is never rejected by Better Auth (or vice versa).
  * No behaviour change is intended here; adjust the explicit options below only if
  * a test proves a default diverges from the above.
  */
-export function buildBetterAuth(gw: GatewayConfig, db: Firestore) {
+export function buildBetterAuth(gw: GatewayConfig, db: Firestore, emailSender: EmailSender) {
   return betterAuth({
     secret: gw.BETTER_AUTH_SECRET,
     baseURL: gw.BETTER_AUTH_URL,
@@ -61,6 +72,13 @@ export function buildBetterAuth(gw: GatewayConfig, db: Firestore) {
     }),
     emailAndPassword: {
       enabled: true,
+      // Wires the forgot-password flow. Without this callback Better Auth throws
+      // RESET_PASSWORD_DISABLED on `requestPasswordReset` (verified against
+      // better-auth 1.6.26: `dist/api/routes/password.mjs`). The callback
+      // receives `{user, url, token}`; the url embeds the single-use token and
+      // expires in 1h. In prod (RESEND_API_KEY set) the link emails the user;
+      // otherwise the LoggingEmailSender prints it to the log for dev/ops.
+      sendResetPassword: ({ user, url }) => emailSender.sendPasswordResetEmail(user.email, url),
     },
     // Confirmed-minimal shape (better-auth docs, checked 2026-08-13) — no
     // relied-on default-value mechanism here; routes/auth/index.ts always
@@ -73,7 +91,9 @@ export function buildBetterAuth(gw: GatewayConfig, db: Firestore) {
     advanced: {
       useSecureCookies: gw.NODE_ENV === 'production',
     },
-    trustedOrigins: [...allowedBrowserOrigins(gw)],
+    trustedOrigins: [
+      ...new Set([...getBetterAuthTrustedOrigins(gw), ...allowedBrowserOrigins(gw)]),
+    ],
     plugins: [bearer()],
   });
 }
