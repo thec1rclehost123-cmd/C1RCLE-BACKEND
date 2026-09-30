@@ -81,6 +81,7 @@ import {
 
 import type {
   AdminAuditRepository,
+  EmailSender,
   PaymentProvider,
   VerificationProvider,
 } from '@c1rcle/core/domain';
@@ -186,6 +187,8 @@ export interface PartnerV2Services {
   emailOtp: EmailOtpService;
   /** Guest-portal signup onboarding profile (session-scoped, no org). */
   guestProfile: GuestProfileService;
+  /** Outbound transactional email (OTP + password-reset links). */
+  emailSender: EmailSender;
 }
 
 // Each route module calls `createV2Services()` independently at import time
@@ -454,9 +457,15 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     config: coreConfig,
   });
 
+  const emailSender = new ResendEmailSender(
+    gwConfig.RESEND_API_KEY,
+    gwConfig.NODE_ENV,
+    deps.logger,
+  );
+
   const emailOtp = createEmailOtpService({
     emailOtp: repositories.emailOtp,
-    emailSender: new ResendEmailSender(gwConfig.RESEND_API_KEY, gwConfig.NODE_ENV, deps.logger),
+    emailSender,
     config: coreConfig,
   });
 
@@ -514,5 +523,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     leaderboard,
     emailOtp,
     guestProfile,
+    /** Serves `buildBetterAuth`'s `emailAndPassword.sendResetPassword` callback. */
+    emailSender,
   };
 }

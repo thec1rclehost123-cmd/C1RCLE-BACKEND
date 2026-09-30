@@ -314,6 +314,62 @@ agree(
   false,
 );
 
+/* ── password reset (forgot / reset) — anti-oracle ack guard ────────────── */
+const VALID_FORGOT = { email: 'staff@example.com' };
+agree(
+  'forgotPasswordRequestSchema',
+  'accepts a well-formed forgot-password request',
+  VALID_FORGOT,
+  true,
+);
+agree('forgotPasswordRequestSchema', 'rejects a missing email', {}, false);
+agree(
+  'forgotPasswordRequestSchema',
+  'rejects an extra key (.strict)',
+  { ...VALID_FORGOT, redirectTo: 'https://app.example.com/reset' },
+  false,
+);
+
+const VALID_RESET = { newPassword: 'corr3ct-horse2', token: 'tok_12345' };
+agree(
+  'resetPasswordRequestSchema',
+  'accepts a well-formed reset-password request',
+  VALID_RESET,
+  true,
+);
+agree(
+  'resetPasswordRequestSchema',
+  'rejects a password under 8 chars',
+  { ...VALID_RESET, newPassword: 'short' },
+  false,
+);
+agree(
+  'resetPasswordRequestSchema',
+  'rejects a missing token',
+  { newPassword: 'corr3ct-horse2' },
+  false,
+);
+agree(
+  'resetPasswordRequestSchema',
+  'rejects an extra key (.strict)',
+  { ...VALID_RESET, sessionId: 's_1' },
+  false,
+);
+
+agree('passwordResetAckSchema', 'accepts the reset ack (status true)', { status: true }, true);
+agree(
+  'passwordResetAckSchema',
+  'accepts the forgot ack (status true + message)',
+  { status: true, message: 'If this email exists in our system, check your email' },
+  true,
+);
+agree(
+  'passwordResetAckSchema',
+  'rejects status false (contract asserts success only)',
+  { status: false },
+  false,
+);
+
 /* ── onboarding profile — .strict(), `role` stripped at the boundary ─────── */
 const VALID_ONBOARDING_PROFILE = {
   legalName: 'Neon Room Hospitality LLP',
@@ -446,6 +502,7 @@ const VALID_PUBLIC_EVENT_DETAIL = {
   startingPricePaise: 5000,
   isFree: false,
   cancellationReason: null,
+  compensation: null,
   version: 1,
   createdAt: ISO,
   updatedAt: ISO,
