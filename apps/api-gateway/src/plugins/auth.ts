@@ -25,7 +25,11 @@ import type {
 } from '@c1rcle/core/domain';
 import type { Firestore } from '@c1rcle/core/infrastructure';
 
-import { getBetterAuthTrustedOrigins, type GatewayConfig } from '../config/index.js';
+import {
+  allowedBrowserOrigins,
+  getBetterAuthTrustedOrigins,
+  type GatewayConfig,
+} from '../config/index.js';
 
 import type { FastifyInstance } from 'fastify';
 
@@ -45,8 +49,11 @@ export type BetterAuthInstance = ReturnType<typeof buildBetterAuth>;
  *   - session lifetime: `expiresIn` 7 days, `updateAge` 1 day — a read inside the
  *     updateAge window extends expiry in place; the token string is NOT rotated
  *     (see `routes/v2/auth/index.ts` `/refresh`, and phase-00 Session Log).
- *   - `trustedOrigins`: explicit environment-driven browser origins from
- *     `BETTER_AUTH_TRUSTED_ORIGINS` or `ALLOWED_ORIGINS`.
+ *   - `trustedOrigins`: the union of the explicit environment-driven origins
+ *     (`BETTER_AUTH_TRUSTED_ORIGINS` or `ALLOWED_ORIGINS`) and the CORS
+ *     allow-list (`allowedBrowserOrigins` — `CORS_ALLOWED_ORIGINS`, or the 3
+ *     frontend dev origins when unset outside production), so a browser origin
+ *     allowed by CORS is never rejected by Better Auth (or vice versa).
  * No behaviour change is intended here; adjust the explicit options below only if
  * a test proves a default diverges from the above.
  */
@@ -84,7 +91,9 @@ export function buildBetterAuth(gw: GatewayConfig, db: Firestore, emailSender: E
     advanced: {
       useSecureCookies: gw.NODE_ENV === 'production',
     },
-    trustedOrigins: getBetterAuthTrustedOrigins(gw),
+    trustedOrigins: [
+      ...new Set([...getBetterAuthTrustedOrigins(gw), ...allowedBrowserOrigins(gw)]),
+    ],
     plugins: [bearer()],
   });
 }
