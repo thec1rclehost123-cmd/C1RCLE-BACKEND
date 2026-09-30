@@ -20,6 +20,21 @@ const PROMOS = 'v2_event_catalog_promos';
 const TABLES = 'v2_event_catalog_tables';
 const ASSIGNMENTS = 'v2_event_catalog_promoter_assignments';
 
+/**
+ * An active (never-suspended) assignment has no `suspendedAt` field in
+ * Firestore at all — it's only written by `suspendPromoterAssignment`. The
+ * domain type is `string | null`, never `undefined`, so a raw cast straight
+ * through fails the response schema (which requires the real type, not
+ * `undefined`) for every currently-active promoter.
+ */
+function toAssignment(data: DocumentData): PromoterAssignment {
+  return {
+    ...(data as unknown as PromoterAssignment),
+    endedAt: (data.endedAt ?? null) as string | null,
+    suspendedAt: (data.suspendedAt ?? null) as string | null,
+  };
+}
+
 /** Firestore adapter for `EventCatalogRepository` (B12) — tiers/promos/tables/promoter-assignments. */
 export class FirestoreEventCatalogRepository implements EventCatalogRepository {
   constructor(private readonly db: Firestore) {}
@@ -111,23 +126,19 @@ export class FirestoreEventCatalogRepository implements EventCatalogRepository {
   // ── Promoter assignments ──────────────────────────────────────────────────
   async getAssignmentById(assignmentId: EntityId): Promise<PromoterAssignment | null> {
     const snap = await this.db.collection(ASSIGNMENTS).doc(assignmentId).get();
-    return snap.exists ? (snap.data() as unknown as PromoterAssignment) : null;
+    return snap.exists ? toAssignment(snap.data() as DocumentData) : null;
   }
   async listAssignments(eventId: EntityId): Promise<PromoterAssignment[]> {
     const snap = await this.db.collection(ASSIGNMENTS).where('eventId', '==', eventId).get();
-    return snap.docs.map((doc) => doc.data() as unknown as PromoterAssignment);
+    return snap.docs.map((doc) => toAssignment(doc.data()));
   }
   async listAssignmentsByPromoter(promoterId: EntityId): Promise<PromoterAssignment[]> {
     const snap = await this.db.collection(ASSIGNMENTS).where('promoterId', '==', promoterId).get();
-    return snap.docs.map((doc) => doc.data() as unknown as PromoterAssignment);
+    return snap.docs.map((doc) => toAssignment(doc.data()));
   }
   async listAllAssignments(query: PaginationQuery): Promise<Page<PromoterAssignment>> {
     const base = this.db.collection(ASSIGNMENTS);
-    return paginateQuery(
-      base,
-      query,
-      (data: DocumentData) => data as unknown as PromoterAssignment,
-    );
+    return paginateQuery(base, query, toAssignment);
   }
   async saveAssignment(assignment: PromoterAssignment, _tx?: TxContext | null): Promise<void> {
     await this.db
