@@ -117,6 +117,9 @@ export default async function authRoutes(
         fastify.rateLimit('SENSITIVE_COMMAND'),
       ],
     },
+    // codeql[js/missing-rate-limiting] rate limiting IS applied via the
+    // preHandler list (fastify.rateLimit('SENSITIVE_COMMAND') — same bucket as
+    // login/OTP). CodeQL cannot see through the plugin-decorated preHandler.
     async (request, reply) => {
       if (!auth) return sendAuthUnavailable(reply, request);
       const body = request.body as z.infer<typeof forgotPasswordRequestSchema>;
@@ -143,6 +146,9 @@ export default async function authRoutes(
         fastify.rateLimit('SENSITIVE_COMMAND'),
       ],
     },
+    // codeql[js/missing-rate-limiting] rate limiting IS applied via the
+    // preHandler list (fastify.rateLimit('SENSITIVE_COMMAND') — same bucket as
+    // login/OTP). CodeQL cannot see through the plugin-decorated preHandler.
     async (request, reply) => {
       if (!auth) return sendAuthUnavailable(reply, request);
       const body = request.body as z.infer<typeof resetPasswordRequestSchema>;
