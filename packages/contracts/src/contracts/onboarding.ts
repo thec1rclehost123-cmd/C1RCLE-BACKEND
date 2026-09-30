@@ -49,10 +49,6 @@ export const onboardingDocumentSchema = z.object({
   reviewedBy: opaqueIdSchema.nullable(),
   reviewedAt: z.iso.datetime().nullable(),
   rejectionReason: z.string().nullable(),
-  status: onboardingDocumentStatusSchema,
-  reviewedBy: opaqueIdSchema.nullable(),
-  reviewedAt: z.iso.datetime().nullable(),
-  rejectionReason: z.string().nullable(),
 });
 
 export const onboardingRequestDtoSchema = z.object({
@@ -244,7 +240,7 @@ export const approveOnboardingResultSchema = z.object({
       entityType: z.string().max(120).optional(),
     }),
     documents: z.array(onboardingDocumentSchema),
-    documents: z.array(onboardingDocumentSchema),
+
     missingDocuments: z.array(z.string()),
     submittedAt: z.iso.datetime().nullable(),
     reviewedBy: opaqueIdSchema.nullable(),
