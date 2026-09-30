@@ -98,6 +98,7 @@ export async function registerV2Routes(
         clientEmail: gw.FIREBASE_CLIENT_EMAIL,
         privateKey: gw.FIREBASE_PRIVATE_KEY,
       }),
+      services.emailSender,
     );
   }
 

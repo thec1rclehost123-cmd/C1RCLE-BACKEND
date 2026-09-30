@@ -17,7 +17,12 @@ import { bearer } from 'better-auth/plugins';
 import { firestoreAdapter } from 'better-auth-firestore';
 import fp from 'fastify-plugin';
 
-import type { OrganizationRepository, OrganizationRole, Capability } from '@c1rcle/core/domain';
+import type {
+  Capability,
+  EmailSender,
+  OrganizationRepository,
+  OrganizationRole,
+} from '@c1rcle/core/domain';
 import type { Firestore } from '@c1rcle/core/infrastructure';
 
 import { getBetterAuthTrustedOrigins, type GatewayConfig } from '../config/index.js';
@@ -45,7 +50,7 @@ export type BetterAuthInstance = ReturnType<typeof buildBetterAuth>;
  * No behaviour change is intended here; adjust the explicit options below only if
  * a test proves a default diverges from the above.
  */
-export function buildBetterAuth(gw: GatewayConfig, db: Firestore) {
+export function buildBetterAuth(gw: GatewayConfig, db: Firestore, emailSender: EmailSender) {
   return betterAuth({
     secret: gw.BETTER_AUTH_SECRET,
     baseURL: gw.BETTER_AUTH_URL,
@@ -60,6 +65,13 @@ export function buildBetterAuth(gw: GatewayConfig, db: Firestore) {
     }),
     emailAndPassword: {
       enabled: true,
+      // Wires the forgot-password flow. Without this callback Better Auth throws
+      // RESET_PASSWORD_DISABLED on `requestPasswordReset` (verified against
+      // better-auth 1.6.26: `dist/api/routes/password.mjs`). The callback
+      // receives `{user, url, token}`; the url embeds the single-use token and
+      // expires in 1h. In prod (RESEND_API_KEY set) the link emails the user;
+      // otherwise the LoggingEmailSender prints it to the log for dev/ops.
+      sendResetPassword: ({ user, url }) => emailSender.sendPasswordResetEmail(user.email, url),
     },
     // Confirmed-minimal shape (better-auth docs, checked 2026-08-13) — no
     // relied-on default-value mechanism here; routes/auth/index.ts always
