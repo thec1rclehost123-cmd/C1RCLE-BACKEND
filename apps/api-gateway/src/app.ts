@@ -4,6 +4,7 @@ import cors from '@fastify/cors';
 import Fastify, { LogController, type FastifyInstance } from 'fastify';
 
 import {
+  allowedBrowserOrigins,
   createTrustedProxyMatcher,
   getAllowedOrigins,
   getGatewayConfig,
@@ -70,11 +71,19 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   app.addHook('onRequest', onRequestHook);
 
-  // Cookie-based sessions require credentials. Origins are explicit and
-  // environment-driven so production cannot accidentally inherit localhost
-  // behavior or enable wildcard credentialed CORS.
+  // B10: cookie-based sessions require CORS credentials, and the frontends call
+  // the gateway cross-origin (`localhost:300x` -> `:8080` in dev, Vercel ->
+  // Render in production). Both origin sources are honoured: `ALLOWED_ORIGINS`
+  // (server-side allow-list) and `CORS_ALLOWED_ORIGINS` (browser allow-list,
+  // falling back to the 3 dev frontend ports outside production). Exact origins
+  // only — never `*`, which browsers refuse alongside credentials anyway. See
+  // docs/architecture/decisions.md D-001.
+  //
+  // Methods and headers are explicit: @fastify/cors v11 defaults to GET,HEAD,POST
+  // only, which fails the preflight for the admin console's PUT/DELETE and the
+  // partner dashboard's PATCH.
   await app.register(cors, {
-    origin: getAllowedOrigins(config),
+    origin: [...new Set([...getAllowedOrigins(config), ...allowedBrowserOrigins(config)])],
     credentials: true,
     methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: [
