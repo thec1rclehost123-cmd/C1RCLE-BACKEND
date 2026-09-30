@@ -48,6 +48,7 @@ import phase5Routes from './phase5-routes.js';
 import guestProfileRoutes from './profile.js';
 import publicDiscoveryRoutes from './public/discovery.js';
 import rsvpRoutes from './rsvp/rsvp-routes.js';
+import socialRoutes from './social/social-routes.js';
 import supportIntakeRoutes from './support/intake-routes.js';
 import ticketRoutes from './tickets/ticket-routes.js';
 import walletRoutes from './wallet/wallet-routes.js';
@@ -179,6 +180,8 @@ export async function registerV2Routes(
       await leaderboardRoutes(v2);
       // Phase 7: support intake for the guest/requester.
       await supportIntakeRoutes(v2);
+      // Phase 8: guest follow graph + notification inbox (session-scoped).
+      await socialRoutes(v2);
     },
     { prefix: '/api/v2' },
   );

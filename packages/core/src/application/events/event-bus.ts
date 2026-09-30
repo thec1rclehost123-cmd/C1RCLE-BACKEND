@@ -23,6 +23,9 @@ export class InProcessEventBus implements OutboxWriter {
   private readonly handlers = new Map<string, Set<EventHandler>>();
   /** Idempotency by event id per handler (dedupe), survives bus restarts. */
   private readonly processedByHandler = new Map<string, Set<EntityId>>();
+  /** Stable per-subscription identity (see `handlerKey`). */
+  private readonly handlerIds = new WeakMap<EventHandler, number>();
+  private nextHandlerId = 0;
   private readonly store: OutboxStore;
   private readonly maxAttempts: number;
   private draining = false;
@@ -55,8 +58,9 @@ export class InProcessEventBus implements OutboxWriter {
     const set = this.handlers.get(type) ?? new Set<EventHandler>();
     set.add(handler);
     this.handlers.set(type, set);
-    if (!this.processedByHandler.has(handlerKey(type, handler))) {
-      this.processedByHandler.set(handlerKey(type, handler), new Set<EntityId>());
+    if (!this.handlerIds.has(handler)) this.handlerIds.set(handler, this.nextHandlerId++);
+    if (!this.processedByHandler.has(this.handlerKey(type, handler))) {
+      this.processedByHandler.set(this.handlerKey(type, handler), new Set<EntityId>());
     }
   }
 
@@ -93,7 +97,7 @@ export class InProcessEventBus implements OutboxWriter {
 
     let allSucceeded = true;
     for (const handler of handlers) {
-      const key = handlerKey(row.type, handler);
+      const key = this.handlerKey(row.type, handler);
       const seen = this.processedByHandler.get(key) ?? new Set<EntityId>();
       if (seen.has(row.id)) continue; // consumer idempotency by event id
       try {
@@ -115,8 +119,14 @@ export class InProcessEventBus implements OutboxWriter {
     }
     return false;
   }
-}
 
-function handlerKey(type: string, handler: EventHandler): string {
-  return `${type}#${handler.name}`;
+  /**
+   * Keyed by handler identity, not `handler.name`: factory-built consumers
+   * (e.g. `createAuditConsumer(...)`) are anonymous, so two of them on one
+   * event type used to share a dedupe set and the second silently skipped
+   * every event the first had handled.
+   */
+  private handlerKey(type: string, handler: EventHandler): string {
+    return `${type}#${handler.name}#${this.handlerIds.get(handler)}`;
+  }
 }

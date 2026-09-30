@@ -196,3 +196,8 @@ export type {
   GuestProfileServiceDeps,
 } from './guest-profile/guest-profile-service.js';
 export { createGuestProfileService } from './guest-profile/guest-profile-service.js';
+// Phase 8: follow graph + notifications (publisher service + bus subscribers)
+export { SocialService } from './social/social-service.js';
+export type { FollowStatus } from './social/social-service.js';
+export { createFollowerFanOutConsumer } from './social/notification-consumers.js';
+export type { FollowerFanOutDeps } from './social/notification-consumers.js';

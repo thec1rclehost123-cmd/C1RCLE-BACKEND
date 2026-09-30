@@ -31,6 +31,9 @@ export interface EventPayloads {
   'event.updated': { title?: string; venueId?: EntityId };
   'event.published': { title: string };
   'event.cancelled': { title: string };
+  // Phase 8: follow graph. Consumers: audit; follower-count projections later.
+  'follow.created': { followerId: EntityId; targetType: 'venue' | 'host'; targetId: EntityId };
+  'follow.removed': { followerId: EntityId; targetType: 'venue' | 'host'; targetId: EntityId };
 }
 
 export type DomainEventType = keyof EventPayloads;

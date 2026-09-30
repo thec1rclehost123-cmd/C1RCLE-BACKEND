@@ -686,3 +686,33 @@ export {
   eventPublicDetailDtoSchema,
   discoveryFeedDtoSchema,
 } from './contracts/public.js';
+
+// Phase 8: follow graph + notifications
+export type {
+  CreateFollowRequest,
+  FollowDto,
+  FollowListResponse,
+  FollowStatusDto,
+  FollowTargetTypeDto,
+  MarkNotificationsReadRequest,
+  MarkReadResultDto,
+  NotificationDto,
+  NotificationListResponse,
+  UnreadCountDto,
+} from './contracts/social.js';
+export {
+  createFollowSchema,
+  followDtoSchema,
+  followListResponseSchema,
+  followStatusDtoSchema,
+  followTargetParamsSchema,
+  followTargetTypeSchema,
+  listMyFollowsQuerySchema,
+  listNotificationsQuerySchema,
+  markNotificationsReadSchema,
+  markReadResultDtoSchema,
+  notificationDtoSchema,
+  notificationListResponseSchema,
+  notificationTypeSchema,
+  unreadCountDtoSchema,
+} from './contracts/social.js';

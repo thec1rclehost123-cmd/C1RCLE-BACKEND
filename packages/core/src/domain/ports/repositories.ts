@@ -83,6 +83,7 @@ import type {
   ScanDenyReason,
 } from '../models/scan-ledger.js';
 import type { ScannerDevice } from '../models/scanner-device.js';
+import type { Follow, FollowTargetType, Notification } from '../models/social.js';
 import type {
   SupportTicket,
   SupportTicketCategory,
@@ -1183,6 +1184,41 @@ export interface GuestProfileRepository {
   getByUserId(userId: EntityId): Promise<GuestProfile | null>;
   save(profile: GuestProfile): Promise<void>;
 }
+// ─── Phase 8: follow graph + notifications ─────────────────────────────────
+/** One edge doc per (follower, target); `save` is an idempotent upsert. */
+export interface FollowRepository {
+  get(id: EntityId): Promise<Follow | null>;
+  save(follow: Follow): Promise<void>;
+  /** Returns false when the edge did not exist (unfollow stays idempotent). */
+  delete(id: EntityId): Promise<boolean>;
+  listByFollower(
+    followerId: EntityId,
+    query: PaginationQuery & { targetType?: FollowTargetType },
+  ): Promise<Page<Follow>>;
+  listFollowers(
+    targetType: FollowTargetType,
+    targetId: EntityId,
+    query: PaginationQuery,
+  ): Promise<Page<Follow>>;
+  countFollowers(targetType: FollowTargetType, targetId: EntityId): Promise<number>;
+}
+
+/**
+ * Inbox per user. `createIfAbsent` is the consumer-side idempotency guard:
+ * a redelivered event never overwrites (and so never un-reads) a row.
+ */
+export interface NotificationRepository {
+  createIfAbsent(notification: Notification): Promise<boolean>;
+  listForUser(
+    userId: EntityId,
+    query: PaginationQuery & { unreadOnly?: boolean },
+  ): Promise<Page<Notification>>;
+  countUnread(userId: EntityId): Promise<number>;
+  /** Marks only the caller's own unread rows; returns how many changed. */
+  markRead(userId: EntityId, ids: EntityId[], readAt: string): Promise<number>;
+  markAllRead(userId: EntityId, readAt: string): Promise<number>;
+}
+
 // ─── Platform settings (singleton doc) ──────────────────────────────────────
 
 /**

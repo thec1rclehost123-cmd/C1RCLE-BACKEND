@@ -104,3 +104,17 @@ describe('DomainEvent identity (B09)', () => {
     expect(audits.all()).toHaveLength(1);
   });
 });
+
+describe('InProcessEventBus — multiple subscribers per event type (Phase 8)', () => {
+  it('delivers to every anonymous subscriber, not just the first', async () => {
+    const bus = new InProcessEventBus(new MemoryOutboxStore());
+    const seen: string[] = [];
+    const makeAnonymous = (label: string) => async () => {
+      seen.push(label);
+    };
+    bus.subscribe('event.published', makeAnonymous('audit'));
+    bus.subscribe('event.published', makeAnonymous('fan-out'));
+    await bus.append(makeEvent());
+    expect(seen).toEqual(['audit', 'fan-out']);
+  });
+});
