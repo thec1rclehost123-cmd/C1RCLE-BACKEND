@@ -522,12 +522,29 @@ jobs:
         with:
           turbo-cache: 'false'
 
+      # `--from` is the parent of the oldest commit this PR actually
+      # introduces, not the base ref. A PR whose base lags the integration
+      # branch carries that branch's history inside `base..head`, and linting it
+      # wholesale means judging the PR on commits it never authored — including
+      # squash-merge commits whose subject is the original PR title
+      # (`Fix/guest portal update (#47)`), which can never be fixed from here.
+      # `pr-commit-range.mjs` prints NONE when everything in range is already
+      # merged (a pure promotion PR), and falls back to the base ref if it
+      # cannot narrow, so this is never weaker than the previous behaviour.
       - name: Lint the commits in this pull request
         run: |
-          pnpm exec commitlint \
-            --from "origin/${{ github.base_ref }}" \
-            --to "${{ github.event.pull_request.head.sha }}" \
-            --verbose
+          FROM=$(node scripts/pr-commit-range.mjs \
+            --base "origin/${{ github.base_ref }}" \
+            --head "${{ github.event.pull_request.head.sha }}")
+          if [ "$FROM" = "NONE" ]; then
+            echo "No unreviewed commits in ${{ github.base_ref }}..head — nothing to lint."
+          else
+            echo "Linting from $FROM"
+            pnpm exec commitlint \
+              --from "$FROM" \
+              --to "${{ github.event.pull_request.head.sha }}" \
+              --verbose
+          fi
 
       - name: Lint the pull-request title
         env:
