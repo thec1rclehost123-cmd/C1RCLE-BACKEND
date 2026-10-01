@@ -136,7 +136,6 @@ export interface OrganizationRepository {
    * to `null`-safe fields, never an error.
    */
   getByIds(organizationIds: EntityId[]): Promise<Organization[]>;
-
   /** Public host-profile lookup — global (not org-scoped): a guest reaches an
    * organization by its slug alone, with no tenant context of their own. */
   getBySlug(slug: string): Promise<Organization | null>;
@@ -259,7 +258,6 @@ export interface VenueRepository {
    * `OrganizationRepository.getByIds`.
    */
   getByIds(venueIds: EntityId[]): Promise<Venue[]>;
-
   getBySlug(slug: string, organizationId: EntityId): Promise<Venue | null>;
   /** Public venue-profile lookup — global (not org-scoped): the guest surface
    * addresses a venue by slug alone, with no tenant context of its own. */
@@ -641,18 +639,6 @@ export interface CartReservationRepository {
    * `InventoryService.getAvailableQuantity` — never a public route response.
    */
   listActiveByEvent(eventId: EntityId, now: Date): Promise<CartReservation[]>;
-  /**
-   * Sum of `quantity` across a user's live holds for `(tierId, eventId)` —
-   * `status: 'active'` and not yet past `now`. Drives per-user ticket-caps
-   * (`tier.maxPerUser`) at hold creation. Bounded by one user's active cart
-   * holdings; never a public route response.
-   */
-  countActiveQuantity(
-    userId: EntityId,
-    eventId: EntityId,
-    tierId: EntityId,
-    now: Date,
-  ): Promise<number>;
   /**
    * Sum of `quantity` across a user's live holds for `(tierId, eventId)` —
    * `status: 'active'` and not yet past `now`. Drives per-user ticket-caps

@@ -73,7 +73,6 @@ export class EventService {
 
   async create(actor: ActorContext, command: CreateEventCommand): Promise<Event> {
     await this.assertVenueAccess(actor, command.venueId);
-    await this.assertVenueAccess(actor, command.venueId);
     const event = createEvent({
       id: this.deps.config.ids(),
       organizationId: actor.organizationId,
@@ -200,8 +199,13 @@ export class EventService {
     const startingPricePaise = paidTiers.length
       ? Math.min(...paidTiers.map((tier) => tier.priceInPaise))
       : 0;
-    const isFree = paidTiers.length === 0 || paidTiers.every((tier) => tier.priceInPaise === 0);
+    // Respect an explicit `isFree: false` set by the host via PATCH — only
+    // auto-derive from tiers when the event hasn't been explicitly marked paid.
+    const isFree = !event.isFree
+      ? false
+      : paidTiers.length === 0 || paidTiers.every((tier) => tier.priceInPaise === 0);
     const withCatalogSummary = { ...event, startingPricePaise, isFree };
+
     // The `scheduled` step is transient: only the final `published` state is
     // persisted, so the version bump happens once. Walking two live bumps
     // (review→scheduled→published) and saving only the last would write
