@@ -53,16 +53,6 @@ export function rsvpOrderId(eventId: EntityId, userId: EntityId): EntityId {
 }
 
 /**
- * Deterministic RSVP order id for one user+event. Hashed (not concatenated)
- * so the result always fits the 64-char opaque-id cap regardless of id
- * lengths — same reason `entitlementId` hashes rather than concatenates.
- */
-export function rsvpOrderId(eventId: EntityId, userId: EntityId): EntityId {
-  const digest = createHash('sha256').update(`rsvp:${eventId}:${userId}`).digest('hex');
-  return `RSVP-${digest.slice(0, 32)}`;
-}
-
-/**
  * ─── CheckoutService (Phase 4) ─────────────────────────────────────────────────
  * Orchestrates the full checkout flow:
  *   quote → holds → intent → confirm (dual path: webhook + redirect)
