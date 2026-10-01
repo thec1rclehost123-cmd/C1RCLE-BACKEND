@@ -29,6 +29,11 @@
  * With --base <ref> it also inspects commits in <ref>..HEAD for the exact shape
  * of the original bug: a commit that touches pnpm-lock.yaml, names an advisory
  * (or "high severity vulnerabilities"), and does NOT touch pnpm-workspace.yaml.
+ * Commits already merged into the integration branch (origin/staging, origin/main)
+ * are exempt from that history check — a PR targeting a branch that lags the
+ * integration branch necessarily drags its history into <ref>..HEAD, and
+ * re-litigating reviewed commits is how a guardrail gets ignored. The invariant
+ * checks above still apply to the branch's current state either way.
  *
  * Exit code 0 = clean. Exit 1 = violation found (CI fails).
  *
@@ -284,8 +289,42 @@ const SECURITY_COMMIT =
 
 const baseArgIndex = process.argv.indexOf('--base');
 const base = baseArgIndex !== -1 ? process.argv[baseArgIndex + 1] : undefined;
+let inspected = 0;
 
 if (base) {
+  /**
+   * Refs whose already-merged history is treated as reviewed, so its commits are
+   * not re-litigated. A pull request that targets a branch *behind* the
+   * integration branch (the normal case while a release is pending promotion,
+   * e.g. base `main` while `staging` carries the fixes) necessarily carries the
+   * integration branch's commits inside `<base>..HEAD`, because merging it in is
+   * exactly how the branch catches up. Those commits already passed review when
+   * they landed; re-flagging them makes the guardrail fail every such PR on
+   * history it did not author, which is how a guardrail gets ignored.
+   *
+   * The invariant checks above still apply to the branch's *current* state, so a
+   * commit that slipped a lockfile-only fix through is still caught by the
+   * pnpm-workspace/lockfile reconciliation — this only exempts the commit-shape
+   * history check for commits the integration branch already accepted.
+   *
+   * Remote-tracking refs only, deliberately: a local `main` may sit many commits
+   * behind `origin/main`, and exempting against it would wave through history
+   * that was never released. CI checks out with `fetch-depth: 0`, so `origin/*`
+   * is what exists there anyway.
+   */
+  const EXEMPT_REFS = ['origin/staging', 'origin/main']
+    .map((ref) => {
+      try {
+        execFileSync('git', ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], {
+          cwd: ROOT,
+          stdio: 'ignore',
+        });
+        return ref;
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
   let commits;
   try {
     const out = execFileSync('git', ['log', '--format=%H%x00%s', `${base}..HEAD`], {
@@ -302,6 +341,36 @@ if (base) {
   } catch {
     console.log(`  note: cannot resolve '${base}..HEAD' — skipping the commit-shape check.`);
     commits = [];
+  }
+
+  // Narrow to the commits this branch actually introduces. `git rev-list A..B --not C`
+  // is "in A..B but not already merged into C" — exactly the set that has not been
+  // reviewed, in one pass. Doing it per-commit would mean N rev-parse calls. The
+  // SHAs are full-length, matching `git log --format=%H` above.
+  const totalInRange = commits.length;
+  if (EXEMPT_REFS.length > 0) {
+    try {
+      const unreviewed = new Set(
+        execFileSync('git', ['rev-list', `${base}..HEAD`, '--not', ...EXEMPT_REFS], {
+          cwd: ROOT,
+          encoding: 'utf8',
+        })
+          .split('\n')
+          .filter(Boolean),
+      );
+      // An empty set is a valid answer, not a failure: it means every commit in
+      // the range is already merged, so there is nothing new to audit. Only the
+      // throw above means the narrowing itself could not be computed.
+      commits = commits.filter((c) => unreviewed.has(c.hash));
+      console.log(
+        `  note: ${commits.length} of ${totalInRange} commit(s) in ${base}..HEAD are new;` +
+          ` the other ${totalInRange - commits.length} are already merged into` +
+          ` ${EXEMPT_REFS.join('/')} and are exempt from the commit-shape check.`,
+      );
+    } catch {
+      // If the exemption cannot be computed, fall back to auditing everything.
+      console.log('  note: could not narrow to unreviewed commits — auditing all of them.');
+    }
   }
 
   for (const { hash, subject } of commits) {
@@ -334,6 +403,7 @@ if (base) {
         `  in the same commit, then regenerate the lockfile.`,
     );
   }
+  inspected = commits.length;
 }
 
 // ── Result ───────────────────────────────────────────────────────────────────
@@ -346,5 +416,5 @@ if (errors.length > 0) {
 
 console.log(
   `security pin check OK (${manifest.pins.length} advisory pins held by pnpm-workspace.yaml` +
-    `${base ? `, ${base}..HEAD commits inspected` : ''})`,
+    `${inspected > 0 ? `, ${inspected} new commit(s) in ${base}..HEAD inspected` : ''})`,
 );
