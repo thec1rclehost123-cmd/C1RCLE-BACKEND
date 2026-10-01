@@ -45,6 +45,7 @@ jobs:
               - 'package.json'
               - 'pnpm-lock.yaml'
               - 'pnpm-workspace.yaml'
+              - 'governance/**'
               - 'turbo.json'
               - 'tsconfig.base.json'
               - 'eslint.config.mjs'
@@ -155,6 +156,15 @@ jobs:
         id: audit
         run: pnpm audit --audit-level=high
 
+      # `pnpm audit` only sees the lockfile, so a lockfile-only advisory fix
+      # looks clean here and then reverts on the next `pnpm install`. This walks
+      # the PR's commits and rejects that shape: a security commit touching
+      # pnpm-lock.yaml without touching pnpm-workspace.yaml. Needs history, which
+      # is why it lives here (fetch-depth: 0) rather than in CI's static job.
+      - name: Durable security pins
+        id: pins
+        run: node scripts/check-security-pins.mjs --base "${{ github.event.pull_request.base.sha || github.sha }}"
+
       - name: Scan for verified secrets
         id: secrets
         if: always()
@@ -220,6 +230,7 @@ jobs:
             echo "| Scan | Result |"
             echo "| --- | :--- |"
             echo "| pnpm audit | ${{ steps.audit.outcome }} |"
+            echo "| Durable security pins | ${{ steps.pins.outcome }} |"
             echo "| Secrets | ${{ steps.secrets.outcome }} |"
             echo "| Config misconfiguration | ${{ steps.config.outcome }} |"
             echo "| Dependency CVEs | ${{ steps.cve.outcome }} |"

@@ -64,6 +64,7 @@ jobs:
               - 'package.json'
               - 'pnpm-lock.yaml'
               - 'pnpm-workspace.yaml'
+              - 'governance/**'
               - 'turbo.json'
               - 'tsconfig.base.json'
               - 'eslint.config.mjs'
@@ -136,6 +137,16 @@ jobs:
         if: always()
         run: node scripts/check-nginx-config.mjs
 
+      # A dependency patched for an advisory has to be pinned in
+      # pnpm-workspace.yaml, not only in pnpm-lock.yaml. pnpm re-resolves from
+      # the manifest, so a lockfile-only fix (commit 8be206f) silently reverted
+      # on the next plain `pnpm install` and took the fixes with it. This checks
+      # the pins still hold and that the lockfile agrees with the manifest.
+      - name: Security pins
+        id: pins
+        if: always()
+        run: node scripts/check-security-pins.mjs
+
       # A focused `it.only` silently disables every other test in its file, so a
       # green suite can be hiding almost all of itself.
       - name: No focused tests committed
@@ -162,6 +173,7 @@ jobs:
             echo "| Typecheck | ${{ steps.typecheck.outcome }} |"
             echo "| Boundaries | ${{ steps.boundaries.outcome }} |"
             echo "| Nginx config | ${{ steps.nginx.outcome }} |"
+            echo "| Security pins | ${{ steps.pins.outcome }} |"
             echo "| Focused tests | ${{ steps.focused.outcome }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 

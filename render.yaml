@@ -63,6 +63,16 @@ services:
       - key: BETTER_AUTH_URL
         value: https://circle-v2-backend.onrender.com
 
+      # Browser origins allowed to call this API cross-origin (CORS) and trusted
+      # by Better Auth. Comma-separated exact origins, https only, no wildcards,
+      # e.g. https://c1rcle-v2-admin-console.vercel.app plus the partner
+      # dashboard and guest portal production origins. Not a secret, but kept
+      # in the dashboard because the list changes with frontend domains. When
+      # unset in production, NO browser origin is allowed and every direct
+      # frontend -> gateway call fails its CORS preflight.
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+
       # Phase 5 door scanning. The HMAC key behind rotating ticket QRs and
       # signed offline admission manifests — forging it forges entry to a paid
       # event, so production refuses to boot without a real 32+ character

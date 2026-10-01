@@ -42,6 +42,10 @@ import {
   createLeaderboardService,
   createEmailOtpService,
   createGuestProfileService,
+  SocialService,
+  createFollowerFanOutConsumer,
+  NotificationService,
+  createNotificationConsumer,
   type ScannerService,
   type DoorService,
   type CoverWalletService,
@@ -81,6 +85,7 @@ import {
 
 import type {
   AdminAuditRepository,
+  EmailSender,
   PaymentProvider,
   VerificationProvider,
 } from '@c1rcle/core/domain';
@@ -115,6 +120,8 @@ export interface PartnerV2Services {
   events: EventService;
   catalog: EventCatalogService;
   analytics: AnalyticsService;
+  /** Phase 8: follow graph + notification inbox (guest, session-scoped). */
+  social: SocialService;
   /** Phase 2: partner applications, applicant + admin review sides. */
   onboarding: OnboardingService;
   /** Phase 2: platform-admin resolution, tiering and dual control. */
@@ -186,6 +193,10 @@ export interface PartnerV2Services {
   emailOtp: EmailOtpService;
   /** Guest-portal signup onboarding profile (session-scoped, no org). */
   guestProfile: GuestProfileService;
+  /** V2 partner-dashboard inbox — recipient is the org tenant. */
+  notifications: NotificationService;
+  /** Outbound transactional email (OTP + password-reset links). */
+  emailSender: EmailSender;
 }
 
 // Each route module calls `createV2Services()` independently at import time
@@ -269,6 +280,19 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   eventBus.subscribe('event.updated', createAuditConsumer(audits));
   // Future projection consumer (no-op now — wire exists for B11 projections).
   eventBus.subscribe('event.published', createProjectionConsumer);
+  // Phase 8 pub/sub: follow graph changes are audited, and every publish fans
+  // out "new event" notifications to venue + host followers. The publisher
+  // (EventService / SocialService) never calls these directly.
+  eventBus.subscribe('follow.created', createAuditConsumer(audits));
+  eventBus.subscribe('follow.removed', createAuditConsumer(audits));
+  eventBus.subscribe(
+    'event.published',
+    createFollowerFanOutConsumer({
+      events: repositories.events,
+      follows: repositories.follows,
+      notifications: repositories.socialNotifications,
+    }),
+  );
 
   const adminAudits: AdminAuditRepository =
     gw.STORAGE_DRIVER === 'memory'
@@ -335,7 +359,20 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     repositories,
   };
 
+  // V2 partner inbox producer consumer: domain events → notification rows.
+  // Subscribed to each producer event type; the handler is a named function
+  // (its `handler.name` keys the bus's per-event dedupe set).
+  const notificationConsumer = createNotificationConsumer({
+    notifications: repositories.notifications,
+    config: coreConfig,
+    logger: deps.logger,
+  });
+  eventBus.subscribe('promoter_connection.requested', notificationConsumer);
+  eventBus.subscribe('partnership.requested', notificationConsumer);
+  eventBus.subscribe('event.published', notificationConsumer);
+
   const adminAuthority = new AdminAuthorityService(deps);
+  const onboardingService = new OnboardingService(deps, adminAuthority);
 
   // Phase 5 services
   const scanner = createScannerService({
@@ -395,6 +432,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     eventCodes: repositories.eventCodes,
     doorSales: repositories.doorSales,
     scanLedger: repositories.scanLedger,
+    venues: repositories.venues,
     adminAudit: adminAudits,
     logger: deps.logger,
   });
@@ -453,9 +491,15 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     config: coreConfig,
   });
 
+  const emailSender = new ResendEmailSender(
+    gwConfig.RESEND_API_KEY,
+    gwConfig.NODE_ENV,
+    deps.logger,
+  );
+
   const emailOtp = createEmailOtpService({
     emailOtp: repositories.emailOtp,
-    emailSender: new ResendEmailSender(gwConfig.RESEND_API_KEY, gwConfig.NODE_ENV, deps.logger),
+    emailSender,
     config: coreConfig,
   });
 
@@ -476,7 +520,8 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     events: new EventService(deps),
     catalog: new EventCatalogService(deps),
     analytics: new AnalyticsService(deps),
-    onboarding: new OnboardingService(deps, adminAuthority),
+    onboarding: onboardingService,
+    social: new SocialService(deps),
     adminAuthority,
     adminOps,
     checkout,
@@ -513,5 +558,8 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     leaderboard,
     emailOtp,
     guestProfile,
+    notifications: new NotificationService(deps),
+    /** Serves `buildBetterAuth`'s `emailAndPassword.sendResetPassword` callback. */
+    emailSender,
   };
 }

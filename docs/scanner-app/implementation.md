@@ -1044,6 +1044,146 @@ propagating — an unreadable store is a valid first-run state, not a crash.
 forget:** the handset build meets the contract's storage requirement; the
 web build cannot, and should be treated as staff-supervised/preview.
 
+## 2026-09-24 (fourth round) — The tab shell and all five tabs
+
+With login accepted, the same transcription pass was applied to the rest of
+the reference: the app shell and the five tabs. These screens were built in
+the earlier structural pass using design tokens and approximated spacing —
+exactly the failure mode that cost four rounds on login — so the
+expectation going in was that they carried the same class of error. They
+did, plus two genuine functional bugs.
+
+**`onTouchEnd` on a `View` does not fire for mouse clicks under
+react-native-web.** The Door tab's segmented control, its gender and type
+choice buttons, the guest-count stepper, and the header's back button were
+all built with `onTouchEnd` handlers. On a handset they work; in a browser
+they are inert. Every one is now a `Pressable`. This is the sort of thing
+that a bundle check cannot catch — the code compiles and renders, the
+controls simply never respond — and it would have looked like a styling
+problem to anyone testing the web build.
+
+**The shared header was doubling as each tab's title.** The reference has
+two distinct things: one app-shell header carrying the *event* (back
+button, event name, LIVE badge) that every tab sits under, and then each
+tab's own large Anton title ("Scan Ticket", "Door", "Stats", "Guests",
+"Settings"). The build had collapsed these into one — each screen passed
+its own title into the shared header, so the Door tab's header read "Door"
+where it should have read the event name, and the big per-tab titles were
+missing on several screens. `AppScreenHeader` now renders once from
+`(tabs)/_layout.tsx` and reads the event from the session itself, which
+also removes five call sites that could drift apart.
+
+**Tab bar rebuilt as a custom `tabBar`.** Two details are not expressible
+through `screenOptions`: the active state is a pill behind the entire cell
+(icon and label together) rather than a highlight around the icon, and the
+bar floats over a 120px gradient scrim that fades content out beneath it.
+The `backdrop-filter: blur(22px) saturate(160%)` is now real (via
+`expo-blur`) instead of being faked with a more opaque solid fill, and the
+labels are no longer force-uppercased — `typography.label` carries
+`textTransform: 'uppercase'`, so "Door Entry" was rendering as "DOOR
+ENTRY".
+
+**Icon corrections:** the scan grid's cells are 9.5px, not 8.5 (a `1fr 1fr`
+grid with `gap:3` inside a 22px box); the Guests icon is 26px wide in the
+reference and was being clipped by a 22px wrapper; and the Settings dial is
+a `repeating-conic-gradient` of eight spokes, which had been simplified to
+a plain ring — now drawn as SVG wedges using the same helper as the login
+hero's rays.
+
+**Per-screen rebuilds** were otherwise mechanical: literal values from the
+markup in place of `spacing`/`radii` tokens, plus the pieces that were
+simply absent — Settings was missing the whole ASSIGNED GATE segmented
+selector and the "Switch event" row, and was using React Native's platform
+`Switch` where the reference has a 50x30 pill toggle; Guests had three
+filter chips where the reference has five (the VIP and Guestlist tier
+filters were missing) and flat avatars where the reference colours them by
+tier.
+
+**Two real bugs caught by the toolchain, not by eye:** typecheck rejected
+the header reading `event.name` / `event.venue`, which do not exist on the
+contract's event shape (it carries `title` and `venueId`) — the header had
+been written against the reference's mock data rather than the real schema.
+Lint then flagged two `??` guards on fields that are not actually nullable.
+Both were fixed against the schema rather than silenced.
+
+**Stats is the one screen that cannot be finished from the frontend.**
+`GET /door/stats` returns `occupancy` only — inside, capacity, remaining,
+prebooked. The reference shows an entries-per-hour chart, a gender split,
+average age, a rejected count and a table count on top of that. The layout
+is built in full; the numbers are handled by provenance rather than filled
+in:
+
+- Hero (checked-in, capacity, percent, progress) — real, from `occupancy`.
+- DOOR headcount and TABLES — real, from `GET /door/sales` records.
+- TICKETS — derived as `inside − doorHeads`. Defensible, but a derivation
+  rather than a reported figure, and worth saying so.
+- GENDER SPLIT and AVG AGE — computed from door-sale records, which do
+  carry gender and age, and labelled "door entries only" on screen because
+  scanned tickets carry neither. Genuinely partial.
+- ENTRIES / HOUR and REJECTED — no endpoint exposes either. The cards
+  render with an explicit unavailable note and an em dash.
+
+A fabricated headcount at a door is worse than a blank one, so nothing here
+is invented to fill the layout. **This is a backend gap, not a frontend
+one:** matching the design needs `GET /door/stats` to return hourly
+buckets, a denied-scan count, and a gender/age breakdown across all
+entries rather than just door sales. Flagged for a decision.
+
+**Verified:** `typecheck` and `lint` clean across every rebuilt screen, a
+clean 1000-module bundle, HTTP 200, `pnpm boundaries` unchanged.
+
+## 2026-09-24 (fifth round) — Select Event, and four pieces of bespoke art
+
+The last screen in the reference. Its four cards are not one card repeated:
+each has its own palette, its own height (200px for the live one, 180 for
+the rest), its own title size, and — the part that had been flattened — its
+own 3D composition. Card one pairs a spinning record with its sleeve; card
+two floats two balloons; card three has a lone turntable over conic rays;
+card four has two striped party hats. The build had reused a single
+turntable on every card, which is what made the list read as one thing
+repeated rather than four different nights.
+
+`src/components/decor/EventCardArt.tsx` builds all four, each with the
+reference's `floaty` bob (a 6px rise and fall) at its own duration, delay
+and held rotation. The balloons and hats are SVG: a balloon is an ellipse
+with a three-stop radial gradient plus a knot and string; a hat is a
+triangle clip filled with diagonal bands and a gradient pompom.
+
+**A clipping bug caught while building the hats.** The stripe rotation was
+initially on the same `<G>` that carried the clip path, which rotates the
+clip along with its contents — the cone's outline would have tilted with
+its stripes instead of staying upright. The rotation now sits on an inner
+group nested inside the clipped one. Lint separately flagged that `Rect`'s
+`x`/`y` props are deprecated in this version of react-native-svg, so the
+bands are paths.
+
+**Two data-driven corrections to the screen itself:** the LIVE badge now
+keys off the event's real `status === 'live'` instead of always decorating
+whichever card happens to be first, and the header's gate chip — missing
+entirely — is back.
+
+**One deliberate functional addition:** the reference goes straight from a
+card tap into the app. A real shift cannot, because it needs a door code
+redeemed for a scanner session (contract §5), so selecting a card reveals
+the code field rather than navigating. This is a departure from the
+reference and a necessary one.
+
+**Every screen in the reference has now been through this pass.**
+
+**Verified:** `typecheck` and `lint` clean, a clean 1001-module bundle
+compiled from an empty Metro cache, HTTP 200, `pnpm boundaries` unchanged.
+
+**A verification gap worth recording, because it produced a false
+"verified" earlier in this session.** The Expo dev server only recompiles
+when a client actually pulls the JS bundle. With no browser attached, a
+`curl` of the page returns 200 from the already-built HTML without
+rebuilding anything — so "HTTP 200 after my change" proved the server was
+running, not that the changed files compile. The reliable check is to
+restart with `--clear` and watch for a fresh `Web Bundled … (N modules)`
+line, and to confirm N moved when files were added (1000 → 1001 here, the
+new `EventCardArt`). Earlier bundle claims in this document that rest on a
+plain page fetch should be read with that caveat.
+
 **Still not a pixel diff.** Everything above is derived from the markup and
 verified by compilation plus a clean bundle; this environment has no
 browser or screenshot capability, so the user's screenshot remains the only
@@ -1051,3 +1191,1534 @@ real fidelity check. The sheen sweep on each vinyl disc also stays an
 approximation — the reference uses a genuine smooth `conic-gradient` and
 SVG has no equivalent primitive, so it's fanned into stepped-opacity
 wedges that read correctly at this size but aren't a true blend.
+
+## 2026-09-24 (sixth round) — Phase 2: money surfaces, and what the contract check caught first
+
+Proceeding on the rollout plan in `06-v1-vs-v2-and-rollout.md`, Phase 2 is
+the money surfaces: `/door/wallet-qr`, `/door/wallet-charge`,
+`/door/ticket-sale`, plus walk-in and dine-in, which were pulled forward
+earlier. Reading the frozen contract before building on top of the existing
+walk-in/dine-in code turned out to matter more than the new work.
+
+**Three defects in what had already shipped.**
+
+1. `paymentMode` was never sent. The contract requires it on every money
+   call; both submit paths omitted it entirely.
+2. `totalGuests` was sent only for dine-in. The contract states it is the
+   *priced* party size and is required on both — so a walk-in was going up
+   with no headcount attached to price against.
+3. `doorSaleSchema` declared `guestPhone`, `guestAge` and `gender`, none of
+   which the server returns. `DoorSaleResponse` is headcount and money.
+   Because zod strips unknown keys rather than failing, this never threw —
+   the Door register simply rendered "—" in those three positions on every
+   row, forever, and looked like a data problem rather than a schema one.
+
+**A correction to my own earlier entry.** The previous round's note in this
+document claimed Stats' gender split and average age were "computed from
+door-sale records, which do carry gender and age". That was wrong. Those
+fields are write-only inputs — collected at the door, never returned by any
+read endpoint — so the computation could only ever have produced empty
+results. Typecheck caught it the instant the schema was corrected against
+the contract. Both cards now say they are unavailable, and a TAKEN AT THE
+DOOR card was added showing money that is genuinely returned. The earlier
+claim stands corrected rather than quietly edited away.
+
+**Paid ticket sale** is folded into the Door form as a third entry Type
+rather than a fourth segment: the form already asks what kind of entry this
+is, and the reference's three-segment control is the shape being matched.
+Tiers come from the shift payload (now persisted in the session, since
+`ticket-sale` needs a `tierId` and nothing else carries them), sold-out
+tiers are disabled from `tier.available`, and `pricePaise × quantity` is
+displayed so staff collect the right cash — displayed only; no price is ever
+sent, and the server recomputes it. The response's `replayed: true` is
+surfaced as an explicit "do not collect again", because that flag is exactly
+the difference between a retry and charging a guest twice.
+
+**Cover-tab charging** (`app/wallet.tsx`) has no counterpart in the
+reference design, so it is built in the established visual language rather
+than transcribed. The contract's rules here are unusually prescriptive and
+each one is load-bearing: buttons render *from* `presetItems` with no
+free-amount keypad (the API has no amount field to send one to); a null
+`balancePaise` means the venue hides balances and must render as nothing,
+never `0`; the QR is re-scanned for every charge because the call takes the
+QR rather than a saved wallet id, so a charge always follows a tab
+physically presented; and the 3-charges-per-device-per-minute limit is
+enforced client-side so staff meet a disabled button instead of a server
+refusal mid-queue. Refunds, top-ups and freezes are supervisor-console
+actions and are deliberately absent.
+
+**A real bug lint caught in that velocity gate.** It was computing
+`Date.now()` during render to decide whether the limit had expired. Besides
+being impure, it meant the gate would never clear on its own — nothing
+re-renders a component just because time passed, so the buttons would have
+stayed disabled until some unrelated state change happened to occur. Expired
+timestamps are now pruned on a timer and the gate derives from state alone.
+
+**Deviations, both worth a decision:** the cover tab is a separate route
+reached from the Door tab rather than a sixth tab, because the reference's
+nav is a fixed five and this surface only exists for shifts granted
+`canCharge` — but `05-cover-wallet-door-sales.md` D1 does call it a "Charge
+tab", so a sixth tab may be what was intended. And the entry form still
+requires phone, gender and age, which the contract treats as optional,
+because the reference marks them required with asterisks; that is stricter
+than the server and could block a legitimate entry.
+
+**Phase 2's exit criterion is not met.** The contract and the rollout plan
+both require an actual double-tap test under a simulated flaky network
+before money calls ship — not a code review. The idempotency discipline is
+implemented (one key per user intent, rotated only after a confirmed
+success, never per network attempt) but has not been exercised against a
+real degraded connection. That test needs a device and a throttled network,
+neither of which exists in this environment.
+
+**Verified:** `typecheck` and `lint` clean.
+
+## 2026-09-24 (seventh round) — Phase 3: escalation, and a Phase 1 defect that had never been exercised
+
+Continuing the rollout plan, Phase 3 is staff-deny and override
+(`POST /door/staff-deny`, `POST /door/override`). Both need the same
+`ticket.override` permission the contract also requires for manual
+check-in, so before writing anything new the existing manual-check-in path
+was checked to see if it even gated on that permission correctly. It
+didn't, and the check went one level deeper than expected.
+
+**`doorGuestSchema` was wrong in kind, not just incomplete.** It modeled
+guests as `entitlementId`/`holderName`/`tierName`/a free-text `status` —
+none of which the real `DoorGuest` type
+(`packages/contracts/src/contracts/phase5.ts`) has. The actual shape is
+`id`/`name`/`ticketType`/`entryType`/`quantity`/`source`, with `status`
+being exactly the two-value enum `entered`/`not_entered`. Because zod
+requires every declared field and none of the declared ones exist on the
+real payload, **every guest-roster fetch would fail schema validation
+against real staging** — this had clearly never been run against the
+actual backend, only built to match the reference design's mock data
+(which invented tier categories like "VIP" and "Guestlist" that have no
+counterpart on the server at all).
+
+**Compounding it, the response schema required a `cursor` key the server
+never sends.** The roster is paged with `limit` (max 1000) plus a
+`truncated` flag, not cursor-based pagination — so the fetch would have
+failed before the guest-shape mismatch was even reached.
+
+**`manualCheckIn` parsed the wrong response schema entirely.** It ran the
+result through `checkInResultSchema` — the discriminated union a *camera*
+scan can return (consumed/denied/confirmation_required). The real response
+to `POST /door/guests/check-in` is `{ guest: DoorGuest, checkInId }`, a
+completely different shape with no `status` field matching that union at
+all. Every successful manual check-in would have thrown on parsing the
+success response.
+
+**And no permission check existed for it at all.** The contract and the
+backend route agree: manual check-in requires `ticket.override`, a
+role-level RBAC right (owner/admin/manager hold it, member does not) —
+distinct from the door-session's `canScan`/`canWalkIn`/`canCharge`
+booleans, which come from a different authorization layer entirely (the
+event code that opened the shift, not the staff member's role). Any staff
+member could tap the button and receive an unexplained 403 with no warning
+the action wasn't available to them.
+
+All four fixed: `guestSchema` and `guestListResponseSchema` corrected
+against the real contract; `manualCheckIn` now parses
+`manualCheckInResponseSchema`; a `canOverride(role)` helper added to
+`staffAuth.ts`, explicitly documented as a UI-only mirror of the server's
+RBAC rule and not a security boundary — getting it wrong shows or hides a
+button, it can never grant access, since the server enforces the real
+permission regardless. `guests.tsx` was rebuilt with three real filters
+(All/Entered/Not entered) in place of the reference's five, two of which
+(VIP, Guestlist) don't correspond to anything `DoorGuest` returns and would
+have been fabricated categories.
+
+**The new Phase 3 surfaces themselves were comparatively simple once the
+ground under them was correct.** Staff-deny is a "Deny without a ticket"
+link under the Scan screen's manual-code panel — reusing that field as an
+optional `qrPayload` — for refusing someone who never presents a scannable
+ticket. Override is an OVERRIDE pill on denied Recent Scans rows, shown
+only when `canOverride` is true, opening a small reason-capture modal.
+
+**A shortcut considered and rejected while building the override modal:**
+the fastest path was a hardcoded reason string like `'Manager override at
+door'`. That would have satisfied the schema (`reason: z.string().min(1)`)
+while destroying the actual point of the field — the contract's own
+override state diagram says the record exists to show "who let them in
+anyway," which requires a real reason, not a placeholder. Built a proper
+modal instead. `RecentEntry` now carries the scan's real `checkInId` (null
+for admissions — there's nothing to override on one) so the override call
+has a real target.
+
+**Verified:** `typecheck` and `lint` clean, `pnpm boundaries` unchanged.
+
+**What this round changes about how much to trust "Phase 1 — done."** Two
+concrete defects (guest schema, manual-check-in response schema) sat in
+code that this document had already marked complete and verified. Both
+were the kind of bug that only a real network round-trip against staging
+would surface — `tsc` and `eslint` are blind to "this shape doesn't match
+what the server actually returns" when the shape is merely internally
+consistent. Phase 1's manual E2E walkthrough (pair → redeem → scan →
+… → search roster → manual check-in → heartbeat, against real staging)
+has still never been run. It was written down as an open item before; it
+should now be read as the thing standing between "typechecks" and "works."
+
+## 2026-09-24 (eighth round) — Actually running Phase 1 & 2 E2E against a real backend
+
+The user asked to complete Phase 1 and 2's manual E2E exit criteria. Two
+blockers surfaced immediately, both outside scanner-app's own code.
+
+**Blocker 1 — CORS.** The scanner-app web target pointed at the deployed
+`circle-v2-backend.onrender.com`. Its `ALLOWED_ORIGINS` is an explicit list
+with no wildcard (`docs/operations/render-staging.md`) — a documented
+policy, not a misconfiguration, and it will never include an ephemeral
+localhost dev port. This is not something to route around: no Render
+credentials exist in this session to change deployed staging config, and
+loosening a shared environment's CORS policy for local dev convenience
+isn't a unilateral call to make even if credentials did exist. Instead,
+`apps/scanner-app/.env` was pointed at a **local** `api-gateway` instance
+(`http://localhost:8080`, already running from earlier in this session,
+Firestore-backed against the `c1rcle-v2` project) — same code, same
+contract, no infra change, and `apps/api-gateway/.env.local`'s
+`ALLOWED_ORIGINS` (a local, gitignored file) was widened to include the
+scanner-app's dev ports.
+
+**Blocker 2 — no real data.** Confirmed with the user before proceeding
+(this writes real records to a live Firestore project, not something to
+do unasked): built `apps/api-gateway/src/scripts/seed-scanner-e2e.ts`,
+following the existing `seed-platform-admin.ts`/`migrate-and-seed-v1-sample.ts`
+pattern — a real Better Auth signup, then an organization/venue/published
+event/tiers/entitlements/cover-wallet/two door-codes (`full` and
+`charge`) built via the same domain constructors the real application
+layer uses, all `seed_e2e_`-prefixed for identifiability. One deliberate
+shortcut: rather than replicating the rotating-QR HMAC scheme for test
+tickets, `decodeQr()`'s own fallback path (a bare id with no colons is a
+legitimate non-magic lookup) was used to mint tickets that can be typed as
+plain text instead of scanned — confirmed by reading `scanner-service.ts`
+before relying on it, not assumed.
+
+**Then a second script, `e2e-scanner-check.ts`, drives the exact HTTP
+sequence `scannerApiClient.ts` sends** — login, device registration,
+session redemption, camera-path scan (valid/couple-confirm/already-used),
+guest roster + manual check-in, heartbeat, walk-in/dine-in, ticket-sale
+with idempotent replay, staff-deny/override, stats, and cover-wallet
+charging — asserting each response matches what this session's schema
+fixes expect. This is explicitly NOT the documented manual walkthrough:
+there is no browser-automation tool in this environment, so nothing here
+clicks a button in the running app. What it proves instead is that the
+real backend, end to end, returns what the frontend code now expects —
+which is exactly the class of bug (response shapes that don't match)
+found twice already this session by static reading, and now checked
+against a live server instead of assumed.
+
+**Two things this session's own earlier fixes had gotten right,
+confirmed on the first real request:** the corrected `guestSchema`/
+`guestListResponseSchema` (no `cursor`, real `DoorGuest` fields) matched
+the live `/door/guests` response exactly, and `manualCheckInResponseSchema`
+(`{guest, checkInId}`, not the camera-scan union) matched
+`/door/guests/check-in` exactly. Both were rewritten from reading the
+contract, never exercised against a server until this pass — they were
+right.
+
+**Three real, previously-undiscovered backend defects found and fixed
+by the pass itself, not anticipated:**
+
+1. **`v2_scan_ledger` was missing two composite indexes** the admission-
+   stats aggregate query requires (`eventId+admittedCount`,
+   `eventId+tierName+admittedCount`). `firestore.indexes.json` declared
+   seven other indexes on that collection but not these two — a real gap
+   in the committed file, not just an undeployed one, and exactly the
+   "missing firestore.indexes.json" risk flagged as a disclosed gap
+   earlier in this doc set, now empirically confirmed. Added both index
+   definitions and deployed them (`firebase deploy --only
+   firestore:indexes`) — additive only, no data risk, and the exact
+   thing already called for.
+2. **`GET /door/sales` 500'd on every empty result.** `pageInfo.pageSize:
+   query.limit ?? items.length` — when no `limit` is given (scanner-app
+   never sends one) and zero sales exist yet (the first walk-in of any
+   night), `pageSize` became `0`, which failed the endpoint's own response
+   schema (`pageSize > 0`) server-side, turning a legitimate empty list
+   into a 500. Fixed to `query.limit ?? 1000` (`DoorService.listSales`'s
+   own documented fetch cap) — `pageSize` describes page *capacity*, not
+   how many items happened to come back.
+3. **Every walk-in/dine-in creation 500'd**, full stop: `AdminAuditRecord.before`
+   is documented as `null` for a create action (no prior state), but
+   `door-service.ts`'s `auditRecord()` helper passed the bare `undefined`
+   an omitted parameter produces straight through. The Firestore Admin
+   SDK rejects a literal `undefined` field outright — `Cannot use
+   "undefined" as a Firestore value`. This is not an edge case; it fired
+   on the very first walk-in this session tried to create. Fixed with
+   `?? null` on both `before` and `after`.
+
+**A process-management lesson, not a code one.** `tsx watch`'s restart-
+on-file-change reliably raced its own socket teardown on Windows
+(`EADDRINUSE` on almost every hot-reload attempt observed this round),
+silently leaving the OLD, unpatched process as the actual listener while
+looking like a successful restart in the log. Two of the fixes above
+appeared to "not work" on first re-test purely because of this — the
+fixes were correct, the process serving them wasn't. The reliable
+sequence became: find the PID on the port, force-stop it, confirm the
+port is free, then start fresh — never trust the watch restart's own log
+line as confirmation that new code is live.
+
+**Once the index finished building, three more real backend defects
+surfaced, all previously invisible to `pnpm test` because that suite runs
+against the in-memory repositories, which don't replicate real Firestore
+transaction semantics at all — none of the three could have been caught
+without a live round-trip:**
+
+4. **Every walk-in and dine-in creation 500'd, full stop.**
+   `AdminAuditRecord.before` is documented as `null` for a create action
+   (no prior state to diff against), but `door-service.ts`'s
+   `auditRecord()` helper passed the bare `undefined` an omitted optional
+   parameter produces straight through, unmodified. The Firestore Admin
+   SDK rejects a literal `undefined` field outright:
+   `Cannot use "undefined" as a Firestore value (found in field
+   "before")`. Not an edge case — it fired on the very first walk-in this
+   session attempted. Fixed with `?? null` on both `before` and `after`.
+5. **The identical bug, independently, in `cover-wallet-service.ts`'s own
+   `auditRecord()` helper** (`before ? {...before} : before` — the falsy
+   branch returned the bare `undefined`, not `null`). Every wallet-charge
+   500'd on writing its own audit record for the same reason. Same fix.
+6. **The most serious finding: `recordTicketSale` never actually settles
+   any paid order — door or online, this writer is shared with the live
+   checkout path.** `FirestoreLedgerRepository.createBatch` ran a
+   `for`-loop inside one `runTransaction`, reading an idempotency doc,
+   then writing two documents, then looping back to read the *next*
+   entry's idempotency doc — but Firestore transactions require every
+   read to happen before any write in the same transaction. A ticket sale
+   always produces at least four ledger entries (revenue, platform fee,
+   venue share, host payout), so this violated the ordering rule on
+   *every* real sale, throwing `FAILED_PRECONDITION: Firestore
+   transactions require all reads to be executed before all writes`.
+   Worse, the failure was silent from the guest's perspective: the order
+   and entitlements are saved via separate, earlier, non-transactional
+   writes before `settleOrder` is ever called, so the guest's ticket and
+   admission succeed regardless — and `sellAtDoor`'s own idempotent-replay
+   branch returns early on a retry without ever re-attempting settlement.
+   A sold, walked-in ticket could sit with **no ledger entry ever created
+   for it**, permanently, with no error surfaced on retry to reveal that
+   money was never recorded. Fixed by reading every idempotency doc
+   up front (in parallel) before issuing any write — the standard
+   two-phase read/write split Firestore transactions require.
+
+**A frontend schema bug found by the same pass, in code written earlier
+this session.** `staffDenyResponseSchema` declared a minimal
+`{checkInId, status, denyReason}` shape, matching the contract doc's
+abbreviated prose. The real response — confirmed by reading
+`door-ops-routes.ts`'s actual `validateV2Response` call — is the full
+`checkInDtoSchema` row, keyed by `id`, not `checkInId`. `override`'s
+response, by contrast, checked out exactly as the minimal contract shape
+promised. Fixed the schema and `scan.tsx`'s one call site
+(`result.checkInId` → `result.id`).
+
+**A process-management lesson, not a code one.** `tsx watch`'s restart-
+on-file-change reliably raced its own socket teardown on Windows
+(`EADDRINUSE` on nearly every hot-reload attempt observed this round),
+silently leaving the OLD, unpatched process as the actual listener while
+looking like a successful restart in the log. Several fixes above
+appeared to "not work" on first re-test purely because of this — the
+fixes were correct, the process serving them wasn't. The reliable
+sequence became: find the PID on the port, force-stop it, confirm the
+port is free, then start fresh — never trust the watch restart's own log
+line as confirmation that new code is live.
+
+**Final result: 24 of 25 checks passed** — login, device pairing, session
+redemption, a valid scan, a couple-ticket confirmation round trip, an
+already-used denial, the guest roster, heartbeat, walk-in, dine-in, door
+sales, a real paid ticket sale with a genuine idempotent replay (same
+`orderId`, guest not charged twice), staff-deny, override, stats, and
+cover-wallet charging (QR resolution through to a real debit) all matched
+what the frontend code expects, against a real backend, not a mock. The
+one non-pass (`guest row shape`) is a test-ordering artifact — by that
+point the run's own earlier scan steps had consumed the only three
+entitlements that existed, leaving no `not_entered` guest to inspect; the
+same assertion passed cleanly in three earlier runs before those
+entitlements were consumed. Confirmed with a direct re-check rather than
+assumed.
+
+Backend regression check: `pnpm --filter api-gateway test` (54 files, 529
+tests) and `pnpm --filter @c1rcle/core test` (46 files, 584 tests, 4
+pre-existing skips) both still fully green after all six fixes — expected,
+since the memory-driver test suite never exercised any of the six buggy
+paths, but confirms nothing else broke.
+
+**What this round changes about how much to trust "done."** Six concrete
+defects — three in scanner-app's own schemas/client code, three in shared
+backend services (one of them a live-checkout revenue bug) — sat in code
+this document had called complete and verified, invisible to typecheck,
+lint, and the full test suite alike. All six needed a real network
+round-trip against a real backend to surface. Phase 1's manual E2E
+walkthrough is no longer the only thing separating "typechecks" from
+"works" — this HTTP-level pass now stands in for a meaningful slice of
+it, but the actual documented walkthrough (a physical device, a real
+camera, a human tapping through the app) still has never been run, and
+should be treated as the remaining gap, not a formality.
+
+## 2026-09-24 (ninth round) — Login "succeeds" (200) but the UI never leaves the login screen
+
+Reported directly: login's network request showed 200, but the screen
+stayed on `/login`. Not a network or backend issue — a real client-side
+navigation bug, and once found, it turned out to affect every auth
+transition in the app, not just login.
+
+**Root cause.** `useScannerAuthState()` (driving the root layout's
+redirect) only re-checks whether the user is authenticated when its own
+`refresh()` function is called. Nothing called it — `_layout.tsx` only
+destructured `{ state }`, and `refresh` had no caller anywhere in the
+codebase. So `state` was computed exactly once, on first mount, and never
+again. Meanwhile `login.tsx` called `setStaffSession(...)` (a real,
+synchronous, in-memory write) and then `router.replace('/pairing')`
+directly. That changed the URL, which re-rendered the root layout with a
+fresh `pathname` but the SAME stale `state` (`'logged_out'`, from before
+login). The layout's own redirect logic saw `pathname` no longer matched
+`'logged_out'`'s target (`/login`) and — reading the stale state, not the
+real one — redirected straight back to `/login`. The 200 was real; the
+login was real; the screen just got yanked back before the state that
+would have kept it on `/pairing` ever got a chance to update.
+
+**Why this wasn't caught by any earlier "app actually run" check this
+session:** every prior verification was "does the bundle compile and
+serve," confirmed via `curl`. Nobody had actually clicked through login
+until now — this is precisely the class of bug static checks and a
+running-but-unclicked dev server both miss.
+
+**The fix has two parts, because fixing only the reported symptom would
+have left a landmine one screen later.**
+
+1. A module-level pub-sub (`notifyAuthStateChanged()`), the same pattern
+   already used for `toastStore.ts`. Login, pairing, redeem and logout all
+   changed direct `router.replace(...)` calls to this instead, letting the
+   root layout be the SOLE navigator after any auth-affecting action —
+   the async check runs, state updates, and the redirect fires to
+   whatever the CORRECT target is, with no intermediate render ever
+   showing a mismatched pathname+stale-state combination.
+2. **A second, related bug surfaced while fixing the first.** The state
+   machine had `paired_no_session` doing double duty for two genuinely
+   different situations: "this device has never been named" (needs
+   `/pairing`) and "this device is paired but has no scanner session"
+   (needs `/redeem`). Both mapped to the same route, `/pairing`. That
+   means even with navigation correctly wired up, a device that just
+   finished pairing would recompute state, land back in that same
+   overloaded bucket (still no session — pairing alone doesn't grant
+   one), and get redirected to `/pairing` again instead of `/redeem` —
+   an actual dead end past the login fix. Split the state into
+   `needs_pairing` and `needs_redeem`, each with its own route
+   (`/pairing`, `/redeem`).
+
+**A third instance of the exact same original bug, found by tracing the
+pattern rather than waiting to be told about it:** logout. `settings.tsx`
+cleared the staff session and called `router.replace('/login')` directly
+— same race, same stale state (`'active_session'` this time), same
+redirect-back. Tapping "Log out" would flash to `/login` and immediately
+bounce back into the app. Fixed the same way.
+
+**Scoped out, deliberately:** "Switch event" in Settings
+(`router.replace('/redeem')`) doesn't touch anything
+`useScannerAuthState` reads — it's a plain navigation while staying fully
+authenticated — so it correctly stays a direct `router.replace`, not
+`notifyAuthStateChanged()`.
+
+**Verified:** `typecheck`/`lint` clean across all five touched files
+(`authState.ts`, `_layout.tsx`, `login.tsx`, `pairing.tsx`, `redeem.tsx`,
+`settings.tsx`), and confirmed no stale references to the old
+`paired_no_session` state name remain anywhere in the app.
+
+## 2026-09-25 — Select Event: a second markup-diff pass after seeing it actually run
+
+The user could now reach the Select Event screen (auth-navigation fix
+landed) and reported it didn't match the reference. Re-diffed the current
+`redeem.tsx` against the exact `isEvents` markup (`template.html` lines
+284-352) line by line rather than re-deriving from memory, per the method
+this session already learned costs less than guessing.
+
+**Real deviations found and fixed:**
+
+1. **The dark/surface card (index 2, "Afro House" position) was missing
+   its border entirely.** The reference gives every card the same
+   treatment except this one, which alone carries `border:1px solid
+   #2A2626` — needed because it's the only card whose background is close
+   enough to the screen's own `#0B0A0A` that it would otherwise have no
+   visible edge against it. The build had no per-card border logic at
+   all.
+2. **The main title was missing its letter-spacing.** Reference:
+   `letter-spacing:-.01em` on a 62px face. RN's `letterSpacing` is
+   absolute points, not em, so this is `-0.62`, not a value that carries
+   over by unit conversion — added explicitly.
+3. **Card titles used one fixed `lineHeight:34` for every card**, but the
+   reference's `line-height:.95` is a ratio, and two different card
+   positions use two different font sizes (36px for the live card, 32px
+   for the other three) — `0.95 × 36 = 34.2`, `0.95 × 32 = 30.4`. The
+   fixed 34 was close for the first and visibly too tall for the other
+   three. Now computed per-card as `theme.titleSize * 0.95`.
+
+**Checked and confirmed already correct, not touched:** every card's date-
+pill border color, live-badge/date-pill packing (already `gap:8`, not
+`space-between` — an earlier read of this file mid-session momentarily
+suspected otherwise before re-confirming), every card's arrow-circle
+background/foreground pairing across all four positions, the title row's
+`26px 4px 18px` padding, and the "Tonight & upcoming · N" meta block. All
+matched the markup exactly already — nothing there needed to change,
+confirmed rather than assumed.
+
+**Deliberately not changed, and disclosed as such:** the selected-card
+border (2px `onSurface`) has no counterpart in the reference at all — the
+mock jumps straight from a card tap into the app; this build needs an
+intermediate door-code step (contract §5 — a real shift needs a redeemed
+scanner session, the mock has none of that), so tapping reveals a form
+instead of navigating. The border is this app's own affordance for that
+necessary extra step, not a stray style choice, and was kept rather than
+stripped for that reason.
+
+**Verified:** `typecheck`/`lint` clean, dev server restarted clean.
+
+---
+
+### "No events appear" / "profile not seen" — stale seed data, not a bug
+
+Reported after the login-navigation fix: events list and profile appeared
+empty on a fresh manual test. `listEvents` filters by exact IST calendar-day
+match against `startAt`; the seed script's own `startAt` was written on an
+earlier run's calendar day, so by the time of testing it no longer matched
+`today`. Verified `istDateKey` and `resolveDoorDate('today')` both apply the
+same IST (+5:30) shift consistently — momentarily suspected a timezone bug,
+ruled out by direct check. Fix: re-ran `seed-scanner-e2e.ts`; confirmed via a
+direct `GET /door/events?date=today` call that the event now returns.
+"Profile not seen" had no separate cause found — concluded to be describing
+the same empty-looking screen, not a distinct `getStaffUser()` bug.
+
+**Not changed:** no code touched. This is a data-freshness gap the seed
+script doesn't self-correct — re-seeding is a manual step before any future
+test session that starts on a new calendar day.
+
+---
+
+### Color/background dispute — verified as no bug, twice
+
+Two rounds of user-supplied color analysis (from an external tool reading
+the reference HTML) claimed a real mismatch. Both checked out clean:
+
+1. **Token-table claim.** Every color in the pasted table was compared
+   directly against `src/theme/tokens.ts` — exact matches on all 9 values
+   (`background #0B0A0A`, `surface #151313`, `onSurface #F4F1EE`, etc.). A
+   grep across the app for hardcoded `#000`/`black` literals found only the
+   7 expected `shadowColor: '#000'` drop-shadow usages, no bypass of the
+   token system. No change made.
+2. **Screenshot-tint claim** ("background looks black, HTML looks grey," a
+   later screenshot showing a blue/gray wash over the Select Event screen).
+   The screenshot itself included the browser DevTools panel, which reported
+   `Background: #0B0A0A` for the inspected element — matching our token
+   exactly. Concluded the tint was Chrome's own element-inspection highlight
+   overlay (drawn over the full bounding box of the selected DOM node), not
+   a render defect. No change made; told the user to deselect DevTools and
+   re-screenshot.
+
+---
+
+### Select Event — title overlapping card art on long real titles
+
+Found while investigating the screenshot above, not separately reported.
+The reference's mock titles ("Neon Nights Vol. 04") are short enough to
+never reach the card's decorative art in the top-right corner. The real
+seeded title ("Seed E2E Walkthrough Night") is long enough that its second
+line ran underneath the art, because `cardTitleBlock` had no width
+constraint (`{ flex: 1 }` only).
+
+**Fix:** `app/redeem.tsx` — `cardTitleBlock: { flex: 1, maxWidth: '62%' }`.
+Keeps text clear of the art regardless of title length; the reference has
+no equivalent case to match against since its mock text never triggers it.
+
+**Verified:** `typecheck`/`lint` clean, dev server restarted, confirmed
+`200` on a clean bundle.
+
+---
+
+### Scan Ticket screen — missing event-context header (real markup gap)
+
+User supplied the reference's actual Scan Ticket render (`isScan` block,
+same HTML) alongside our behavior after redeeming a door code, and the two
+diverged structurally, not just cosmetically:
+
+- **Reference:** a top bar with a back arrow, the redeemed event's name and
+  gate ("Rooftop · All Gates"), and a LIVE badge — all above the "Scan
+  Ticket" headline. The checked-in counter reads as `315 / 450` (count over
+  capacity), not a bare count.
+- **Build (before this fix):** `app/(tabs)/scan.tsx` went straight to the
+  "Scan Ticket" headline with no event-context bar at all, and the counter
+  was `recent.filter(admitted).length` — a client-local tally of only this
+  session's scans, with no `/ capacity` denominator and no connection to
+  the event actually redeemed.
+
+**Fix:** added an `eventBar` row (back button → `/redeem` via
+`router.replace`, matching the existing "Switch event" precedent in
+`settings.tsx`; event title + gate; LIVE badge gated on
+`event.status === 'live'`) sourced from `getSessionMeta()`. Counter now
+calls `fetchStats(event.id)` on mount for the real `occupancy.inside` value
+and renders it as `inside / capacity`, falling back to the local tally only
+before that first fetch resolves. `pushRecent` bumps `inside` locally on a
+real admit so the number doesn't lag between polls.
+
+**Not changed:** no periodic re-poll of `fetchStats` was added — Phase 1
+scope is a single fetch on mount; a live SSE/poll stats stream is already
+called out as later-phase work in the architecture doc, not something to
+smuggle in here.
+
+**Verified:** `typecheck`/`lint` clean, dev server restarted clean (fresh
+bundle, `200` on `:8090`).
+
+---
+
+### D-030 — device-registration + GPS geofence, layered on top of the door code (not replacing it)
+
+User asked to drop door codes entirely in favor of registered-device + IP-
+range/geofence auth. Raised concerns before implementing (asked via
+`AskUserQuestion`, user chose the additive option): the code currently does
+three jobs beyond "is this device known" — per-shift revocation, permission
+scoping (full vs. charge-only), and event binding on multi-event nights.
+Removing it would require replacing all three, not just the identity check.
+Also flagged that IP-based geofencing is unreliable on cellular (carrier NAT
+gives city-level IP, not venue-precise) — GPS is the workable substitute,
+but client-reported GPS is spoofable, so it can only ever be a soft layer
+on top of an already-authorized redemption, never the sole gate.
+
+**Chosen scope: device + GPS geofence, door code stays for permission/event
+select.** Implemented as an additive check on `POST /door/sessions`
+(shift-open), not on every scan — one check per shift is proportionate.
+
+**Backend (`C1RCLE-BACKEND`):**
+- `packages/contracts/src/contracts/phase5.ts` — added optional
+  `deviceLocation: { lat, lng }` to `scannerSessionCreateBodySchema`
+  (schema is `.strict()`, so this had to be declared, not just tolerated).
+- `packages/core/src/application/door/door-ops-service.ts` — new
+  `enforceGeofence()` called at the top of `startShift()`, right after the
+  event/org-access checks and before device binding. Haversine distance
+  against the event's venue coordinates (`Venue.public.address.lat/lng`,
+  which already existed in the domain model — no migration needed). Radius
+  is a generous 500m constant, sized to absorb ordinary GPS drift rather
+  than "prove you're standing at the exact door" — this is deliberately a
+  deterrent layer, not a precision boundary. **Skips silently** (no reject)
+  whenever `deviceLocation` is absent (older client, denied permission, web
+  target with no geolocation) or the venue has no pinned coordinates at
+  all — an absent signal must degrade to "code-only", never to "shift
+  blocked", or every venue without a lat/lng on file gets bricked.
+- `door-ops-service.ts`'s `DoorOpsServiceDeps` gained a `venues` repository
+  dependency; wired in `apps/api-gateway/src/lib/v2-services.ts`.
+- `scanner-routes.ts` forwards `body.deviceLocation` into the `startShift`
+  command.
+- **A denial surfaces as 404, not 403** — this route already calls
+  `mapDomainError(..., { hideForbidden: true })` for every `ForbiddenError`
+  (the same cross-tenant-IDOR convention used elsewhere: a caller must not
+  be able to distinguish "wrong location" from "wrong event/org" by status
+  code). The geofence denial reuses that existing masking rather than
+  inventing a new distinguishable code — deliberate, not an oversight.
+- Tests added: `scanner-routes.test.ts` — 3 new cases (inside radius → 201,
+  far outside → 404, no location sent at all → 201/skipped), seeding a real
+  venue with coordinates since the existing test fixtures all use
+  `venueId: null` (which is exactly why none of the pre-existing 529 tests
+  needed to change — the check is a no-op for every event with no venue).
+
+**Frontend (`C1RCLE-FRONTEND`):**
+- Added `expo-location@~55.1.14` via `npx expo install` (SDK-matched).
+- `app.config.ts` — `NSLocationWhenInUseUsageDescription` (iOS),
+  `ACCESS_COARSE_LOCATION`/`ACCESS_FINE_LOCATION` (Android), and the
+  `expo-location` config plugin with its own permission string.
+- `app/redeem.tsx` — new `tryGetDeviceLocation()`: requests foreground
+  permission, takes a `Balanced`-accuracy fix, and resolves to `undefined`
+  on any failure (denied permission, timeout, unsupported platform) rather
+  than throwing — the redeem flow must never be blocked by a location
+  problem, only narrowed by a successful one. Wired into `handleRedeem`
+  alongside the existing device-id/name resolution.
+- `src/api/scannerApiClient.ts` — `redeemDoorCode`'s input type gained the
+  optional `deviceLocation` field (body is passed through as one object, so
+  no other change was needed there).
+
+**Verified:** `@c1rcle/contracts` build clean, `@c1rcle/core` typecheck +
+lint + full test suite clean (580 passed, 4 skipped — unchanged), `api-
+gateway` typecheck + lint clean, full test suite green (532 passed, +3 new
+— the 3 added geofence cases), scanner-app `typecheck`/`lint` clean, dev
+server restarted with `--clear` (native module added) and confirmed on a
+fresh 1009-module bundle, `200` on `:8090`. api-gateway's `tsx watch`
+picked up every backend edit live and settled on a single clean listener
+on `:8080` — confirmed via its own log tail, not assumed.
+
+**Not done, disclosed:** no server-side enforcement beyond shift-open — a
+scan-time or per-scan geofence check was not requested and would need a
+different design (GPS on every scan is a worse UX/battery trade for a
+security property shift-open already buys). No IP-based check was added at
+all — the concern raised (unreliable on cellular) stands, and GPS is the
+substitute actually implemented. No admin UI to set/edit a venue's
+lat/lng exists yet — until a venue has coordinates on file, this check is
+a no-op for it, which is safe but silent; worth a follow-up decision on
+whether that should be surfaced to owners rather than defaulting quietly.
+
+---
+
+### Phase 2 exit criterion closed — real double-charge race found and fixed by the double-tap test it was written for
+
+Resumed the double-tap concurrency script written earlier this session
+(`e2e-double-tap-check.ts`) but never run. Re-seeded fresh data and ran it
+for the first time against the real backend. **2 of 4 checks failed on the
+first run, and the failures were a genuine, exploitable bug, not a test
+artifact:**
+
+1. **Cover-wallet charge: a real double-charge.** Two concurrent requests
+   with the identical `idempotencyKey` both debited the wallet. Before:
+   `balanceBefore=₹2000`, one `₹500` charge → both responses returned
+   *different* balances (`₹1000` and `₹1500`), meaning the wallet was
+   actually debited twice for one guest tap. This is the single most
+   serious class of bug the whole test existed to catch.
+2. **Ticket-sale: a raw internal error leaked to the client.** The second
+   concurrent request failed with `"Version conflict: expected 1, current
+   3"` — an unhandled domain-layer error, not a clean idempotency response.
+   The version having jumped by 2 (not 1) indicated the losing request ran
+   the real sale logic a second time before colliding, not that it was
+   safely rejected up front.
+3. Walk-in and dine-in did *not* fail — both showed one side succeeding and
+   the other cleanly rejected with `409 already in flight`. The test's
+   original assertions (`both succeed, same id`) were wrong for this
+   correct-and-desired shape; fixed the assertions rather than the routes
+   (see below).
+
+**Root cause:** `wallet-charge` and `ticket-sale` are the only two door-money
+routes that never went through the generic `runIdempotent` claim
+(`v2-idempotency.ts`, backed by `FirestoreIdempotencyStore.claim`'s atomic
+`ref.create()`). Both instead pass `body.idempotencyKey` straight into their
+domain service (`cover-wallet-service.ts`'s `debitWallet`,
+`door-ticket-sale-service`'s `sellAtDoor`), which do their own idempotency
+check as `findByIdempotencyKey` (read) → conditionally write. Two concurrent
+requests can both read "not found" before either has written, and both
+proceed — a textbook TOCTOU race. This is the exact race class flagged in
+`e2e-double-tap-check.ts`'s own header comment as untestable by a sequential
+retry — and it took a real concurrent run to surface it, exactly as
+predicted. It also connects to an already-disclosed, deferred gap in
+`task.md` ("Fix 3/4: `DoorSale`/`CoverWalletTxn` id schemes — needs a
+migration plan") — that item was framed as an id-hygiene nit; this proves
+it is a live, exploitable double-spend path.
+
+**Fix — additive, no data migration:** wrapped both routes'
+(`door-ops-routes.ts`) service calls in the same `runIdempotent` claim
+walk-in/dine-in/check-ins already use, keyed from `body.idempotencyKey`
+(not the `Idempotency-Key` header, since that's what these two routes'
+existing clients already send). The inner domain-level check is now a
+redundant-but-harmless second guard; the outer atomic claim is what
+actually prevents the race. **Deliberately did not touch the
+`CoverWalletTxn`/`DoorSale` id scheme itself** — that migration (live doc
+ids already exist under the old scheme) stays its own deferred item; this
+fix closes the exploit without needing it.
+
+**A second bug surfaced by fixing the first:** wrapping ticket-sale broke
+`door-commerce-routes.test.ts`'s existing retry test — a legitimate
+*sequential* retry now returned the frozen `201`/`replayed:false` from the
+stored first response instead of `200`/`replayed:true`, because the outer
+layer replays the exact stored body verbatim. Fixed by treating the outer
+`runIdempotent` result's own `replayed` flag as authoritative: on a replay,
+the route now forces `200` and overwrites `replayed: true` in the response
+body rather than trusting what was frozen in storage.
+
+**Verified:** `@c1rcle/core`/`api-gateway` typecheck+lint clean, full
+`api-gateway` suite green (532/532, including the now-passing retry test),
+re-seeded fresh data and re-ran the double-tap script against the fix —
+**5/5 passed**, including the two that previously exposed the double-charge
+and the version-conflict leak. This run against the live server is itself
+the verification; no separate restart was needed since the test exercised
+the running instance directly.
+
+**Phase 2's exit criterion (documented as "still not fully met" in
+`task.md`) is now closed** — a real double-tap under genuine concurrency
+ran against the real backend, found a real bug, and confirmed the fix.
+
+---
+
+### Phase 4 SSE live stats — a doc/reality mismatch found, then the frontend actually wired to what already existed
+
+`task.md` listed "SSE live stats" under "Not done — Phase 4+ (not
+started)". Checking before building turned up that this was false: `GET
+/door/stats/stream` was fully implemented in `phase5-routes.ts` (SSE, not
+WebSocket — see that file's own header comment for why: one-way data flow,
+headers ride ordinary HTTP auth instead of leaking a token into a query
+string, CORS applies, correct across multiple instances, one nginx line),
+with a full test file (`door-stats-stream.test.ts`) already green —
+connection-budget limiter, per-org/per-actor caps, tenant re-check on every
+tick, a bounded 15-minute stream lifetime, heartbeat comments to survive
+proxy idle-timeouts. Running the test file directly confirmed all of it
+passing before touching anything. The actual gap was narrower than the
+doc claimed: the backend half was done; `stats.tsx` was still polling
+`GET /door/stats` every 15s and had simply never been switched over.
+
+**Frontend work — wiring `stats.tsx` to the stream that already existed:**
+- Occupancy (`inside`/`capacity`) now comes from the SSE stream instead of
+  the 15s poll. Door-sale-derived numbers (walk-ins/dine-ins → tables,
+  revenue) still poll on the old interval — `/door/stats/stream` only
+  carries `occupancy`, there is no sale-record stream to switch to.
+- On any stream close (the server's own bounded-lifetime rotation, or an
+  ordinary drop), the screen waits 2s and reopens — matching the server's
+  own stated expectation that a client "goes back through the full
+  authorization path on reconnect" rather than treating a stream as a
+  permanent subscription.
+- Subtitle now reads "Live"/"Connecting…" instead of the old hardcoded
+  "refreshes every 15s", which stopped being true the moment occupancy
+  moved to a push model.
+
+**A real architecture violation caught by lint, not by oversight:** the
+first version of this read the stream with a bare `fetch()` +
+`ReadableStream` reader directly in `scannerApiClient.ts`. This repo's own
+ESLint rule (`no-restricted-globals`/`no-restricted-syntax`) forbids any
+module outside `@c1rcle/api-client` from touching the network — for good
+reason, since that's the one place base URL, auth headers, timeouts and
+error typing are consistently applied. `EventSource` was not an option
+either: it cannot attach the `Authorization`/`X-Organization-Id` headers
+this endpoint requires, which is exactly the credential-leak-via-query-
+string class the backend's own header comment says SSE was chosen over
+WebSocket to avoid — using it here would have reintroduced the exact
+problem the backend design avoided, one layer up.
+
+**Fix: added `ApiClient.openEventStream` to `@c1rcle/api-client` itself**
+(`packages/api-client/src/client.ts` + `types.ts`), rather than special-
+casing an exception for this one file. It reuses the client's existing
+private `#send` (same base-URL/auth/error normalisation every other call
+gets), reads the response body through a `ReadableStream` reader, and
+parses SSE frames (`event:`/`data:` pairs; bare `: keep-alive` comment
+lines correctly produce no callback). No retry wrapper, unlike the JSON
+calls — a stream's reconnect policy is the caller's decision, not
+something to bake into the shared client. `scannerApiClient.ts`'s
+`openStatsStream` is now a thin wrapper: dispatches `stats`/`closed`
+frames to zod-validated handlers.
+
+**A real lint-caught bug in the first draft of `openEventStream` itself:**
+a `let closed = false` flag, set only inside a `close()` closure returned
+from the outer function, hit `@typescript-eslint/no-unnecessary-condition`
+as "always falsy" — TypeScript's control-flow narrowing genuinely cannot
+see a mutation that happens only inside a separately-returned closure, so
+every `if (!closed)` guard was flagged. Fixed by checking `signal.aborted`
+through a named `isAborted()` function instead of a plain flag — which
+also fixed a real correctness gap the flag had: it never reflected an
+externally-passed `AbortSignal` firing (only the client's own internal
+one), so a caller-supplied `signal.abort()` would previously not have
+suppressed the close callback the way a caller reasonably expects.
+
+**Verified:** `@c1rcle/api-client` `build`/`lint`/`test` all clean (18/18,
+no regression from the new method), `@c1rcle/app-scanner-app`
+`typecheck`/`lint` clean, dev server restarted with `--clear` (a workspace
+package changed, not just app code) and confirmed on a fresh 1009-module
+bundle, `200` on `:8090`.
+
+**Not done, disclosed:** no automated test exercises the frontend's actual
+stream consumption end-to-end (no browser/E2E harness in this
+environment) — correctness here rests on `typecheck`/`lint` plus reading
+the server's exact frame-writing code (`phase5-routes.ts`'s `send()`)
+byte-for-byte against the client's parser, not a running round trip. The
+backend side's own test suite (already green, unchanged by this round) is
+the only end-to-end proof that actually exists for this feature.
+
+---
+
+### Phase 5 attendance-report endpoint — built from the doc's own confirmed spec, one real bug caught by its own test
+
+`07-storage-sizing-caching.md` §5b had already confirmed the requirement
+and the exact data source with the user in an earlier session ("who
+entered / who didn't / what time / how many", answerable from
+`Entitlement` alone, no new field needed) and flagged the one real gap:
+no route existed. Built to that spec exactly rather than re-deriving scope.
+
+**Backend (`C1RCLE-BACKEND`):**
+- `packages/core/src/application/door/door-ops-service.ts` —
+  `getAttendanceReport(eventId, actor)`, placed next to `listGuests` (same
+  service, same pagination discipline: `GUEST_SCAN_PAGE`/`MAX_GUEST_SCAN`,
+  a `truncated` flag on the same honesty convention — if the cap is ever
+  hit, every count is partial, not just the list, disclosed in the return
+  type's own doc comment rather than silently overclaiming exactness).
+  Computes `enteredEntitlements` (entitlements with ≥1 scan) separately
+  from `admittedCount` (`sum(scanCount)` across all) — the doc's own D5
+  diagram calls out that the naive entitlement count undercounts a
+  half-used couple ticket's real admissions; summing `scanCount` directly
+  is exactly equal to summing `ScanLedger.admittedCount` without needing
+  to touch the ledger at all.
+- **Deliberately scoped out: a gate/device/hour breakdown.** The doc flags
+  that slice as needing `ScanLedger` grouped queries against composite
+  indexes not verified for this exact query shape (§4.2 of
+  `03-data-model.md`). Building it on an unconfirmed index would be
+  guessing at a production query plan; left out rather than shipped
+  unverified.
+- `packages/contracts/src/contracts/phase5.ts` —
+  `attendanceReportQuerySchema`/`attendanceReportGuestSchema`/
+  `attendanceReportTierBreakdownSchema`/`attendanceReportDtoSchema`,
+  re-exported through `client.ts`.
+- `apps/api-gateway/src/routes/v2/door/door-ops-routes.ts` —
+  `GET /door/attendance-report`, same org-scoped/`hideForbidden` pattern as
+  every other door-ops read, `cache-control: no-store` (guest names are
+  PII, same rule as `/door/guests`).
+
+**A real bug, caught by the test written for this feature, not by
+inspection:** the first version excluded voided entitlements from the
+counts and tier breakdown but still pushed them into the `guests` array,
+labeled `status: 'not_entered'`. A refunded ticket would have shown up in
+the report as a no-show — actively misleading, since "withdrawn" and
+"expected but never came" are different facts a promoter would act on
+differently. Fixed by excluding voided entitlements from `guests` entirely,
+matching the exclusion already applied to the counts.
+
+**Tests added** (`door-ops-routes.test.ts`, `GET /door/attendance-report`):
+the full headcount scenario (an entered ticket, a no-show, a half-used
+couple ticket seeded directly at `scanCount:1/scanCountAllowed:2` rather
+than through the real two-step scan-then-confirm HTTP flow — this test is
+about the report's arithmetic, not the couple-confirmation flow itself —
+and a voided ticket), asserting `admittedCount` correctly comes out to 2
+(not 3, which is what counting entitlements alone would give); cross-
+tenant 404; an empty event returning zeros rather than an error.
+
+**Verified:** `@c1rcle/contracts` build clean, `@c1rcle/core` typecheck +
+lint clean, full test suite unchanged at 580/584 (4 skipped — this is a
+new method, not a changed one, so no prior test should move), `api-
+gateway` typecheck + lint clean, full suite green at **535/535** (532 + 3
+new). `tsx watch` picked up every edit live on the already-running dev
+gateway, confirmed via its own log tail.
+
+---
+
+### CORS gap found live — `X-Scanner-Session-Token` was never in the allowlist
+
+User hit this directly in the browser: every call past login on the Stats
+tab (and by the same mechanism, every other authenticated door/scanner
+screen) failed with `Request header field x-scanner-session-token is not
+allowed by Access-Control-Allow-Headers in preflight response.`
+
+**Root cause:** `apps/api-gateway/src/app.ts`'s `@fastify/cors`
+registration lists `allowedHeaders` explicitly (`Authorization`,
+`Content-Type`, `X-Organization-Id`, `X-Request-Id`,
+`X-Client-Request-Id`, `Idempotency-Key`, `If-Match`) — `X-Scanner-Session-
+Token` was never added, despite being required on nearly every door route
+since Phase 5 was built. This only surfaces for a browser client: CORS
+preflight doesn't apply to native RN, so the scanner-app's handset target
+never hit it, and it stayed invisible until the web target (added this
+session) actually reached an authenticated screen with a browser sitting
+in front of it.
+
+**Fix:** added `'X-Scanner-Session-Token'` to `allowedHeaders`. One line.
+
+**Verified:** `typecheck`/`lint` clean. Found the port held by a stale
+process from the CORS-fix's own `tsx watch` restart cycle (the same
+known `EADDRINUSE` race documented earlier this session — the log showed
+a `Fatal startup error: EADDRINUSE` from the restart attempt, with the
+actual live listener being an orphaned earlier process, not the one that
+picked up this fix). Did the full manual cycle instead of trusting it:
+killed both the orphan and the failed restart attempt, confirmed the port
+free, started a fresh instance directly (`npx tsx watch --env-file-if-
+exists=.env.local src/server.ts` — the package's own real `dev` script,
+not guessed), confirmed a single clean "listening" line with no error
+above it, then confirmed the actual fix with a real CORS preflight probe
+(`curl -X OPTIONS` with `Access-Control-Request-Headers` including the
+header) — response now lists `X-Scanner-Session-Token` in `access-
+control-allow-headers`. Not inferred from code alone; the exact browser
+failure mode was reproduced and closed.
+
+---
+
+### A second, structurally different CORS gap — the SSE stream's hijacked response never went through `@fastify/cors` at all
+
+User hit this immediately after the header-name fix above: `GET /door/
+stats/stream` returned `200 OK` but the browser still blocked it —
+`No 'Access-Control-Allow-Origin' header is present`. Not the same bug as
+the header-name gap; that one made preflight fail with a 4xx. This one is
+the actual response silently missing CORS headers entirely.
+
+**Root cause:** `phase5-routes.ts`'s `startStatsStream` calls
+`reply.hijack()` and writes the response with a raw `socket.writeHead(200,
+{...})`, bypassing Fastify's reply pipeline completely — which is exactly
+where `@fastify/cors` (registered once, app-wide, in `app.ts`) adds its
+headers. Every other route goes through that pipeline and got the CORS
+fix above for free; this one route builds its own response by hand and
+never included them. `curl` showed `200 OK` because the server-side
+response was genuinely fine — the browser was the one enforcing CORS
+client-side on a response that had no allow-origin header at all.
+
+**Fix:** added a `corsHeadersFor(request)` helper replicating the exact
+policy `app.ts` configures for the plugin (exact-origin allowlist via
+`getAllowedOrigins`, credentialed — `credentials: true` forbids a wildcard
+origin, so an origin outside the allowlist correctly gets nothing, same
+as the plugin's own behavior for a disallowed origin) and spread its
+result into the manual `writeHead` call.
+
+**Verified against the real failure mode, not just the code:** an
+`OPTIONS`/`curl` check without a valid session only reaches the 401 path
+(normal Fastify pipeline, never hijacked, was never broken) — proves
+nothing about this bug. Logged in for real (`POST /auth/login` against
+the seeded owner), then hit the actual stream endpoint with a valid
+bearer token and `Origin: http://localhost:8090`: response is a genuine
+`200`, `content-type: text/event-stream`, **and now carries
+`access-control-allow-origin`/`access-control-allow-credentials`**, with
+a real `event: stats` frame streaming live occupancy data right after the
+headers. This is the exact codepath (hijacked, authenticated, streaming)
+that was broken; confirming it there rather than on an easier substitute
+path is what actually closes this.
+
+Also re-hit the same known `tsx watch` `EADDRINUSE` restart race
+documented earlier in this session, twice, across both CORS fixes in this
+round — each time via the same disciplined manual cycle (kill every
+stale/failed PID, confirm the port free, start fresh directly with the
+package's real `dev` script, confirm one clean "listening" line with no
+error above it) rather than trusting the watcher's own log.
+
+**Not done, disclosed:** no automated test covers either CORS fix — the
+test harness (`buildPartnerTestServer`) never registers the real
+`@fastify/cors` plugin at all, so neither the header-allowlist gap nor
+the hijack-bypasses-it gap would have been caught by the existing suite
+regardless. Verification here rests entirely on the live curl reproduction
+above, not on a regression test guarding against this coming back.
+
+---
+
+### Tab bar "stuck on Scan" + both back buttons "not working" — a real navigation bug, plus a duplicate header caused by my own prior round
+
+User reported two back buttons on screen and a tab bar that would not move
+off Scan — screenshots showed the duplicate header and a frozen shell.
+
+**Two separate causes, not one:**
+
+1. **Duplicate header.** Last round's Scan-screen fix (event-context
+   header: back button, title, gate, LIVE badge) duplicated
+   `AppScreenHeader` — a shared header already rendered once, globally, by
+   `(tabs)/_layout.tsx` above the `Tabs` navigator, exactly for this
+   purpose (its own doc comment: "every tab shows the same event, and
+   passing it in five places invited drift"). I built a second one inside
+   `scan.tsx`'s own scroll content instead of checking whether one already
+   existed. Removed the duplicate entirely — `scan.tsx` keeps only the
+   counter row (`inside / capacity`), which is genuinely new; back button,
+   title, gate and LIVE badge are `AppScreenHeader`'s job alone. Also
+   removed the now-dead `router`/`useRouter` import and `gate` state that
+   only existed to feed the duplicate.
+
+2. **The real bug — root layout force-redirected away from every tab but
+   Scan.** `app/_layout.tsx`'s `alreadyThere` check compared the current
+   path against `ROUTE_BY_STATE[state]`, which for `active_session` is the
+   single string `/(tabs)/scan`. Navigating to `/(tabs)/stats`,
+   `/(tabs)/door`, `/(tabs)/guests`, `/(tabs)/settings`, or back to
+   `/redeem` made that comparison false on every one of them, so the root
+   layout rendered `<Redirect href="/(tabs)/scan">` and bounced the user
+   straight back — on every single render, since nothing about the
+   comparison ever became true again while on those screens. This is why
+   the tab bar "wouldn't move": tapping Stats DID navigate there, then was
+   immediately redirected back before the next frame. Same mechanism
+   explains both back buttons "not working" — `AppScreenHeader`'s own back
+   button (`router.replace('/redeem')`, an already-established, correct
+   pattern — `settings.tsx`'s "Switch event" row does the identical thing)
+   hit the exact same bounce.
+   
+   **This was a pre-existing bug, not something this session's work
+   introduced** — `settings.tsx`'s "Switch event" row has used this same
+   `/redeem`-while-`active_session` pattern all along, meaning it was
+   already broken before today; it just hadn't been exercised by hand
+   until the user actually tried the back button.
+
+**Fix:** replaced the single-route comparison with a `SATISFIED_PREFIXES`
+map — `active_session` now accepts any of `/scan`, `/door`, `/stats`,
+`/guests`, `/settings`, `/wallet`, `/redeem` as "already there," so
+navigating between tabs, into the wallet screen, or back to redeem no
+longer looks like "not at the target" to the root layout. The other three
+states (`logged_out`/`needs_pairing`/`needs_redeem`) keep their original
+single-route behavior — each of those genuinely only has the one legitimate
+screen, so no change in behavior there.
+
+**Verified:** `typecheck`/`lint` clean on both files, dev servers (frontend
+and backend — both had been killed when the prior session/process ended,
+confirmed via `netstat` and restarted from scratch) confirmed up with
+clean single listeners and `200`/bundled responses.
+
+**Not done, disclosed:** no automated test covers the root-layout
+redirect logic at all (no navigation-level test harness exists in this
+app) — verified by code reading (the exact string comparison that was
+provably false for every non-Scan tab) and a clean bundle, not by a
+regression test or a manual click-through, which the user is best placed
+to do next.
+
+---
+
+### The tab-bar fix above had a real regression — redeeming a code got the user stuck on the redeem screen
+
+User hit this immediately after the previous fix: a door code redeem now
+returned `201 Created` (success), but the screen never advanced into the
+app.
+
+**Root cause:** adding `/redeem` to `active_session`'s `SATISFIED_PREFIXES`
+(the previous round's fix) solved "back button bounces you away from
+`/redeem`" but broke the opposite, more common case — the moment a redeem
+succeeds, `state` transitions to `active_session` while `pathname` is
+still `/redeem` (the screen hasn't navigated anywhere; it just called
+`notifyAuthStateChanged()` and waits for the root layout's redirect). With
+`/redeem` now counted as "already satisfied" for `active_session` too,
+that redirect never fires — the exact transition the whole
+notify-then-passive-redirect pattern exists to perform silently stopped
+happening. One path cannot correctly mean both "the state just resolved,
+please advance into the app" and "the user deliberately backed out here,
+please leave them alone" — those are opposite intents sharing one
+pathname, indistinguishable from `state` + `pathname` alone.
+
+**Fix:** removed `/redeem` from `active_session`'s satisfied set again
+(restores the correct forward-redirect on a successful redeem). For the
+actual "let me back out to switch events" need, changed the mechanism
+instead of the path check: `AppScreenHeader`'s back button and
+`settings.tsx`'s "Switch event" row now call `clearSession()` (deletes the
+scanner-session token/meta) before `notifyAuthStateChanged()`, rather than
+navigating directly. This makes `state` genuinely resolve to
+`needs_redeem` — which already has `/redeem` correctly in its own
+satisfied set — so the existing notify-and-let-the-root-layout-navigate
+pattern lands there without any special-casing, and without reintroducing
+the stale-state race a direct `router.replace()` would cause (the same
+race class fixed earlier this session for login/pairing). "Switch event"
+ending the current shift outright is also the more correct behavior
+anyway — its own label already said "close this shift and pick another,"
+not "peek at the list without leaving."
+
+**Verified:** `typecheck`/`lint` clean, dev server restarted `--clear`,
+confirmed `200` on a fresh bundle. Not re-verified end-to-end by an actual
+redeem click-through in this environment (no browser here) — the user's
+next test is what actually confirms this round closes both the original
+report and this regression together.
+
+---
+
+### Missing Profile screen — logout was only reachable after a shift was already open
+
+User asked "there is no logout login" — clarified via a follow-up question
+to mean: the reference has a Profile screen reachable by tapping the
+avatar circle in the header, and log-out should not require having
+already redeemed a door code first. Both were real gaps: the avatar circle
+in `redeem.tsx`'s header (`gateChipAvatar`) was a plain `View`, not
+pressable, and the only log-out control anywhere in the app lived in
+`(tabs)/settings.tsx` — reachable only through the tab bar, which the tab
+bar itself only exists once `active_session` is reached (i.e., after a
+code is redeemed). Staff identity exists from login onward, well before
+that point, with no way to log out in between.
+
+**Fix:** new `app/profile.tsx` — a peer screen (not a tab), profile card
+(name/role/email) plus the same log-out control settings.tsx already had,
+reusing that exact notify-then-passive-redirect pattern (not a direct
+`router.replace('/login')`, for the same stale-state-race reason every
+other transition in this app avoids it). Wired the avatar circle in
+`redeem.tsx` to `router.push('/profile')`. Added `/profile` to
+`_layout.tsx`'s `SATISFIED_PREFIXES` for `needs_pairing`, `needs_redeem`,
+and `active_session` (every state where staff identity already exists) so
+visiting it from any of them doesn't get redirect-bounced — `router.back()`
+is safe on its own back button since viewing or leaving Profile never
+changes auth state; only its log-out action does, and that already goes
+through the safe notify-driven path.
+
+**Deliberately left `(tabs)/settings.tsx` untouched** — it keeps its own
+profile card and log-out for the in-session case; `profile.tsx` is not a
+replacement, just the missing pre-session path to the same action. Also
+did not add an avatar to `AppScreenHeader` (the in-session shared header)
+— the reference gives that header a different design (back/title/LIVE
+badge, no avatar), and Settings already covers logout once in-session, so
+there was no gap there to close.
+
+**Verified:** `typecheck`/`lint` clean, dev server restarted `--clear`,
+fresh 1010-module bundle (one more than before — the new route), `200`
+confirmed.
+
+---
+
+### Corrected per user screenshots: wrong tap target, and Profile should BE Settings, not a slimmed-down copy
+
+Two screenshots came back: one of the reference header showing the brand
+mark ("C" logo, left side) as the intended tap target — not the gate-chip
+avatar (right side, initial letter) the previous round wired — and one of
+the existing, already-correct `(tabs)/settings.tsx` screen as what
+"profile" should actually look like. My first `profile.tsx` was a
+hand-built, slimmed-down card (no gate selector, no scanner toggles, no
+device row) that didn't match.
+
+**Fix — extracted, not duplicated:** moved all of `(tabs)/settings.tsx`'s
+JSX and state into a new shared component,
+`src/features/settings/SettingsPanel.tsx`. `(tabs)/settings.tsx` is now a
+thin wrapper (`ScrollView` + `<SettingsPanel />`); `app/profile.tsx` is a
+back button + the identical `<SettingsPanel />`. One screen, two entry
+points — in-session (tab bar) and pre-session (brand mark tap) — so they
+cannot drift apart the way a hand-copied second version would have.
+
+**Tap target corrected in `redeem.tsx`:** the brand mark (`C` circle,
+left) is now the `Pressable` going to `/profile`; the gate-chip avatar
+(right, initial letter) is reverted to a plain, non-interactive `View`,
+exactly as the screenshot indicated.
+
+**Verified:** `typecheck`/`lint` clean, dev server restarted `--clear`,
+fresh 1011-module bundle (one more than the previous round — same route
+count, the extraction added a file), `200` confirmed.
+
+---
+
+### Header cropped under the status bar — no screen in this app ever handled safe-area insets
+
+User's screenshot showed `AppScreenHeader` (back button, title, LIVE
+badge) crowded right up against the top edge; a reference screenshot
+showed proper breathing room below the status bar.
+
+**Root cause:** `react-native-safe-area-context` was a dependency
+(pulled in transitively) but never actually wired up anywhere — no
+`SafeAreaProvider`, no `useSafeAreaInsets()` call, in the whole app.
+Every screen's top padding was a hardcoded small constant (`paddingTop: 6`
+on `AppScreenHeader`, `8` on `redeem.tsx`) that has no relationship to the
+actual status bar/notch height on a real device — it happened to look
+approximately fine only by accident of whatever chrome the web preview
+adds.
+
+**Fix:** added `SafeAreaProvider` (from `react-native-safe-area-context`)
+around the whole app in `app/_layout.tsx`, then wired real insets into the
+two screens directly implicated — `AppScreenHeader` (`paddingTop:
+insets.top + 6`) and `redeem.tsx` (`paddingTop: insets.top + 8` on the
+scroll container).
+
+**Deliberately did not touch `login.tsx`/`pairing.tsx`/`wallet.tsx`/
+`profile.tsx` in this round** — `login.tsx` in particular has a full-bleed
+hero graphic (`DjConsole`/`HeroRays`) that may be intentionally edge-to-
+edge under the status bar per the reference design; changing its top
+padding without a specific report risks introducing a new regression on a
+screen that was carefully tuned earlier this session. Same gap likely
+exists there too (no screen in the app used insets before this), but it's
+now a known, scoped follow-up rather than something changed blind.
+
+**Verified:** `typecheck`/`lint` clean, dev server restarted `--clear`,
+clean bundle, `200` confirmed. Not verified against an actual notched
+device/browser viewport in this environment — the fix uses the platform's
+real safe-area API rather than a guessed constant, which is the correct
+mechanism, but the user's own screenshot is still the only real check for
+exact spacing.
+
+---
+
+### Three more real issues, fixed in one round
+
+**1. Header padding fix was a no-op — `insets.top` is genuinely 0 in a plain
+web browser.** User reported "i still see it the same." The safe-area fix
+above was mechanically correct but only manifests on a real notched
+device; the actual test environment here is a browser at `localhost:8090`,
+which has no OS status bar/notch to reserve space for, so
+`useSafeAreaInsets()` legitimately returns `0`. The user's original
+complaint was really just "too little top padding," not notch-avoidance
+specifically. Fixed by raising the *base* padding itself —
+`AppScreenHeader` and `redeem.tsx` now use `insets.top + 20` (was `+6`/
+`+8`) — so there's a real, visible gap in a browser (insets=0 case) and
+strictly more on an actual device (insets add on top of the same base).
+
+**2. Heartbeat: a genuine, confirmed-broken feature, not just console
+noise.** `sendHeartbeat()` posted an empty `{}` body; the contract's
+`scannerHeartbeatBodySchema` requires `eventId` (`.strict()`, no
+default). Reproduced directly against the live backend: empty body → `422`
+in ~0.3s (not a timeout — this bug and the reported timeout are two
+separate things); corrected body (`eventId` + `gate` from
+`getSessionMeta()`) → `200` in ~0.3s, real device row returned. Heartbeat
+has never actually succeeded since it was built. Fixed by pulling
+`eventId`/`gate` from the session meta, matching the pattern every other
+authenticated call in this file already uses (`checkIn`'s `gate: meta.gate`
+etc). Separately, `useHeartbeat`'s `setInterval` callback had no `.catch()`
+at all — any failure (this bug, or a transient network hiccup) became an
+uncaught promise rejection every single tick, which is what "keeps on
+coming" was describing structurally. Fixed with a swallow-and-retry-next-
+tick catch (`no-console` forbids logging it client-side, and a dropped
+heartbeat has nothing actionable for the user anyway — the next tick 60s
+later covers for it). The literal "15000ms timeout" message specifically
+is most plausibly explained by this session's own repeated dev-gateway
+restarts landing mid-flight of some heartbeat tick, not a separate code
+bug — should stop now that the endpoint call itself is fixed and the
+server isn't being restarted every few minutes anymore.
+
+**3. Guests tab: whole-row-tap replaced with a dedicated admit control.**
+Previously the entire guest row was one giant `Pressable` with no visible
+affordance beyond a static "PENDING" text pill — easy to mis-tap, and
+nothing on screen actually signaled "tap here to admit." Added
+`AdmitButton`: a filled circular checkmark button (primary orange, drop
+shadow, a quick spring scale-down on press-in / back on release) that
+replaces the pill for not-yet-entered guests; entered guests keep the
+static "IN" pill (nothing to do there, so no button). Staff without
+override rights still see the old static "PENDING" pill, unchanged
+behavior, just via the same component now.
+
+**Verified:** `typecheck`/`lint` clean across all three changes, dev
+server restarted `--clear`, clean bundle, `200` confirmed. Heartbeat fix
+additionally verified with a direct, live curl reproduction against the
+real backend (both the broken empty-body case and the fixed
+real-eventId case) — not just read from the contract schema.
+
+---
+
+### Scan flow rebuilt: verify-then-confirm, matching the reference's actual interaction and making a dead Settings toggle real
+
+User asked whether a screenshot of the reference's post-scan sheet ("VALID
+TICKET — Ticket verified. Tap admit to check in." with GUEST/TIER/PAX and
+DISMISS + ADMIT GUEST buttons) was how this app should behave. It
+wasn't: `runScan` called the mutating `POST /door/check-ins` directly on
+every scan, so the sheet only ever showed an *already-settled* outcome
+with a single DISMISS button — there was no confirm step to skip, which
+also meant Settings' "Auto-admit valid tickets — Skip the confirm step"
+toggle had literally nothing to skip. It existed as a UI element with a
+local `useState` that nothing else in the app ever read.
+
+**Root design, confirmed from the contract's own doc comment before
+building anything:** `POST /door/lookup` exists specifically for this —
+`ticketLookupResponseSchema`'s comment in `packages/contracts` explicitly
+says a preview must use its own `valid | invalid` vocabulary rather than
+reusing the mutating response's `consumed`, because mapping "would be
+admitted" onto "consumed" reads as already-admitted when nothing was
+spent. That's precisely the bug being fixed here, and the fix follows the
+shape the contract already documented rather than inventing a new one.
+
+**Frontend changes:**
+- `src/features/settings/scannerPreferences.ts` (new) — promoted
+  `soundOn`/`hapticOn`/`autoAdmit`/`continuousScanning` out of
+  `SettingsPanel`'s local `useState` into a module-level pub-sub store
+  (same pattern as `toastStore.ts`), so `scan.tsx` can actually read
+  `autoAdmit`. `SettingsPanel.tsx` now reads/writes through it instead of
+  local state — UI unchanged, just no longer a dead end.
+- `src/api/schemas.ts` — `ticketLookupResultSchema`/`TicketLookupResult`,
+  transcribed from the backend's `ticketLookupResponseSchema` (this app's
+  own convention of independently re-declaring each contract shape, same
+  as every other schema in this file).
+- `src/api/scannerApiClient.ts` — `lookupTicket()`, `POST /door/lookup`.
+- `app/(tabs)/scan.tsx` — `runScan` now calls `lookupTicket` first.
+  `lookup.status === 'invalid'` or `autoAdmit` on → falls straight through
+  to the existing mutating `checkIn` path (extracted into a shared
+  `handleScanResult`, used by both this path and the new explicit-admit
+  path, so they can't drift apart). Otherwise → `pendingLookup` state,
+  rendering the new confirm sheet; nothing is consumed until the guard
+  explicitly taps "ADMIT GUEST" (`confirmAdmit`, which then calls the real
+  `checkIn`).
+- `src/features/scan/ResultSheet.tsx` — new `pending` prop/branch:
+  secondary-colored sheet, GUEST/TIER/PAX grid (PAX = `scansAllowed`, so a
+  couple ticket correctly shows `2`), DISMISS (outline) + ADMIT GUEST
+  (filled, loading state while the real `checkIn` is in flight) side by
+  side — matching the reference screenshot's exact two-button layout,
+  distinct from the existing single-DISMISS informational sheet used for
+  an already-settled result.
+
+**Verified against the real backend, not just typecheck:** logged in,
+opened a real session, called `/door/lookup` on a never-scanned ticket
+twice in a row and confirmed `scansUsed` stayed `0` both times (genuinely
+non-mutating), then called the real `/door/check-ins` and confirmed it
+still admitted correctly afterward (`scansUsed: 1`, `status: consumed`).
+`typecheck`/`lint` clean, dev server restarted `--clear`, fresh
+1012-module bundle, `200` confirmed.
+
+**Not done, disclosed:** the couple-ticket confirmation flow
+(`confirmation_required`, a *different*, server-driven two-seat
+confirmation with its own token) was deliberately left untouched and
+routes through the same `handleScanResult` as before — this round only
+addresses the single-ticket verify-then-confirm gap, not a redesign of
+the couple flow.
+
+---
+
+### Login inputs turning white on autofill — a browser mechanism, not app styling
+
+User showed the reference (inputs stay dark even filled in) against ours
+(the same fields turn solid white the moment the browser filled the staff
+email). Not a styling mistake in `GalaTextInput` — it's a real, distinct
+browser mechanism: on the web target, RN's `TextInput` renders as an
+actual `<input>` DOM element, and Chrome (and other Chromium browsers)
+force a white/yellow background on an *autofilled* input via the
+`:-webkit-autofill` pseudo-class. Nothing reachable through React
+Native's `style` prop — inline styles or an ordinary stylesheet rule —
+can override a browser-internal pseudo-class; that requires an actual CSS
+rule targeting it directly, which nothing in this app was doing.
+
+**Fix:** `src/web/injectAutofillStyle.ts` (new) — injects one `<style>`
+tag into `document.head` on web only (idempotent: checks for its own tag
+by id before adding another), applying the standard workaround for this
+exact browser behavior: an oversized inset `box-shadow` in the real
+background color to visually paint over the browser's forced one, plus
+`-webkit-text-fill-color` (autofill overrides text color directly too —
+`color` alone loses to it), plus a near-instant `background-color`
+transition to avoid a one-frame flash of the browser's own autofill color
+before the rule takes effect. Called once at module scope in
+`app/_layout.tsx`. Colored to match `colors.surface` (`#151313`) — the
+exact fill `GalaTextInput`'s `surface` variant already uses on
+`login.tsx`, the screen this was reported on.
+
+**A real TS gap hit while writing this:** the app's tsconfig has no `dom`
+lib (an RN project normally has no DOM to type against), so `document`
+isn't a recognized global there even though it exists at runtime on the
+web target. Fixed with a minimal local `MinimalDocument` interface for
+exactly the three members used, read off `globalThis`, rather than adding
+`dom` to the whole app's lib config for one file.
+
+**Verified:** `typecheck`/`lint` clean, dev server restarted `--clear`,
+fresh 1013-module bundle, `200` confirmed. Both dev servers (frontend and
+backend) had been killed when the prior session ended — confirmed via
+`netstat` and restarted from scratch, both single clean listeners.
+
+**Not chased, disclosed:** the user also called out "the font also looks
+bad" in the same message. No independent, distinct font bug was found —
+`GalaTextInput` does set `fontFamily: 'Archivo_600SemiBold'` correctly,
+and the most likely explanation is the autofill white-background
+destroying contrast made the (correctly-styled) text look wrong by
+association. Left unaddressed rather than guessing at a fix with no clear
+defect to point to; worth another look specifically if it's still visibly
+off once this round's fix is confirmed.
+
+---
+
+### Full-app fidelity audit against the reference HTML — a general-purpose subagent, read-only, then fixes applied to real findings only
+
+User asked to sweep the whole app for more discrepancies against
+`ui_example/claude_design_ui/Circle Scanner.html`. Delegated the sweep
+itself to a subagent with an explicit read-only, evidence-required brief
+(every finding must quote both a reference value located by grep and the
+exact app line, no guessing from "how these apps usually look," and an
+explicit list of everything already fixed this session so it wouldn't
+re-report closed items). Report came back mostly clean — login, pairing
+(no reference counterpart exists at all, confirmed via a full-file grep),
+redeem.tsx, the shared header/tab bar, SettingsPanel, guests.tsx, and most
+of door.tsx/scan.tsx matched the reference exactly wherever checked,
+including several letter-spacing-from-em conversions that were already
+correct. Four real, defensible misses, all in `ResultSheet.tsx` plus two
+minor 2px rounding misses elsewhere — fixed all six:
+
+1. **`ResultSheet.tsx` title was 44px against the reference's 58px** — the
+   single most visible miss in the audit (Admitted/Entry Denied/Valid
+   Ticket titles rendering noticeably smaller than the reference).
+   Fixed: `fontSize: 58, lineHeight: 52` (was 44/42 — `line-height:.9` of
+   58 ≈ 52).
+2. **Settled-result grid silently dropped the PAX column.** The
+   `pending` (verify-then-confirm) branch built earlier this session
+   correctly has 3 grid cells (GUEST/TIER/PAX); the older `result`
+   (already-settled) branch only ever had 2. The reference's grid template
+   is unconditional across every outcome. Added the PAX cell to the
+   settled branch too, sourced from `entitlement.scansAllowed` where an
+   entitlement exists (`consumed`/`confirmation_required`), `—` for
+   `denied` (no entitlement on that variant).
+3. **Grid label letter-spacing was 1.4, reference is `.12em` of 10px =
+   1.2.** Fixed.
+4. **DISMISS/ADMIT GUEST were an even 50/50 split; reference is an
+   asymmetric `1fr 1.6fr` grid.** Added a distinct `admitWrap` style
+   (`flex: 1.6`) instead of reusing `dismissWrap` (`flex: 1`) for both.
+5. **`stats.tsx`'s hero occupancy number: `lineHeight: 74` vs the
+   reference's literal `line-height:1` on a 72px face (=72).** Fixed.
+6. **Scan screen's manual-code input was 54px tall; the reference's
+   *this specific field* is 52px.** Note this is NOT the same as
+   `GalaTextInput`'s shared default height (also 54) — that default is
+   correct for `login.tsx`'s inputs (a different reference element,
+   confirmed clean by the same audit), so the fix overrides height only
+   at the `scan.tsx` call site (`manualCodeInput` style) rather than
+   changing the shared component default, which would have silently
+   regressed the already-verified login screen.
+
+**Deliberately not touched:** the audit flagged the `confirmation_required`
+(couple-ticket) case in `ResultSheet.tsx` as "unverified, not a reported
+defect" — that case is actually intercepted by `scan.tsx`'s separate
+`coupleConfirm` flow before ever reaching `ResultSheet`'s settled-result
+branch in practice, so left alone pending an actual report against it.
+
+**Verified:** `typecheck`/`lint` clean across all six fixes, dev server
+restarted `--clear` (cold cache this time — took ~24s to rebuild vs the
+usual ~10s, nothing wrong, just a colder Metro cache than prior rounds),
+fresh 1013-module bundle, `200` confirmed. Both dev servers (frontend and
+backend) were down again when this round started (killed when the prior
+session/process ended) — confirmed via `netstat` and restarted from
+scratch, both clean single listeners.
+
+---
+
+### D-030 geofence, closed for real: venue-coordinates UI in partner-dashboard (C1RCLE-FRONTEND)
+
+D-030's own disclosed gap ("no admin UI to set a venue's lat/lng — check
+is a silent no-op until one exists") is now closed. Investigated first
+(via a subagent, read-only) rather than guessing at scope: the venue-
+settings screen in `apps/partner-dashboard` turned out to be a fully
+mocked, documented stub with **zero live data anywhere on the page** —
+no `venueId` resolution, no API calls, a permanently-disabled "Save
+changes unavailable" button. Asked the user how to handle that given the
+much larger-than-expected scope; chosen answer: fully wire the page, not
+just bolt on two number inputs to a still-fake form.
+
+**A separate-repos gotcha hit immediately:** C1RCLE-BACKEND and
+C1RCLE-FRONTEND each maintain their OWN copy of `packages/contracts` —
+not a shared package. Every schema/type change made earlier for the
+backend route (`venueAddressSchema` value + `VenueAddress` type export)
+had to be independently mirrored in `C1RCLE-FRONTEND/packages/contracts`
+as well, or the frontend code literally couldn't import what it needed.
+Confirmed both copies' `venueAddressSchema` (with `lat`/`lng`) were
+already identical before this round; only the *exports* were missing on
+both sides.
+
+**Backend (`C1RCLE-BACKEND`):**
+- `packages/contracts/src/contracts/organization.ts` — exported
+  `VenueAddress` (was defined, never exported as a type).
+- `packages/contracts/src/client.ts` — re-exported `venueAddressSchema`
+  (value) and `VenueAddress` (type).
+- `apps/api-gateway/src/routes/v2/partner/venues.ts` — added
+  `address: venueAddressSchema.optional()` to `updateVenueBody.public`
+  (was `.strict()` and would 422 on any `address` key). Domain layer
+  (`updateVenue()`, `VenueService.update`) already supported it with zero
+  changes — confirmed by the investigating subagent before touching
+  anything, not assumed.
+- **Disclosed in the route's own comment, not silently handled:**
+  `updateVenue()`'s merge on `public` is shallow, so sending
+  `{ address: { lat, lng } }` alone REPLACES the whole address object,
+  dropping `street`/`city`/etc. A caller must always send the complete
+  address, not a lat/lng-only patch.
+- Tests added (`venues.test.ts`): a normal address-set round trip, and a
+  test that explicitly documents the shallow-merge behavior (`city`
+  disappears when a second PATCH sends only `lat`/`lng`) — a real gotcha
+  worth pinning down as expected behavior, not letting a future reader
+  discover it as a surprise bug report. **537/537 passing** (532 + 3 new
+  from this session's earlier attendance-report work + 2 new here).
+
+**Frontend (`C1RCLE-FRONTEND`):**
+- `packages/contracts` — mirrored both export additions above.
+- `apps/partner-dashboard/src/lib/venue/venue-repository.ts` (new) —
+  `getMyVenue(organizationId)` (lists venues for the org, returns the
+  first — every `/venue/*` route in this app is un-parameterized, no
+  `[venueId]` segment anywhere, confirming the product's own "one venue
+  per org" assumption), `getVenueProfile`, `updateVenueProfile`. Sends
+  `X-Organization-Id` explicitly on every call — confirmed via full-repo
+  grep that literally no other repository in this app sends that header
+  (org-scoped identity elsewhere comes from the access token itself,
+  stamped via `setActiveOrg`'s refresh call), meaning venue routes are the
+  first thing in this app to actually need it sent as a header, not just
+  assumed to work by copying an existing pattern that happened to be
+  silent about it.
+- `apps/partner-dashboard/src/components/venue/screens/SettingsScreen.tsx`
+  — `VenueProfile` rewritten from a static mock form to a real one: loads
+  the org's venue + profile on mount (`getActiveOrgId()` for the
+  organization, matching `DashboardAuthProvider`'s own resolution),
+  populates the form from live data, and a working Save button that
+  PATCHes `public.name`/`capacity`/`address` (street/city/lat/lng, now
+  structured fields replacing the old single free-text "Address" input)
+  and `private.contactPhone`/`contactEmail`. Optimistic concurrency
+  (`If-Match`) tracked via the venue's own `version` (bumped locally by 1
+  after a successful save, matching this codebase's convention elsewhere
+  rather than triggering a full refetch for a number that's deterministic
+  post-success).
+- **Deliberately NOT wired, disclosed via an on-screen note:** "Venue
+  type" (Nightclub/Bar/Live venue) has no backend field anywhere in
+  `VenuePublicProfile` — kept as local-only UI state with a visible "Not
+  saved — no backend field yet" note, rather than inventing a field or
+  silently dropping the control. Logo upload is unchanged (still a local
+  object-URL preview only — no upload endpoint exists; this was already
+  true before this round and is out of scope for a geofence-motivated
+  change). Payout/Team/Security tabs are untouched, still the pre-existing
+  mocked stubs they always were — "fully wire the page" was scoped to the
+  Venue Profile tab this task actually needed, not a mandate to fix three
+  unrelated stubs.
+- A real, second `no-unnecessary-condition` false-positive hit while
+  writing the loading effect — same root cause as `ApiClient
+  .openEventStream`'s `isAborted()` fix earlier this session (TS's
+  control-flow narrowing can't see a cancellation flag's later mutation
+  from a cleanup closure), same fix (read through a named function, not a
+  bare property access), after first trying this codebase's own
+  established `{ cancelled: false }` object pattern from
+  `DashboardAuthProvider.tsx` and finding it insufficient on the second
+  check in the same block.
+
+**Verified — the full loop, not just each half in isolation:** logged in
+as the seeded owner, called `GET /organizations/:id/venues` (confirms
+`getMyVenue`'s resolution), `GET .../profile`, then `PATCH .../profile`
+with the exact body shape the new UI code constructs (`address: {city,
+lat, lng}`) — `200`, address round-tripped correctly. Then, to confirm
+this isn't just a plumbing exercise but actually closes D-030: minted a
+fresh door code and called `POST /door/sessions` twice — once with a
+device location far from the newly-set coordinates (`404`, masked-
+forbidden per this route's existing IDOR convention) and once from nearby
+(`201`, shift opened) — proving the geofence built earlier this session
+now genuinely enforces against coordinates set through this new UI path,
+not just against hand-seeded test data. `typecheck`/`lint` clean on every
+touched file (both repos), full backend suite green (537/537), partner-
+dashboard suite 252/253 (the one failure is `VenueOperationsInteractions
+.test.tsx`'s unrelated, pre-existing, date-hardcoded Create Event
+assertion — asserts a literal "Thu, 24 Sep 2026" that went stale once the
+system date passed it, nothing to do with this change). Dev server
+(`next dev --turbopack --port 3001`) started clean, `/venue/settings`
+returns a `307` under `curl` with no session cookie (the expected
+auth-gate redirect, not an error).

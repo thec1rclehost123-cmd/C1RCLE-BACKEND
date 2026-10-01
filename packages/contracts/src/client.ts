@@ -40,6 +40,9 @@ export type {
   OtpSendRequest,
   OtpVerifyRequest,
   OtpAckResponse,
+  ForgotPasswordRequest,
+  ResetPasswordRequest,
+  PasswordResetAck,
 } from './contracts/auth.js';
 
 export {
@@ -52,6 +55,9 @@ export {
   otpSendRequestSchema,
   otpVerifyRequestSchema,
   otpAckResponseSchema,
+  forgotPasswordRequestSchema,
+  resetPasswordRequestSchema,
+  passwordResetAckSchema,
 } from './contracts/auth.js';
 
 // Organization, Venue, Member
@@ -65,6 +71,7 @@ export type {
   CreateVenueInput,
   OrganizationMemberDto,
   InviteMemberInput,
+  VenueAddress,
   VenueProfileDto,
   VenueSlotDto,
   CreateVenueBlockInput,
@@ -91,6 +98,7 @@ export {
   createVenueSchema,
   organizationMemberDtoSchema,
   inviteMemberSchema,
+  venueAddressSchema,
   venueProfileDtoSchema,
   venueSlotDtoSchema,
   createVenueBlockSchema,
@@ -129,6 +137,7 @@ export type {
   TablePackageDto,
   CreateTablePackageRequest,
   PromoterAssignmentDto,
+  PromoterAssignedEventDto,
   AssignPromoterRequest,
 } from './contracts/event.js';
 
@@ -151,6 +160,7 @@ export {
   tablePackageDtoSchema,
   createTablePackageSchema,
   promoterAssignmentDtoSchema,
+  promoterAssignedEventDtoSchema,
   assignPromoterSchema,
 } from './contracts/event.js';
 
@@ -162,6 +172,12 @@ export type {
   SetVenueShareRequest,
   PartnerAccessDto,
   OrganizationOverviewDto,
+  OrganizationTrendsDto,
+  TrendGranularity,
+  TrendBucketDto,
+  OrganizationCalendarDto,
+  OrganizationEventCardDto,
+  OrganizationEventCardListResponse,
   EventAnalyticsDto,
   ReferralLinkDto,
   CreateReferralLinkRequest,
@@ -181,6 +197,12 @@ export {
   partnerPermissionSchema,
   partnerAccessDtoSchema,
   organizationOverviewDtoSchema,
+  organizationTrendsDtoSchema,
+  trendGranularitySchema,
+  trendBucketDtoSchema,
+  organizationCalendarDtoSchema,
+  organizationEventCardDtoSchema,
+  organizationEventCardListResponseSchema,
   eventAnalyticsDtoSchema,
   referralLinkDtoSchema,
   createReferralLinkSchema,
@@ -215,6 +237,9 @@ export type {
   AdminAuditRecordDto,
   AdminLookupResultItem,
   AdminLookupResponse,
+  AdminAlertCategory,
+  AdminAlertsResponse,
+  AdminAlertCategoryKey,
 } from './contracts/onboarding.js';
 
 export {
@@ -393,6 +418,10 @@ export {
   doorGuestSchema,
   doorGuestListQuerySchema,
   doorGuestListResponseSchema,
+  attendanceReportQuerySchema,
+  attendanceReportGuestSchema,
+  attendanceReportTierBreakdownSchema,
+  attendanceReportDtoSchema,
   manualCheckInBodySchema,
   manualCheckInResponseSchema,
   scanDenyReasonSchema,
@@ -559,12 +588,15 @@ export type {
   AdminPayoutStatus,
   RunPayoutBatchInput,
   PayoutBatchResult,
+  FinanceOrderDto,
 } from './contracts/phase6.js';
 
 export {
   ledgerEntryDtoSchema,
   ledgerEntryListResponseSchema,
   balanceSummaryResponseSchema,
+  financeOrderDtoSchema,
+  financeOrderListResponseSchema,
   payoutRequestSchema,
   payoutResponseSchema,
   payoutListResponseSchema,
@@ -659,3 +691,65 @@ export {
   eventPublicDetailDtoSchema,
   discoveryFeedDtoSchema,
 } from './contracts/public.js';
+
+// Phase 8: guest follow graph + notification inbox (session-scoped).
+// NotificationDto/notificationDtoSchema are aliased — the V2 partner-inbox
+// exports below use the same names for a distinct DTO (org-tenant inbox vs
+// guest follow notifications). Every other name here is already distinct
+// (this file pluralizes "notification[s]ListResponse" etc.), so only those
+// two need it.
+export type {
+  CreateFollowRequest,
+  FollowDto,
+  FollowListResponse,
+  FollowStatusDto,
+  FollowTargetTypeDto,
+  MarkNotificationsReadRequest,
+  MarkReadResultDto,
+  NotificationDto as SocialNotificationDto,
+  NotificationListResponse,
+  UnreadCountDto,
+} from './contracts/social.js';
+export {
+  createFollowSchema,
+  followDtoSchema,
+  followListResponseSchema,
+  followStatusDtoSchema,
+  followTargetParamsSchema,
+  followTargetTypeSchema,
+  listMyFollowsQuerySchema,
+  listNotificationsQuerySchema,
+  markNotificationsReadSchema,
+  markReadResultDtoSchema,
+  notificationDtoSchema as socialNotificationDtoSchema,
+  notificationListResponseSchema,
+  notificationTypeSchema,
+  unreadCountDtoSchema,
+} from './contracts/social.js';
+
+// Notifications (V2 partner inbox)
+export type {
+  NotificationRecipientTypeDto,
+  NotificationActionTypeDto,
+  NotificationActionDto,
+  NotificationPriorityDto,
+  NotificationDto,
+  NotificationsListResponse,
+  NotificationReadRequest,
+  MarkAllNotificationsReadResult,
+  NotificationDecisionDto,
+  NotificationActionRequestDto,
+} from './contracts/notifications.js';
+
+export {
+  notificationRecipientTypeSchema,
+  notificationActionTypeSchema,
+  notificationActionSchema,
+  notificationPrioritySchema,
+  notificationDtoSchema,
+  notificationsListResponseSchema,
+  notificationReadRequestSchema,
+  markAllNotificationsReadResultSchema,
+  notificationDecisionSchema,
+  notificationActionRequestSchema,
+} from './contracts/notifications.js';

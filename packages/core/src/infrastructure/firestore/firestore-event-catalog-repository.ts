@@ -20,6 +20,21 @@ const PROMOS = 'v2_event_catalog_promos';
 const TABLES = 'v2_event_catalog_tables';
 const ASSIGNMENTS = 'v2_event_catalog_promoter_assignments';
 
+/**
+ * An active (never-suspended) assignment has no `suspendedAt` field in
+ * Firestore at all — it's only written by `suspendPromoterAssignment`. The
+ * domain type is `string | null`, never `undefined`, so a raw cast straight
+ * through fails the response schema (which requires the real type, not
+ * `undefined`) for every currently-active promoter.
+ */
+function toAssignment(data: DocumentData): PromoterAssignment {
+  return {
+    ...(data as unknown as PromoterAssignment),
+    endedAt: (data.endedAt ?? null) as string | null,
+    suspendedAt: (data.suspendedAt ?? null) as string | null,
+  };
+}
+
 /** Firestore adapter for `EventCatalogRepository` (B12) — tiers/promos/tables/promoter-assignments. */
 export class FirestoreEventCatalogRepository implements EventCatalogRepository {
   constructor(private readonly db: Firestore) {}
@@ -27,11 +42,12 @@ export class FirestoreEventCatalogRepository implements EventCatalogRepository {
   // ── Ticket tiers ──────────────────────────────────────────────────────────
   async getTierById(tierId: EntityId): Promise<TicketTier | null> {
     const snap = await this.db.collection(TIERS).doc(tierId).get();
-    return snap.exists ? (snap.data() as unknown as TicketTier) : null;
+    const data = snap.data();
+    return snap.exists && data ? fromTierDoc(data) : null;
   }
   async listTiers(eventId: EntityId): Promise<TicketTier[]> {
     const snap = await this.db.collection(TIERS).where('eventId', '==', eventId).get();
-    return snap.docs.map((doc) => doc.data() as unknown as TicketTier);
+    return snap.docs.map((doc) => fromTierDoc(doc.data()));
   }
   async findWalkInTier(eventId: EntityId): Promise<TicketTier | null> {
     const snap = await this.db
@@ -43,7 +59,7 @@ export class FirestoreEventCatalogRepository implements EventCatalogRepository {
     if (snap.empty) return null;
     const doc = snap.docs[0];
     if (!doc) return null;
-    return doc.exists ? (doc.data() as unknown as TicketTier) : null;
+    return doc.exists ? fromTierDoc(doc.data()) : null;
   }
   async findDineInTier(eventId: EntityId): Promise<TicketTier | null> {
     const snap = await this.db
@@ -55,13 +71,17 @@ export class FirestoreEventCatalogRepository implements EventCatalogRepository {
     if (snap.empty) return null;
     const doc = snap.docs[0];
     if (!doc) return null;
-    return doc.exists ? (doc.data() as unknown as TicketTier) : null;
+    return doc.exists ? fromTierDoc(doc.data()) : null;
   }
   async saveTier(tier: TicketTier, _tx?: TxContext | null): Promise<void> {
-    await this.db
-      .collection(TIERS)
-      .doc(tier.id)
-      .set({ ...tier });
+    const data = { ...tier } as Record<string, unknown>;
+    if (tier.accessType === 'RSVP') {
+      delete data.priceInPaise;
+      delete data.pricingPhases;
+      delete data.doorPriceInPaise;
+      delete data.commissionEligible;
+    }
+    await this.db.collection(TIERS).doc(tier.id).set(data);
   }
 
   // ── Promo codes ───────────────────────────────────────────────────────────
@@ -111,23 +131,23 @@ export class FirestoreEventCatalogRepository implements EventCatalogRepository {
   // ── Promoter assignments ──────────────────────────────────────────────────
   async getAssignmentById(assignmentId: EntityId): Promise<PromoterAssignment | null> {
     const snap = await this.db.collection(ASSIGNMENTS).doc(assignmentId).get();
-    return snap.exists ? (snap.data() as unknown as PromoterAssignment) : null;
+    // Narrow on the data rather than on `snap.exists`: the assertion form
+    // (`as DocumentData` or `!`) is rejected by the lint pair
+    // `non-nullable-type-assertion-style` / `no-non-null-assertion`.
+    const data = snap.data();
+    return data ? toAssignment(data) : null;
   }
   async listAssignments(eventId: EntityId): Promise<PromoterAssignment[]> {
     const snap = await this.db.collection(ASSIGNMENTS).where('eventId', '==', eventId).get();
-    return snap.docs.map((doc) => doc.data() as unknown as PromoterAssignment);
+    return snap.docs.map((doc) => toAssignment(doc.data()));
   }
   async listAssignmentsByPromoter(promoterId: EntityId): Promise<PromoterAssignment[]> {
     const snap = await this.db.collection(ASSIGNMENTS).where('promoterId', '==', promoterId).get();
-    return snap.docs.map((doc) => doc.data() as unknown as PromoterAssignment);
+    return snap.docs.map((doc) => toAssignment(doc.data()));
   }
   async listAllAssignments(query: PaginationQuery): Promise<Page<PromoterAssignment>> {
     const base = this.db.collection(ASSIGNMENTS);
-    return paginateQuery(
-      base,
-      query,
-      (data: DocumentData) => data as unknown as PromoterAssignment,
-    );
+    return paginateQuery(base, query, toAssignment);
   }
   async saveAssignment(assignment: PromoterAssignment, _tx?: TxContext | null): Promise<void> {
     await this.db
@@ -135,4 +155,16 @@ export class FirestoreEventCatalogRepository implements EventCatalogRepository {
       .doc(assignment.id)
       .set({ ...assignment });
   }
+}
+
+function fromTierDoc(data: DocumentData): TicketTier {
+  // RSVP's non-applicable fields are intentionally absent in Firestore. Keep
+  // the internal pricing projection numeric for existing checkout consumers.
+  return {
+    ...(data as unknown as TicketTier),
+    priceInPaise: (data.priceInPaise as number | undefined) ?? 0,
+    pricingPhases: (data.pricingPhases as TicketTier['pricingPhases'] | undefined) ?? [],
+    commissionEligible: (data.commissionEligible as boolean | undefined) ?? false,
+    doorPriceInPaise: (data.doorPriceInPaise as number | null | undefined) ?? null,
+  };
 }

@@ -4,6 +4,8 @@ import {
   doorEventListResponseSchema,
   doorGuestListQuerySchema,
   doorGuestListResponseSchema,
+  attendanceReportQuerySchema,
+  attendanceReportDtoSchema,
   manualCheckInBodySchema,
   manualCheckInResponseSchema,
   paginationQuerySchema,
@@ -387,6 +389,37 @@ export default async function doorOpsRoutes(fastify: FastifyInstance) {
     },
   );
 
+  // ── GET /door/attendance-report ───────────────────────────────────────────
+  // Who entered, who didn't, what time, how many — `07-storage-sizing-
+  // caching.md` §5b. Admin-console-facing (a full-roster report, not a
+  // phone-bandwidth-conscious search), but kept in this v2 door slice
+  // rather than a separate app surface since the data and access rule are
+  // identical to every other door-ops read here.
+  fastify.get(
+    '/door/attendance-report',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({ querystring: attendanceReportQuerySchema }),
+      ],
+    },
+    async (request, reply) => {
+      const query = request.query as z.infer<typeof attendanceReportQuerySchema>;
+      const actor = services.actor(request);
+      const report = await services.doorOps
+        .getAttendanceReport(query.eventId, actor)
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, query.eventId, error, { hideForbidden: true }),
+        );
+      if (report === undefined) return reply;
+      // Guest names are PII, same rule as `/door/guests`.
+      reply.header('cache-control', 'no-store');
+      const validated = validateV2Response(reply, request, attendanceReportDtoSchema, report);
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
   // ── POST /door/guests/check-in ────────────────────────────────────────────
   // Admits a guest whose QR will not scan — cracked screen, dead phone.
   // Deliberately runs the SAME atomic claim as the camera, so this cannot be
@@ -493,26 +526,47 @@ export default async function doorOpsRoutes(fastify: FastifyInstance) {
     async (request, reply) => {
       const body = request.body as z.infer<typeof walletChargeBodySchema>;
       const actor = services.actor(request);
-      const result = await services.doorOps
-        .chargeWallet(
-          {
-            sessionToken: sessionTokenFrom(request),
-            eventId: body.eventId,
-            qrPayload: body.qrPayload,
-            presetItemId: body.presetItemId,
-            quantity: body.quantity,
-            idempotencyKey: body.idempotencyKey,
-          },
-          actor,
-        )
-        .catch((error: unknown) =>
-          mapDomainError(reply, request, body.eventId, error, { hideForbidden: true }),
-        );
+
+      // `chargeWallet`'s own idempotency check (`findByIdempotencyKey` then
+      // write, in `cover-wallet-service.ts`) is a read-then-write race, not
+      // an atomic claim — two concurrent requests with the same key can both
+      // read "not found" and both debit. A double-tap check under real
+      // concurrency proved this: two racing requests debited the wallet
+      // twice for one guest tap. `runIdempotent`'s Firestore-`create()`-based
+      // claim (already proven safe for walk-in/dine-in/check-ins) wraps the
+      // whole call so only one side ever runs it; the inner check becomes a
+      // harmless secondary guard for a plain sequential retry. Keyed from
+      // `body.idempotencyKey` (not the `Idempotency-Key` header) because
+      // that's what this route's existing clients already send.
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: actor.userId,
+        commandName: 'door.wallet.charge',
+        idempotencyKey: body.idempotencyKey,
+        context: { path: {}, body },
+        run: async () => {
+          const charge = await services.doorOps.chargeWallet(
+            {
+              sessionToken: sessionTokenFrom(request),
+              eventId: body.eventId,
+              qrPayload: body.qrPayload,
+              presetItemId: body.presetItemId,
+              quantity: body.quantity,
+              idempotencyKey: body.idempotencyKey,
+            },
+            actor,
+          );
+          const validated = validateV2Response(reply, request, walletChargeResponseSchema, charge);
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
+        },
+      }).catch((error: unknown) =>
+        mapDomainError(reply, request, body.eventId, error, { hideForbidden: true }),
+      );
       if (result === undefined) return reply;
       reply.header('cache-control', 'no-store');
-      const validated = validateV2Response(reply, request, walletChargeResponseSchema, result);
-      if (validated === undefined) return reply;
-      return reply.send(validated);
+      return reply.status(result.statusCode).send(result.body);
     },
   );
 
@@ -535,39 +589,65 @@ export default async function doorOpsRoutes(fastify: FastifyInstance) {
     async (request, reply) => {
       const body = request.body as z.infer<typeof doorTicketSaleBodySchema>;
       const actor = services.actor(request);
-      const sale = await services.doorTicketSale
-        .sellAtDoor(
-          {
-            sessionToken: sessionTokenFrom(request),
-            eventId: body.eventId,
-            tierId: body.tierId,
+
+      // Same race as wallet-charge (see its comment): `sellAtDoor`'s own
+      // idempotency check is read-then-write, not atomic, and a double-tap
+      // check under real concurrency proved it — a raw domain version-
+      // conflict leaked to the client instead of a clean replay, meaning the
+      // two requests raced past each other into the same write path. Wrap
+      // in the same proven-atomic `runIdempotent` claim.
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: actor.userId,
+        commandName: 'door.ticket-sale',
+        idempotencyKey: body.idempotencyKey,
+        context: { path: {}, body },
+        run: async () => {
+          const sale = await services.doorTicketSale.sellAtDoor(
+            {
+              sessionToken: sessionTokenFrom(request),
+              eventId: body.eventId,
+              tierId: body.tierId,
+              quantity: body.quantity,
+              paymentMode: body.paymentMode,
+              guestName: body.guestName,
+              guestPhone: body.guestPhone ?? null,
+              guestEmail: body.guestEmail ?? null,
+              guestAge: body.guestAge ?? null,
+              gender: body.gender ?? null,
+              gate: body.gate ?? null,
+              idempotencyKey: body.idempotencyKey,
+            },
+            actor,
+          );
+          const validated = validateV2Response(reply, request, doorTicketSaleResponseSchema, {
+            orderId: sale.order.id,
+            amountPaise: sale.amountPaise,
             quantity: body.quantity,
             paymentMode: body.paymentMode,
-            guestName: body.guestName,
-            guestPhone: body.guestPhone ?? null,
-            guestEmail: body.guestEmail ?? null,
-            guestAge: body.guestAge ?? null,
-            gender: body.gender ?? null,
-            gate: body.gate ?? null,
-            idempotencyKey: body.idempotencyKey,
-          },
-          actor,
-        )
-        .catch((error: unknown) =>
-          mapDomainError(reply, request, body.eventId, error, { hideForbidden: true }),
-        );
-      if (sale === undefined) return reply;
-      const validated = validateV2Response(reply, request, doorTicketSaleResponseSchema, {
-        orderId: sale.order.id,
-        amountPaise: sale.amountPaise,
-        quantity: body.quantity,
-        paymentMode: body.paymentMode,
-        ticketIds: sale.tickets.map((t) => t.id),
-        checkInIds: sale.checkInIds,
-        replayed: sale.replayed,
-      });
-      if (validated === undefined) return reply;
-      return reply.status(sale.replayed ? 200 : 201).send(validated);
+            ticketIds: sale.tickets.map((t) => t.id),
+            checkInIds: sale.checkInIds,
+            replayed: sale.replayed,
+          });
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: sale.replayed ? 200 : 201, body: validated };
+        },
+      }).catch((error: unknown) =>
+        mapDomainError(reply, request, body.eventId, error, { hideForbidden: true }),
+      );
+      if (result === undefined) return reply;
+      // `runIdempotent` replays the exact stored response verbatim, which on
+      // the FIRST call was a 201 with `replayed: false` baked in — a later
+      // sequential retry must still read as a replay (200, `replayed: true`)
+      // even though nothing re-ran. The outer layer's own `replayed` flag,
+      // not the frozen stored body, is authoritative for both.
+      if (result.replayed) {
+        return reply
+          .status(200)
+          .send({ ...(result.body as Record<string, unknown>), replayed: true });
+      }
+      return reply.status(result.statusCode).send(result.body);
     },
   );
 }

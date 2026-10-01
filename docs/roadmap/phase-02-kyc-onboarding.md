@@ -89,10 +89,14 @@ the organization with the plan's fee and the single capability applied for).
 
 ## Deferred, and why
 
-- **Signed storage upload.** `addDocument` takes a `storagePath` the client has
+- ~~**Signed storage upload.** `addDocument` takes a `storagePath` the client has
   already written to; issuing signed upload URLs needs a Firebase Storage
   bucket decision that has not been made. The label→path convention from v1
-  (`kyc/{userId}/{label}.{ext}`) is what the tests use.
+  (`kyc/{userId}/{label}.{ext}`) is what the tests use.~~
+  **✅ DONE 2026-08-30 (`2a9a4b3`)** — the storage-bucket decision was made
+  and pre-signed upload URLs are implemented. The Firebase Admin SDK stays
+  behind the infrastructure adapter; routes hand the client a signed URL rather
+  than proxying bytes.
 - **Approval email.** No mail transport exists in V2 yet; it belongs with
   notifications (Phase 8) rather than bolted onto this path.
 - **`v2_verification_attempts` sub-collection shape.** Stored flat with a

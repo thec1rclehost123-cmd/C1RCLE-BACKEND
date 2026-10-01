@@ -100,7 +100,7 @@ function seedTier(
     eventId: 'evt_1',
     organizationId: 'org_1',
     name: 'General Admission',
-    priceInPaise: 0,
+    accessType: 'RSVP',
     quantity: 10,
     ...overrides,
   });
@@ -115,7 +115,7 @@ function seedLegacyFreeTier(catalog: MemoryEventCatalogRepository): void {
     eventId: 'evt_1',
     organizationId: 'org_1',
     name: 'General Admission',
-    priceInPaise: 0,
+    accessType: 'RSVP',
     quantity: 250,
   });
   const legacy = {
@@ -157,7 +157,7 @@ describe('CheckoutService.createRsvp', () => {
       eventId: 'evt_1',
       organizationId: 'org_1',
       name: 'Door Paid',
-      priceInPaise: 0,
+      priceInPaise: 1000,
       quantity: 10,
     });
     const legacy = {
@@ -226,7 +226,7 @@ describe('CheckoutService.createRsvp', () => {
       eventId: 'evt_draft',
       organizationId: 'org_1',
       name: 'General Admission',
-      priceInPaise: 0,
+      accessType: 'RSVP',
       quantity: 10,
     });
     await catalog.saveTier(tier);
