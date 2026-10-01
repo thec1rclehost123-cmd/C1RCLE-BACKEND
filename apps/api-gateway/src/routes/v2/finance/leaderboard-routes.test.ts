@@ -73,12 +73,11 @@ describe('GET /organizations/:organizationId/leaderboard/me', () => {
   it('returns the caller own standing', async () => {
     const server = await buildServer();
     const promoter = await seedOrganization(server);
-    await createV2Services().leaderboard.recordCommission(
-      promoter,
-      3_000,
-      'Delhi',
-      new Date('2026-09-08T12:00:00.000Z'),
-    );
+    // `periodType=month` with no explicit `periodValue` resolves against the
+    // real wall clock on the read side (see leaderboard-routes.ts), so the
+    // write must land in the actual current month too — a fixed historical
+    // date here would silently stop matching once the calendar moves on.
+    await createV2Services().leaderboard.recordCommission(promoter, 3_000, 'Delhi', new Date());
 
     const res = await server.inject({
       method: 'GET',

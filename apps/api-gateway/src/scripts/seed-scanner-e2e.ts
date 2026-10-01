@@ -132,7 +132,6 @@ async function main(): Promise<void> {
     summary: 'Created by seed-scanner-e2e.ts for the manual scanner-app walkthrough.',
     startAt,
     endAt,
-    capacity: 300,
     now,
   });
   const event = {

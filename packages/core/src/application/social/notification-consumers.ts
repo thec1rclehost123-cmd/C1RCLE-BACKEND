@@ -6,7 +6,7 @@ import type { FollowTargetType } from '../../domain/models/social.js';
 import type {
   EventRepository,
   FollowRepository,
-  NotificationRepository,
+  SocialNotificationRepository,
 } from '../../domain/ports/repositories.js';
 
 /**
@@ -32,7 +32,7 @@ const WRITE_CONCURRENCY = 50;
 export interface FollowerFanOutDeps {
   events: Pick<EventRepository, 'getById'>;
   follows: Pick<FollowRepository, 'listFollowers'>;
-  notifications: Pick<NotificationRepository, 'createIfAbsent'>;
+  notifications: Pick<SocialNotificationRepository, 'createIfAbsent'>;
 }
 
 export function createFollowerFanOutConsumer(deps: FollowerFanOutDeps) {

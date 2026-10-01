@@ -74,8 +74,8 @@ async function seedPublishedEvent(overrides: {
       },
       facilities: ['stage'],
       menu: { sections: [], updatedAt: null },
-      capacity: null,
       settings: { showGuestList: false, activityEnabled: false },
+      capacity: null,
     },
     private: {
       contactEmail: 'private@example.test',
@@ -97,7 +97,7 @@ async function seedPublishedEvent(overrides: {
     summary: 'A public test event',
     description: '',
     imageUrl: null,
-    startAt: '2026-09-01T18:00:00.000Z',
+    startAt: new Date(Date.now() + 7 * 86400 * 1000).toISOString(),
     endAt: null,
     status: 'published',
     isPublic: true,
