@@ -135,6 +135,26 @@ async function onboardAndApproveHost(
       createPlatformAdmin({ id: 'ops_1', email: 'ops@c1rcle.test', role: 'ops' }),
     );
 
+  // Approval is blocked until every required document is KYC-verified — the
+  // server-side mirror of the admin console's disabled Approve button.
+  // Prove the gate is real before proving it opens.
+  const blocked = await server.inject({
+    method: 'POST',
+    url: `/api/v2/admin/onboarding/applications/${requestId}/approve`,
+    headers: asUser('ops_1'),
+    payload: {},
+  });
+  expect(blocked.statusCode, JSON.stringify(blocked.json())).toBe(400);
+
+  for (const label of ['id_front', 'id_back', 'selfie']) {
+    const verify = await server.inject({
+      method: 'POST',
+      url: `/api/v2/admin/onboarding/applications/${requestId}/documents/${label}/verify`,
+      headers: { ...asUser('ops_1'), 'idempotency-key': ik(`verify-${label}`) },
+    });
+    expect(verify.statusCode, JSON.stringify(verify.json())).toBe(200);
+  }
+
   const approve = await server.inject({
     method: 'POST',
     url: `/api/v2/admin/onboarding/applications/${requestId}/approve`,
