@@ -73,6 +73,7 @@ export class EventService {
 
   async create(actor: ActorContext, command: CreateEventCommand): Promise<Event> {
     await this.assertVenueAccess(actor, command.venueId);
+    await this.assertVenueAccess(actor, command.venueId);
     const event = createEvent({
       id: this.deps.config.ids(),
       organizationId: actor.organizationId,
@@ -187,22 +188,20 @@ export class EventService {
     const tiers = await this.deps.repositories.catalog.listTiers(event.id);
     validateCompensationForPublish(
       event.compensation ?? null,
-      tiers.map((tier) => tier.id),
+      tiers
+        .filter((tier) => tier.accessType !== 'RSVP' && tier.commissionEligible !== false)
+        .map((tier) => tier.id),
     );
     const now = this.deps.config.clock.now();
     // Ticket pricing is the source of truth. The create endpoint cannot know
     // the final catalog yet, so refresh these denormalized discovery fields at
     // the publish boundary before the event becomes guest-visible.
-    const startingPricePaise = tiers.length
-      ? Math.min(...tiers.map((tier) => tier.priceInPaise))
+    const paidTiers = tiers.filter((tier) => tier.accessType !== 'RSVP');
+    const startingPricePaise = paidTiers.length
+      ? Math.min(...paidTiers.map((tier) => tier.priceInPaise))
       : 0;
-    // Respect an explicit `isFree: false` set by the host via PATCH — only
-    // auto-derive from tiers when the event hasn't been explicitly marked paid.
-    const isFree = !event.isFree
-      ? false
-      : tiers.length === 0 || tiers.every((tier) => tier.priceInPaise === 0);
+    const isFree = paidTiers.length === 0 || paidTiers.every((tier) => tier.priceInPaise === 0);
     const withCatalogSummary = { ...event, startingPricePaise, isFree };
-
     // The `scheduled` step is transient: only the final `published` state is
     // persisted, so the version bump happens once. Walking two live bumps
     // (review→scheduled→published) and saving only the last would write

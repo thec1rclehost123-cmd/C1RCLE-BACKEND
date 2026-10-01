@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 
+import { InvalidOperationError } from '../../domain/errors.js';
 import { computeSettlementSplit, createLedgerEntry } from '../../domain/models/ledger.js';
 import { requireOrgAccess } from '../context.js';
 
@@ -33,6 +34,8 @@ export interface RecordTicketSaleInput {
   platformFeeRate: number;
   venueShareRate: number;
   promoterCommissionRate: number | null;
+  /** Frozen assignment calculation, when attribution carries V2 terms. */
+  promoterCommissionPaise?: number | null;
 }
 
 export interface BalanceSummary {
@@ -92,12 +95,27 @@ export function createFinanceService(deps: FinanceServiceDeps): FinanceService {
       return existing;
     }
 
-    const split = computeSettlementSplit(
+    const calculated = computeSettlementSplit(
       input.grossAmount,
       input.platformFeeRate,
       input.venueShareRate,
       input.promoterCommissionRate,
     );
+    const promoterCommission = input.promoterCommissionPaise ?? calculated.promoterCommission;
+    if (
+      promoterCommission < 0 ||
+      promoterCommission > input.grossAmount - calculated.platformFee - calculated.venueShare
+    ) {
+      throw new InvalidOperationError(
+        'Promoter commission exceeds the distributable ticket revenue',
+      );
+    }
+    const split = {
+      ...calculated,
+      promoterCommission,
+      hostPayout:
+        input.grossAmount - calculated.platformFee - calculated.venueShare - promoterCommission,
+    };
     const now = config.clock.now();
 
     const entries: LedgerEntry[] = [

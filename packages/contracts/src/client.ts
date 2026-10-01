@@ -137,6 +137,7 @@ export type {
   TablePackageDto,
   CreateTablePackageRequest,
   PromoterAssignmentDto,
+  PromoterAssignedEventDto,
   AssignPromoterRequest,
 } from './contracts/event.js';
 
@@ -159,6 +160,7 @@ export {
   tablePackageDtoSchema,
   createTablePackageSchema,
   promoterAssignmentDtoSchema,
+  promoterAssignedEventDtoSchema,
   assignPromoterSchema,
 } from './contracts/event.js';
 
@@ -235,6 +237,9 @@ export type {
   AdminAuditRecordDto,
   AdminLookupResultItem,
   AdminLookupResponse,
+  AdminAlertCategory,
+  AdminAlertsResponse,
+  AdminAlertCategoryKey,
 } from './contracts/onboarding.js';
 
 export {
@@ -687,7 +692,12 @@ export {
   discoveryFeedDtoSchema,
 } from './contracts/public.js';
 
-// Phase 8: follow graph + notifications
+// Phase 8: guest follow graph + notification inbox (session-scoped).
+// NotificationDto/notificationDtoSchema are aliased — the V2 partner-inbox
+// exports below use the same names for a distinct DTO (org-tenant inbox vs
+// guest follow notifications). Every other name here is already distinct
+// (this file pluralizes "notification[s]ListResponse" etc.), so only those
+// two need it.
 export type {
   CreateFollowRequest,
   FollowDto,
@@ -696,7 +706,7 @@ export type {
   FollowTargetTypeDto,
   MarkNotificationsReadRequest,
   MarkReadResultDto,
-  NotificationDto,
+  NotificationDto as SocialNotificationDto,
   NotificationListResponse,
   UnreadCountDto,
 } from './contracts/social.js';
@@ -711,8 +721,35 @@ export {
   listNotificationsQuerySchema,
   markNotificationsReadSchema,
   markReadResultDtoSchema,
-  notificationDtoSchema,
+  notificationDtoSchema as socialNotificationDtoSchema,
   notificationListResponseSchema,
   notificationTypeSchema,
   unreadCountDtoSchema,
 } from './contracts/social.js';
+
+// Notifications (V2 partner inbox)
+export type {
+  NotificationRecipientTypeDto,
+  NotificationActionTypeDto,
+  NotificationActionDto,
+  NotificationPriorityDto,
+  NotificationDto,
+  NotificationsListResponse,
+  NotificationReadRequest,
+  MarkAllNotificationsReadResult,
+  NotificationDecisionDto,
+  NotificationActionRequestDto,
+} from './contracts/notifications.js';
+
+export {
+  notificationRecipientTypeSchema,
+  notificationActionTypeSchema,
+  notificationActionSchema,
+  notificationPrioritySchema,
+  notificationDtoSchema,
+  notificationsListResponseSchema,
+  notificationReadRequestSchema,
+  markAllNotificationsReadResultSchema,
+  notificationDecisionSchema,
+  notificationActionRequestSchema,
+} from './contracts/notifications.js';

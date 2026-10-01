@@ -12,6 +12,10 @@ import type {
 /** In-memory referral links (dev/test adapter). */
 export class MemoryReferralLinkRepository implements ReferralLinkRepository {
   links = new Map<EntityId, ReferralLink>();
+  private recordedSales = new Set<string>();
+  private globalCodes = new Map<string, EntityId>();
+  private promoterCodes = new Map<EntityId, string>();
+  private vanityAliases = new Map<string, EntityId>();
 
   async getById(linkId: EntityId): Promise<ReferralLink | null> {
     return this.links.get(linkId) ?? null;
@@ -23,6 +27,84 @@ export class MemoryReferralLinkRepository implements ReferralLinkRepository {
       if (link.eventId === eventId && link.code === wanted) return link;
     }
     return null;
+  }
+
+  async findByCodeGlobal(code: string): Promise<ReferralLink | null> {
+    const wanted = normalizeReferralCode(code);
+    for (const link of this.links.values()) if (link.code === wanted) return link;
+    return null;
+  }
+
+  async findAnyByPromoter(promoterId: EntityId): Promise<ReferralLink | null> {
+    for (const link of this.links.values()) {
+      if (link.promoterId === promoterId) return link;
+    }
+    return null;
+  }
+
+  async findByVanity(prefix: string, slug: string): Promise<ReferralLink | null> {
+    for (const link of this.links.values()) {
+      if (link.vanityPrefix === prefix && link.vanitySlug === slug) return link;
+    }
+    return null;
+  }
+
+  async claimVanityAlias(prefix: string, slug: string, linkId: EntityId): Promise<boolean> {
+    const key = `${prefix}/${slug}`;
+    const owner = this.vanityAliases.get(key);
+    if (owner && owner !== linkId) return false;
+    this.vanityAliases.set(key, linkId);
+    return true;
+  }
+
+  async claimGlobalCode(code: string, promoterId: EntityId): Promise<boolean> {
+    const wanted = normalizeReferralCode(code);
+    const owner = this.globalCodes.get(wanted);
+    if (owner && owner !== promoterId) return false;
+    this.globalCodes.set(wanted, promoterId);
+    return true;
+  }
+
+  async getOrCreatePromoterCode(
+    promoterId: EntityId,
+    proposedCode: string,
+  ): Promise<string | null> {
+    const existing = this.promoterCodes.get(promoterId);
+    const wanted = existing ?? normalizeReferralCode(proposedCode);
+    const owner = this.globalCodes.get(wanted);
+    if (owner && owner !== promoterId) return null;
+    this.globalCodes.set(wanted, promoterId);
+    if (!existing) this.promoterCodes.set(promoterId, wanted);
+    return wanted;
+  }
+
+  async recordClick(linkId: EntityId): Promise<boolean> {
+    const link = this.links.get(linkId);
+    if (!link || !link.isActive) return false;
+    this.links.set(linkId, {
+      ...link,
+      clicks: link.clicks + 1,
+      updatedAt: new Date().toISOString(),
+    });
+    return true;
+  }
+
+  async recordSale(
+    linkId: EntityId,
+    orderId: EntityId,
+    revenuePaise: number,
+    commissionPaise: number,
+  ): Promise<void> {
+    const link = this.links.get(linkId);
+    if (!link || this.recordedSales.has(orderId)) return;
+    this.recordedSales.add(orderId);
+    this.links.set(linkId, {
+      ...link,
+      conversions: link.conversions + 1,
+      revenuePaise: link.revenuePaise + revenuePaise,
+      commissionPaise: link.commissionPaise + commissionPaise,
+      updatedAt: new Date().toISOString(),
+    });
   }
 
   async listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<ReferralLink>> {

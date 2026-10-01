@@ -4,7 +4,7 @@ import type { EntityId } from '../../domain/identity.js';
 import type { Follow, FollowTargetType, Notification } from '../../domain/models/social.js';
 import type {
   FollowRepository,
-  NotificationRepository,
+  SocialNotificationRepository,
   Page,
   PaginationQuery,
 } from '../../domain/ports/repositories.js';
@@ -22,7 +22,10 @@ import type { DocumentData, DocumentReference, Firestore } from 'firebase-admin/
  * Composite indexes for the ordered queries live in `firestore.indexes.json`.
  */
 const FOLLOW_COLLECTION = 'v2_follows';
-const NOTIFICATION_COLLECTION = 'v2_notifications';
+// Distinct from the V2 partner-dashboard inbox's `v2_notifications` — same
+// concept name, different tenant shape (per-user here, per-org there), so a
+// shared collection would let the two kinds of rows collide.
+const NOTIFICATION_COLLECTION = 'v2_social_notifications';
 /** Firestore batch write limit. */
 const BATCH_LIMIT = 500;
 
@@ -81,7 +84,7 @@ export class FirestoreFollowRepository implements FollowRepository {
   }
 }
 
-export class FirestoreNotificationRepository implements NotificationRepository {
+export class FirestoreSocialNotificationRepository implements SocialNotificationRepository {
   constructor(private readonly db: Firestore) {}
 
   private get collection() {
