@@ -55,6 +55,7 @@ import type {
   LeaderboardStat,
 } from '../models/leaderboard.js';
 import type { LedgerEntry, LedgerEntryType } from '../models/ledger.js';
+import type { Notification } from '../models/notification.js';
 import type { OnboardingRequest, OnboardingStatus } from '../models/onboarding.js';
 import type { Order } from '../models/order.js';
 import type {
@@ -83,7 +84,11 @@ import type {
   ScanDenyReason,
 } from '../models/scan-ledger.js';
 import type { ScannerDevice } from '../models/scanner-device.js';
-import type { Follow, FollowTargetType, Notification } from '../models/social.js';
+import type {
+  Follow,
+  FollowTargetType,
+  Notification as SocialNotification,
+} from '../models/social.js';
 import type {
   SupportTicket,
   SupportTicketCategory,
@@ -197,6 +202,22 @@ export interface ReferralLinkRepository {
   getById(linkId: EntityId): Promise<ReferralLink | null>;
   /** The guest-facing lookup: resolve a shared code to its link. */
   findByCode(eventId: EntityId, code: string): Promise<ReferralLink | null>;
+  /** Promoter-wide code identity used across every event link. */
+  findByCodeGlobal(code: string): Promise<ReferralLink | null>;
+  /** Existing link used only to recover the promoter's stable code. */
+  findAnyByPromoter(promoterId: EntityId): Promise<ReferralLink | null>;
+  findByVanity(prefix: string, slug: string): Promise<ReferralLink | null>;
+  claimVanityAlias(prefix: string, slug: string, linkId: EntityId): Promise<boolean>;
+  claimGlobalCode(code: string, promoterId: EntityId): Promise<boolean>;
+  getOrCreatePromoterCode(promoterId: EntityId, proposedCode: string): Promise<string | null>;
+  recordClick(linkId: EntityId): Promise<boolean>;
+  /** Atomic paid-order counters, idempotency is owned by the order settlement path. */
+  recordSale(
+    linkId: EntityId,
+    orderId: EntityId,
+    revenuePaise: number,
+    commissionPaise: number,
+  ): Promise<void>;
   listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<ReferralLink>>;
   listByPromoter(promoterId: EntityId, query: PaginationQuery): Promise<Page<ReferralLink>>;
   save(link: ReferralLink, tx?: TxContext | null): Promise<void>;
@@ -298,6 +319,8 @@ export interface EventRepository {
   /** Platform-wide event directory (admin events view) — global, includes non-public. */
   listAll(query: PaginationQuery): Promise<Page<Event>>;
   listPublic(query: PaginationQuery): Promise<Page<Event>>;
+  /** Upcoming public events, ordered by start time and bounded at the query. */
+  listUpcomingPublic(startAtOrAfter: string, limit: number): Promise<Event[]>;
   save(event: Event, tx?: TxContext | null): Promise<void>;
   delete(eventId: EntityId, tx?: TxContext | null): Promise<void>;
 }
@@ -644,6 +667,10 @@ export interface OrderRepository {
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Order>>;
   /** Lists orders for an event. */
   listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<Order>>;
+  /** Lists all orders platform-wide (admin read-only dashboard). */
+  listAll(query: PaginationQuery): Promise<Page<Order>>;
+  /** Hard-deletes an order (support operation). */
+  delete(orderId: EntityId, tx?: TxContext | null): Promise<void>;
   /**
    * Sum of `quantity` across a user's *paid* orders for `(tierId, eventId)`.
    * Drives per-user ticket-caps (`tier.maxPerUser`) at hold creation: only
@@ -656,8 +683,6 @@ export interface OrderRepository {
     eventId: EntityId,
     tierId: EntityId,
   ): Promise<number>;
-  /** Lists all orders platform-wide (admin read-only dashboards). */
-  listAll(query: PaginationQuery): Promise<Page<Order>>;
   /** Saves (create or update). Version is checked for optimistic locking. */
   save(order: Order, tx?: TxContext | null): Promise<void>;
 }
@@ -1175,6 +1200,32 @@ export interface EmailOtpRepository {
   delete(recipient: EntityId): Promise<void>;
 }
 
+// ─── Notifications (V2 partner inbox) ─────────────────────────────────────
+
+/**
+ * Partner-dashboard inbox, addressed to the ORGANIZATION (recipientId), not
+ * to a person — matches the org-scoped RBAC model. List reads are bounded by
+ * `PaginationQuery`; `markAllRead` returns how many rows flipped so the
+ * route can report a real count.
+ */
+export interface NotificationRepository {
+  create(notification: Notification, tx?: TxContext | null): Promise<void>;
+  save(notification: Notification, tx?: TxContext | null): Promise<void>;
+  getById(notificationId: EntityId): Promise<Notification | null>;
+  /**
+   * Newest-first. The Firestore adapter materializes the per-recipient rows
+   * and sorts in memory (same bound/pattern as venue overlapping slots), so
+   * no composite `recipientId + createdAt` index must be provisioned.
+   */
+  listByRecipient(recipientId: EntityId, query: PaginationQuery): Promise<Page<Notification>>;
+  listUnreadByRecipient(recipientId: EntityId, query: PaginationQuery): Promise<Page<Notification>>;
+  /** Marks one read; resolves null when the row is gone. */
+  markRead(notificationId: EntityId, nowIso: string): Promise<Notification | null>;
+  /** Marks every unread row for the recipient; returns the count flipped. */
+  markAllRead(recipientId: EntityId, nowIso: string): Promise<number>;
+  countUnread(recipientId: EntityId): Promise<number>;
+}
+
 /**
  * One doc per session user id, fully replaced on each save — no
  * optimistic-lock version (matches `EmailOtpRepository`'s `docRef.set`
@@ -1204,15 +1255,18 @@ export interface FollowRepository {
 }
 
 /**
- * Inbox per user. `createIfAbsent` is the consumer-side idempotency guard:
+ * Inbox per user for follow-graph notifications ("X you follow published an
+ * event"). Distinct from the V2 partner-dashboard `NotificationRepository`
+ * above — this one is per-USER (guest, session-scoped), that one is
+ * per-ORGANIZATION. `createIfAbsent` is the consumer-side idempotency guard:
  * a redelivered event never overwrites (and so never un-reads) a row.
  */
-export interface NotificationRepository {
-  createIfAbsent(notification: Notification): Promise<boolean>;
+export interface SocialNotificationRepository {
+  createIfAbsent(notification: SocialNotification): Promise<boolean>;
   listForUser(
     userId: EntityId,
     query: PaginationQuery & { unreadOnly?: boolean },
-  ): Promise<Page<Notification>>;
+  ): Promise<Page<SocialNotification>>;
   countUnread(userId: EntityId): Promise<number>;
   /** Marks only the caller's own unread rows; returns how many changed. */
   markRead(userId: EntityId, ids: EntityId[], readAt: string): Promise<number>;
@@ -1242,6 +1296,7 @@ export type {
   LeaderboardBucket,
   LeaderboardPeriodType,
   EmailOtp,
+  Notification,
   GuestProfile,
   PlatformSettings,
 };

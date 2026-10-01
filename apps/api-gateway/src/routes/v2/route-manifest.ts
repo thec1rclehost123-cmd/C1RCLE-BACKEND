@@ -33,6 +33,7 @@ import phase5ScannerRoutes from './door/scanner-routes.js';
 import financeRoutes from './finance/finance-routes.js';
 import leaderboardRoutes from './finance/leaderboard-routes.js';
 import { internalRoutes } from './internal/index.js';
+import notificationRoutes from './notifications/notifications-routes.js';
 import onboardingRoutes from './onboarding.js';
 import orderRoutes from './orders/orders-routes.js';
 import partnerAnalyticsRoutes from './partner/analytics.js';
@@ -182,6 +183,8 @@ export async function registerV2Routes(
       await supportIntakeRoutes(v2);
       // Phase 8: guest follow graph + notification inbox (session-scoped).
       await socialRoutes(v2);
+      // V2 partner-dashboard inbox (org-tenant recipient).
+      await notificationRoutes(v2);
     },
     { prefix: '/api/v2' },
   );

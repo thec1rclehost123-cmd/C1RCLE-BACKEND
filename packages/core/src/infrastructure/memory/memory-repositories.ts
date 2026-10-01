@@ -126,6 +126,13 @@ export class MemoryEventRepository implements EventRepository {
     return serializeSlice([...this.events.values()], query);
   }
 
+  async listUpcomingPublic(startAtOrAfter: string, limit: number): Promise<Event[]> {
+    const all = [...this.events.values()]
+      .filter((e) => e.isPublic && e.startAt >= startAtOrAfter)
+      .sort((a, b) => a.startAt.localeCompare(b.startAt));
+    return all.slice(0, limit);
+  }
+
   async save(event: Event, _tx?: TxContext | null): Promise<void> {
     casSet(this.events, event);
   }
@@ -561,6 +568,14 @@ export class MemoryOrderRepository implements OrderRepository {
 
   async listAll(query: PaginationQuery): Promise<Page<Order>> {
     return serializeSlice([...this.orders.values()], query);
+  }
+
+  async delete(orderId: EntityId, _tx?: TxContext | null): Promise<void> {
+    const order = this.orders.get(orderId);
+    if (order && order.paymentId) {
+      this.byPaymentId.delete(order.paymentId);
+    }
+    this.orders.delete(orderId);
   }
 
   async save(order: Order, _tx?: TxContext | null): Promise<void> {

@@ -67,7 +67,7 @@ async function seedEvent(eventId: string, organizationId: string): Promise<void>
     startingPricePaise: null,
     isFree: false,
     cancellationReason: null,
-    capacity: 500,
+    capacity: null,
     adminOverride: false,
     version: 1,
     createdAt: now,

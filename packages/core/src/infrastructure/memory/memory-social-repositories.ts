@@ -2,7 +2,7 @@ import type { EntityId } from '../../domain/identity.js';
 import type { Follow, FollowTargetType, Notification } from '../../domain/models/social.js';
 import type {
   FollowRepository,
-  NotificationRepository,
+  SocialNotificationRepository,
   Page,
   PaginationQuery,
 } from '../../domain/ports/repositories.js';
@@ -68,7 +68,7 @@ export class MemoryFollowRepository implements FollowRepository {
   }
 }
 
-export class MemoryNotificationRepository implements NotificationRepository {
+export class MemorySocialNotificationRepository implements SocialNotificationRepository {
   entries = new Map<EntityId, Notification>();
 
   async createIfAbsent(notification: Notification): Promise<boolean> {

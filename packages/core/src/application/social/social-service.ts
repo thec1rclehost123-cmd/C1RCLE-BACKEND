@@ -95,19 +95,19 @@ export class SocialService {
     userId: EntityId,
     query: PaginationQuery & { unreadOnly?: boolean },
   ): Promise<Page<Notification>> {
-    return this.repos.notifications.listForUser(userId, query);
+    return this.repos.socialNotifications.listForUser(userId, query);
   }
 
   unreadCount(userId: EntityId): Promise<number> {
-    return this.repos.notifications.countUnread(userId);
+    return this.repos.socialNotifications.countUnread(userId);
   }
 
   markRead(userId: EntityId, ids: EntityId[]): Promise<number> {
-    return this.repos.notifications.markRead(userId, ids, this.nowIso());
+    return this.repos.socialNotifications.markRead(userId, ids, this.nowIso());
   }
 
   markAllRead(userId: EntityId): Promise<number> {
-    return this.repos.notifications.markAllRead(userId, this.nowIso());
+    return this.repos.socialNotifications.markAllRead(userId, this.nowIso());
   }
 
   private nowIso(): string {

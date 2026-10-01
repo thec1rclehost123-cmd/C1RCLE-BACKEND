@@ -12,7 +12,7 @@ import {
   unreadCountDtoSchema,
 } from '@c1rcle/contracts/client';
 
-import type { Follow, Notification, Page } from '@c1rcle/core/domain';
+import type { Follow, SocialNotification, Page } from '@c1rcle/core/domain';
 
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
@@ -277,7 +277,7 @@ export function toFollowDto(follow: Follow) {
   };
 }
 
-export function toNotificationDto(notification: Notification) {
+export function toNotificationDto(notification: SocialNotification) {
   return {
     id: notification.id,
     type: notification.type,

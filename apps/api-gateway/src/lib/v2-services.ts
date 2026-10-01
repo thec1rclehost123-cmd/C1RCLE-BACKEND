@@ -44,6 +44,8 @@ import {
   createGuestProfileService,
   SocialService,
   createFollowerFanOutConsumer,
+  NotificationService,
+  createNotificationConsumer,
   type ScannerService,
   type DoorService,
   type CoverWalletService,
@@ -191,6 +193,8 @@ export interface PartnerV2Services {
   emailOtp: EmailOtpService;
   /** Guest-portal signup onboarding profile (session-scoped, no org). */
   guestProfile: GuestProfileService;
+  /** V2 partner-dashboard inbox — recipient is the org tenant. */
+  notifications: NotificationService;
   /** Outbound transactional email (OTP + password-reset links). */
   emailSender: EmailSender;
 }
@@ -286,7 +290,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     createFollowerFanOutConsumer({
       events: repositories.events,
       follows: repositories.follows,
-      notifications: repositories.notifications,
+      notifications: repositories.socialNotifications,
     }),
   );
 
@@ -355,7 +359,20 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     repositories,
   };
 
+  // V2 partner inbox producer consumer: domain events → notification rows.
+  // Subscribed to each producer event type; the handler is a named function
+  // (its `handler.name` keys the bus's per-event dedupe set).
+  const notificationConsumer = createNotificationConsumer({
+    notifications: repositories.notifications,
+    config: coreConfig,
+    logger: deps.logger,
+  });
+  eventBus.subscribe('promoter_connection.requested', notificationConsumer);
+  eventBus.subscribe('partnership.requested', notificationConsumer);
+  eventBus.subscribe('event.published', notificationConsumer);
+
   const adminAuthority = new AdminAuthorityService(deps);
+  const onboardingService = new OnboardingService(deps, adminAuthority);
 
   // Phase 5 services
   const scanner = createScannerService({
@@ -503,7 +520,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     events: new EventService(deps),
     catalog: new EventCatalogService(deps),
     analytics: new AnalyticsService(deps),
-    onboarding: new OnboardingService(deps, adminAuthority),
+    onboarding: onboardingService,
     social: new SocialService(deps),
     adminAuthority,
     adminOps,
@@ -541,6 +558,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     leaderboard,
     emailOtp,
     guestProfile,
+    notifications: new NotificationService(deps),
     /** Serves `buildBetterAuth`'s `emailAndPassword.sendResetPassword` callback. */
     emailSender,
   };

@@ -32,6 +32,7 @@ export * from './firestore-user-account-repository.js';
 export * from './firestore-user-ban-repository.js';
 export * from './firestore-leaderboard-repository.js';
 export * from './firestore-email-otp-repository.js';
+export * from './firestore-notification-repository.js';
 export * from './firestore-guest-profile-repository.js';
 export * from './firestore-social-repositories.js';
 export * from './firestore-platform-settings-repository.js';

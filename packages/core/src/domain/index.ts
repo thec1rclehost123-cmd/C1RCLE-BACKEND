@@ -30,8 +30,25 @@ export * from './models/support-ticket.js';
 export * from './models/safety-report.js';
 export * from './models/leaderboard.js';
 export * from './models/email-otp.js';
+export * from './models/notification.js';
 export * from './models/guest-profile.js';
-export * from './models/social.js';
+// `Notification`/`createNotification` collide with the V2 partner-inbox
+// names above — distinct per-user follow-notification shape, so re-exported
+// under a `Social` prefix instead of `export *`.
+export type {
+  FollowTargetType,
+  Follow,
+  NotificationType as SocialNotificationType,
+  Notification as SocialNotification,
+} from './models/social.js';
+export {
+  FOLLOW_TARGET_TYPES,
+  followId,
+  createFollow,
+  NOTIFICATION_TYPES as SOCIAL_NOTIFICATION_TYPES,
+  notificationId as socialNotificationId,
+  createNotification as createSocialNotification,
+} from './models/social.js';
 export * from './models/platform-settings.js';
 export type * from './models/platform-user.js';
 export * from './ports/email-sender.js';

@@ -1029,7 +1029,7 @@
       ]
     },
     {
-      "collectionGroup": "v2_notifications",
+      "collectionGroup": "v2_social_notifications",
       "queryScope": "COLLECTION",
       "fields": [
         {
@@ -1043,7 +1043,7 @@
       ]
     },
     {
-      "collectionGroup": "v2_notifications",
+      "collectionGroup": "v2_social_notifications",
       "queryScope": "COLLECTION",
       "fields": [
         {

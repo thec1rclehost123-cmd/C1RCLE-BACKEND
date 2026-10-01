@@ -4,7 +4,7 @@ import { domainEvent } from '../../domain/events.js';
 import { MemoryOutboxStore } from '../../infrastructure/memory/memory-outbox-store.js';
 import {
   MemoryFollowRepository,
-  MemoryNotificationRepository,
+  MemorySocialNotificationRepository,
 } from '../../infrastructure/memory/memory-social-repositories.js';
 import { InProcessEventBus } from '../events/event-bus.js';
 
@@ -23,7 +23,7 @@ function guest(userId: string): ActorContext {
 
 function setup(opts: { event?: Partial<Event> | null } = {}) {
   const follows = new MemoryFollowRepository();
-  const notifications = new MemoryNotificationRepository();
+  const notifications = new MemorySocialNotificationRepository();
   const bus = new InProcessEventBus(new MemoryOutboxStore());
   const emitted: DomainEvent[] = [];
   bus.subscribe('follow.created', async (e) => void emitted.push(e));
@@ -56,7 +56,7 @@ function setup(opts: { event?: Partial<Event> | null } = {}) {
     outbox: bus,
     repositories: {
       follows,
-      notifications,
+      socialNotifications: notifications,
       venues: { getById: async (id: string) => (id === 'venue_1' ? { id } : null) },
       organizations: { getById: async (id: string) => (id === 'org_1' ? { id } : null) },
     },

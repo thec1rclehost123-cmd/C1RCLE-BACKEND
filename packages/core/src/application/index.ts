@@ -201,3 +201,12 @@ export { SocialService } from './social/social-service.js';
 export type { FollowStatus } from './social/social-service.js';
 export { createFollowerFanOutConsumer } from './social/notification-consumers.js';
 export type { FollowerFanOutDeps } from './social/notification-consumers.js';
+
+// V2 partner-dashboard inbox (org-tenant recipient)
+export { NotificationService } from './notifications/notification-service.js';
+export type {
+  RecordNotificationInput,
+  NotificationListResult,
+  NotificationDecision,
+} from './notifications/notification-service.js';
+export { createNotificationConsumer } from './notifications/notification-consumer.js';
