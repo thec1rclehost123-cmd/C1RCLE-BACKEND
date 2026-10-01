@@ -533,6 +533,11 @@ jobs:
       # cannot narrow, so this is never weaker than the previous behaviour.
       - name: Lint the commits in this pull request
         run: |
+          # `-e` so a non-zero exit from the script (bad args, unreadable repo)
+          # fails the step instead of leaving $FROM empty and turning into
+          # `commitlint --from ""`, which lints an unintended range. `-u` catches
+          # an unset variable, and `-o pipefail` would matter if this grew a pipe.
+          set -euo pipefail
           FROM=$(node scripts/pr-commit-range.mjs \
             --base "origin/${{ github.base_ref }}" \
             --head "${{ github.event.pull_request.head.sha }}")

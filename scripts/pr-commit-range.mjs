@@ -71,6 +71,8 @@ const EXEMPT_REFS = ['origin/staging', 'origin/main'].filter((ref) => {
     git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
     return true;
   } catch {
+    // A missing ref is an ordinary, expected outcome (shallow fetch, or a fork
+    // that has no `origin/main`), not something worth a warning.
     return false;
   }
 });
@@ -86,11 +88,19 @@ let oldestUnreviewed;
 try {
   // `--reverse` puts the oldest first, which is the one whose parent is the
   // correct `--from`: everything after it, and nothing before it.
+  // Split on `\r?\n` so a CRLF checkout (this repo is developed on Windows)
+  // cannot leave a trailing `\r` glued onto the SHA and break `rev-parse`.
   oldestUnreviewed = git(['rev-list', '--reverse', `${base}..${head}`, '--not', ...EXEMPT_REFS])
-    .split('\n')
+    .split(/\r?\n/)
     .filter(Boolean)[0];
-} catch {
+} catch (err) {
   // Could not compute the narrowing — fall back to auditing the whole range.
+  // Say so on stderr: a silent fallback here looks identical to a correct
+  // narrowing in the Actions log, which is exactly the bug you want to catch.
+  console.error(
+    'pr-commit-range: could not compute the unreviewed set, falling back to the base ref:',
+    err instanceof Error ? err.message : String(err),
+  );
   console.log(base);
   process.exit(0);
 }
@@ -106,10 +116,9 @@ if (!oldestUnreviewed) {
 let from;
 try {
   from = git(['rev-parse', '--verify', '--quiet', `${oldestUnreviewed}^`]);
+  if (!from) from = EMPTY_TREE;
 } catch {
   from = EMPTY_TREE;
 }
-
-if (!from) from = EMPTY_TREE;
 
 console.log(from);
