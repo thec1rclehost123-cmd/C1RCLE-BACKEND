@@ -411,6 +411,15 @@ describe('admin review', () => {
 
     const stored = await services.repos().organizations.getById(body.organization.id);
     expect(stored?.members[0]?.capabilities).toEqual(['venue']);
+
+    const venues = await services.repos().venues.listByOrganization(body.organization.id, {
+      limit: 10,
+      cursor: null,
+    });
+    expect(venues.items).toHaveLength(1);
+    expect(venues.items[0]?.organizationId).toBe(body.organization.id);
+    expect(venues.items[0]?.ownerId).toBe('user_a');
+    expect(venues.items[0]?.public.name).toBe('Blue Room Hospitality');
   });
 
   it('writes a before/after audit record for the approval', async () => {

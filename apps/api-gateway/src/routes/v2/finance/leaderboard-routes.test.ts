@@ -73,12 +73,7 @@ describe('GET /organizations/:organizationId/leaderboard/me', () => {
   it('returns the caller own standing', async () => {
     const server = await buildServer();
     const promoter = await seedOrganization(server);
-    await createV2Services().leaderboard.recordCommission(
-      promoter,
-      3_000,
-      'Delhi',
-      new Date('2026-09-08T12:00:00.000Z'),
-    );
+    await createV2Services().leaderboard.recordCommission(promoter, 3_000, 'Delhi', new Date());
 
     const res = await server.inject({
       method: 'GET',

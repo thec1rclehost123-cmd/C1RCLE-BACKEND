@@ -20,6 +20,7 @@ import {
   verifyOnboardingDocument,
 } from '../../domain/models/onboarding.js';
 import { createOrganization } from '../../domain/models/organization.js';
+import { createVenue } from '../../domain/models/venue.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type { PlatformAdmin } from '../../domain/models/admin-authority.js';
@@ -394,11 +395,13 @@ export class OnboardingService {
 
   /**
    * Approves an application and provisions the organization it asked for.
+   * Venue applications also receive their initial venue record so the venue
+   * dashboard has an active venue immediately after approval.
    *
-   * The two writes are ordered organization-first: a failure after the
-   * organization exists leaves the request still `submitted`, which an admin
-   * can retry — the opposite order would leave an approved request pointing at
-   * an organization that was never created, which nothing can repair.
+   * Provisioning is ordered organization-first, venue-second, approval-last: a
+   * failure before the request is saved leaves it `submitted`, so an admin can
+   * retry without exposing an approved request that points at incomplete
+   * provisioning.
    *
    * Note what is *not* here: no automatic approval on a passing verification.
    * The provider is advisory (see `ports/verification.ts`); a human at TIER2
@@ -429,6 +432,19 @@ export class OnboardingService {
       now,
     });
     await this.deps.repositories.organizations.save(organization);
+
+    if (request.requestedType === 'venue') {
+      const venue = createVenue({
+        id: this.deps.config.ids(),
+        organizationId: organization.id,
+        ownerId: request.userId,
+        name: request.profile.legalName,
+        slug: organization.slug,
+        city: request.profile.city ?? null,
+        now,
+      });
+      await this.deps.repositories.venues.save(venue);
+    }
 
     const approved = approveOnboardingRequest(request, {
       reviewedBy: admin.id,
