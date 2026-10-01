@@ -27,3 +27,4 @@ export * from './firestore-dispute-repository.js';
 export * from './firestore-leaderboard-repository.js';
 export * from './firestore-email-otp-repository.js';
 export * from './firebase-object-storage.js';
+export * from './firestore-user-directory.js';

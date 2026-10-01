@@ -35,3 +35,4 @@ export type * from './ports/idempotency.js';
 export * from './ports/verification.js';
 export * from './ports/object-storage.js';
 export * from './ports/payment-provider.js';
+export * from './ports/user-directory.js';

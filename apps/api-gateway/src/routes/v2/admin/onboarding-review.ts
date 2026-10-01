@@ -1,7 +1,9 @@
 import {
   adminAuditRecordDtoSchema,
   approveOnboardingResultSchema,
+  documentReadUrlDtoSchema,
   idempotencyKeySchema,
+  onboardingDocumentLabelSchema,
   onboardingRequestDtoSchema,
   onboardingStatusSchema,
   opaqueIdSchema,
@@ -11,6 +13,7 @@ import {
   proposalStatusSchema,
   proposedActionDtoSchema,
   proposeActionSchema,
+  rejectKycDocumentSchema,
   resolveProposalSchema,
   reviewOnboardingSchema,
 } from '@c1rcle/contracts/client';
@@ -44,6 +47,7 @@ const services = createV2Services();
 const requestIdParam = z.object({ requestId: opaqueIdSchema });
 const proposalIdParam = z.object({ proposalId: opaqueIdSchema });
 const adminIdParam = z.object({ adminId: opaqueIdSchema });
+const documentParam = z.object({ requestId: opaqueIdSchema, label: onboardingDocumentLabelSchema });
 const commandHeaders = z.looseObject({ 'idempotency-key': idempotencyKeySchema });
 
 const queueQuerySchema = paginationQuerySchema.extend({
@@ -196,6 +200,133 @@ export default async function adminRoutes(fastify: FastifyInstance) {
   );
   registerReview(fastify, 'request-changes', (userId, requestId, note) =>
     services.onboarding.requestChanges(userId, { requestId, note }),
+  );
+
+  /* ─── KYC document desk ─────────────────────────────────────────────────
+   * Distinct from the three routes above: those decide the *application*;
+   * these decide one uploaded *document*'s own review state. `approve()`
+   * requires every required-for-entity-type document to be `verified`
+   * first (enforced server-side in the service, not just by the admin
+   * console disabling its button).
+   */
+
+  fastify.post(
+    '/admin/onboarding/applications/:requestId/documents/:label/verify',
+    {
+      preHandler: [
+        fastify.rateLimit('SENSITIVE_COMMAND'),
+        fastify.validateV2({ params: documentParam, headers: commandHeaders }),
+      ],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+      const { requestId, label } = request.params as z.infer<typeof documentParam>;
+      const v2Headers = request.v2Headers ?? {};
+
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: userId,
+        commandName: 'admin.onboarding.document_verify',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { requestId, label }, body: undefined },
+        run: async () => {
+          const updated = await services.onboarding.verifyKycDocument(userId, { requestId, label });
+          const validated = validateV2Response(
+            reply,
+            request,
+            onboardingRequestDtoSchema,
+            toDto(updated),
+          );
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
+        },
+      }).catch((error: unknown) =>
+        isIdempotencyConflict(error)
+          ? mapDomainError(reply, request, requestId, error, {
+              conflictId: v2Headers['idempotency-key'],
+            })
+          : mapDomainError(reply, request, requestId, error),
+      );
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
+
+  fastify.post(
+    '/admin/onboarding/applications/:requestId/documents/:label/reject',
+    {
+      preHandler: [
+        fastify.rateLimit('SENSITIVE_COMMAND'),
+        fastify.validateV2({
+          params: documentParam,
+          headers: commandHeaders,
+          body: rejectKycDocumentSchema,
+        }),
+      ],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+      const { requestId, label } = request.params as z.infer<typeof documentParam>;
+      const body = request.body as z.infer<typeof rejectKycDocumentSchema>;
+      const v2Headers = request.v2Headers ?? {};
+
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: userId,
+        commandName: 'admin.onboarding.document_reject',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { requestId, label }, body },
+        run: async () => {
+          const updated = await services.onboarding.rejectKycDocument(userId, {
+            requestId,
+            label,
+            reason: body.reason,
+          });
+          const validated = validateV2Response(
+            reply,
+            request,
+            onboardingRequestDtoSchema,
+            toDto(updated),
+          );
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
+        },
+      }).catch((error: unknown) =>
+        isIdempotencyConflict(error)
+          ? mapDomainError(reply, request, requestId, error, {
+              conflictId: v2Headers['idempotency-key'],
+            })
+          : mapDomainError(reply, request, requestId, error),
+      );
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
+
+  /** Read-only mint — not idempotency-keyed, same rationale as the applicant upload-url route. */
+  fastify.get(
+    '/admin/onboarding/applications/:requestId/documents/:label/read-url',
+    {
+      preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({ params: documentParam })],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+      const { requestId, label } = request.params as z.infer<typeof documentParam>;
+
+      const grant = await services.onboarding
+        .getDocumentReadUrl(userId, { requestId, label })
+        .catch((error: unknown) => mapDomainError(reply, request, requestId, error));
+      if (grant === undefined) return reply;
+
+      const validated = validateV2Response(reply, request, documentReadUrlDtoSchema, grant);
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
   );
 
   /* ─── Dual-control proposal desk ───────────────────────────────────────── */
