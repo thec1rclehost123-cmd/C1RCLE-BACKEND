@@ -77,7 +77,7 @@ RBAC permissions (no dedicated finance permission in the matrix yet). Contracts:
 tests, `pnpm check`-equivalent (lint/typecheck/test/boundaries) all green (203
 gateway tests total, up from 197).
 
-**NOT done, explicitly deferred:**
+**NOT done, explicitly deferred (as of this entry; webhook integration, disputes and leaderboard all closed in the later 2026-09-08 entries below):**
 - **Checkout webhook integration** (`checkout/webhook-routes.ts`'s
   `payment.captured` handler calling `financeService.recordTicketSale`) —
   investigated but NOT wired. Blocker: this doc's `recordTicketSale` signature

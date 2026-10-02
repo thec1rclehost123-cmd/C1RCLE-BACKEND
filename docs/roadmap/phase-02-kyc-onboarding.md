@@ -1,6 +1,13 @@
 # Phase 2 — KYC / Onboarding
 
-**Status:** substantially done (2026-08-14) · **Depends on:** Phase 0 (auth)
+**Status:** done (2026-08-14); pre-signed upload URLs 2026-08-30 (`2a9a4b3`); admin per-document verify/reject/read-url routes on `staging` · **Depends on:** Phase 0 (auth)
+
+**Current state (verified against `staging`, 2026-10-02):**
+
+- Applicant: `/onboarding/{me,applications,applications/:id,.../documents,.../documents/upload-url,.../submit,verify-document}`.
+- Admin: queue/detail, `POST .../documents/:label/{verify,reject}`, `GET .../documents/:label/read-url`, approve/reject/request-changes via `/admin/onboarding/applications/:id/:action`.
+- **Approve gate not on `staging`:** `OnboardingService.approve` only requires status `submitted`; it does not yet require every document to be `verified`. Per-document verification is recorded and audited but advisory.
+- Phone verification (`documentType: 'phone'`) verifies a Firebase ID token via `firebase-admin` `verifyIdToken` (`lib/verification/firebase-phone-verifier.ts`); other document types use the format-check provider (D-018). Email OTP is separate: `POST /auth/otp/{send,verify}`.
 
 Currently explicitly BLOCKED in every C1RCLE-BACKEND doc
 (`docs/reference/frontend-api-map.md`: "no manifest entry exists for KYC/onboarding/

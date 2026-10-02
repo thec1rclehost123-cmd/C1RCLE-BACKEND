@@ -57,8 +57,7 @@ it as a past finding, not a guaranteed-current state.
 
 ## Execution plan
 
-Superseded by `docs/PHASE_5_HTTP_WIRING_PLAN.md` — that doc is the current,
-accurate breakdown of what shipped and what remains. (An older pre-implementation
+The original wiring plan is `docs/PHASE_5_HTTP_WIRING_PLAN.md` (historical — itself fully superseded; this file's session log is the current record). (An older pre-implementation
 "Execution Plan (Agent-driven)" section lived here inline; it had been duplicated
 into the file as a line-number-prefixed paste and was removed 2026-09-01.)
 
@@ -233,6 +232,8 @@ the admission path's security). Full reasoning in
 need to be told the handset is deauthorized, and there is nothing to hide
 from a caller who already proved tenancy and a live session).
 
+> **Superseded (verified 2026-10-02):** wallet-QR recognition + charge (`POST /door/wallet-qr`, `POST /door/wallet-charge`), the paid walk-up sale (`POST /door/ticket-sale`, D-027) and live stats (SSE, D-028) all shipped after this entry; no 501 remains. Original text kept for history.
+
 **NOT built, tracked not hidden:** Cover-Wallet charging on the Scan tab
 (wallet-QR recognition + preset items + charge-by-item — the wallet itself
 exists, the scanner-facing surface does not); the paid walk-up ticket sale
@@ -326,9 +327,7 @@ Re-verified against the working tree rather than against these notes.
     per D-006. The roadmap's "Week 3 Gate" wording ("WebSocket connects") was
     met by a different mechanism; `docs/PHASE_5_HTTP_WIRING_PLAN.md` is
     banner-marked accordingly.
-- One stale comment survived at `routes/v2/door/door-sale-routes.ts:34`, which
-  still describes `/door/stats` + `/door/stats/ws` as "the honest stubs they
-  already" are. Both statements are now wrong.
+- A stale comment at `routes/v2/door/door-sale-routes.ts` that described `/door/stats` + `/door/stats/ws` as honest stubs has since been rewritten as a historical note.
 
 **Still open in Phase 5** (unchanged, and genuinely so): an override does not
 credit a scan back to the ticket; the per-club `ScannerSession` org attribution

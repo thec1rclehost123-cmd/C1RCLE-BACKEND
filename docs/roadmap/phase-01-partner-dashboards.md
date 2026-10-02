@@ -1,6 +1,6 @@
 # Phase 1 — Partner dashboards (Host / Venue / Promoter)
 
-**Status:** substantially done (2026-08-13) — finance endpoints blocked on Phase 6 · **Depends on:** Phase 0
+**Status:** done (2026-08-13); finance/analytics shipped with Phase 6 (2026-09-08), `venueShareRate` 2026-09-17 · **Depends on:** Phase 0
 
 ## Carried over from Phase 0 (see phase-00-foundation.md §C for full context)
 
@@ -182,7 +182,7 @@ DTOs (careful: promoter finance is private, never shown to venue/host).
 
 ### What is left in this phase, and why
 
-- **Finance dashboard endpoints are BLOCKED on Phase 6, not skipped.** There
+- **Finance dashboard endpoints were BLOCKED on Phase 6, not skipped (historical — now LIVE: `/organizations/:id/finance/{balance,ledger,orders}`, payouts, bank accounts, disputes; see Phase 6).** There
   is no ledger yet, so a `/finance` route could only return invented numbers —
   precisely what rule 10 forbids. The phase doc's own warning ("promoter
   finance is private, never shown to venue/host") is a *ledger* access rule; it

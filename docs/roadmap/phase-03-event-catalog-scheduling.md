@@ -70,7 +70,7 @@ promoter-assignments, create+list+end) and `VenueCalendarService`/
     idempotent replay, and schema rejection of negative prices / zero capacity
     / unknown discount types / >100% rates.
 
-**Not in this phase, still open:** the pricing/redemption *runtime* v1 logic
+**Not in this phase (since closed by Phase 4 — pricing, quote/hold/checkout and promo redemption are live under `application/{pricing,checkout}`):** the pricing/redemption *runtime* v1 logic
 this doc describes (`getEffectivePrice` scheduled-price windows, promo
 redemption race protection, table→booking assignment, per-order commission
 calculation). Those belong to Phase 4's checkout path — they are consumption

@@ -1,8 +1,9 @@
 # Phase 7 — Admin console backend
 
 **Status:** Phase A DONE (2026-09-12) · Phase B DONE (2026-09-13) ·
-Phase C PAUSED (user ban done 2026-09-13; safety-reports/support-desk
-deferred, no intake path exists — see below) · Phase D DONE except
+Phase C PARTIAL (user ban done 2026-09-13; support desk + guest intake
+shipped 2026-09-20, `cec80b7`; safety-reports/content moderation still
+paused — no routes registered; see below) · Phase D DONE except
 admin invite-by-email (deferred, API surface verified 2026-09-20 —
 see below) · Depends on:
 Phase 2 (onboarding approvals), Phase 6 (financial actions)
@@ -107,7 +108,7 @@ via live Firestore-emulator browser click-through (not just unit tests).
       Revisit only if/when a real product need for per-document rejection
       shows up — not speculatively.
 
-## Phase C — Trust & safety, support — IN PROGRESS
+## Phase C — Trust & safety, support — PARTIAL (ban + support desk done; safety/content paused)
 
 - [x] User ban/unban — DONE (2026-09-13). `USER_BAN`/`USER_UNBAN` added to
       `AdminAction` (TIER2, direct command — matches v1's
@@ -136,8 +137,16 @@ via live Firestore-emulator browser click-through (not just unit tests).
       2026-09-13 to skip for now rather than build dead scaffolding.
       Revisit once a real reporting/ticket intake surface is scoped
       (guest-portal or partner-dashboard side).
-- [ ] Support ticket desk (timeline, internal notes, merge logic, SLA) —
-      PAUSED, same reasoning as above.
+- [x] Support ticket desk — **DONE 2026-09-20 (`cec80b7`)**, superseding the
+      "no intake path" pause above. Guest/requester intake:
+      `POST/GET /support/tickets`, `GET /support/tickets/:id`,
+      `POST /support/tickets/:id/messages` (`support/intake-routes.ts`); admin
+      desk: `GET /admin/support/tickets[/:id]`, `POST .../{assign,reply,notes,
+      priority,link,merge,resolve}`, `DELETE .../:id` (`admin/support.ts`).
+      See `docs/admin-dashboard/04-support-desk.md`, `05-support-intake.md`.
+      Safety reports remain unrouted: `SafetyService`/`AdminSafetyService`
+      exist in core but no `/safety` route is registered in
+      `route-manifest.ts`.
 
 ## Phase D — Operator tooling — IN PROGRESS
 
