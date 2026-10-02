@@ -23,6 +23,7 @@ setup (`.github/actions/setup`), then `ci-ok` aggregates them.
 | `changes` | Which paths moved, so expensive jobs can skip |
 | `static` | Format, lint, typecheck, architecture boundaries, and a no-focused-tests guard — **one runner, one install**, with `if: always()` on each step so a single run reports every failure at once |
 | `test` | `pnpm build` + full suite + coverage ratchet + sticky PR comment. The build step here is **the only place a `tsc` break in `@c1rcle/core` or `api-gateway` is caught**, because the Docker image compiles neither (see §4) |
+| `scenario` | `pnpm test:scenarios` — scenario suite, **merge only** (pushes to `main`/`staging`); `skipped` on PRs |
 | `docker` | Builds the real `Dockerfile`, Trivy-scans the image, boots the container, and asserts it **refuses** to boot when misconfigured |
 | `contract-parity` | Cross-repo schema agreement with `C1RCLE-FRONTEND` (opt-in, see §3) |
 | `actionlint` | Lints the workflows themselves, shellcheck included |
@@ -45,7 +46,7 @@ is a backstop, not the primary loop. Three consolidations follow from that:
   — three checkouts and two identical installs for scanners that finish in a
   couple of minutes.
 
-That is 13 jobs down to 9, and roughly half the runner-minutes per pull request.
+That took the pipeline from 13 jobs to 9 (a merge-only `scenario` job was added later), and roughly half the runner-minutes per pull request.
 `if: always()` on each step preserves the one thing the split bought: a single
 run still reports *everything* that is broken, rather than making you fix
 failures one round trip at a time.
@@ -59,12 +60,17 @@ Concurrency cancels superseded pull-request runs but never cancels a pushed
 run on `main`/`staging` — the tail of that run gates, triggers and verifies the
 production deploy, so cancelling it would silently skip a deployment.
 
-### `security.yml` — pull requests, `main`, and Mondays 06:15 UTC
+### `security.yml` — PRs into `main` and `staging`, pushes, and Mondays 06:15 UTC
 
 Four jobs: CodeQL (`javascript-typescript` + `actions`, `build-mode: none`),
 dependency review (fails on `high`, denies copyleft licences), a combined `scan`
 job (`pnpm audit --audit-level=high`, TruffleHog, Trivy config + filesystem), and
 OSSF Scorecard. Aggregated by `security-ok`.
+
+PR-gate scans (CodeQL, dependency review, `scan`) run on pull requests into both
+`main` and `staging` (feature → staging → main), so `Security OK` is reported on
+every PR; pushes to `staging`/`main` skip them (the merge already ran them) and
+Scorecard runs only on the default branch.
 
 Split from `ci.yml` because it runs on a different cadence and needs
 `security-events: write`, which the fast gates must not inherit.
@@ -146,6 +152,9 @@ where husky exits non-zero. Hook installation is a developer convenience, never
 a build dependency.
 
 ### Branch protection on `main` and `staging`
+
+Both branches must require the checks below; `Security OK` now reports on PRs
+into `staging`, so it can be required there.
 
 Require exactly two checks:
 
@@ -298,3 +307,8 @@ docker run --rm -v "$PWD:/src:ro" node:24-slim bash -c '
   tar cf - --exclude=./node_modules --exclude=./.git . | (cd /w && tar xf -) &&
   cd /w && pnpm install --frozen-lockfile && pnpm check'
 ```
+
+### Renovate
+
+`renovate.json` sets `baseBranches: ["staging"]`: dependency PRs target the
+integration branch (feature → staging → main) and are gated by `CI OK` + `Security OK`.
