@@ -23,6 +23,7 @@ setup (`.github/actions/setup`), then `ci-ok` aggregates them.
 | `changes` | Which paths moved, so expensive jobs can skip |
 | `static` | Format, lint, typecheck, architecture boundaries, and a no-focused-tests guard — **one runner, one install**, with `if: always()` on each step so a single run reports every failure at once |
 | `test` | `pnpm build` + full suite + coverage ratchet + sticky PR comment. The build step here is **the only place a `tsc` break in `@c1rcle/core` or `api-gateway` is caught**, because the Docker image compiles neither (see §4) |
+| `scenario` | `pnpm test:scenarios` — scenario suite, **merge only** (pushes to `main`/`staging`); `skipped` on PRs |
 | `docker` | Builds the real `Dockerfile`, Trivy-scans the image, boots the container, and asserts it **refuses** to boot when misconfigured |
 | `contract-parity` | Cross-repo schema agreement with `C1RCLE-FRONTEND` (opt-in, see §3) |
 | `actionlint` | Lints the workflows themselves, shellcheck included |
@@ -45,7 +46,7 @@ is a backstop, not the primary loop. Three consolidations follow from that:
   — three checkouts and two identical installs for scanners that finish in a
   couple of minutes.
 
-That is 13 jobs down to 9, and roughly half the runner-minutes per pull request.
+That took the pipeline from 13 jobs to 9 (a merge-only `scenario` job was added later), and roughly half the runner-minutes per pull request.
 `if: always()` on each step preserves the one thing the split bought: a single
 run still reports *everything* that is broken, rather than making you fix
 failures one round trip at a time.

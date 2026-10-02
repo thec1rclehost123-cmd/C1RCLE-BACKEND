@@ -28,7 +28,7 @@ status is tracked — don't duplicate a "what's done" list anywhere else.
 - Phase 5 (Door/Scanner/Cover-wallet) — **done** (verified 2026-09-28); both former 501s are now implemented.
 - Phase 6 (Finance/Ledger/Payouts) — **done** (verified 2026-09-08); `venueShareRate` closed 2026-09-17, analytics fallback 2026-09-19.
 - Phase 7 (Admin console backend) — **done** (2026-09-16); Phase C deferrals in `roadmap/ADMIN-DASHBOARD-GAPS.md`.
-- Phase 8 (Social/notifications) — not started.
+- Phase 8 (Social/notifications) — **partial**: follow graph + notifications live (2026-09-29); chat/DM not started.
 
 ## `docs/architecture/` — how the system is built, and why
 
@@ -57,8 +57,8 @@ for context, not as current truth** — if it disagrees with live code or with
 - `frontend-api-map.md` — `C1RCLE-FRONTEND` route/contract mapping as of
   2026-08-12. Useful for "what does the frontend expect," not for "what's
   live in this backend today" (that's `docs/roadmap/`).
-- `task.md`, `route-manifest.ts`, `API_V2_ROUTE_MANIFEST.md`,
-  `API_ROUTE_CATALOG.generated.md`, `V1_TO_V2_PARITY.md`,
+- `task.md`, `route-manifest.ts` (planning manifest; live registration is
+  `apps/api-gateway/src/routes/v2/route-manifest.ts`), `V1_TO_V2_PARITY.md`,
   `MASTER_LAUNCH_IMPLEMENTATION_PLAN.md`,
   `Dream Architecture Implementation Plan.md`, `chatgpt_response.md` — the
   T-series design authority and full-platform destination plans, copied from
