@@ -65,18 +65,35 @@ export function createTrustedProxyMatcher(entries: readonly string[]) {
   };
 }
 
+/**
+ * Validates a comma-separated origin list and returns each entry in canonical
+ * `URL.origin` form. `@fastify/cors` and Better Auth compare origins as exact
+ * strings, and a browser's `Origin` header is always canonical (lower-case
+ * host, no default port, no trailing slash). Without normalising, a value
+ * like `https://app.example.com/` passes validation yet silently never
+ * matches, so every cross-origin preflight from that frontend is refused.
+ */
 function validateOrigins(value: string, field: string): string[] {
   const origins = parseList(value);
   if (origins.length === 0) throw new Error(`${field} must contain at least one origin`);
+  const normalized: string[] = [];
   for (const origin of origins) {
     if (origin === '*' || origin.includes('*'))
       throw new Error(`${field} cannot contain a wildcard origin`);
     const parsed = new URL(origin);
-    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.pathname !== '/') {
+    if (
+      !['http:', 'https:'].includes(parsed.protocol) ||
+      parsed.pathname !== '/' ||
+      parsed.search !== '' ||
+      parsed.hash !== '' ||
+      parsed.username !== '' ||
+      parsed.password !== ''
+    ) {
       throw new Error(`${field} must contain origin URLs without paths: ${origin}`);
     }
+    if (!normalized.includes(parsed.origin)) normalized.push(parsed.origin);
   }
-  return origins;
+  return normalized;
 }
 
 const envSchema = z.object({
