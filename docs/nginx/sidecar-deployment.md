@@ -1,6 +1,6 @@
 # Sidecar Deployment (Option A — interim, budget-tier)
 
-> **Status:** Implemented and locally verified. **Not yet deployed to Render.**
+> **Status:** Implemented and locally verified. **Went live on Render 2026-09-10** (see the post-deploy correction below). Note: the repo's `render.yaml` still describes the plain Fastify Docker service; confirm the live service's Dockerfile in the Render dashboard.
 > **Last verified:** `782fd15` — 2026-09-10 — run `bash docs/nginx/regenerate.sh` to refresh
 >
 > Companion docs: [`deployment.md`](./deployment.md) (the real two-service SOTA

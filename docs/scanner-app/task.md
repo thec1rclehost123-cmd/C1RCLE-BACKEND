@@ -22,7 +22,7 @@ agent-metadata:
 
 ## Deferred — Backend structural fixes (logged, not forgotten)
 
-- [ ] Fix 2/4: extract `cover-wallet-service.ts` — needs a careful refactor of 1,474 lines across two storage backends, not a mechanical move.
+- [x] Fix 2/4: `cover-wallet-service.ts` now lives in its own module `application/cover-wallet/` (verified 2026-10-02; the original 1,474-line figure is historical).
 - [ ] Fix 3/4: fix `DoorSale`/`CoverWalletTxn` id schemes — needs a migration plan, not just a code change (live doc ids already exist in that scheme).
 
 ## Done — Phase 1 (core scan flow) — `apps/scanner-app`, C1RCLE-FRONTEND
