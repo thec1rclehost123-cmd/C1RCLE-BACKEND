@@ -59,12 +59,17 @@ Concurrency cancels superseded pull-request runs but never cancels a pushed
 run on `main`/`staging` — the tail of that run gates, triggers and verifies the
 production deploy, so cancelling it would silently skip a deployment.
 
-### `security.yml` — pull requests, `main`, and Mondays 06:15 UTC
+### `security.yml` — PRs into `main` and `staging`, pushes, and Mondays 06:15 UTC
 
 Four jobs: CodeQL (`javascript-typescript` + `actions`, `build-mode: none`),
 dependency review (fails on `high`, denies copyleft licences), a combined `scan`
 job (`pnpm audit --audit-level=high`, TruffleHog, Trivy config + filesystem), and
 OSSF Scorecard. Aggregated by `security-ok`.
+
+PR-gate scans (CodeQL, dependency review, `scan`) run on pull requests into both
+`main` and `staging` (feature → staging → main), so `Security OK` is reported on
+every PR; pushes to `staging`/`main` skip them (the merge already ran them) and
+Scorecard runs only on the default branch.
 
 Split from `ci.yml` because it runs on a different cadence and needs
 `security-events: write`, which the fast gates must not inherit.
@@ -146,6 +151,9 @@ where husky exits non-zero. Hook installation is a developer convenience, never
 a build dependency.
 
 ### Branch protection on `main` and `staging`
+
+Both branches must require the checks below; `Security OK` now reports on PRs
+into `staging`, so it can be required there.
 
 Require exactly two checks:
 
@@ -298,3 +306,8 @@ docker run --rm -v "$PWD:/src:ro" node:24-slim bash -c '
   tar cf - --exclude=./node_modules --exclude=./.git . | (cd /w && tar xf -) &&
   cd /w && pnpm install --frozen-lockfile && pnpm check'
 ```
+
+### Renovate
+
+`renovate.json` sets `baseBranches: ["staging"]`: dependency PRs target the
+integration branch (feature → staging → main) and are gated by `CI OK` + `Security OK`.
