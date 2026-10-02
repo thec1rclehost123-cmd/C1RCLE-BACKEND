@@ -73,12 +73,11 @@ describe('GET /organizations/:organizationId/leaderboard/me', () => {
   it('returns the caller own standing', async () => {
     const server = await buildServer();
     const promoter = await seedOrganization(server);
-    await createV2Services().leaderboard.recordCommission(
-      promoter,
-      3_000,
-      'Delhi',
-      new Date('2026-09-08T12:00:00.000Z'),
-    );
+    // `periodType=month` with no explicit `periodValue` resolves to the
+    // CURRENT month bucket (see leaderboard-routes.ts's `resolvePeriodValue`),
+    // so the seed must land in the real current month rather than a fixed
+    // date that goes stale as soon as the calendar rolls over.
+    await createV2Services().leaderboard.recordCommission(promoter, 3_000, 'Delhi', new Date());
 
     const res = await server.inject({
       method: 'GET',

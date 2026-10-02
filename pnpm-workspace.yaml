@@ -23,8 +23,18 @@ overrides:
   tar: '>=7.5.21'
   # fast-uri ^3 (ajv/@fastify/ajv-compiler) and ^4 (fast-json-stringify) — pin to
   # patched releases that satisfy each dependent's declared range.
-  #   fast-uri -> 3.1.6 / 4.1.4   fixes CVE-2026-75899/75931/75975/76172 (SSRF, host confusion)
+  #   fast-uri -> 3.1.7 / 4.1.4   fixes CVE-2026-84292/84394 (authority injection, host confusion)
+  #     (3.1.6 was the prior pin; a later CVE landed against 3.1.6 itself)
   #   nanoid   -> 3.3.18          fixes CVE-2026-67213 (DoS via infinite loop)
-  'fast-uri@^3.0.0': '3.1.6'
+  'fast-uri@^3.0.0': '3.1.7'
   'fast-uri@^4.0.0': '4.1.4'
   'nanoid@^3.0.0': '3.3.18'
+  # @grpc/grpc-js: CVE-2026-101916, authentication bypass via improper peer
+  # certificate validation (pulled in transitively by firebase-admin).
+  '@grpc/grpc-js': '>=1.14.5'
+  # brace-expansion (pulled in via eslint's minimatch dep, both major lines
+  # present): CVE-2026-102276/102278, DoS via stack exhaustion / uncontrolled
+  # recursion on crafted brace patterns.
+  'brace-expansion': '>=5.0.11'
+  # js-yaml: CVE-2026-84375, DoS in YAML parsing (pulled in via eslint).
+  'js-yaml': '>=4.3.2'

@@ -130,6 +130,32 @@ await check('each response carries a unique requestId', async () => {
   assert(a.body.requestId !== b.body.requestId, 'requestIds must not repeat across requests');
 });
 
+// 7. KYC document-review routes are registered and admin-gated. A 404 here
+//    would mean the route never shipped; a 200/other-than-401 would mean an
+//    unauthenticated caller can read or mutate someone else's KYC documents.
+await check(
+  'GET .../onboarding/applications/:id/documents/:label/read-url without a session returns 401',
+  async () => {
+    const { status, body } = await request(
+      '/api/v2/admin/onboarding/applications/smoke-test-request/documents/id_front/read-url',
+    );
+    assert(status === 401, `expected 401, got ${status}`);
+    assert(body?.code === 'unauthorized', `expected code "unauthorized", got ${body?.code}`);
+  },
+);
+
+await check(
+  'POST .../onboarding/applications/:id/documents/:label/verify without a session returns 401',
+  async () => {
+    const { status, body } = await request(
+      '/api/v2/admin/onboarding/applications/smoke-test-request/documents/id_front/verify',
+      { method: 'POST', headers: { 'idempotency-key': 'smoke-verify-request' } },
+    );
+    assert(status === 401, `expected 401, got ${status}`);
+    assert(body?.code === 'unauthorized', `expected code "unauthorized", got ${body?.code}`);
+  },
+);
+
 const failed = results.filter((r) => !r.ok);
 const summary = [
   `### Smoke tests — \`${baseUrl}\``,

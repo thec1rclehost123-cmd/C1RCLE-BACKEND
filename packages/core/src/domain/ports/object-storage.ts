@@ -35,10 +35,27 @@ export interface UploadUrlGrant {
   readonly expiresAt: number;
 }
 
+/** Admin-side request to mint a short-lived signed GET for an uploaded object. */
+export interface ReadUrlRequest {
+  /** Object path inside the bucket — the document's stored `storagePath`. */
+  readonly key: string;
+  /** Absolute expiry, epoch ms — computed by the caller from the injected clock. */
+  readonly expiresAt: number;
+}
+
+export interface ReadUrlGrant {
+  /** Where the client `GET`s the file. Opaque; never logged in full. */
+  readonly readUrl: string;
+  /** Echoes the request's `expiresAt`, epoch ms. */
+  readonly expiresAt: number;
+}
+
 export interface ObjectStoragePort {
   /** Recorded so a provider swap is visible in support history. */
   readonly name: string;
   issueUploadUrl(request: UploadUrlRequest): Promise<UploadUrlGrant>;
+  /** Admin KYC desk: mint a short-lived signed GET to view an uploaded document. */
+  issueReadUrl(request: ReadUrlRequest): Promise<ReadUrlGrant>;
 }
 
 /**
@@ -56,6 +73,13 @@ export class EchoObjectStorage implements ObjectStoragePort {
       method: 'PUT',
       headers: { 'content-type': request.contentType },
       storagePath: request.key,
+      expiresAt: request.expiresAt,
+    };
+  }
+
+  async issueReadUrl(request: ReadUrlRequest): Promise<ReadUrlGrant> {
+    return {
+      readUrl: `memory://reads/${request.key}`,
       expiresAt: request.expiresAt,
     };
   }
