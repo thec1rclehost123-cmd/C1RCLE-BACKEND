@@ -26,6 +26,9 @@ class CapturingEmailSender implements EmailSender {
   async sendPasswordResetEmail(recipient: string, resetUrl: string): Promise<void> {
     this.resetLinks.push({ recipient, resetUrl });
   }
+  async sendOnboardingChangesRequestedEmail(): Promise<void> {
+    // unused by these tests
+  }
 }
 
 function firstSent(sender: CapturingEmailSender): { recipient: string; code: string } {

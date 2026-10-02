@@ -11,8 +11,10 @@ import { domainEvent, type DomainEventType, type EventPayloads } from '../domain
 import type { CoreConfig } from '../config/index.js';
 import type { EntityId } from '../domain/identity.js';
 import type { InventoryService } from './inventory/inventory-service.js';
+import type { PricingService } from './pricing/pricing-service.js';
 import type { OrganizationRole, Capability } from '../domain/models/organization.js';
 import type { AdminAuditRepository } from '../domain/ports/audit.js';
+import type { EmailSender } from '../domain/ports/email-sender.js';
 import type { ObjectStoragePort } from '../domain/ports/object-storage.js';
 import type { OutboxWriter } from '../domain/ports/outbox.js';
 import type { PaymentProvider } from '../domain/ports/payment-provider.js';
@@ -61,9 +63,9 @@ import type {
   SafetyReportRepository,
   NotificationRepository,
 } from '../domain/ports/repositories.js';
+import type { UserDirectoryPort } from '../domain/ports/user-directory.js';
 import type { VerificationProvider } from '../domain/ports/verification.js';
 import type { Logger } from '../telemetry/logger.js';
-import type { PricingService } from './pricing/pricing-service.js';
 
 /** Who is making this call and in which tenant/role. Set by gateway auth. */
 export interface ActorContext {
@@ -97,6 +99,17 @@ export interface ServiceDeps {
    * `EchoObjectStorage` on the memory driver; Firebase Storage v4 on firestore.
    */
   objectStorage: ObjectStoragePort;
+  /**
+   * Phase 2 gap-closure: outbound transactional email beyond OTP (currently:
+   * notifying an applicant their onboarding request needs changes).
+   */
+  emailSender: EmailSender;
+  /**
+   * Phase 2 gap-closure: resolves a `userId` to an email for the services
+   * that need to reach a user outside their own session. `NullUserDirectory`
+   * on the memory driver; reads Better Auth's own store on firestore.
+   */
+  userDirectory: UserDirectoryPort;
   /** Phase 4: Payment provider (pluggable) */
   paymentProvider: PaymentProvider;
   /** Phase 4: Pricing engine */

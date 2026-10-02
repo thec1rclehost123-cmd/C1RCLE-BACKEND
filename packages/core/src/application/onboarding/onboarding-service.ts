@@ -14,6 +14,7 @@ import {
   rejectOnboardingRequest,
   requestOnboardingChanges,
   REQUIRED_DOCUMENT_LABELS,
+  REQUIRED_DOCUMENT_LABELS_BUSINESS,
   sanitizeApplicantProfile,
   submitOnboardingRequest,
   updateOnboardingProfile,
@@ -178,9 +179,12 @@ export class OnboardingService {
   ): Promise<UploadUrlGrant> {
     const request = await this.requireOwn(userId, command.requestId);
 
-    if (!REQUIRED_DOCUMENT_LABELS.includes(command.label)) {
+    // Validated against both entity-type label sets, not just this applicant's —
+    // `entityType` can still change while the request is a draft.
+    const allLabels = [...REQUIRED_DOCUMENT_LABELS, ...REQUIRED_DOCUMENT_LABELS_BUSINESS];
+    if (!allLabels.includes(command.label)) {
       throw new InvalidOperationError(
-        `Unknown document label — expected one of ${REQUIRED_DOCUMENT_LABELS.join(', ')}`,
+        `Unknown document label — expected one of ${allLabels.join(', ')}`,
       );
     }
     if (!ALLOWED_UPLOAD_CONTENT_TYPES.includes(command.contentType)) {
@@ -475,7 +479,7 @@ export class OnboardingService {
     command: ReviewCommand,
     meta?: AuditRequestMeta,
   ): Promise<OnboardingRequest> {
-    return this.review(
+    const updated = await this.review(
       adminUserId,
       command,
       'onboarding.request_changes',
@@ -483,6 +487,31 @@ export class OnboardingService {
         requestOnboardingChanges(request, { reviewedBy: admin.id, note: command.note, now }),
       meta,
     );
+
+    // Best-effort notification: the decision is already persisted and audited,
+    // so an email-provider outage or an unresolvable address (memory driver)
+    // is logged and swallowed rather than rolling it back.
+    try {
+      const email = await this.deps.userDirectory.getEmailById(updated.userId);
+      if (email) {
+        await this.deps.emailSender.sendOnboardingChangesRequestedEmail(email, {
+          legalName: updated.profile.legalName,
+          note: updated.reviewNote ?? '',
+        });
+      } else {
+        this.deps.logger.info('onboarding.changes_requested_email_skipped', {
+          requestId: updated.id,
+          reason: 'no_email_on_file',
+        });
+      }
+    } catch (error) {
+      this.deps.logger.error('onboarding.changes_requested_email_failed', {
+        requestId: updated.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    return updated;
   }
 
   private async review(

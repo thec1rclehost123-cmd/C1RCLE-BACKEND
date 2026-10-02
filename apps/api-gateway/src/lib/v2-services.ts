@@ -68,6 +68,7 @@ import {
   FormatCheckVerificationProvider,
   CompositeVerificationProvider,
   MemoryPaymentProvider,
+  NullUserDirectory,
 } from '@c1rcle/core/domain';
 import {
   MemoryOutboxStore,
@@ -75,6 +76,7 @@ import {
   MemoryAdminAuditRepository,
   FirestoreAdminAuditRepository,
   FirebaseObjectStorage,
+  FirestoreUserDirectory,
   buildRepositories,
   firestoreClient,
   storageClient,
@@ -88,6 +90,7 @@ import type {
   EmailSender,
   PaymentProvider,
   VerificationProvider,
+  UserDirectoryPort,
 } from '@c1rcle/core/domain';
 
 import { getGatewayConfig } from '../config/index.js';
@@ -334,15 +337,33 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
           new FormatCheckVerificationProvider(),
         );
 
+  const resolvedLogger =
+    logger ??
+    createLogger({
+      info: (message, obj) => console.info(message, obj ?? {}),
+      warn: (message, obj) => console.warn(message, obj ?? {}),
+      error: (message, obj) => console.error(message, obj ?? {}),
+    });
+
+  // Shared with `emailOtp` below — one Resend-backed sender, same provider
+  // for every outbound transactional email this gateway sends.
+  const emailSender = new ResendEmailSender(
+    gwConfig.RESEND_API_KEY,
+    gwConfig.NODE_ENV,
+    resolvedLogger,
+  );
+
+  // Same branch shape as `objectStorage`/`paymentProvider`: the memory driver
+  // (tests, CI) has no Better Auth user store to read, since auth is
+  // bypassed entirely on that driver — see `plugins/auth.ts`.
+  const userDirectory: UserDirectoryPort =
+    gw.STORAGE_DRIVER === 'memory'
+      ? new NullUserDirectory()
+      : new FirestoreUserDirectory(firestoreClient(gw));
+
   const deps: ServiceDeps = {
     config: coreConfig,
-    logger:
-      logger ??
-      createLogger({
-        info: (message, obj) => console.info(message, obj ?? {}),
-        warn: (message, obj) => console.warn(message, obj ?? {}),
-        error: (message, obj) => console.error(message, obj ?? {}),
-      }),
+    logger: resolvedLogger,
     outbox: eventBus,
     adminAudit: adminAudits,
     // Swap here — and only here — when a real KYC provider is contracted.
@@ -352,6 +373,8 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
       gw.STORAGE_DRIVER === 'memory'
         ? new EchoObjectStorage()
         : new FirebaseObjectStorage(storageClient(gw), coreConfig.storage.kycBucket),
+    emailSender,
+    userDirectory,
 
     paymentProvider,
     pricing,
@@ -490,12 +513,6 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     leaderboard: repositories.leaderboard,
     config: coreConfig,
   });
-
-  const emailSender = new ResendEmailSender(
-    gwConfig.RESEND_API_KEY,
-    gwConfig.NODE_ENV,
-    deps.logger,
-  );
 
   const emailOtp = createEmailOtpService({
     emailOtp: repositories.emailOtp,
