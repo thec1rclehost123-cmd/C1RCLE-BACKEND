@@ -129,6 +129,34 @@ describe('app bootstrap + internal routes', () => {
     await app.close();
   });
 
+  it.each([
+    ['a trailing slash', 'https://c1rcle-v2-admin-console.vercel.app/'],
+    ['the default https port', 'https://c1rcle-v2-admin-console.vercel.app:443'],
+    ['an upper-case host', 'https://C1RCLE-v2-Admin-Console.vercel.app'],
+  ])('matches the browser Origin when ALLOWED_ORIGINS has %s', async (_label, configured) => {
+    // Regression: these forms passed config validation but were handed to
+    // @fastify/cors verbatim, so the exact-string compare against the browser's
+    // canonical Origin never matched and the admin console's authenticated
+    // preflight came back without Access-Control-Allow-Origin.
+    const origin = 'https://c1rcle-v2-admin-console.vercel.app';
+    const app = await buildApp({
+      config: testConfig({ ALLOWED_ORIGINS: configured, BETTER_AUTH_TRUSTED_ORIGINS: configured }),
+    });
+    const preflight = await app.inject({
+      method: 'OPTIONS',
+      url: '/api/v2/admin/onboarding/applications?status=submitted&limit=100',
+      headers: {
+        origin,
+        'access-control-request-method': 'GET',
+        'access-control-request-headers': 'authorization,x-request-id',
+      },
+    });
+    expect(preflight.statusCode).toBe(204);
+    expect(preflight.headers['access-control-allow-origin']).toBe(origin);
+    expect(preflight.headers['access-control-allow-credentials']).toBe('true');
+    await app.close();
+  });
+
   it('404s blocked/unknown v2 routes with the canonical envelope (never 501)', async () => {
     const app = await buildApp({});
     // Out-of-scope slice path (payments) must 404 by absence.
