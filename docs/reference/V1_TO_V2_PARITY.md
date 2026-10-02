@@ -1,5 +1,8 @@
 # V1 → V2 Parity Report
 
+> ⚠️ **REFERENCE ONLY — snapshot as of the B09/parity pass (2026-08).** Field-name parity is still CI-locked by `packages/core/src/domain/v1-parity.test.ts`; for build status see `docs/roadmap/ROADMAP.md`.
+
+
 **Status:** snapshot as of the B09/parity pass.
 **Source of truth:** the previous production backend (`thec1rcle/apps/api-gateway/src/routes/v1/`): its proven field names, defaults, and behaviors — not its bugs.
 **Guarded by:** `packages/core/src/domain/v1-parity.test.ts` (CI-locked field names).

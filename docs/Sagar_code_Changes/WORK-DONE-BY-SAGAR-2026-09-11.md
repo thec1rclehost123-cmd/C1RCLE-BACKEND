@@ -1,5 +1,7 @@
 # Work done by Sagar — 2026-09-11
 
+> **Historical log, as of 2026-09-11; see [ROADMAP.md](../roadmap/ROADMAP.md) for current status.**
+
 > **Purpose of this file:** a running record of what was built, what it fixed,
 > what is verified, and what is still outstanding — written to be readable by
 > someone who is not in the code every day.
@@ -182,7 +184,7 @@ Kept visible rather than quietly dropped:
 
 | Item | Status | Note |
 |---|---|---|
-| `GET /door/stats/ws` (live push) | **Open, honest 501** | Needs `@fastify/websocket` registered on the app. Polling `GET /door/stats` works today. |
+| `GET /door/stats/ws` (live push) | **Open, honest 501** (since closed 2026-09-16: replaced by SSE `GET /door/stats/stream`, D-028; no 501 remains) | Needs `@fastify/websocket` registered on the app. Polling `GET /door/stats` works today. |
 | An override does not credit a scan back to the ticket | **Deliberate** | An override is a human decision recorded against one refusal. Crediting a scan back would let one override grant unlimited entries. |
 | Anonymous device-only auth (no staff login) | **Deliberate** | The scanner still needs a logged-in staff session *in addition to* the device token. That is stronger than the roadmap's original plan, and costs nothing while the scanner is a staff-operated device. |
 | `MAGIC_TICKET_SECRET` must be set on Render | **Action required before next deploy** | Production now refuses to boot without it. Documented in `render.yaml` and the staging contract. |
@@ -206,9 +208,9 @@ fallback to a key published in the source code.
 | 2 — KYC / Onboarding | substantially done |
 | 3 — Event catalog & scheduling | done |
 | 4 — Guest checkout & tickets | done |
-| 5 — Door / Scanner / Cover wallet | **done + hardened today**; 1 honest 501 left |
+| 5 — Door / Scanner / Cover wallet | **done + hardened today**; 1 honest 501 left (closed 2026-09-16, SSE) |
 | 6 — Finance / Ledger / Payouts | done (known gap: venue revenue-share rate settles to 0 — no such field exists in the data model yet) |
-| 7 — Admin console | partially started (amount-tiered refunds landed 2026-09-11 in PR #32) |
+| 7 — Admin console (later done A/B/D, see ROADMAP) | partially started (amount-tiered refunds landed 2026-09-11 in PR #32) |
 | 8 — Social / notifications | not started |
 
 Live deployment is still the interim nginx + Fastify sidecar on Render's free
