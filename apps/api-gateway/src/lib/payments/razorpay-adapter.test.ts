@@ -343,3 +343,73 @@ describe('RazorpayPaymentProvider — getPayment', () => {
     await expect(provider().getPayment('pay_1')).rejects.toThrow('Rate limited');
   });
 });
+
+describe('RazorpayPaymentProvider — payment id validation', () => {
+  const hostile: readonly (readonly [string, string])[] = [
+    ['path traversal out of /payments/', '../../../v1/orders'],
+    ['single-level traversal', '../refunds'],
+    ['absolute url', 'https://evil.test/steal'],
+    ['protocol-relative url', '//evil.test/steal'],
+    ['query delimiter', 'pay_1?amount=1'],
+    ['fragment delimiter', 'pay_1#x'],
+    ['encoded traversal', 'pay_1%2F..%2Forders'],
+    ['crlf injection', 'pay_1\r\nX-Injected: 1'],
+    ['bare newline', 'pay_1\n'],
+    ['null byte', 'pay_1 '],
+    ['leading whitespace', ' pay_1'],
+    ['inner space', 'pay 1'],
+    ['empty string', ''],
+    ['over-length', `pay_${'a'.repeat(200)}`],
+  ];
+
+  it.each(hostile)('rejects %s without issuing a request', async (_label, paymentId) => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(provider().getPayment(paymentId)).rejects.toThrow('Invalid Razorpay payment id');
+    await expect(provider().capturePayment(paymentId)).rejects.toThrow(
+      'Invalid Razorpay payment id',
+    );
+    await expect(
+      provider().refundPayment({ paymentId, amountPaise: 1, idempotencyKey: 'idem-x' }),
+    ).rejects.toThrow('Invalid Razorpay payment id');
+
+    // Fails closed: not one request leaves the process, so the id can never
+    // reach the wire in any form.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('does not echo the rejected id back in the error', async () => {
+    const hostileId = 'pay_1\r\nInjected-Header: 1';
+    vi.stubGlobal('fetch', vi.fn());
+
+    let message = '<no error thrown>';
+    try {
+      await provider().getPayment(hostileId);
+    } catch (e) {
+      message = e instanceof Error ? e.message : String(e);
+    }
+
+    expect(message).toBe('Invalid Razorpay payment id');
+    expect(message).not.toContain('Injected-Header');
+    expect(message).not.toContain('\n');
+  });
+
+  it('still accepts well-formed ids unchanged', async () => {
+    const captured = jsonResponse({
+      id: 'pay_ABC123xyz',
+      amount: 1000,
+      currency: 'INR',
+      status: 'captured',
+      captured: true,
+    });
+    const fetchMock = vi.fn().mockResolvedValue(captured);
+    vi.stubGlobal('fetch', fetchMock);
+
+    for (const id of ['pay_1', 'pay_ABC123xyz', 'order_1', 'rfnd_1', 'cust_1']) {
+      await provider().getPayment(id);
+      const [url] = fetchMock.mock.calls.at(-1) as [string];
+      expect(url).toBe(`https://razorpay.test/v1/payments/${id}`);
+    }
+  });
+});
