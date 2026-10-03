@@ -55,3 +55,8 @@ overrides:
   # via firebase-admin -> @google-cloud/firestore -> google-gax. 1.14.5 is the
   # patched release.
   '@grpc/grpc-js': '>=1.14.5'
+  # @fastify/busboy 3.2.0 and earlier: Denial of Service (GHSA-xjh9-v7x6-24jw,
+  # GHSA-x8mw-p69m-v3mx; Trivy CVE-2026-19481 / CVE-2026-19484). 3.2.1 is the
+  # patched release. Floor, not an exact pin, so a newer patched release needs
+  # no manifest edit.
+  '@fastify/busboy': '>=3.2.1'

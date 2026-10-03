@@ -100,6 +100,18 @@
       "why": "getAuthContext can return unauthorized certificates as though they were authorized, in 1.14.0-1.14.4. Pulled in via firebase-admin -> @google-cloud/firestore -> google-gax.",
       "overrides": { "@grpc/grpc-js": ">=1.14.5" },
       "minResolved": "1.14.5"
+    },
+    {
+      "name": "@fastify/busboy",
+      "advisories": [
+        "GHSA-xjh9-v7x6-24jw",
+        "GHSA-x8mw-p69m-v3mx",
+        "CVE-2026-19481",
+        "CVE-2026-19484"
+      ],
+      "why": "Denial of Service in @fastify/busboy 3.2.0 and earlier; fixed in 3.2.1. A floor rather than an exact pin so a newer patched release needs no manifest edit.",
+      "overrides": { "@fastify/busboy": ">=3.2.1" },
+      "minResolved": "3.2.1"
     }
   ]
 }
