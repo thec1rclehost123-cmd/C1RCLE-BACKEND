@@ -6,6 +6,7 @@ import {
   coverWalletDebitRequestSchema,
   coverWalletCreditRequestSchema,
   coverWalletResponseSchema,
+  magicQrResponseSchema,
   coverWalletReconciliationRequestSchema,
   coverWalletReconciliationResponseSchema,
 } from '@c1rcle/contracts/client';
@@ -158,6 +159,40 @@ export default async function phase5CoverWalletRoutes(fastify: FastifyInstance) 
         coverWalletResponseSchema,
         coverWalletToDto(wallet),
       );
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  /**
+   * GET /api/v2/cover-wallets/:walletId/qr
+   *
+   * The rotating tab QR a guest shows at the bar. Readable by the guest whose
+   * tab it is, or by staff of the venue running the event (a guest with a
+   * dead phone still needs to be served). Anyone else gets a 404, never a
+   * 403, so a stranger cannot confirm a wallet id exists.
+   *
+   * Rotates on a 30-second window and carries a signature, so a screenshot of
+   * someone's tab is worthless within half a minute — the same reasoning as
+   * the rotating ticket QR.
+   */
+  fastify.get(
+    '/cover-wallets/:walletId/qr',
+    {
+      preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({ params: walletIdParam })],
+    },
+    async (request, reply) => {
+      const { walletId } = request.params as z.infer<typeof walletIdParam>;
+      const actor = services.actor(request);
+      const qr = await services.coverWallet
+        .generateWalletQr(walletId, actor)
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, walletId, error, { hideForbidden: true }),
+        );
+      if (qr === undefined) return reply;
+      // A rotating credential must never sit in a cache.
+      reply.header('cache-control', 'no-store');
+      const validated = validateV2Response(reply, request, magicQrResponseSchema, qr);
       if (validated === undefined) return reply;
       return reply.send(validated);
     },

@@ -20,16 +20,28 @@ export class FirestoreLedgerRepository implements LedgerRepository {
   }
 
   async createBatch(entries: LedgerEntry[]): Promise<LedgerEntry[]> {
+    // Firestore transactions require every read to happen before any write
+    // in the SAME transaction — reading entry N+1's idempotency doc after
+    // writing entry N's throws `FAILED_PRECONDITION: Firestore transactions
+    // require all reads to be executed before all writes` the moment there
+    // are 2+ entries, which `recordTicketSale` always produces (revenue,
+    // platform fee, venue share, host payout, at minimum). Every real
+    // ticket-sale settlement — door or online, this writer is shared —
+    // failed here. Reading every idempotency doc up front, before any
+    // write, satisfies the ordering rule.
     return this.db.runTransaction(async (tx) => {
+      const pairs = entries.map((entry) => ({
+        entry,
+        idemRef: this.db.collection(IDEMPOTENCY_COLLECTION).doc(entry.idempotencyKey),
+      }));
+      const idemSnaps = await Promise.all(pairs.map(({ idemRef }) => tx.get(idemRef)));
       const created: LedgerEntry[] = [];
-      for (const entry of entries) {
-        const idemRef = this.db.collection(IDEMPOTENCY_COLLECTION).doc(entry.idempotencyKey);
-        const idemSnap = await tx.get(idemRef);
-        if (idemSnap.exists) continue;
+      pairs.forEach(({ entry, idemRef }, index) => {
+        if (idemSnaps[index]?.exists) return;
         tx.set(this.collection.doc(entry.id), toDoc(entry));
         tx.set(idemRef, { entryId: entry.id });
         created.push(entry);
-      }
+      });
       return created.length > 0 ? created : entries;
     });
   }

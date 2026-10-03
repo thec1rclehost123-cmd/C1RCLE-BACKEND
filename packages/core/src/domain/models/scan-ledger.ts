@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
 import { StateTransitionError } from '../errors.js';
 import { bumpVersion, newVersionedEntity } from '../identity.js';
@@ -171,13 +171,20 @@ export interface ScanLedgerCreateInput {
  * cap once a real (UUID) eventId and a real entitlement id were both
  * concatenated in with a millisecond timestamp — same bug class as
  * `entitlementId()` in `domain/models/entitlement.ts`, whose doc comment has
- * the full story. Timestamp is still part of the hash input so repeated
- * calls for the same event+entitlement (rare, but not impossible for a
- * multi-scan couple ticket) don't collide.
+ * the full story.
+ *
+ * A timestamp alone is NOT enough entropy. Two scans of the same ticket
+ * inside one millisecond — a couple ticket, a guest double-tapping, two
+ * devices racing — produced the SAME id, and the second write then failed an
+ * optimistic-lock check. Door staff saw a 409 on an ordinary second scan.
+ * Random bytes are mixed in so every attempt gets its own row, which is
+ * correct for an append-only audit log: uniqueness here is not what prevents
+ * a double admission (`EntitlementRepository.claimAdmission` is), so this id
+ * has no reason to be deterministic.
  */
 function scanLedgerId(eventId: string, entitlementId: string | null, at: number): string {
   const digest = createHash('sha256')
-    .update(`${eventId}:${entitlementId ?? 'walkin'}:${at}`)
+    .update(`${eventId}:${entitlementId ?? 'walkin'}:${at}:${randomBytes(12).toString('hex')}`)
     .digest('hex');
   return `SCAN-${digest.slice(0, 32)}`;
 }

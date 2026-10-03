@@ -1,23 +1,25 @@
 import {
   ForbiddenError,
   InvalidOperationError,
+  NotFoundError,
   OnboardingRequestNotFoundError,
 } from '../../domain/errors.js';
 import {
   addOnboardingDocument,
   allRequiredDocumentsVerified,
-  ALL_DOCUMENT_LABELS,
   approveOnboardingRequest,
   createOnboardingRequest,
   missingDocuments,
   platformFeePercentFor,
-  rejectKycDocument,
+  rejectOnboardingDocument,
   rejectOnboardingRequest,
   requestOnboardingChanges,
+  REQUIRED_DOCUMENT_LABELS,
+  REQUIRED_DOCUMENT_LABELS_BUSINESS,
   sanitizeApplicantProfile,
   submitOnboardingRequest,
   updateOnboardingProfile,
-  verifyKycDocument,
+  verifyOnboardingDocument,
 } from '../../domain/models/onboarding.js';
 import { createOrganization } from '../../domain/models/organization.js';
 
@@ -31,7 +33,8 @@ import type {
   PartnerEntityType,
 } from '../../domain/models/onboarding.js';
 import type { Capability, Organization } from '../../domain/models/organization.js';
-import type { ReadUrlGrant, UploadUrlGrant } from '../../domain/ports/object-storage.js';
+import type { AuditRequestMeta } from '../../domain/ports/audit.js';
+import type { UploadUrlGrant } from '../../domain/ports/object-storage.js';
 import type { PaginationQuery } from '../../domain/ports/repositories.js';
 import type { VerificationResult } from '../../domain/ports/verification.js';
 import type { AdminAuthorityService } from '../admin/admin-authority-service.js';
@@ -55,6 +58,12 @@ import type { ServiceDeps } from '../context.js';
  * `sanitizeApplicantProfile` drops everything else a client sends.
  */
 
+/** Every KYC label either entity-type path can upload. */
+const ALL_DOCUMENT_LABELS: readonly string[] = [
+  ...REQUIRED_DOCUMENT_LABELS,
+  ...REQUIRED_DOCUMENT_LABELS_BUSINESS,
+];
+
 /** How many verification attempts one applicant gets, and over what window. */
 const VERIFICATION_ATTEMPT_LIMIT = 5;
 const VERIFICATION_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -62,9 +71,9 @@ const VERIFICATION_WINDOW_MS = 24 * 60 * 60 * 1000;
 /** KYC image upload bounds — enforced in the signed URL itself. */
 const MAX_DOCUMENT_BYTES = 5 * 1024 * 1024;
 const UPLOAD_URL_TTL_MS = 10 * 60 * 1000;
-/** Admin KYC desk read URLs — short-lived like the upload grant they mirror. */
-const READ_URL_TTL_MS = 10 * 60 * 1000;
 const ALLOWED_UPLOAD_CONTENT_TYPES: readonly string[] = ['image/jpeg', 'image/png', 'image/webp'];
+/** Admin read URLs are minted per view, not cached — short-lived on purpose. */
+const READ_URL_TTL_MS = 10 * 60 * 1000;
 
 export interface StartApplicationCommand {
   requestedType: PartnerEntityType;
@@ -96,15 +105,6 @@ export interface VerifyDocumentCommand {
 export interface ReviewCommand {
   requestId: EntityId;
   note?: string;
-}
-
-export interface DocumentReviewCommand {
-  requestId: EntityId;
-  label: string;
-}
-
-export interface RejectDocumentCommand extends DocumentReviewCommand {
-  reason: string;
 }
 
 export class OnboardingService {
@@ -186,10 +186,10 @@ export class OnboardingService {
   ): Promise<UploadUrlGrant> {
     const request = await this.requireOwn(userId, command.requestId);
 
-    // Validated against the full label set (both entity-type paths), not
-    // just this applicant's — `requestedType`/`entityType` can still change
-    // while the request is a draft, and an upload-url mint has no side
-    // effect worth gating more tightly than "is this a real KYC label".
+    // Validated against both entity-type label sets, not just this applicant's:
+    // `entityType` can still change while the request is a draft, and minting
+    // an upload URL has no side effect worth gating more tightly than "is this
+    // a real KYC label". Business applicants need the registration/signatory set.
     if (!ALL_DOCUMENT_LABELS.includes(command.label)) {
       throw new InvalidOperationError(
         `Unknown document label — expected one of ${ALL_DOCUMENT_LABELS.join(', ')}`,
@@ -219,7 +219,10 @@ export class OnboardingService {
     const request = await this.requireOwn(userId, command.requestId);
     const updated = addOnboardingDocument(
       request,
-      { label: command.label, storagePath: command.storagePath },
+      {
+        label: command.label,
+        storagePath: command.storagePath,
+      },
       this.deps.config.clock.now(),
     );
     await this.repo.save(updated);
@@ -305,6 +308,103 @@ export class OnboardingService {
   }
 
   /**
+   * Mints a short-lived signed GET URL so an admin can actually view an
+   * uploaded KYC image before deciding on the application — v1 had this
+   * (`kyc/[uid]/route.js`'s signed-URL helper, prefix-allowlisted since it
+   * took an arbitrary key); v2 doesn't need a separate allowlist because the
+   * key is derived from a document already attached to a request this
+   * method loaded, never from caller input.
+   *
+   * Any admin may view (matches v1's broader view-vs-decide role split —
+   * approval itself stays ONBOARDING_APPROVE/TIER2, viewing isn't a decision).
+   */
+  async issueDocumentReadUrl(
+    adminUserId: EntityId,
+    requestId: EntityId,
+    label: string,
+  ): Promise<{ readUrl: string; expiresAt: number }> {
+    await this.authority.requireAdmin(adminUserId);
+    const request = await this.requireRequest(requestId);
+    const document = request.documents.find((doc) => doc.label === label);
+    if (!document) throw new NotFoundError('onboarding_document', label);
+
+    const expiresAt = this.deps.config.clock.now().getTime() + READ_URL_TTL_MS;
+    const grant = await this.deps.objectStorage.issueReadUrl({
+      key: document.storagePath,
+      expiresAt,
+    });
+    return { readUrl: grant.readUrl, expiresAt: grant.expiresAt };
+  }
+
+  /**
+   * KYC review desk: marks one uploaded document legitimate. Never touches
+   * `OnboardingRequest.status` — that decision belongs to `approve`/
+   * `reject`/`requestChanges` below, on the Onboarding desk, not here.
+   * Same TIER2 gate as the application decisions (`ONBOARDING_APPROVE`):
+   * this codebase doesn't carry a separate KYC-only admin action yet, and
+   * document legitimacy is exactly the kind of call `support` shouldn't
+   * make unsupervised either.
+   */
+  async verifyKycDocument(
+    adminUserId: EntityId,
+    requestId: EntityId,
+    label: string,
+    meta?: AuditRequestMeta,
+  ): Promise<OnboardingRequest> {
+    const admin = await this.authority.authorize(adminUserId, 'ONBOARDING_APPROVE');
+    const request = await this.requireRequest(requestId);
+    const updated = verifyOnboardingDocument(
+      request,
+      label,
+      admin.id,
+      this.deps.config.clock.now(),
+    );
+    await this.repo.save(updated);
+    await this.authority.record(admin, {
+      action: 'onboarding.document.verify',
+      targetType: 'onboarding_request',
+      targetId: request.id,
+      before: { label, status: 'pending' },
+      after: { label, status: 'verified' },
+      reason: null,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
+    });
+    return updated;
+  }
+
+  /** KYC review desk: marks one uploaded document illegitimate/unreadable. */
+  async rejectKycDocument(
+    adminUserId: EntityId,
+    requestId: EntityId,
+    label: string,
+    reason: string,
+    meta?: AuditRequestMeta,
+  ): Promise<OnboardingRequest> {
+    const admin = await this.authority.authorize(adminUserId, 'ONBOARDING_APPROVE');
+    const request = await this.requireRequest(requestId);
+    const updated = rejectOnboardingDocument(
+      request,
+      label,
+      admin.id,
+      reason,
+      this.deps.config.clock.now(),
+    );
+    await this.repo.save(updated);
+    await this.authority.record(admin, {
+      action: 'onboarding.document.reject',
+      targetType: 'onboarding_request',
+      targetId: request.id,
+      before: { label },
+      after: { label, status: 'rejected' },
+      reason,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
+    });
+    return updated;
+  }
+
+  /**
    * Approves an application and provisions the organization it asked for.
    *
    * The two writes are ordered organization-first: a failure after the
@@ -319,19 +419,19 @@ export class OnboardingService {
   async approve(
     adminUserId: EntityId,
     command: ReviewCommand,
+    meta?: AuditRequestMeta,
   ): Promise<{ request: OnboardingRequest; organization: Organization }> {
     const admin = await this.authority.authorize(adminUserId, 'ONBOARDING_APPROVE');
     const request = await this.requireRequest(command.requestId);
     if (request.status !== 'submitted') {
       throw new InvalidOperationError(`Only a submitted application can be approved`);
     }
-    // The admin console disables its Approve button until every required
-    // document shows `verified`, but that is advisory only — a crafted
-    // request must not be able to skip KYC review, so the server enforces
-    // the same rule here before provisioning anything.
+    // Enforce the KYC gate BEFORE provisioning: `approveOnboardingRequest`
+    // re-checks it, but by then the organization would already be saved, and a
+    // refused approval must not leave an orphan organization behind.
     if (!allRequiredDocumentsVerified(request)) {
       throw new InvalidOperationError(
-        'All required KYC documents must be verified before this application can be approved',
+        'All required documents must be verified on the KYC desk before this application can be approved',
       );
     }
 
@@ -365,6 +465,8 @@ export class OnboardingService {
       before: { status: request.status },
       after: { status: approved.status, organizationId: organization.id },
       reason: command.note ?? null,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     this.deps.logger.info('onboarding.approved', {
       requestId: request.id,
@@ -373,27 +475,39 @@ export class OnboardingService {
     return { request: approved, organization };
   }
 
-  async reject(adminUserId: EntityId, command: ReviewCommand): Promise<OnboardingRequest> {
-    return this.review(adminUserId, command, 'onboarding.reject', (request, admin, now) =>
-      rejectOnboardingRequest(request, { reviewedBy: admin.id, note: command.note, now }),
+  async reject(
+    adminUserId: EntityId,
+    command: ReviewCommand,
+    meta?: AuditRequestMeta,
+  ): Promise<OnboardingRequest> {
+    return this.review(
+      adminUserId,
+      command,
+      'onboarding.reject',
+      (request, admin, now) =>
+        rejectOnboardingRequest(request, { reviewedBy: admin.id, note: command.note, now }),
+      meta,
     );
   }
 
-  async requestChanges(adminUserId: EntityId, command: ReviewCommand): Promise<OnboardingRequest> {
+  async requestChanges(
+    adminUserId: EntityId,
+    command: ReviewCommand,
+    meta?: AuditRequestMeta,
+  ): Promise<OnboardingRequest> {
     const updated = await this.review(
       adminUserId,
       command,
       'onboarding.request_changes',
       (request, admin, now) =>
         requestOnboardingChanges(request, { reviewedBy: admin.id, note: command.note, now }),
+      meta,
     );
 
-    // Best-effort notification. The review decision is already persisted and
-    // audited above — a transient email-provider outage (or a user we cannot
-    // resolve an email for, e.g. on the memory/test driver) must not roll
-    // that back or block the admin, so failures are logged and swallowed
-    // rather than re-thrown. Never an empty catch: every failure path here
-    // is logged.
+    // Best-effort notification. The decision is already persisted and audited:
+    // an email-provider outage (or no resolvable email, e.g. memory/test
+    // driver) must not roll it back or block the admin. Every failure is
+    // logged, never silently swallowed.
     try {
       const email = await this.deps.userDirectory.getEmailById(updated.userId);
       if (email) {
@@ -417,103 +531,12 @@ export class OnboardingService {
     return updated;
   }
 
-  /**
-   * KYC desk: verify one uploaded document. Same TIER2 authority as the
-   * application decision itself (`ONBOARDING_APPROVE`) — document review
-   * gates that decision, so it is not a lesser action.
-   *
-   * Named `verifyKycDocument` (not `verifyDocument`) to avoid colliding with
-   * the applicant-side `verifyDocument` above, which runs a KYC *provider*
-   * check on a raw document number — an entirely different operation that
-   * happens to share a near-identical name.
-   */
-  async verifyKycDocument(
-    adminUserId: EntityId,
-    command: DocumentReviewCommand,
-  ): Promise<OnboardingRequest> {
-    const admin = await this.authority.authorize(adminUserId, 'ONBOARDING_APPROVE');
-    const request = await this.requireRequest(command.requestId);
-    const before = documentStatus(request, command.label);
-    const updated = verifyKycDocument(
-      request,
-      command.label,
-      admin.id,
-      this.deps.config.clock.now(),
-    );
-    await this.repo.save(updated);
-    await this.authority.record(admin, {
-      action: 'onboarding.document_verify',
-      targetType: 'onboarding_request',
-      targetId: request.id,
-      before: { label: command.label, status: before },
-      after: { label: command.label, status: 'verified' },
-      reason: null,
-    });
-    return updated;
-  }
-
-  /** KYC desk: reject one uploaded document — reason required. */
-  async rejectKycDocument(
-    adminUserId: EntityId,
-    command: RejectDocumentCommand,
-  ): Promise<OnboardingRequest> {
-    const admin = await this.authority.authorize(adminUserId, 'ONBOARDING_APPROVE');
-    const request = await this.requireRequest(command.requestId);
-    const before = documentStatus(request, command.label);
-    const updated = rejectKycDocument(
-      request,
-      command.label,
-      command.reason,
-      admin.id,
-      this.deps.config.clock.now(),
-    );
-    await this.repo.save(updated);
-    await this.authority.record(admin, {
-      action: 'onboarding.document_reject',
-      targetType: 'onboarding_request',
-      targetId: request.id,
-      before: { label: command.label, status: before },
-      after: { label: command.label, status: 'rejected' },
-      reason: command.reason,
-    });
-    return updated;
-  }
-
-  /**
-   * KYC desk: mint a short-lived signed GET to view one uploaded document.
-   * `requireAdmin` only — viewing is not a decision, so any active platform
-   * admin may do it, unlike verify/reject which are TIER2.
-   */
-  async getDocumentReadUrl(
-    adminUserId: EntityId,
-    command: DocumentReviewCommand,
-  ): Promise<ReadUrlGrant> {
-    await this.authority.requireAdmin(adminUserId);
-    const request = await this.requireRequest(command.requestId);
-    const document = request.documents.find((candidate) => candidate.label === command.label);
-    if (!document) {
-      throw new InvalidOperationError(
-        `No document with label "${command.label}" has been uploaded`,
-      );
-    }
-    const expiresAt = this.deps.config.clock.now().getTime() + READ_URL_TTL_MS;
-    const grant = await this.deps.objectStorage.issueReadUrl({
-      key: document.storagePath,
-      expiresAt,
-    });
-    this.deps.logger.info('onboarding.read_url_issued', {
-      requestId: request.id,
-      label: command.label,
-      provider: this.deps.objectStorage.name,
-    });
-    return grant;
-  }
-
   private async review(
     adminUserId: EntityId,
     command: ReviewCommand,
     auditAction: string,
     apply: (request: OnboardingRequest, admin: PlatformAdmin, now: Date) => OnboardingRequest,
+    meta?: AuditRequestMeta,
   ): Promise<OnboardingRequest> {
     // Rejecting and asking for changes are TIER2 as well: both determine
     // whether a business gets onto the platform.
@@ -528,6 +551,8 @@ export class OnboardingService {
       before: { status: request.status },
       after: { status: updated.status },
       reason: command.note ?? null,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
     });
     return updated;
   }
@@ -555,11 +580,6 @@ export class OnboardingService {
 
 function capabilityFor(type: PartnerEntityType): Capability {
   return type;
-}
-
-/** The current review status of one label, or `null` if never uploaded — for audit `before`. */
-function documentStatus(request: OnboardingRequest, label: string): string | null {
-  return request.documents.find((document) => document.label === label)?.status ?? null;
 }
 
 /**

@@ -8,7 +8,7 @@ import {
   rejectConnection,
   revokeConnection,
 } from '../../domain/models/promoter-connection.js';
-import { requireOrgAccess } from '../context.js';
+import { requireOrgAccess, emit } from '../context.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type {
@@ -16,8 +16,22 @@ import type {
   ConnectionTargetType,
   PromoterConnection,
 } from '../../domain/models/promoter-connection.js';
-import type { PaginationQuery } from '../../domain/ports/repositories.js';
+import type { Page, PaginationQuery } from '../../domain/ports/repositories.js';
 import type { ActorContext, ServiceDeps } from '../context.js';
+
+/**
+ * A connection plus the public-safe display names the dashboard renders.
+ * Same rationale as `PartnershipWithNames`: resolved server-side, `null`
+ * when the counterparty is gone.
+ */
+export interface PromoterConnectionWithNames {
+  connection: PromoterConnection;
+  promoterName: string | null;
+  promoterSlug: string | null;
+  targetName: string | null;
+  targetSlug: string | null;
+  targetCity: string | null;
+}
 
 /**
  * ─── Promoter connection service (Phase 1) ───────────────────────────────────
@@ -72,12 +86,92 @@ export class PromoterConnectionService {
     });
     await this.repo.save(connection);
     this.deps.logger.info('promoter_connection.requested', { connectionId: connection.id });
+
+    // Notification producer: the recipient is the OTHER party, resolved for
+    // the inbox consumer rather than left to a read-time fan-out.
+    const promoterOrg = await this.deps.repositories.organizations.getById(connection.promoterId);
+    await emit(this.deps, actor, connection.id, 'promoter_connection.requested', {
+      connectionId: connection.id,
+      targetId,
+      targetType: connection.targetType,
+      initiatedBy: connection.initiatedBy,
+      promoterId: connection.promoterId,
+      promoterName: promoterOrg?.name ?? connection.promoterId,
+      message: connection.message,
+    });
     return connection;
   }
 
   async listForOrganization(actor: ActorContext, organizationId: EntityId, query: PaginationQuery) {
     requireOrgAccess(actor, organizationId);
     return this.repo.listForOrganization(organizationId, query);
+  }
+
+  /**
+   * Same page as `listForOrganization` with counterparty names resolved.
+   * A constant number of batched lookups (promoter orgs + venue targets in
+   * parallel, then the expanded org set once venues resolve) — never a
+   * per-row fan-out, so a 100-row page costs 3 reads, not 300.
+   * For venue targets the venue's own name/city wins, falling back to the
+   * owning org's name when the venue row is gone.
+   */
+  async listWithNames(
+    actor: ActorContext,
+    organizationId: EntityId,
+    query: PaginationQuery,
+  ): Promise<Page<PromoterConnectionWithNames>> {
+    const page = await this.listForOrganization(actor, organizationId, query);
+
+    const venueTargetIds = page.items
+      .filter((connection) => connection.targetType === 'venue')
+      .map((connection) => connection.targetId);
+    const [promoterOrgs, venueTargets] = await Promise.all([
+      this.deps.repositories.organizations.getByIds(
+        page.items.map((connection) => connection.promoterId),
+      ),
+      this.deps.repositories.venues.getByIds(venueTargetIds),
+    ]);
+
+    // Org ids the page can reference: every `targetId` (some venue targets
+    // point `targetId` at the owning org instead of the venue) plus every
+    // resolved venue's owner org, so the fallback chain below never misses.
+    const venueOwnerIds = venueTargets.map((venue) => venue.organizationId);
+    const orgIds = [...new Set([...page.items.map((c) => c.targetId), ...venueOwnerIds])];
+    const targetOrgs = await this.deps.repositories.organizations.getByIds(orgIds);
+
+    const promoterByName = new Map(promoterOrgs.map((org) => [org.id, org] as const));
+    const targetOrgByName = new Map(targetOrgs.map((org) => [org.id, org] as const));
+    const venueByName = new Map(venueTargets.map((venue) => [venue.id, venue] as const));
+
+    const items = page.items.map((connection): PromoterConnectionWithNames => {
+      const promoterOrg = promoterByName.get(connection.promoterId);
+      if (connection.targetType === 'venue') {
+        const venue = venueByName.get(connection.targetId);
+        // Prefer the venue row; fall back to the org addressed by `targetId`,
+        // then to the venue's owning org (parity with the old per-row logic).
+        const fallbackOrg =
+          targetOrgByName.get(connection.targetId) ??
+          (venue ? targetOrgByName.get(venue.organizationId) : undefined);
+        return {
+          connection,
+          promoterName: promoterOrg?.name ?? null,
+          promoterSlug: promoterOrg?.slug ?? null,
+          targetName: venue?.public.name ?? fallbackOrg?.name ?? null,
+          targetSlug: venue?.public.slug ?? fallbackOrg?.slug ?? null,
+          targetCity: venue?.public.address?.city ?? null,
+        };
+      }
+      const targetOrg = targetOrgByName.get(connection.targetId);
+      return {
+        connection,
+        promoterName: promoterOrg?.name ?? null,
+        promoterSlug: promoterOrg?.slug ?? null,
+        targetName: targetOrg?.name ?? null,
+        targetSlug: targetOrg?.slug ?? null,
+        targetCity: null,
+      };
+    });
+    return { ...page, items };
   }
 
   async approve(actor: ActorContext, connectionId: EntityId): Promise<PromoterConnection> {

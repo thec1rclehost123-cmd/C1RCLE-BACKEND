@@ -4,6 +4,7 @@ import {
   paginationQuerySchema,
   balanceSummaryResponseSchema,
   ledgerEntryListResponseSchema,
+  financeOrderListResponseSchema,
   payoutRequestSchema,
   payoutResponseSchema,
   payoutListResponseSchema,
@@ -18,6 +19,7 @@ import {
 import { maskAccountNumber } from '@c1rcle/core/domain';
 import { z } from 'zod';
 
+import type { FinanceOrderRow } from '@c1rcle/core/application';
 import type { BankAccount, Dispute, LedgerEntry, Payout } from '@c1rcle/core/domain';
 
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
@@ -96,6 +98,53 @@ export default async function financeRoutes(fastify: FastifyInstance) {
       if (page === undefined) return reply;
       const validated = validateV2Response(reply, request, ledgerEntryListResponseSchema, {
         items: page.items.map(ledgerEntryToDto),
+        pageInfo: {
+          page: 0,
+          pageSize: query.limit,
+          total: page.total,
+          hasNextPage: page.nextCursor !== null,
+        },
+      });
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  /**
+   * GET /organizations/:organizationId/finance/orders
+   *
+   * The revenue side of the same desk the ledger serves: which orders produced
+   * this balance. Deliberately NOT `GET /orders` — that route is scoped to the
+   * *buyer*, so it structurally cannot answer a partner's question, and reusing
+   * it here would have meant a second set of auth semantics on one path.
+   *
+   * Lives under `/finance/` rather than at the top level because it is a
+   * finance read, not a commerce read: it is a narrower projection
+   * (`financeOrderDtoSchema`) and carries no pricing breakdown or contact PII.
+   * The full order DTO remains the guest's, unchanged.
+   */
+  fastify.get(
+    '/organizations/:organizationId/finance/orders',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({ params: organizationIdParam, querystring: paginationQuerySchema }),
+        fastify.requirePermission('organization.read'),
+      ],
+    },
+    async (request, reply) => {
+      const { organizationId } = request.params as z.infer<typeof organizationIdParam>;
+      const query = request.query as z.infer<typeof paginationQuerySchema>;
+      const actor = services.actor(request);
+      const page = await services.orders
+        .listForOrganization(organizationId, actor, {
+          cursor: query.cursor ?? null,
+          limit: query.limit,
+        })
+        .catch((error: unknown) => mapDomainError(reply, request, organizationId, error));
+      if (page === undefined) return reply;
+      const validated = validateV2Response(reply, request, financeOrderListResponseSchema, {
+        items: page.items.map(financeOrderToDto),
         pageInfo: {
           page: 0,
           pageSize: query.limit,
@@ -484,6 +533,23 @@ export default async function financeRoutes(fastify: FastifyInstance) {
   );
 }
 
+function financeOrderToDto(row: FinanceOrderRow) {
+  const { order, eventName, ticketCount } = row;
+  return {
+    id: order.id,
+    eventId: order.eventId,
+    eventName,
+    buyerName: order.contact.name,
+    ticketCount,
+    currency: order.currency,
+    grandTotalPaise: order.grandTotalPaise,
+    refundedPaise: order.refundedPaise,
+    status: order.status,
+    paidAt: order.paidAt,
+    createdAt: order.createdAt,
+  };
+}
+
 function ledgerEntryToDto(entry: LedgerEntry) {
   return {
     id: entry.id,
@@ -534,6 +600,7 @@ function disputeToDto(dispute: Dispute) {
     status: dispute.status,
     resolutionNote: dispute.resolutionNote,
     resolvedAt: dispute.resolvedAt,
+    resolution: dispute.resolution,
     createdAt: dispute.createdAt,
   };
 }

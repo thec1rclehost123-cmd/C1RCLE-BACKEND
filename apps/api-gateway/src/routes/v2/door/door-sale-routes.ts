@@ -30,9 +30,14 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
  * Deliberately a standalone plugin (not folded into `phase5-routes.ts`) so
  * this slice — walk-in, dine-in, sales list — can be built and tested without
  * colliding with the scanner + cover-wallet slices being wired concurrently in
- * that shared file. Registering this plugin into route registration, and
- * leaving `/door/stats` + `/door/stats/ws` as the honest stubs they already
- * are in `phase5-routes.ts`, is owned elsewhere.
+ * that shared file.
+ *
+ * Historical note: this header once added that registration, and leaving
+ * `/door/stats` + `/door/stats/ws` as "the honest stubs they already are" in
+ * `phase5-routes.ts`, was owned elsewhere. Both are now false: this plugin is
+ * registered, `GET /door/stats` is a real read model, and live push shipped as
+ * SSE at `GET /door/stats/stream` (`efb8a17`, 2026-09-16) — there is no
+ * WebSocket route and no 501 stub left in Phase 5.
  */
 
 const services = createV2Services();
@@ -90,7 +95,7 @@ export default async function phase5DoorSaleRoutes(fastify: FastifyInstance) {
               guestPhone: body.guestPhone ?? undefined,
               guestAge: body.guestAge ?? undefined,
               gender: body.gender ?? undefined,
-              contact: body.contact ?? undefined,
+              guestEmail: body.guestEmail ?? undefined,
               totalGuests: body.totalGuests,
               gate: body.gate ?? undefined,
               paymentMode: body.paymentMode,
@@ -149,7 +154,7 @@ export default async function phase5DoorSaleRoutes(fastify: FastifyInstance) {
               guestPhone: body.guestPhone ?? undefined,
               guestAge: body.guestAge ?? undefined,
               gender: body.gender ?? undefined,
-              contact: body.contact ?? undefined,
+              guestEmail: body.guestEmail ?? undefined,
               totalGuests: body.totalGuests,
               // CreateDineInInput.tableNumber is a required `string` even
               // though the wire contract and the persisted sale both treat
@@ -218,7 +223,13 @@ export default async function phase5DoorSaleRoutes(fastify: FastifyInstance) {
         items,
         pageInfo: {
           page: 1,
-          pageSize: query.limit ?? items.length,
+          // `pageSize` describes the capacity of a page, not how many items
+          // happened to come back — `items.length` is legitimately 0 for the
+          // first sale of a night, which failed `doorSalesListResponseSchema`'s
+          // `pageSize > 0` and 500'd every empty-list request. The fallback
+          // is DoorService.listSales's own fetch cap, matching the comment
+          // above about what "no limit" actually means server-side.
+          pageSize: query.limit ?? 1000,
           total: sales.length,
           hasNextPage: limited.length < sales.length,
         },

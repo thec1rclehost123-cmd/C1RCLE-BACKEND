@@ -13,6 +13,116 @@ import type { EntityId, VersionedEntity } from '../identity.js';
 // ─── Ticket tiers ────────────────────────────────────────────────────────────
 
 export type TicketTierStatus = 'active' | 'paused' | 'sold_out';
+export type TicketAccessType = 'ENTRY' | 'VIP' | 'VVIP' | 'TABLE' | 'PACKAGE' | 'RSVP';
+export type TicketAudienceType = 'GENERAL' | 'MALE' | 'FEMALE' | 'COUPLE' | 'GROUP';
+
+export interface TicketPricingPhase {
+  id: string;
+  name: string;
+  priceInPaise: number;
+  startsAt: string;
+  endsAt: string;
+  quantity: number | null;
+}
+
+export interface PartialDateTicketPricingPhaseInput {
+  id: string;
+  name: string;
+  priceInPaise: number;
+  startDate: string;
+  endDate: string;
+  quantity: number | null;
+}
+
+export type CreateTicketPricingPhaseInput = PartialDateTicketPricingPhaseInput | TicketPricingPhase;
+
+function resolvePricingPhase(input: CreateTicketPricingPhaseInput, now: Date): TicketPricingPhase {
+  if ('startsAt' in input) return input;
+  const dateParts = (value: string) => {
+    const match = /^(\d{2})-(\d{2})$/.exec(value);
+    if (!match) throw new InvalidOperationError('Phase dates must use DD-MM');
+    const day = Number(match[1]);
+    const month = Number(match[2]);
+    if (month < 1 || month > 12 || day < 1 || day > 31)
+      throw new InvalidOperationError('Invalid phase date');
+    return { day, month };
+  };
+  const startDate = dateParts(input.startDate);
+  const endDate = dateParts(input.endDate);
+  // Event calendar dates use the current editor timezone: Asia/Kolkata (UTC+05:30).
+  const localNow = new Date(now.getTime() + 330 * 60_000);
+  const validDay = (date: { day: number; month: number }, year: number) => {
+    const stamp = Date.UTC(year, date.month - 1, date.day);
+    return (
+      new Date(stamp).getUTCMonth() === date.month - 1 && new Date(stamp).getUTCDate() === date.day
+    );
+  };
+  const isoAt = (
+    date: { day: number; month: number },
+    time: { hour: number; minute: number; second?: number; millisecond?: number },
+    year: number,
+  ) =>
+    new Date(
+      Date.UTC(
+        year,
+        date.month - 1,
+        date.day,
+        time.hour,
+        time.minute,
+        time.second ?? 0,
+        time.millisecond ?? 0,
+      ) -
+        330 * 60_000,
+    ).toISOString();
+  const localTodayStamp = Date.UTC(
+    localNow.getUTCFullYear(),
+    localNow.getUTCMonth(),
+    localNow.getUTCDate(),
+  );
+  let startYear = localNow.getUTCFullYear();
+  let startsAt = '';
+  for (let yearOffset = 0; yearOffset <= 8; yearOffset += 1) {
+    const year = startYear + yearOffset;
+    if (!validDay(startDate, year)) continue;
+    const candidate = Date.UTC(year, startDate.month - 1, startDate.day);
+    if (candidate >= localTodayStamp) {
+      startYear = year;
+      startsAt = isoAt(startDate, { hour: 0, minute: 0 }, year);
+      break;
+    }
+  }
+  if (!startsAt) throw new InvalidOperationError('Could not resolve phase start date');
+  let endYear = startYear;
+  const startTuple = startDate.month * 100 + startDate.day;
+  const endTuple = endDate.month * 100 + endDate.day;
+  if (endTuple < startTuple) endYear += 1;
+  let resolvedEndDate = false;
+  for (let yearOffset = 0; yearOffset <= 8; yearOffset += 1) {
+    if (validDay(endDate, endYear + yearOffset)) {
+      endYear += yearOffset;
+      resolvedEndDate = true;
+      break;
+    }
+  }
+  if (!resolvedEndDate) throw new InvalidOperationError('Could not resolve phase end date');
+  const endExclusiveDate = new Date(Date.UTC(endYear, endDate.month - 1, endDate.day + 1));
+  endYear = endExclusiveDate.getUTCFullYear();
+  const endExclusive = {
+    day: endExclusiveDate.getUTCDate(),
+    month: endExclusiveDate.getUTCMonth() + 1,
+  };
+  const endsAt = isoAt(endExclusive, { hour: 0, minute: 0 }, endYear);
+  if (Date.parse(startsAt) >= Date.parse(endsAt))
+    throw new InvalidOperationError('Pricing phase must start before it ends');
+  return {
+    id: input.id,
+    name: input.name,
+    priceInPaise: input.priceInPaise,
+    startsAt,
+    endsAt,
+    quantity: input.quantity,
+  };
+}
 
 export interface TicketTier extends VersionedEntity {
   id: EntityId;
@@ -31,9 +141,25 @@ export interface TicketTier extends VersionedEntity {
   status: TicketTierStatus;
   salesStartAt: string | null;
   salesEndAt: string | null;
-  /** Per-order purchase bounds (V1 `minPerOrder`/`maxPerOrder`). */
-  minPerOrder: number | null;
+  /** Maximum tickets that can be purchased per order. */
   maxPerOrder: number | null;
+  accessType?: TicketAccessType;
+  audienceType?: TicketAudienceType;
+  guestCount?: number;
+  pricingPhases?: TicketPricingPhase[];
+  doorPriceInPaise?: number | null;
+  benefits?: string[];
+  minAge?: number | null;
+  maxAge?: number | null;
+  minPerOrder?: number | null;
+  maxPerUser?: number | null;
+  tableConfig?: {
+    capacity: number;
+    minimumSpendPaise: number;
+    redeemableAmountPaise: number;
+    tableCount: number;
+  } | null;
+  commissionEligible?: boolean;
 }
 
 export interface CreateTicketTierInput {
@@ -44,29 +170,87 @@ export interface CreateTicketTierInput {
   description?: string;
   entryType?: string;
   currency?: string;
-  priceInPaise: number;
+  priceInPaise?: number;
   quantity: number;
   salesStartAt?: string | null;
   salesEndAt?: string | null;
-  minPerOrder?: number | null;
   maxPerOrder?: number | null;
+  accessType?: TicketAccessType;
+  audienceType?: TicketAudienceType;
+  guestCount?: number;
+  pricingPhases?: CreateTicketPricingPhaseInput[];
+  doorPriceInPaise?: number | null;
+  benefits?: string[];
+  minAge?: number | null;
+  maxAge?: number | null;
+  minPerOrder?: number | null;
+  maxPerUser?: number | null;
+  tableConfig?: TicketTier['tableConfig'];
+  commissionEligible?: boolean;
   now?: Date;
 }
 
 export function createTicketTier(input: CreateTicketTierInput): TicketTier {
+  const accessType = input.accessType ?? 'ENTRY';
+  const priceInPaise = input.priceInPaise ?? 0;
+  if (
+    accessType === 'RSVP' &&
+    (input.priceInPaise !== undefined ||
+      input.pricingPhases?.length ||
+      input.commissionEligible !== undefined ||
+      input.doorPriceInPaise !== undefined)
+  )
+    throw new InvalidOperationError(
+      'RSVP tickets cannot include price, phases, door price, or commission',
+    );
+  if (accessType !== 'RSVP' && priceInPaise <= 0)
+    throw new InvalidOperationError('Paid tickets require a positive price');
   if (input.quantity < 0)
     throw new InvalidOperationError('Ticket tier quantity cannot be negative');
-  if (input.priceInPaise < 0)
-    throw new InvalidOperationError('Ticket tier price cannot be negative');
+  if (priceInPaise < 0) throw new InvalidOperationError('Ticket tier price cannot be negative');
+  const guestCount = input.guestCount ?? 1;
+  if (!Number.isInteger(guestCount) || guestCount < 1)
+    throw new InvalidOperationError('Guest count must be at least 1');
+  if (input.minPerOrder !== null && input.minPerOrder !== undefined && input.minPerOrder < 1)
+    throw new InvalidOperationError('Minimum tickets per order must be positive');
+  if (input.maxPerUser !== null && input.maxPerUser !== undefined && input.maxPerUser < 1)
+    throw new InvalidOperationError('Maximum tickets per user must be positive');
+  if (input.minPerOrder && input.maxPerOrder && input.minPerOrder > input.maxPerOrder)
+    throw new InvalidOperationError('Minimum tickets per order cannot exceed maximum');
+  const phases = (input.pricingPhases ?? []).map((phase) =>
+    resolvePricingPhase(phase, input.now ?? new Date()),
+  );
   if (
-    input.minPerOrder !== undefined &&
-    input.maxPerOrder !== undefined &&
-    input.minPerOrder !== null &&
-    input.maxPerOrder !== null &&
-    input.minPerOrder > input.maxPerOrder
-  ) {
-    throw new InvalidOperationError('minPerOrder cannot exceed maxPerOrder');
+    input.salesStartAt &&
+    input.salesEndAt &&
+    Date.parse(input.salesStartAt) >= Date.parse(input.salesEndAt)
+  )
+    throw new InvalidOperationError('Ticket sales must start before they end');
+  for (const phase of phases) {
+    if (phase.priceInPaise <= 0 || (phase.quantity !== null && phase.quantity < 0))
+      throw new InvalidOperationError(
+        'Paid phase prices must be positive and quantities cannot be negative',
+      );
+    if (Date.parse(phase.startsAt) >= Date.parse(phase.endsAt))
+      throw new InvalidOperationError('Pricing phase must start before it ends');
   }
+  const sortedPhases = [...phases].sort((a, b) => Date.parse(a.startsAt) - Date.parse(b.startsAt));
+  for (let index = 1; index < sortedPhases.length; index += 1) {
+    const prevPhase = sortedPhases[index - 1];
+    const currPhase = sortedPhases[index];
+    if (prevPhase && currPhase && Date.parse(prevPhase.endsAt) > Date.parse(currPhase.startsAt))
+      throw new InvalidOperationError('Pricing phases cannot overlap');
+  }
+  if (accessType === 'TABLE' && !input.tableConfig)
+    throw new InvalidOperationError('Table tickets require table configuration');
+  if (
+    input.tableConfig &&
+    (input.tableConfig.capacity < 1 ||
+      input.tableConfig.tableCount < 1 ||
+      input.tableConfig.minimumSpendPaise < 0 ||
+      input.tableConfig.redeemableAmountPaise < 0)
+  )
+    throw new InvalidOperationError('Invalid table configuration');
   return {
     id: input.id,
     eventId: input.eventId,
@@ -75,13 +259,25 @@ export function createTicketTier(input: CreateTicketTierInput): TicketTier {
     description: input.description ?? '',
     entryType: input.entryType ?? 'general',
     currency: input.currency ?? 'INR',
-    priceInPaise: input.priceInPaise,
+    priceInPaise,
     quantity: input.quantity,
     status: 'active',
     salesStartAt: input.salesStartAt ?? null,
     salesEndAt: input.salesEndAt ?? null,
-    minPerOrder: input.minPerOrder ?? null,
     maxPerOrder: input.maxPerOrder ?? null,
+    accessType,
+    audienceType: input.audienceType ?? 'GENERAL',
+    guestCount,
+    pricingPhases: accessType === 'RSVP' ? [] : phases,
+    doorPriceInPaise: accessType === 'RSVP' ? null : (input.doorPriceInPaise ?? null),
+    benefits: input.benefits ?? [],
+    minAge: input.minAge ?? null,
+    maxAge: input.maxAge ?? null,
+    minPerOrder: input.minPerOrder ?? null,
+    maxPerUser: input.maxPerUser ?? null,
+    tableConfig: input.tableConfig ?? null,
+    commissionEligible:
+      accessType === 'RSVP' ? false : (input.commissionEligible ?? priceInPaise > 0),
     ...newVersionedEntity(input.now ?? new Date()),
   };
 }
@@ -99,7 +295,6 @@ export function updateTicketTier(
       | 'quantity'
       | 'salesStartAt'
       | 'salesEndAt'
-      | 'minPerOrder'
       | 'maxPerOrder'
     >
   >,
@@ -109,6 +304,21 @@ export function updateTicketTier(
     throw new InvalidOperationError('Ticket tier price cannot be negative');
   }
   return bumpVersion({ ...tier, ...changes }, now ?? new Date());
+}
+
+/**
+ * Effective unit price for reads against tiers that predate `priceInPaise`.
+ * Legacy tier docs (written by the pre-V2 catalog) carry `doorPriceInPaise`
+ * or no price field at all. RSVP and public listings must not crash on those
+ * docs — and must never invent a price: the legacy door price wins when it
+ * is a valid non-negative integer, otherwise the tier prices as zero, and
+ * callers still gate free-vs-paid on `event.isFree`, never on this alone.
+ */
+export function effectiveTierPricePaise(tier: TicketTier): number {
+  if (typeof tier.priceInPaise === 'number') return tier.priceInPaise;
+  const legacy = (tier as unknown as { doorPriceInPaise?: unknown }).doorPriceInPaise;
+  if (typeof legacy === 'number' && Number.isInteger(legacy) && legacy >= 0) return legacy;
+  return 0;
 }
 
 // ─── Promo codes ──────────────────────────────────────────────────────────────
@@ -257,6 +467,7 @@ export interface CommissionTerms {
   ratePercent: number;
   /** Optional fixed fee (paise). */
   flatPaise: number;
+  tierRates?: Record<string, { ratePercent: number; flatPaise: number }>;
 }
 
 export interface PromoterAssignment extends VersionedEntity {
@@ -269,9 +480,11 @@ export interface PromoterAssignment extends VersionedEntity {
   createdAt: string;
   /** When the assignment was revoked/unlinked, if ever. */
   endedAt: string | null;
+  /** When the assignment was suspended by an admin, if ever. */
+  suspendedAt: string | null;
 }
 
-export type PromoterAssignmentStatus = 'active' | 'ended';
+export type PromoterAssignmentStatus = 'active' | 'ended' | 'suspended';
 
 export interface CreatePromoterAssignmentInput {
   id: EntityId;
@@ -287,6 +500,13 @@ export function createPromoterAssignment(input: CreatePromoterAssignmentInput): 
   }
   if (input.terms.flatPaise < 0)
     throw new InvalidOperationError('Commission fee cannot be negative');
+  for (const rate of Object.values(input.terms.tierRates ?? {})) {
+    if (rate.ratePercent < 0 || rate.ratePercent > 100) {
+      throw new InvalidOperationError('Tier commission rate must be between 0 and 100');
+    }
+    if (rate.flatPaise < 0)
+      throw new InvalidOperationError('Tier commission fee cannot be negative');
+  }
   if (input.terms.version < 1)
     throw new InvalidOperationError('Commission terms version must be >= 1');
   return {
@@ -296,6 +516,7 @@ export function createPromoterAssignment(input: CreatePromoterAssignmentInput): 
     status: 'active',
     terms: input.terms,
     endedAt: null,
+    suspendedAt: null,
     ...newVersionedEntity(input.now ?? new Date()),
   };
 }
@@ -308,4 +529,32 @@ export function endPromoterAssignment(
   if (assignment.status === 'ended') return assignment;
   const stamped = bumpVersion(assignment, now ?? new Date());
   return { ...stamped, status: 'ended', endedAt: (now ?? new Date()).toISOString() };
+}
+
+/**
+ * Suspends an assignment — the promoter can no longer earn commission on this
+ * event while the suspension is active. The partner endpoint should stop
+ * issuing referral codes until the admin reinstates.
+ */
+export function suspendPromoterAssignment(
+  assignment: PromoterAssignment,
+  now?: Date,
+): PromoterAssignment {
+  if (assignment.status === 'ended') return assignment;
+  if (assignment.status === 'suspended') return assignment;
+  const stamped = bumpVersion(assignment, now ?? new Date());
+  return { ...stamped, status: 'suspended', suspendedAt: (now ?? new Date()).toISOString() };
+}
+
+/**
+ * Reinstates a suspended assignment. The frozen commission terms are preserved
+ * and the promoter may resume earning.
+ */
+export function reinstatePromoterAssignment(
+  assignment: PromoterAssignment,
+  now?: Date,
+): PromoterAssignment {
+  if (assignment.status !== 'suspended') return assignment;
+  const stamped = bumpVersion(assignment, now ?? new Date());
+  return { ...stamped, status: 'active', suspendedAt: null };
 }

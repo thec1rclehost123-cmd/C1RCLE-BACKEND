@@ -1,4 +1,8 @@
-import { freezeWallet, unfreezeWallet } from '../../domain/models/cover-wallet.js';
+import {
+  DEFAULT_COVER_WALLET_RULES,
+  freezeWallet,
+  unfreezeWallet,
+} from '../../domain/models/cover-wallet.js';
 
 import { paginateQuery } from './pagination.js';
 
@@ -690,6 +694,7 @@ function toWalletDoc(wallet: CoverWallet): DocumentData {
     lastCreditAt: wallet.lastCreditAt,
     lastDebitAt: wallet.lastDebitAt,
     metadata: wallet.metadata,
+    rules: wallet.rules,
     version: wallet.version,
     createdAt: wallet.createdAt,
     updatedAt: wallet.updatedAt,
@@ -715,6 +720,10 @@ function toWallet(data: DocumentData): CoverWallet {
     lastCreditAt: data.lastCreditAt as string | null,
     lastDebitAt: data.lastDebitAt as string | null,
     metadata: data.metadata as Record<string, unknown>,
+    // Wallets written before preset items existed read as "nothing is
+    // chargeable", which is the correct fail-closed answer rather than an
+    // invented price list.
+    rules: (data.rules as CoverWallet['rules'] | undefined) ?? DEFAULT_COVER_WALLET_RULES,
     version: data.version as number,
     createdAt: data.createdAt as string,
     updatedAt: data.updatedAt as string,

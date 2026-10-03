@@ -35,8 +35,8 @@ export interface DoorSale extends VersionedEntity {
   guestAge: number | null;
   /** Gender (optional) */
   gender: string | null;
-  /** Contact info (optional) */
-  contact: string | null;
+  /** Email for the receipt (optional). */
+  guestEmail: string | null;
   /** Total guests in party */
   totalGuests: number;
   /** Category-specific fields */
@@ -82,7 +82,7 @@ export interface DoorSaleCreateInput {
   guestPhone: string | null;
   guestAge: number | null;
   gender: string | null;
-  contact: string | null;
+  guestEmail: string | null;
   totalGuests: number;
   tableNumber: string | null;
   gate: string | null;
@@ -107,7 +107,7 @@ export function createDoorSale(input: DoorSaleCreateInput): DoorSale {
     guestPhone: input.guestPhone,
     guestAge: input.guestAge,
     gender: input.gender,
-    contact: input.contact,
+    guestEmail: input.guestEmail,
     totalGuests: input.totalGuests,
     tableNumber: input.tableNumber,
     gate: input.gate,

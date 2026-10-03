@@ -3,6 +3,7 @@ import {
   OrganizationService,
   VenueService,
   PartnershipService,
+  PartnerDiscoveryService,
   PublicService,
   ReferralLinkService,
   PromoterConnectionService,
@@ -14,6 +15,7 @@ import {
   IdempotencyService,
   OnboardingService,
   AdminAuthorityService,
+  AdminOperationsService,
   InProcessEventBus,
   createAuditConsumer,
   createProjectionConsumer,
@@ -26,22 +28,37 @@ import {
   createDoorService,
   createCoverWalletService,
   createDoorStatsService,
+  createDoorOpsService,
+  createDoorTicketSaleService,
   createFinanceService,
   createPayoutService,
+  AdminPayoutService,
   createBankAccountService,
   createDisputeService,
+  AdminDisputeService,
+  RefundService,
+  SupportService,
+  AdminSupportService,
   createLeaderboardService,
   createEmailOtpService,
+  createGuestProfileService,
+  SocialService,
+  createFollowerFanOutConsumer,
+  NotificationService,
+  createNotificationConsumer,
   type ScannerService,
   type DoorService,
   type CoverWalletService,
   type DoorStatsService,
+  type DoorOpsService,
+  type DoorTicketSaleService,
   type FinanceService,
   type PayoutService,
   type BankAccountService,
   type DisputeService,
   type LeaderboardService,
   type EmailOtpService,
+  type GuestProfileService,
   type ServiceDeps,
   type ActorContext,
 } from '@c1rcle/core/application';
@@ -70,6 +87,7 @@ import {
 
 import type {
   AdminAuditRepository,
+  EmailSender,
   PaymentProvider,
   VerificationProvider,
   UserDirectoryPort,
@@ -96,6 +114,8 @@ export interface PartnerV2Services {
   organizations: OrganizationService;
   venues: VenueService;
   partnerships: PartnershipService;
+  /** Partner-network browse behind `GET /organizations/:id/discover-partners`. */
+  discovery: PartnerDiscoveryService;
   referralLinks: ReferralLinkService;
   promoterConnections: PromoterConnectionService;
   venueCalendar: VenueCalendarService;
@@ -103,10 +123,14 @@ export interface PartnerV2Services {
   events: EventService;
   catalog: EventCatalogService;
   analytics: AnalyticsService;
+  /** Phase 8: follow graph + notification inbox (guest, session-scoped). */
+  social: SocialService;
   /** Phase 2: partner applications, applicant + admin review sides. */
   onboarding: OnboardingService;
   /** Phase 2: platform-admin resolution, tiering and dual control. */
   adminAuthority: AdminAuthorityService;
+  /** Phase 7 admin: platform directory views + venue suspension resolution. */
+  adminOps: AdminOperationsService;
   checkout: CheckoutService;
   /** Phase 4 PR1: unauthenticated guest-facing discovery reads. */
   public: PublicService;
@@ -144,18 +168,38 @@ export interface PartnerV2Services {
   coverWallet: CoverWalletService;
   /** Phase 5 (Founder Task B2): GET /door/stats read model. */
   doorStats: DoorStatsService;
+  /** Phase 5: event picker, shift start, guest roster, manual check-in. */
+  doorOps: DoorOpsService;
+  /** Phase 5: paid walk-up ticket sale (real order + tickets + settlement). */
+  doorTicketSale: DoorTicketSaleService;
   /** Phase 6: ledger + balances. */
   finance: FinanceService;
   /** Phase 6: payout requests + lifecycle. */
   payout: PayoutService;
+  /** Phase 6 admin: freeze/release (TIER3) + batch execution (TIER2). */
+  adminPayout: AdminPayoutService;
   /** Phase 6: bank account management. */
   bankAccount: BankAccountService;
   /** Phase 6: dispute lifecycle. */
   dispute: DisputeService;
+  /** Phase 6 admin: dispute resolution desk (mutates the ledger on `upheld`). */
+  adminDispute: AdminDisputeService;
+  /** Phase 6 admin: amount-tiered refund approval over an order's payment. */
+  refund: RefundService;
+  /** Phase 7 support: guest/requester intake + follow-ups on your own tickets. */
+  support: SupportService;
+  /** Phase 7 support: admin desk over the same ticket aggregate. */
+  adminSupport: AdminSupportService;
   /** Phase 6: promoter leaderboard. */
   leaderboard: LeaderboardService;
   /** Email OTP (signup verification). */
   emailOtp: EmailOtpService;
+  /** Guest-portal signup onboarding profile (session-scoped, no org). */
+  guestProfile: GuestProfileService;
+  /** V2 partner-dashboard inbox — recipient is the org tenant. */
+  notifications: NotificationService;
+  /** Outbound transactional email (OTP + password-reset links). */
+  emailSender: EmailSender;
 }
 
 // Each route module calls `createV2Services()` independently at import time
@@ -182,8 +226,8 @@ export function createV2Services(logger?: Logger): PartnerV2Services {
  * `plugins/auth.ts`'s `onRequest` hook always populates `request.actor`
  * before this runs when there's a real session — this never fabricates one.
  */
-function actorFromRequest(gw: GatewayConfig, request: FastifyRequest): ActorContext {
-  if (gw.STORAGE_DRIVER === 'memory' && !request.actor) {
+export function actorFromRequest(gw: GatewayConfig, request: FastifyRequest): ActorContext {
+  if (gw.NODE_ENV !== 'production' && gw.STORAGE_DRIVER === 'memory' && !request.actor) {
     // "The memory driver has a single fixed dev actor" (see
     // `partner/invitations.test.ts`) — always fabricates on this driver,
     // never throws. Only `STORAGE_DRIVER=firestore` (real auth) reaches the
@@ -223,6 +267,10 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     firestore: { projectId: gw.FIRESTORE_PROJECT_ID },
     storage: gw.FIREBASE_STORAGE_BUCKET ? { kycBucket: gw.FIREBASE_STORAGE_BUCKET } : undefined,
     emailOtpSecret: gw.EMAIL_OTP_SECRET,
+    // Was never passed, so every deploy silently used the core default — a
+    // published constant that anyone reading the repo could use to mint a
+    // valid door QR for any ticket. Production now fails to boot without it.
+    magicTicketSecret: gw.MAGIC_TICKET_SECRET,
   });
 
   const repositories: ServiceDeps['repositories'] = buildRepositories(gw);
@@ -235,6 +283,19 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   eventBus.subscribe('event.updated', createAuditConsumer(audits));
   // Future projection consumer (no-op now — wire exists for B11 projections).
   eventBus.subscribe('event.published', createProjectionConsumer);
+  // Phase 8 pub/sub: follow graph changes are audited, and every publish fans
+  // out "new event" notifications to venue + host followers. The publisher
+  // (EventService / SocialService) never calls these directly.
+  eventBus.subscribe('follow.created', createAuditConsumer(audits));
+  eventBus.subscribe('follow.removed', createAuditConsumer(audits));
+  eventBus.subscribe(
+    'event.published',
+    createFollowerFanOutConsumer({
+      events: repositories.events,
+      follows: repositories.follows,
+      notifications: repositories.socialNotifications,
+    }),
+  );
 
   const adminAudits: AdminAuditRepository =
     gw.STORAGE_DRIVER === 'memory'
@@ -284,17 +345,15 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
       error: (message, obj) => console.error(message, obj ?? {}),
     });
 
-  // Shared with `emailOtp` below — one Resend-backed sender, same provider
-  // for every outbound transactional email this gateway sends.
+  // One Resend-backed sender shared by OTP and onboarding notifications.
   const emailSender = new ResendEmailSender(
     gwConfig.RESEND_API_KEY,
     gwConfig.NODE_ENV,
     resolvedLogger,
   );
 
-  // Same branch shape as `objectStorage`/`paymentProvider`: the memory driver
-  // (tests, CI) has no Better Auth user store to read, since auth is
-  // bypassed entirely on that driver — see `plugins/auth.ts`.
+  // Memory driver (tests, CI) has no Better Auth user store to read: auth is
+  // bypassed on that driver (see `plugins/auth.ts`).
   const userDirectory: UserDirectoryPort =
     gw.STORAGE_DRIVER === 'memory'
       ? new NullUserDirectory()
@@ -321,13 +380,27 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     repositories,
   };
 
+  // V2 partner inbox producer consumer: domain events → notification rows.
+  // Subscribed to each producer event type; the handler is a named function
+  // (its `handler.name` keys the bus's per-event dedupe set).
+  const notificationConsumer = createNotificationConsumer({
+    notifications: repositories.notifications,
+    config: coreConfig,
+    logger: deps.logger,
+  });
+  eventBus.subscribe('promoter_connection.requested', notificationConsumer);
+  eventBus.subscribe('partnership.requested', notificationConsumer);
+  eventBus.subscribe('event.published', notificationConsumer);
+
   const adminAuthority = new AdminAuthorityService(deps);
+  const onboardingService = new OnboardingService(deps, adminAuthority);
 
   // Phase 5 services
   const scanner = createScannerService({
     scanLedger: repositories.scanLedger,
     eventCodes: repositories.eventCodes,
     scannerSessions: repositories.scannerSessions,
+    scannerDevices: repositories.scannerDevices,
     entitlements: repositories.entitlements,
     repositories,
     config: coreConfig,
@@ -362,9 +435,46 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
 
   const doorStats = createDoorStatsService({
     events: repositories.events,
+    catalog: repositories.catalog,
     scanLedger: repositories.scanLedger,
     doorSales: repositories.doorSales,
     coverWallets: repositories.coverWallets,
+  });
+
+  // The door's non-camera screens: event picker, shift start, roster, manual
+  // check-in. Composes scanner + stats + catalog, so a route stays one call.
+  const doorOps = createDoorOpsService({
+    scanner,
+    coverWallet,
+    doorStats,
+    events: repositories.events,
+    catalog: repositories.catalog,
+    entitlements: repositories.entitlements,
+    eventCodes: repositories.eventCodes,
+    doorSales: repositories.doorSales,
+    scanLedger: repositories.scanLedger,
+    venues: repositories.venues,
+    adminAudit: adminAudits,
+    logger: deps.logger,
+  });
+
+  const checkout = new CheckoutService(deps);
+
+  // The paid walk-up sale. `settleOrder` is injected from the checkout
+  // service so door revenue lands in the finance ledger through the SAME
+  // writer as online revenue, rather than growing a second settlement path
+  // that can drift from it.
+  const doorTicketSale = createDoorTicketSaleService({
+    scanner,
+    events: repositories.events,
+    catalog: repositories.catalog,
+    orders: repositories.orders,
+    entitlements: repositories.entitlements,
+    scanLedger: repositories.scanLedger,
+    inventory,
+    adminAudit: adminAudits,
+    logger: deps.logger,
+    settleOrder: (order) => checkout.settleOrder(order),
   });
 
   // Phase 6 services
@@ -390,6 +500,13 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     config: coreConfig,
   });
 
+  const refund = new RefundService(deps, adminAuthority);
+  const adminPayout = new AdminPayoutService(deps, adminAuthority);
+  const adminDispute = new AdminDisputeService(deps, adminAuthority);
+  const adminOps = new AdminOperationsService(deps, adminAuthority);
+  const support = new SupportService(deps);
+  const adminSupport = new AdminSupportService(deps, adminAuthority);
+
   const leaderboard = createLeaderboardService({
     leaderboard: repositories.leaderboard,
     config: coreConfig,
@@ -401,10 +518,16 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     config: coreConfig,
   });
 
+  const guestProfile = createGuestProfileService({
+    guestProfiles: repositories.guestProfiles,
+    config: coreConfig,
+  });
+
   return {
     organizations: new OrganizationService(deps),
     venues: new VenueService(deps),
     partnerships: new PartnershipService(deps),
+    discovery: new PartnerDiscoveryService(deps),
     referralLinks: new ReferralLinkService(deps),
     promoterConnections: new PromoterConnectionService(deps),
     venueCalendar: new VenueCalendarService(deps),
@@ -412,9 +535,11 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     events: new EventService(deps),
     catalog: new EventCatalogService(deps),
     analytics: new AnalyticsService(deps),
-    onboarding: new OnboardingService(deps, adminAuthority),
+    onboarding: onboardingService,
+    social: new SocialService(deps),
     adminAuthority,
-    checkout: new CheckoutService(deps),
+    adminOps,
+    checkout,
     public: new PublicService(deps),
     paymentProvider,
     orders: new OrderService(deps),
@@ -433,12 +558,23 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     door,
     coverWallet,
     doorStats,
+    doorOps,
+    doorTicketSale,
     // Phase 6
     finance,
     payout,
     bankAccount,
     dispute,
+    refund,
+    adminPayout,
+    adminDispute,
+    support,
+    adminSupport,
     leaderboard,
     emailOtp,
+    guestProfile,
+    notifications: new NotificationService(deps),
+    /** Serves `buildBetterAuth`'s `emailAndPassword.sendResetPassword` callback. */
+    emailSender,
   };
 }

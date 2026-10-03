@@ -74,11 +74,6 @@ export interface OnboardingProfile {
   entityType?: string;
 }
 
-/**
- * A document's KYC review state — separate from `OnboardingStatus`. `pending`
- * means uploaded but not yet reviewed; `verified`/`rejected` are a KYC
- * reviewer's explicit call, never inferred from the application's own status.
- */
 export type OnboardingDocumentStatus = 'pending' | 'verified' | 'rejected';
 
 /** A KYC document the applicant has uploaded. */
@@ -159,10 +154,7 @@ export function updateOnboardingProfile(
 
 export function addOnboardingDocument(
   request: OnboardingRequest,
-  document: Omit<
-    OnboardingDocument,
-    'uploadedAt' | 'status' | 'reviewedBy' | 'reviewedAt' | 'rejectionReason'
-  >,
+  document: { label: string; storagePath: string },
   now?: Date,
 ): OnboardingRequest {
   if (request.status === 'approved' || request.status === 'rejected') {
@@ -171,8 +163,8 @@ export function addOnboardingDocument(
   const at = now ?? new Date();
   // Re-uploading a label replaces it: the newest copy of an ID is the one an
   // admin should review, and keeping both invites approving the stale one.
-  // The replacement always starts `pending` — a re-uploaded ID must be
-  // re-reviewed, never inherit the previous copy's verified/rejected state.
+  // A fresh upload always resets verification — a previously verified ID
+  // photo says nothing about the new file that just overwrote it.
   const documents = request.documents.filter((existing) => existing.label !== document.label);
   return {
     ...bumpVersion(request, at),
@@ -190,129 +182,98 @@ export function addOnboardingDocument(
   };
 }
 
-/** Document labels an individual applicant must supply before an admin can decide. */
-export const INDIVIDUAL_REQUIRED_DOCUMENT_LABELS: readonly string[] = [
-  'id_front',
-  'id_back',
-  'selfie',
-];
+/**
+ * Admin marks one uploaded document as legitimate. Purely a KYC decision —
+ * does not touch `OnboardingRequest.status`, and carries no authority over
+ * whether the application itself gets approved.
+ */
+export function verifyOnboardingDocument(
+  request: OnboardingRequest,
+  label: string,
+  adminId: EntityId,
+  now?: Date,
+): OnboardingRequest {
+  return reviewDocument(request, label, adminId, 'verified', null, now);
+}
+
+/** Admin marks one uploaded document as illegitimate/unreadable — requires a reason. */
+export function rejectOnboardingDocument(
+  request: OnboardingRequest,
+  label: string,
+  adminId: EntityId,
+  reason: string,
+  now?: Date,
+): OnboardingRequest {
+  if (reason.trim().length === 0) {
+    throw new InvalidOperationError('Rejecting a document requires a reason');
+  }
+  return reviewDocument(request, label, adminId, 'rejected', reason.trim(), now);
+}
+
+function reviewDocument(
+  request: OnboardingRequest,
+  label: string,
+  adminId: EntityId,
+  status: 'verified' | 'rejected',
+  rejectionReason: string | null,
+  now?: Date,
+): OnboardingRequest {
+  const existing = request.documents.find((document) => document.label === label);
+  if (existing === undefined) {
+    throw new InvalidOperationError(`No document with label "${label}" has been uploaded`);
+  }
+  const at = now ?? new Date();
+  const documents = request.documents.map((document) =>
+    document.label === label
+      ? { ...existing, status, reviewedBy: adminId, reviewedAt: at.toISOString(), rejectionReason }
+      : document,
+  );
+  return { ...bumpVersion(request, at), documents };
+}
 
 /**
- * Document labels a business-entity applicant must supply: a registration
- * document plus a separate identity set for the authorized signatory.
+ * Every REQUIRED document (see `missingDocuments`) is present and
+ * `verified` — the gate `approveOnboardingRequest` checks. A document that
+ * is merely uploaded (`pending`) or was `rejected` does not count: KYC
+ * review must have actively signed off on each one.
  */
-export const BUSINESS_REQUIRED_DOCUMENT_LABELS: readonly string[] = [
+export function allRequiredDocumentsVerified(request: OnboardingRequest): boolean {
+  if (missingDocuments(request).length > 0) return false;
+  const required =
+    request.profile.entityType === 'business'
+      ? REQUIRED_DOCUMENT_LABELS_BUSINESS
+      : REQUIRED_DOCUMENT_LABELS;
+  return required.every((label) =>
+    request.documents.some(
+      (document) => document.label === label && document.status === 'verified',
+    ),
+  );
+}
+
+/** Individual-applicant document labels, kept as the default set. */
+export const REQUIRED_DOCUMENT_LABELS: readonly string[] = ['id_front', 'id_back', 'selfie'];
+
+/** Business-entity applicants supply a registration doc plus a signatory's identity set. */
+export const REQUIRED_DOCUMENT_LABELS_BUSINESS: readonly string[] = [
   'registration_certificate',
   'sig_id_front',
   'sig_id_back',
   'sig_selfie',
 ];
 
-/** Every label the upload-url/document endpoints will accept, across both entity types. */
-export const ALL_DOCUMENT_LABELS: readonly string[] = [
-  ...INDIVIDUAL_REQUIRED_DOCUMENT_LABELS,
-  ...BUSINESS_REQUIRED_DOCUMENT_LABELS,
-];
-
 /**
- * @deprecated kept for backward compatibility with callers that have not yet
- * moved to the entity-type-aware `requiredDocumentLabelsFor`. Equal to
- * `INDIVIDUAL_REQUIRED_DOCUMENT_LABELS`.
+ * `profile.entityType` is a free-form string (v1 precedent), so this only
+ * recognizes the one value that switches the required set — anything else
+ * (including unset) falls back to the individual set, matching prior
+ * behavior for every request that predates this field mattering.
  */
-export const REQUIRED_DOCUMENT_LABELS: readonly string[] = INDIVIDUAL_REQUIRED_DOCUMENT_LABELS;
-
-/**
- * Which document labels this request must satisfy before an admin can
- * decide, chosen by the applicant's entity type — mirrors the admin
- * console's own `allRequiredDocumentsVerified` gate (business applicants
- * take a different document set than individuals).
- */
-export function requiredDocumentLabelsFor(
-  request: Pick<OnboardingRequest, 'profile'>,
-): readonly string[] {
-  return request.profile.entityType === 'business'
-    ? BUSINESS_REQUIRED_DOCUMENT_LABELS
-    : INDIVIDUAL_REQUIRED_DOCUMENT_LABELS;
-}
-
 export function missingDocuments(request: OnboardingRequest): string[] {
+  const required =
+    request.profile.entityType === 'business'
+      ? REQUIRED_DOCUMENT_LABELS_BUSINESS
+      : REQUIRED_DOCUMENT_LABELS;
   const present = new Set(request.documents.map((document) => document.label));
-  return requiredDocumentLabelsFor(request).filter((label) => !present.has(label));
-}
-
-/**
- * True iff every label this request's entity type requires is both present
- * and has been explicitly marked `verified` by a KYC reviewer. `submitted`
- * only proves the labels are present (`missingDocuments`); this is the
- * stronger gate `approve()` enforces server-side — the admin console's
- * disabled Approve button is advisory only, so a crafted request must not be
- * able to bypass this check.
- */
-export function allRequiredDocumentsVerified(request: OnboardingRequest): boolean {
-  return requiredDocumentLabelsFor(request).every((label) => {
-    const document = request.documents.find((candidate) => candidate.label === label);
-    return document !== undefined && document.status === 'verified';
-  });
-}
-
-/**
- * KYC desk: marks one uploaded document legitimate. Distinct from
- * approve/reject/request-changes on the application itself — this never
- * decides the application, only one document's own review state.
- */
-export function verifyKycDocument(
-  request: OnboardingRequest,
-  label: string,
-  reviewedBy: EntityId,
-  now?: Date,
-): OnboardingRequest {
-  const existing = request.documents.find((document) => document.label === label);
-  if (!existing) {
-    throw new InvalidOperationError(`No document with label "${label}" has been uploaded`);
-  }
-  const at = now ?? new Date();
-  const updated: OnboardingDocument = {
-    ...existing,
-    status: 'verified',
-    reviewedBy,
-    reviewedAt: at.toISOString(),
-    rejectionReason: null,
-  };
-  return {
-    ...bumpVersion(request, at),
-    documents: request.documents.map((document) => (document.label === label ? updated : document)),
-  };
-}
-
-/** KYC desk: marks one uploaded document illegitimate/unreadable — reason required. */
-export function rejectKycDocument(
-  request: OnboardingRequest,
-  label: string,
-  reason: string,
-  reviewedBy: EntityId,
-  now?: Date,
-): OnboardingRequest {
-  const existing = request.documents.find((document) => document.label === label);
-  if (!existing) {
-    throw new InvalidOperationError(`No document with label "${label}" has been uploaded`);
-  }
-  if (!reason || reason.trim().length === 0) {
-    // Same pattern as `requestOnboardingChanges`'s note requirement — a
-    // rejection with no reason leaves the applicant guessing what to fix.
-    throw new InvalidOperationError('Rejecting a document requires a reason');
-  }
-  const at = now ?? new Date();
-  const updated: OnboardingDocument = {
-    ...existing,
-    status: 'rejected',
-    reviewedBy,
-    reviewedAt: at.toISOString(),
-    rejectionReason: reason.trim(),
-  };
-  return {
-    ...bumpVersion(request, at),
-    documents: request.documents.map((document) => (document.label === label ? updated : document)),
-  };
+  return required.filter((label) => !present.has(label));
 }
 
 export function submitOnboardingRequest(request: OnboardingRequest, now?: Date): OnboardingRequest {
@@ -354,11 +315,26 @@ export function rejectOnboardingRequest(
  * Approval records WHO decided and which organization was provisioned. The
  * organization is created by the service in the same unit of work; this model
  * only records the link so the decision stays auditable.
+ *
+ * Refuses unless every required document has been actively `verified` by
+ * KYC review (not just uploaded) — approving an applicant whose ID photos
+ * were never checked is exactly the gap that motivated splitting KYC review
+ * from this decision in the first place.
  */
 export function approveOnboardingRequest(
   request: OnboardingRequest,
   input: ReviewOnboardingInput & { provisionedOrganizationId: EntityId },
 ): OnboardingRequest {
+  // Validate the state transition itself first (throws StateTransitionError
+  // for an already-decided or never-submitted request) before the KYC gate
+  // below — a request that couldn't be approved anyway shouldn't surface a
+  // misleading "documents unverified" message.
+  transitionStatus(request.status, 'approved', ONBOARDING_TRANSITIONS);
+  if (!allRequiredDocumentsVerified(request)) {
+    throw new InvalidOperationError(
+      'All required documents must be verified on the KYC desk before this application can be approved',
+    );
+  }
   const reviewed = review(request, 'approved', input);
   return { ...reviewed, provisionedOrganizationId: input.provisionedOrganizationId };
 }

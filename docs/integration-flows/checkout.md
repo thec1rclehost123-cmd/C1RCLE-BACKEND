@@ -1,13 +1,15 @@
 # Checkout integration flow
 
-**Status:** ASPIRATIONAL — none of the checkout / orders / payments / tickets
-routes are registered on the gateway yet (404 by absence). This is the intended
-shape for when Phase 6 lands; do not build a frontend consumer against it now.
-Guest-portal checkout stays fixture-only until the backend routes exist and are
-tested. Wire shapes below still need reconciling with the corrected envelope
-(bare DTO / flat errors) in `docs/api-contracts/error-contract.md`.
+**Status:** LIVE (verified 2026-09-07) — checkout, orders, payments, tickets,
+wallet, and public discovery routes are all registered under
+`apps/api-gateway/src/routes/v2/{checkout,orders,tickets,wallet,public}/`
+(payments + razorpay webhook live in `checkout/payment-routes.ts` and
+`checkout/webhook-routes.ts`), each with route tests. This document describes
+the intended wire shape; reconcile specifics with the corrected envelope
+(bare DTO / flat errors) in `docs/api-contracts/error-contract.md` and the
+frozen per-domain contracts in `packages/contracts/src/`.
 **Frontend:** apps/guest-portal checkout and confirmation routes.
-**Backend contract:** `/api/v2` checkout, orders, payments, tickets — all BLOCKED.
+**Backend contract:** `/api/v2` checkout, orders, payments, tickets — all LIVE.
 
 ## Authority rules
 
@@ -23,16 +25,15 @@ as a preview. It must not silently switch to fixtures after an API failure.
 ~~~text
 Guest opens public event
   -> GET /api/v2/public/events/:idOrSlug
-  -> POST /api/v2/checkout/quotes
-  -> POST /api/v2/checkout/reservations + Idempotency-Key
-  -> POST /api/v2/orders + Idempotency-Key
-  -> POST /api/v2/orders/:orderId/payment-intents + Idempotency-Key
+  -> POST /api/v2/checkout/quote
+  -> POST /api/v2/checkout/holds + Idempotency-Key        (inventory hold, ~10 min TTL)
+  -> POST /api/v2/payments/attempts + Idempotency-Key     (Razorpay intent + keyId for the hold)
   -> provider UI uses client-safe options
   -> provider returns payment identifiers to frontend
-  -> POST /api/v2/payments/:paymentId/confirm + Idempotency-Key
-  -> backend verifies provider signature/webhook state
-  -> GET /api/v2/orders/:orderId
-  -> GET /api/v2/me/tickets
+  -> POST /api/v2/payments/:id/verify                     (HMAC verify, redirect path)
+  -> backend also confirms via POST /api/v2/webhooks/payments/razorpay (webhook path)
+  -> GET /api/v2/orders/:id  (+ /status for polling)
+  -> GET /api/v2/wallet/tickets
 ~~~
 
 Webhook processing remains backend-only. The browser does not call the webhook
@@ -44,9 +45,9 @@ endpoint, verify signatures, or issue tickets.
 2. Collect quantity, attendee details, and optional promo code.
 3. Request a quote and display its expiry.
 4. Create one reservation with a stable idempotency key per user intent.
-5. Create or resume the order without duplicating it on double-click/reload.
+5. Start the payment attempt (there is no client `POST /orders`; orders are written server-side on payment confirmation) without duplicating it on double-click/reload.
 6. Open the provider UI only with backend-provided client-safe options.
-7. Send provider result identifiers to the backend confirmation endpoint.
+7. Send provider result identifiers to `POST /payments/:id/verify`.
 8. Poll/refetch order state only through the API client when confirmation is
    pending; use bounded backoff and stop on terminal state.
 9. On success, load the order/ticket projection and render confirmation.

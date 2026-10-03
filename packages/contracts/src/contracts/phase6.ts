@@ -34,6 +34,57 @@ export const balanceSummaryResponseSchema = z.object({
 });
 export type BalanceSummaryResponse = z.infer<typeof balanceSummaryResponseSchema>;
 
+/**
+ * ─── Partner-scoped order list (Phase 6 finance) ─────────────────────────────
+ *
+ * The ledger says where money went; this says where it came from. A partner's
+ * finance desk needs the *orders* behind their balance, and the only pre-existing
+ * order listing (`GET /orders`) is scoped to the **buyer**, so it can never
+ * serve this. Hence its own DTO rather than a reuse of
+ * `checkoutOrderDtoSchema` — which is deliberately not exported here: that
+ * shape carries the full pricing breakdown, the payment intent id and the
+ * guest's address, none of which a partner's money view needs, and
+ * `order.contact.email`/`phone` are the two PII fields this endpoint has no
+ * business widening.
+ *
+ * PII, deliberately narrowed: the buyer is identified by **name only**. An
+ * organizer running a door does need to know who bought a ticket, but that is a
+ * guest-list question answered by Phase 5's roster/entitlement endpoints —
+ * not a finance one, and putting an email address on a payouts screen is the
+ * kind of thing that ends up in a support screenshot. If a partner screen ever
+ * genuinely needs contact details, that is a new, separately-reviewed
+ * decision, not a field to add to this schema.
+ */
+export const financeOrderDtoSchema = z.object({
+  id: opaqueIdSchema,
+  /** Denormalized for the table's Event column — resolved server-side, never client-side. */
+  eventId: opaqueIdSchema,
+  eventName: z.string(),
+  /** Buyer display name, from the frozen `OrderContact.name`. */
+  buyerName: z.string(),
+  /** Sum of `lines[].quantity` — what "3 tickets" means on the row. */
+  ticketCount: z.number().int().nonnegative(),
+  currency: z.string().length(3),
+  grandTotalPaise: z.number().int().nonnegative(),
+  refundedPaise: z.number().int().nonnegative(),
+  /** The full `OrderStatus` enum, unmapped — the client owns label wording. */
+  status: z.enum([
+    'pending',
+    'awaiting_payment',
+    'paid',
+    'expired',
+    'cancelled',
+    'failed',
+    'refund_requested',
+    'refunded',
+  ]),
+  paidAt: z.iso.datetime().nullable(),
+  createdAt: z.iso.datetime(),
+});
+export type FinanceOrderDto = z.infer<typeof financeOrderDtoSchema>;
+
+export const financeOrderListResponseSchema = paginatedSchema(financeOrderDtoSchema);
+
 // Payout
 export const payoutRequestSchema = z
   .object({
@@ -49,7 +100,7 @@ export const payoutResponseSchema = z.object({
   organizationId: opaqueIdSchema,
   bankAccountId: opaqueIdSchema,
   amountPaise: z.number().int().positive(),
-  status: z.enum(['requested', 'processing', 'paid', 'failed']),
+  status: z.enum(['requested', 'processing', 'paid', 'failed', 'frozen']),
   failureReason: z.string().nullable(),
   processedAt: z.iso.datetime().nullable(),
   createdAt: z.iso.datetime(),
@@ -57,6 +108,30 @@ export const payoutResponseSchema = z.object({
 export type PayoutResponse = z.infer<typeof payoutResponseSchema>;
 
 export const payoutListResponseSchema = paginatedSchema(payoutResponseSchema);
+
+// Admin payout controls (Phase 6 admin) — freeze/release (TIER3, dual
+// control, executed from an approved proposal) + batch run (TIER2).
+export const adminPayoutStatusSchema = z.enum([
+  'requested',
+  'processing',
+  'paid',
+  'failed',
+  'frozen',
+]);
+export type AdminPayoutStatus = z.infer<typeof adminPayoutStatusSchema>;
+
+export const runPayoutBatchSchema = z
+  .object({
+    payoutIds: z.array(opaqueIdSchema).min(1).max(200),
+  })
+  .strict();
+export type RunPayoutBatchInput = z.infer<typeof runPayoutBatchSchema>;
+
+export const payoutBatchResultSchema = z.object({
+  processed: z.array(payoutResponseSchema),
+  skipped: z.array(z.object({ id: opaqueIdSchema, reason: z.string() })),
+});
+export type PayoutBatchResult = z.infer<typeof payoutBatchResultSchema>;
 
 // Bank Account
 export const bankAccountRequestSchema = z
@@ -104,6 +179,9 @@ export const resolveDisputeRequestSchema = z
   .strict();
 export type ResolveDisputeRequest = z.infer<typeof resolveDisputeRequestSchema>;
 
+export const disputeResolutionOutcomeSchema = z.enum(['upheld', 'denied']);
+export type DisputeResolutionOutcome = z.infer<typeof disputeResolutionOutcomeSchema>;
+
 export const disputeResponseSchema = z.object({
   id: opaqueIdSchema,
   organizationId: opaqueIdSchema,
@@ -115,11 +193,78 @@ export const disputeResponseSchema = z.object({
   status: z.enum(['open', 'under_review', 'resolved']),
   resolutionNote: z.string().nullable(),
   resolvedAt: z.iso.datetime().nullable(),
+  resolution: disputeResolutionOutcomeSchema.nullable(),
   createdAt: z.iso.datetime(),
 });
 export type DisputeResponse = z.infer<typeof disputeResponseSchema>;
 
 export const disputeListResponseSchema = paginatedSchema(disputeResponseSchema);
+
+// Admin dispute resolution (Phase 6 admin) — `upheld` writes a correcting
+// ledger entry, `denied` leaves the ledger untouched.
+export const adminDisputeStatusSchema = z.enum(['open', 'under_review', 'resolved']);
+export type AdminDisputeStatus = z.infer<typeof adminDisputeStatusSchema>;
+
+export const adminResolveDisputeSchema = z
+  .object({
+    outcome: disputeResolutionOutcomeSchema,
+    resolutionNote: z.string().min(1).max(2000),
+  })
+  .strict();
+export type AdminResolveDisputeInput = z.infer<typeof adminResolveDisputeSchema>;
+
+// Admin refund (Phase 6 admin) — amount-tiered approval over an order's
+// payment. See `packages/core/src/domain/models/refund-request.ts`.
+export const requestRefundSchema = z
+  .object({
+    orderId: opaqueIdSchema,
+    amountPaise: z.number().int().positive(),
+    reason: z.string().min(1).max(2000),
+  })
+  .strict();
+export type RequestRefundInput = z.infer<typeof requestRefundSchema>;
+
+export const rejectRefundRequestSchema = z
+  .object({
+    reason: z.string().min(1).max(2000),
+  })
+  .strict();
+export type RejectRefundRequestInput = z.infer<typeof rejectRefundRequestSchema>;
+
+export const adminRefundApprovalDtoSchema = z.object({
+  adminId: opaqueIdSchema,
+  approvedAt: z.iso.datetime(),
+});
+
+export const adminRefundRequestStatusSchema = z.enum([
+  'pending',
+  'approved',
+  'rejected',
+  'settled',
+  'failed',
+]);
+export type AdminRefundRequestStatus = z.infer<typeof adminRefundRequestStatusSchema>;
+
+export const adminRefundRequestDtoSchema = z.object({
+  id: opaqueIdSchema,
+  orderId: opaqueIdSchema,
+  organizationId: opaqueIdSchema,
+  amountPaise: z.number().int().positive(),
+  requestedBy: opaqueIdSchema,
+  reason: z.string(),
+  approversRequired: z.number().int().nonnegative(),
+  approvals: z.array(adminRefundApprovalDtoSchema),
+  status: adminRefundRequestStatusSchema,
+  rejectedBy: opaqueIdSchema.nullable(),
+  rejectionReason: z.string().nullable(),
+  providerRefundId: z.string().nullable(),
+  failureReason: z.string().nullable(),
+  createdAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+});
+export type AdminRefundRequestDto = z.infer<typeof adminRefundRequestDtoSchema>;
+
+export const adminRefundRequestListResponseSchema = paginatedSchema(adminRefundRequestDtoSchema);
 
 // Leaderboard
 export const leaderboardPeriodTypeSchema = z.enum(['all_time', 'month', 'week']);

@@ -41,6 +41,7 @@ import type {
   ScanLedgerRepository,
   EventCodeRepository,
   ScannerSessionRepository,
+  ScannerDeviceRepository,
   DoorSaleRepository,
   CoverWalletRepository,
   CoverWalletTxnRepository,
@@ -51,6 +52,16 @@ import type {
   DisputeRepository,
   LeaderboardRepository,
   EmailOtpRepository,
+  GuestProfileRepository,
+  FollowRepository,
+  SocialNotificationRepository,
+  AdminRefundRequestRepository,
+  UserAccountRepository,
+  UserBanRepository,
+  PlatformSettingsRepository,
+  SupportTicketRepository,
+  SafetyReportRepository,
+  NotificationRepository,
 } from '../domain/ports/repositories.js';
 import type { UserDirectoryPort } from '../domain/ports/user-directory.js';
 import type { VerificationProvider } from '../domain/ports/verification.js';
@@ -130,6 +141,8 @@ export interface ServiceDeps {
     scanLedger: ScanLedgerRepository;
     eventCodes: EventCodeRepository;
     scannerSessions: ScannerSessionRepository;
+    /** Phase 5: handsets a venue has authorized to work its door. */
+    scannerDevices: ScannerDeviceRepository;
     doorSales: DoorSaleRepository;
     coverWallets: CoverWalletRepository;
     coverWalletTxns: CoverWalletTxnRepository;
@@ -141,6 +154,23 @@ export interface ServiceDeps {
     disputes: DisputeRepository;
     leaderboard: LeaderboardRepository;
     emailOtp: EmailOtpRepository;
+    guestProfiles: GuestProfileRepository;
+    /** Phase 8: guest → venue/host follow edges. */
+    follows: FollowRepository;
+    /** Phase 8: per-user in-app inbox, written by bus consumers. */
+    socialNotifications: SocialNotificationRepository;
+    refundRequests: AdminRefundRequestRepository;
+    /** Platform support tickets (guest intake + admin desk). */
+    supportTickets: SupportTicketRepository;
+    /** Platform safety reports (guest intake + admin desk). */
+    safetyReports: SafetyReportRepository;
+    /** Platform user directory (admin users view) — read-only. */
+    users: UserAccountRepository;
+    /** Platform user ban state — Phase 7 trust & safety. */
+    userBans: UserBanRepository;
+    platformSettings: PlatformSettingsRepository;
+    /** V2 partner-dashboard inbox (org-tenant recipient). */
+    notifications: NotificationRepository;
   };
 }
 

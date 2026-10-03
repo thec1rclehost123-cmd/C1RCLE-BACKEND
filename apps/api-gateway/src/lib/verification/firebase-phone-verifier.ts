@@ -38,7 +38,8 @@ export class FirebasePhoneVerificationProvider implements VerificationProvider {
       const decoded = await this.auth.verifyIdToken(request.proofToken);
       claimedPhone = decoded.phone_number;
       uid = decoded.uid;
-    } catch {
+    } catch (err) {
+      console.error('[FirebasePhoneVerifier] verifyIdToken failed:', err);
       return { passed: false, provider: this.name, reason: 'invalid_or_expired_token' };
     }
 

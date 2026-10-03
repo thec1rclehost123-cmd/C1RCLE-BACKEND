@@ -39,13 +39,7 @@ export const onboardingProfileSchema = z
   .strict();
 export type OnboardingProfileDto = z.infer<typeof onboardingProfileSchema>;
 
-/**
- * A document's KYC review state — separate from `OnboardingStatus`. `pending`
- * means uploaded but not yet reviewed; `verified`/`rejected` are a KYC
- * reviewer's explicit call, never inferred from the application's own status.
- */
 export const onboardingDocumentStatusSchema = z.enum(['pending', 'verified', 'rejected']);
-export type OnboardingDocumentStatus = z.infer<typeof onboardingDocumentStatusSchema>;
 
 export const onboardingDocumentSchema = z.object({
   label: z.string().min(1).max(60),
@@ -246,6 +240,7 @@ export const approveOnboardingResultSchema = z.object({
       entityType: z.string().max(120).optional(),
     }),
     documents: z.array(onboardingDocumentSchema),
+
     missingDocuments: z.array(z.string()),
     submittedAt: z.iso.datetime().nullable(),
     reviewedBy: opaqueIdSchema.nullable(),
@@ -275,13 +270,26 @@ export type ApproveOnboardingResult = z.infer<typeof approveOnboardingResultSche
 export const adminRoleSchema = z.enum(['super', 'admin', 'ops', 'finance', 'support']);
 
 export const adminActionSchema = z.enum([
+  'EVENT_PAUSE',
+  'EVENT_RESUME',
+  'EVENT_FORCE_PAUSE',
   'ONBOARDING_APPROVE',
   'VENUE_SUSPEND',
+  'VENUE_REINSTATE',
+  'ORGANIZATION_SUSPEND',
+  'ORGANIZATION_REINSTATE',
   'FINANCIAL_REFUND',
   'PAYOUT_BATCH_RUN',
+  'DISPUTE_RESOLVE',
+  'USER_BAN',
+  'USER_UNBAN',
   'ADMIN_PROVISION',
+  'ADMIN_ROLE_UPDATE',
   'COMMISSION_ADJUST',
   'PAYOUT_FREEZE',
+  'PAYOUT_RELEASE',
+  'PROMOTER_SUSPEND',
+  'PROMOTER_REINSTATE',
 ]);
 
 export const proposalStatusSchema = z.enum(['pending', 'approved', 'rejected', 'cancelled']);
@@ -333,13 +341,55 @@ export type ResolveProposalRequest = z.infer<typeof resolveProposalSchema>;
 export const adminAuditRecordDtoSchema = z.object({
   id: opaqueIdSchema,
   adminId: opaqueIdSchema,
-  adminRole: z.string(),
+  // Absent on records written before adminRole existed on this trail --
+  // never backfilled, since a role change since then would misrepresent
+  // what the actor's role actually was at the time of the action.
+  adminRole: z.string().nullable(),
   action: z.string(),
   targetType: z.string(),
   targetId: opaqueIdSchema,
+  /** Live-resolved display name for the target; `null` when unresolvable. */
+  targetName: z.string().nullable(),
   before: z.record(z.string(), z.unknown()).nullable(),
   after: z.record(z.string(), z.unknown()).nullable(),
   reason: z.string().nullable(),
   occurredAt: z.number().int().nonnegative(),
 });
 export type AdminAuditRecordDto = z.infer<typeof adminAuditRecordDtoSchema>;
+
+/* ─── Admin alerts dashboard ─────────────────────────────────────────────── */
+
+/** Which attention-queue a count refers to. Grows as admin desks ship
+ * (Phase 7: refunds, support SLA). */
+export const adminAlertCategoryKeySchema = z.enum(['pending_proposals', 'pending_onboarding']);
+export type AdminAlertCategoryKey = z.infer<typeof adminAlertCategoryKeySchema>;
+
+/** Visual priority hint for the bell panel, reused by the frontend as-is. */
+export const adminAlertSeveritySchema = z.enum(['normal', 'urgent']);
+
+export const adminAlertCategorySchema = z.object({
+  key: adminAlertCategoryKeySchema,
+  label: z.string(),
+  count: z.number().int().nonnegative(),
+  severity: adminAlertSeveritySchema,
+});
+export type AdminAlertCategory = z.infer<typeof adminAlertCategorySchema>;
+
+/** Snapshot of items needing admin attention. */
+export const adminAlertsResponseSchema = z.object({
+  generatedAt: z.iso.datetime(),
+  categories: z.array(adminAlertCategorySchema),
+});
+export type AdminAlertsResponse = z.infer<typeof adminAlertsResponseSchema>;
+
+export const adminLookupResultItemSchema = z.object({
+  type: z.enum(['venue', 'event', 'organization', 'user']),
+  id: opaqueIdSchema,
+  label: z.string(),
+});
+export type AdminLookupResultItem = z.infer<typeof adminLookupResultItemSchema>;
+
+export const adminLookupResponseSchema = z.object({
+  items: z.array(adminLookupResultItemSchema),
+});
+export type AdminLookupResponse = z.infer<typeof adminLookupResponseSchema>;

@@ -17,7 +17,11 @@ export {
   VenueCalendarService,
   VenueSlotRequestService,
 } from './venues/venue-service.js';
-export type { CreateVenueCommand, UpdateVenueCommand } from './venues/venue-service.js';
+export type {
+  CreateVenueCommand,
+  UpdateVenueCommand,
+  CreateVenueBlockCommand,
+} from './venues/venue-service.js';
 export { EventService } from './events/event-service.js';
 export type { CreateEventCommand, UpdateEventCommand } from './events/event-service.js';
 export { EventCatalogService } from './event-catalog/event-catalog-service.js';
@@ -29,14 +33,28 @@ export type {
   CommissionTerms,
 } from './event-catalog/event-catalog-service.js';
 export { PromoterConnectionService } from './promoters/promoter-connection-service.js';
-export type { RequestConnectionCommand } from './promoters/promoter-connection-service.js';
+export type {
+  PromoterConnectionWithNames,
+  RequestConnectionCommand,
+} from './promoters/promoter-connection-service.js';
 export { ReferralLinkService } from './promoters/referral-link-service.js';
 export type { CreateReferralLinkCommand } from './promoters/referral-link-service.js';
 export { PartnershipService } from './partnerships/partnership-service.js';
-export type { RequestPartnershipCommand } from './partnerships/partnership-service.js';
+export type {
+  PartnershipWithNames,
+  RequestPartnershipCommand,
+} from './partnerships/partnership-service.js';
+export { PartnerDiscoveryService } from './partnerships/partner-discovery-service.js';
+export type {
+  DiscoverPartnerKind,
+  DiscoveredPartner,
+  DiscoverPartnersPage,
+  DiscoverPartnersQuery,
+} from './partnerships/partner-discovery-service.js';
 export { PublicService } from './public/public-service.js';
 export { AdminAuthorityService } from './admin/admin-authority-service.js';
 export type { ProposeCommand, AuditInput } from './admin/admin-authority-service.js';
+export { AdminOperationsService } from './admin/admin-ops-service.js';
 export { OnboardingService } from './onboarding/onboarding-service.js';
 export type {
   StartApplicationCommand,
@@ -52,24 +70,59 @@ export type { EventHandler } from './events/event-bus.js';
 export { createAuditConsumer, createProjectionConsumer } from './events/audit-consumers.js';
 
 // Phase 4: Checkout, Inventory, Payments
-export { CheckoutService } from './checkout/checkout-service.js';
+export { CheckoutService, rsvpOrderId } from './checkout/checkout-service.js';
 export { InventoryService } from './inventory/inventory-service.js';
 export { PricingService } from './pricing/pricing-service.js';
 export { OrderService } from './orders/order-service.js';
+export type { FinanceOrderRow } from './orders/order-service.js';
 export { TicketService } from './tickets/ticket-service.js';
 
 // Phase 5: Scanner, Door, Cover Wallet
 export type {
   ScannerService,
   ScannerServiceDeps,
-  ScanTicketInput,
-  ScanMagicTicketInput,
+  BindDeviceCommand,
+  HeartbeatCommand,
+  ConfirmCoupleCommand,
+  StaffDenyCommand,
+  CreateEventCodeCommand,
+  OpenScannerSessionCommand,
+  OpenScannerSessionResult,
+  ScanInput,
+  ResolveInput,
   ScanResult,
-  ResolveTicketInput,
-  ResolveMagicTicketInput,
   TicketResolution,
-} from './scanner/scanner-service.js';
-export { createScannerService } from './scanner/scanner-service.js';
+  TicketSummary,
+  OfflineManifest,
+  OfflineManifestEntry,
+  OfflineSyncInput,
+  OfflineSyncResult,
+} from './door/scanner-service.js';
+export { createScannerService } from './door/scanner-service.js';
+export type {
+  DoorOpsService,
+  DoorOpsServiceDeps,
+  DoorEventSummary,
+  DoorTierSummary,
+  DoorGuest,
+  DoorGuestSource,
+  StartShiftResult,
+  ResolveWalletCommand,
+  ChargeWalletCommand,
+  WalletChargeResult,
+  AttendanceReport,
+  AttendanceReportGuest,
+  AttendanceReportTierBreakdown,
+} from './door/door-ops-service.js';
+export { createDoorOpsService, resolveDoorDate } from './door/door-ops-service.js';
+export type {
+  DoorTicketSaleService,
+  DoorTicketSaleServiceDeps,
+  DoorTicketSaleCommand,
+  DoorTicketSaleResult,
+  DoorPaymentMode,
+} from './door/door-ticket-sale-service.js';
+export { createDoorTicketSaleService } from './door/door-ticket-sale-service.js';
 export type {
   DoorService,
   DoorServiceDeps,
@@ -114,6 +167,7 @@ export type {
   RequestPayoutInput,
 } from './finance/payout-service.js';
 export { createPayoutService } from './finance/payout-service.js';
+export { AdminPayoutService } from './finance/admin-payout-service.js';
 export type {
   BankAccountService,
   BankAccountServiceDeps,
@@ -126,7 +180,33 @@ export type {
   RaiseDisputeInput,
 } from './finance/dispute-service.js';
 export { createDisputeService } from './finance/dispute-service.js';
+export { AdminDisputeService } from './finance/admin-dispute-service.js';
+export type { RequestRefundCommand } from './finance/refund-service.js';
+export { RefundService } from './finance/refund-service.js';
+export { SupportService } from './support/support-service.js';
+export type { SubmitTicketCommand } from './support/support-service.js';
+export { AdminSupportService } from './support/admin-support-service.js';
+export type { AssignAgentInput, SupportLinkInput } from './support/admin-support-service.js';
 export type { LeaderboardService, LeaderboardServiceDeps } from './finance/leaderboard-service.js';
 export { createLeaderboardService } from './finance/leaderboard-service.js';
 export type { EmailOtpService, EmailOtpServiceDeps } from './auth/email-otp-service.js';
 export { createEmailOtpService } from './auth/email-otp-service.js';
+export type {
+  GuestProfileService,
+  GuestProfileServiceDeps,
+} from './guest-profile/guest-profile-service.js';
+export { createGuestProfileService } from './guest-profile/guest-profile-service.js';
+// Phase 8: follow graph + notifications (publisher service + bus subscribers)
+export { SocialService } from './social/social-service.js';
+export type { FollowStatus } from './social/social-service.js';
+export { createFollowerFanOutConsumer } from './social/notification-consumers.js';
+export type { FollowerFanOutDeps } from './social/notification-consumers.js';
+
+// V2 partner-dashboard inbox (org-tenant recipient)
+export { NotificationService } from './notifications/notification-service.js';
+export type {
+  RecordNotificationInput,
+  NotificationListResult,
+  NotificationDecision,
+} from './notifications/notification-service.js';
+export { createNotificationConsumer } from './notifications/notification-consumer.js';

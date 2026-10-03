@@ -1,19 +1,19 @@
 # CI/CD
 
-Three workflows, one required status check, and a deploy that Render triggers
-but GitHub verifies.
+Three workflows, one required status check, and a deploy that CI gates,
+triggers, and verifies.
 
 ```
-push / PR ──► ci.yml ──────────► CI OK ──► verify-deploy (main only)
-              security.yml ────► Security OK
-   cron ────► maintenance.yml
+push / PR ──► ci.yml ──────────► CI OK ──┐
+              security.yml ────► Security OK ─┼─► gated deploy (staging) ──► Render ──► smoke
+   cron ────► maintenance.yml                ┘
 ```
 
 ---
 
 ## 1. The workflows
 
-### `ci.yml` — every push and pull request to `main`
+### `ci.yml` — every push and pull request to `main` and `staging`
 
 One pipeline, fanned out. All gates run in parallel off a shared composite
 setup (`.github/actions/setup`), then `ci-ok` aggregates them.
@@ -23,12 +23,13 @@ setup (`.github/actions/setup`), then `ci-ok` aggregates them.
 | `changes` | Which paths moved, so expensive jobs can skip |
 | `static` | Format, lint, typecheck, architecture boundaries, and a no-focused-tests guard — **one runner, one install**, with `if: always()` on each step so a single run reports every failure at once |
 | `test` | `pnpm build` + full suite + coverage ratchet + sticky PR comment. The build step here is **the only place a `tsc` break in `@c1rcle/core` or `api-gateway` is caught**, because the Docker image compiles neither (see §4) |
+| `scenario` | `pnpm test:scenarios` — scenario suite, **merge only** (pushes to `main`/`staging`); `skipped` on PRs |
 | `docker` | Builds the real `Dockerfile`, Trivy-scans the image, boots the container, and asserts it **refuses** to boot when misconfigured |
 | `contract-parity` | Cross-repo schema agreement with `C1RCLE-FRONTEND` (opt-in, see §3) |
 | `actionlint` | Lints the workflows themselves, shellcheck included |
 | `commit-lint` | Conventional-commit check on the PR commits **and the PR title** — the title is what a squash merge writes to `main` |
 | `ci-ok` | **The one check to require in branch protection** |
-| `verify-deploy` | `main` only — waits for Render, smoke-tests production, rolls back on failure |
+| `deploy` | `staging` only — after `ci-ok` **and** `Security OK`, triggers the Render deploy, waits for the commit to go live, smoke-tests it, rolls back / files an incident on failure |
 
 ### Why so few jobs
 
@@ -45,7 +46,7 @@ is a backstop, not the primary loop. Three consolidations follow from that:
   — three checkouts and two identical installs for scanners that finish in a
   couple of minutes.
 
-That is 13 jobs down to 9, and roughly half the runner-minutes per pull request.
+That took the pipeline from 13 jobs to 9 (a merge-only `scenario` job was added later), and roughly half the runner-minutes per pull request.
 `if: always()` on each step preserves the one thing the split bought: a single
 run still reports *everything* that is broken, rather than making you fix
 failures one round trip at a time.
@@ -55,16 +56,21 @@ deliberate: path filters and opt-in gates legitimately skip, and requiring
 `success` from all of them would block every docs-only pull request. Because it
 aggregates, **adding a new gate never means editing branch-protection settings**.
 
-Concurrency cancels superseded pull-request runs but never cancels a `main`
-run — the tail of a `main` run is verifying a production deploy that is already
-in flight.
+Concurrency cancels superseded pull-request runs but never cancels a pushed
+run on `main`/`staging` — the tail of that run gates, triggers and verifies the
+production deploy, so cancelling it would silently skip a deployment.
 
-### `security.yml` — pull requests, `main`, and Mondays 06:15 UTC
+### `security.yml` — PRs into `main` and `staging`, pushes, and Mondays 06:15 UTC
 
 Four jobs: CodeQL (`javascript-typescript` + `actions`, `build-mode: none`),
 dependency review (fails on `high`, denies copyleft licences), a combined `scan`
 job (`pnpm audit --audit-level=high`, TruffleHog, Trivy config + filesystem), and
 OSSF Scorecard. Aggregated by `security-ok`.
+
+PR-gate scans (CodeQL, dependency review, `scan`) run on pull requests into both
+`main` and `staging` (feature → staging → main), so `Security OK` is reported on
+every PR; pushes to `staging`/`main` skip them (the merge already ran them) and
+Scorecard runs only on the default branch.
 
 Split from `ci.yml` because it runs on a different cadence and needs
 `security-events: write`, which the fast gates must not inherit.
@@ -88,14 +94,18 @@ changed.
 
 ## 2. Deployment model
 
-Render auto-deploys on push to `main`, out of band from GitHub Actions. CI does
-not trigger the deploy; it **verifies** it.
+Deploys are gated in CI. Render does **not** auto-deploy (its `autoDeploy` is
+off). After every CI gate passes (`ci-ok`) **and** the Security pipeline
+(`Security OK`) passes for the same commit, the `deploy` job triggers a Render
+deploy through the Render API and then verifies it.
 
 ```
-push main
-   ├─► Render builds the Dockerfile and swaps traffic   (out of band)
-   └─► ci.yml gates ──► ci-ok ──► verify-deploy
+push staging
+   ├─► ci.yml gates ──► ci-ok
+   ├─► security.yml ──────► Security OK
+   └─► deploy job (needs: ci-ok, waits for Security OK)
                                     │
+                                    ├─ POST /v1/services/{id}/deploys   trigger Render
                                     ├─ wait-for-deploy.mjs  poll /api/v2/internal/version
                                     │                       until commit == GITHUB_SHA
                                     ├─ smoke.mjs            6 black-box assertions
@@ -110,9 +120,10 @@ from the old one. If the live build predates that field it reports `null`, and
 `wait-for-deploy.mjs` warns and proceeds rather than blocking on a feature it
 cannot detect.
 
-**Rollback** needs `RENDER_API_KEY` and `RENDER_SERVICE_ID`. Without them the
-job logs a notice and skips the rollback step — it still fails the run and files
-the incident issue.
+**Trigger and rollback** need `RENDER_API_KEY` and `RENDER_STAGING_SERVICE_ID`.
+The deploy cannot start without them — the job fails closed rather than
+skipping the gate. If rollback is impossible the run still fails and files the
+incident issue.
 
 ### Smoke assertions
 
@@ -140,7 +151,10 @@ CI harness both install from a context with no `.git` (see `.dockerignore`),
 where husky exits non-zero. Hook installation is a developer convenience, never
 a build dependency.
 
-### Branch protection on `main`
+### Branch protection on `main` and `staging`
+
+Both branches must require the checks below; `Security OK` now reports on PRs
+into `staging`, so it can be required there.
 
 Require exactly two checks:
 
@@ -163,19 +177,22 @@ them means every new gate needs a settings change.
 
 | Secret | Needed? | Effect |
 | --- | --- | --- |
-| `RENDER_API_KEY` | optional | Enables automatic rollback |
-| `RENDER_SERVICE_ID` | optional | Enables automatic rollback |
+| `RENDER_API_KEY` | **required** | Lets CI trigger the gated deploy and roll back a failed one |
+| `RENDER_STAGING_SERVICE_ID` | **required** | Render service id for `staging` deploys (`circle-v2-backend`) |
+| `RENDER_SERVICE_ID` | future | Render service id for `main`, once a `main`-tracking service exists |
 | `FRONTEND_REPO_TOKEN` | optional | Only if `C1RCLE-FRONTEND` is private; falls back to `GITHUB_TOKEN` |
 
-Everything else runs on the built-in `GITHUB_TOKEN`. There are no deploy
-credentials in CI, because CI does not deploy.
+Everything else runs on the built-in `GITHUB_TOKEN`. CI deploys, so the Render
+credentials above are the only secrets beyond it.
 
-### The `production` environment
+### Human approval on deploys
 
-`verify-deploy` declares `environment: production`. GitHub creates it on first
-use. Add required reviewers there if you want a human gate before production is
-verified — note this gates the *verification*, not the deploy, which Render has
-already performed.
+The deploy job deliberately has **no `environment:` block** — the 09-2026
+autopsy showed the runner mis-evaluates job-level `if:` + `environment:` combos
+on push, and the gate rests on CI OK + Security OK + branch protection instead.
+If you want a human gate on `staging` deploys, the clean way is a required
+reviewer on the merge (branch protection) — the deploy runs on the merge push,
+so the approval happens before this workflow is even created.
 
 ### Contract parity
 
@@ -290,3 +307,8 @@ docker run --rm -v "$PWD:/src:ro" node:24-slim bash -c '
   tar cf - --exclude=./node_modules --exclude=./.git . | (cd /w && tar xf -) &&
   cd /w && pnpm install --frozen-lockfile && pnpm check'
 ```
+
+### Renovate
+
+`renovate.json` sets `baseBranches: ["staging"]`: dependency PRs target the
+integration branch (feature → staging → main) and are gated by `CI OK` + `Security OK`.

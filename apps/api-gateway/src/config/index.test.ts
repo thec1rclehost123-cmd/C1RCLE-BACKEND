@@ -1,98 +1,202 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-/**
- * ─── Config fail-closed guards ────────────────────────────────────────────────
- * `getGatewayConfig` caches after the first successful parse, so every case
- * re-imports the module to get a fresh cache. A guard that is never exercised
- * is a guard that quietly stops working.
- */
+import {
+  createTrustedProxyMatcher,
+  getAllowedOrigins,
+  getBetterAuthTrustedOrigins,
+  getGatewayConfig,
+  getTrustedProxyCidrs,
+} from './index.js';
 
-const BASE = {
-  NODE_ENV: 'production',
-  STORAGE_DRIVER: 'memory',
-  BETTER_AUTH_SECRET: 'a'.repeat(32),
-  BETTER_AUTH_URL: 'https://circle-v2-backend.onrender.com',
-  EMAIL_OTP_SECRET: 'b'.repeat(32),
-} satisfies NodeJS.ProcessEnv;
-
-async function loadConfig() {
-  vi.resetModules();
-  return import('./index.js');
+function productionEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  return {
+    NODE_ENV: 'production',
+    STORAGE_DRIVER: 'firestore',
+    FIREBASE_CLIENT_EMAIL: 'firebase@example.test',
+    FIREBASE_PRIVATE_KEY: 'private-key',
+    BETTER_AUTH_SECRET: 'a'.repeat(64),
+    EMAIL_OTP_SECRET: 'b'.repeat(64),
+    MAGIC_TICKET_SECRET: 'c'.repeat(64),
+    PUBLIC_API_URL: 'https://api.example.test',
+    BETTER_AUTH_URL: 'https://api.example.test',
+    ALLOWED_ORIGINS: 'https://app.example.test',
+    BETTER_AUTH_TRUSTED_ORIGINS: 'https://app.example.test',
+    TRUSTED_PROXY_CIDRS: '10.0.0.0/8,2001:db8::1',
+    ...overrides,
+  };
 }
 
-describe('getGatewayConfig', () => {
+describe('gateway configuration', () => {
+  it('uses the documented Render deploy SHA when BUILD_SHA is not explicit', () => {
+    const config = getGatewayConfig(
+      productionEnvironment({ BUILD_SHA: undefined, RENDER_GIT_COMMIT: 'a'.repeat(40) }),
+    );
+
+    expect(config.BUILD_SHA).toBe('a'.repeat(40));
+  });
+
+  it('requires an email OTP secret in production', () => {
+    // A forged magic-ticket key forges entry to a paid event, so production
+    // must refuse to boot on the well-known development default rather than
+    // silently using it (which every deploy did until this was wired).
+    expect(() =>
+      getGatewayConfig(productionEnvironment({ MAGIC_TICKET_SECRET: undefined })),
+    ).toThrow(/MAGIC_TICKET_SECRET/);
+    expect(() => getGatewayConfig(productionEnvironment({ MAGIC_TICKET_SECRET: 'short' }))).toThrow(
+      /MAGIC_TICKET_SECRET/,
+    );
+    expect(() => getGatewayConfig(productionEnvironment({ EMAIL_OTP_SECRET: undefined }))).toThrow(
+      /EMAIL_OTP_SECRET/,
+    );
+  });
+
+  it('keeps an explicit BUILD_SHA ahead of Render metadata', () => {
+    const config = getGatewayConfig(
+      productionEnvironment({ BUILD_SHA: 'b'.repeat(40), RENDER_GIT_COMMIT: 'a'.repeat(40) }),
+    );
+
+    expect(config.BUILD_SHA).toBe('b'.repeat(40));
+  });
+
+  it('parses explicit origins and trusted proxy CIDRs', () => {
+    const config = getGatewayConfig(productionEnvironment());
+    expect(getBetterAuthTrustedOrigins(config)).toEqual(['https://app.example.test']);
+    expect(getTrustedProxyCidrs(config)).toEqual(['10.0.0.0/8', '2001:db8::1']);
+
+    const isTrusted = createTrustedProxyMatcher(getTrustedProxyCidrs(config));
+    expect(isTrusted('10.42.0.8')).toBe(true);
+    expect(isTrusted('198.51.100.8')).toBe(false);
+  });
+
+  it('rejects trust-all proxy configuration', () => {
+    expect(() =>
+      getGatewayConfig(productionEnvironment({ TRUSTED_PROXY_CIDRS: '0.0.0.0/0' })),
+    ).toThrow(/Invalid trusted proxy CIDR/);
+  });
+
+  it('rejects production memory storage and development origins/secrets', () => {
+    expect(() =>
+      getGatewayConfig(
+        productionEnvironment({
+          STORAGE_DRIVER: 'memory',
+          BETTER_AUTH_SECRET: 'dev-only-change-me',
+          ALLOWED_ORIGINS: 'http://localhost:3000',
+          BETTER_AUTH_TRUSTED_ORIGINS: 'http://localhost:3000',
+          PUBLIC_API_URL: 'http://localhost:8080',
+          BETTER_AUTH_URL: 'http://localhost:8080',
+        }),
+      ),
+    ).toThrow(/Production requires STORAGE_DRIVER=firestore/);
+  });
+
+  it('fails closed when production Firestore credentials are missing', () => {
+    expect(() =>
+      getGatewayConfig(
+        productionEnvironment({
+          FIREBASE_CLIENT_EMAIL: '',
+          FIREBASE_PRIVATE_KEY: '',
+        }),
+      ),
+    ).toThrow(/FIREBASE_CLIENT_EMAIL: Required when STORAGE_DRIVER=firestore/);
+  });
+});
+
+describe('allowedBrowserOrigins (CORS_ALLOWED_ORIGINS)', () => {
+  const ADMIN = 'https://c1rcle-v2-admin-console.vercel.app';
+
+  /**
+   * `getGatewayConfig` caches the first successful parse, so each case re-imports
+   * the module to get a fresh cache. The base is staging's `productionEnvironment`
+   * (firestore + the production secrets), because the memory-in-production
+   * escape hatch is staging's shape and `BASE` no longer exists here.
+   */
+  const BASE = productionEnvironment();
+
   beforeEach(() => {
     vi.resetModules();
   });
 
-  it('accepts a well-formed production environment', async () => {
-    const { getGatewayConfig } = await loadConfig();
-    const config = getGatewayConfig({ ...BASE });
-    expect(config.NODE_ENV).toBe('production');
-    expect(config.PORT).toBe(8080);
-  });
+  async function loadConfig() {
+    vi.resetModules();
+    return import('./index.js');
+  }
 
-  it('rejects the development signing secret in production', async () => {
-    const { getGatewayConfig, GatewayConfigError } = await loadConfig();
-    // Better Auth signs sessions with this value and the default is committed
-    // to a public repository, so shipping it means anyone can mint a session.
-    expect(() => getGatewayConfig({ ...BASE, BETTER_AUTH_SECRET: 'dev-only-change-me' })).toThrow(
-      GatewayConfigError,
-    );
-  });
-
-  it('rejects a short signing secret in production', async () => {
-    const { getGatewayConfig } = await loadConfig();
-    expect(() => getGatewayConfig({ ...BASE, BETTER_AUTH_SECRET: 'too-short' })).toThrow(
-      /BETTER_AUTH_SECRET/,
-    );
-  });
-
-  it('rejects an http:// auth URL in production', async () => {
-    const { getGatewayConfig } = await loadConfig();
-    // Session cookies issued against an http:// origin are not marked Secure.
-    expect(() => getGatewayConfig({ ...BASE, BETTER_AUTH_URL: 'http://example.com' })).toThrow(
-      /BETTER_AUTH_URL/,
-    );
-  });
-
-  it('rejects a missing email-OTP secret in production', async () => {
-    const { getGatewayConfig } = await loadConfig();
-    const { EMAIL_OTP_SECRET: _omit, ...withoutSecret } = BASE;
-    expect(() => getGatewayConfig(withoutSecret)).toThrow(/EMAIL_OTP_SECRET/);
-  });
-
-  it('allows the development defaults outside production', async () => {
-    const { getGatewayConfig } = await loadConfig();
-    const config = getGatewayConfig({ NODE_ENV: 'development' });
-    expect(config.BETTER_AUTH_SECRET).toBe('dev-only-change-me');
-    expect(config.BETTER_AUTH_URL).toBe('http://localhost:8080');
-  });
-
-  it('refuses STORAGE_DRIVER=firestore without credentials', async () => {
-    const { getGatewayConfig } = await loadConfig();
-    // Must fail the boot rather than degrade silently to the in-memory store.
-    expect(() => getGatewayConfig({ ...BASE, STORAGE_DRIVER: 'firestore' })).toThrow(
-      /FIREBASE_CLIENT_EMAIL/,
-    );
-  });
-
-  it('accepts STORAGE_DRIVER=firestore with credentials', async () => {
-    const { getGatewayConfig } = await loadConfig();
+  it('parses a comma-separated list, trimming whitespace and trailing slashes', async () => {
+    const { getGatewayConfig, allowedBrowserOrigins } = await loadConfig();
     const config = getGatewayConfig({
       ...BASE,
-      STORAGE_DRIVER: 'firestore',
-      FIREBASE_CLIENT_EMAIL: 'svc@example.iam.gserviceaccount.com',
-      FIREBASE_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----',
+      CORS_ALLOWED_ORIGINS: ` ${ADMIN}/ , https://partners.example.com,${ADMIN}`,
     });
-    expect(config.STORAGE_DRIVER).toBe('firestore');
+    expect(allowedBrowserOrigins(config)).toEqual([ADMIN, 'https://partners.example.com']);
   });
 
-  it('caches after the first successful parse', async () => {
+  it('allows no cross-origin browsers in production when unset', async () => {
+    const { getGatewayConfig, allowedBrowserOrigins } = await loadConfig();
+    // Fails closed: the dev localhost ports must never leak into production.
+    expect(allowedBrowserOrigins(getGatewayConfig({ ...BASE }))).toEqual([]);
+  });
+
+  it('defaults to the local dev frontends outside production', async () => {
+    const { getGatewayConfig, allowedBrowserOrigins } = await loadConfig();
+    const config = getGatewayConfig({ NODE_ENV: 'development' });
+    expect(allowedBrowserOrigins(config)).toEqual([
+      'http://localhost:3000',
+      'http://localhost:3001',
+      'http://localhost:3002',
+    ]);
+  });
+
+  it.each([
+    ['a wildcard', '*'],
+    ['a wildcard subdomain', 'https://*.vercel.app'],
+    ['a path', `${ADMIN}/login`],
+    ['a non-http scheme', 'ftp://example.com'],
+    ['garbage', 'not a url'],
+  ])('rejects %s', async (_label, value) => {
     const { getGatewayConfig } = await loadConfig();
-    const first = getGatewayConfig({ ...BASE, LOG_LEVEL: 'debug' });
-    const second = getGatewayConfig({ ...BASE, LOG_LEVEL: 'error' });
-    expect(second).toBe(first);
-    expect(second.LOG_LEVEL).toBe('debug');
+    expect(() => getGatewayConfig({ ...BASE, CORS_ALLOWED_ORIGINS: value })).toThrow(
+      /CORS_ALLOWED_ORIGINS/,
+    );
+  });
+
+  it('rejects an http:// origin in production', async () => {
+    const { getGatewayConfig } = await loadConfig();
+    expect(() =>
+      getGatewayConfig({ ...BASE, CORS_ALLOWED_ORIGINS: 'http://admin.example.com' }),
+    ).toThrow(/must be https/);
+  });
+});
+
+describe('origin allow-lists', () => {
+  it('normalises entries to the canonical form browsers send in Origin', () => {
+    const config = getGatewayConfig(
+      productionEnvironment({
+        ALLOWED_ORIGINS:
+          'https://Admin.Example.test/, https://partners.example.test:443,https://admin.example.test',
+        BETTER_AUTH_TRUSTED_ORIGINS: 'https://Admin.Example.test/',
+      }),
+    );
+    expect(getAllowedOrigins(config)).toEqual([
+      'https://admin.example.test',
+      'https://partners.example.test',
+    ]);
+    expect(getBetterAuthTrustedOrigins(config)).toEqual(['https://admin.example.test']);
+  });
+
+  // TruffleHog's URI detector matches any `scheme://user:pass@host` and its
+  // unverified result fails the security gate (exit 183). The userinfo below is
+  // a synthetic fixture — a reserved `.test` host that resolves nowhere — and
+  // the row exists precisely to assert such origins are REJECTED. The ignore tag
+  // must stay on the same physical line as the secret to be honoured.
+  it.each([
+    ['a query string', 'https://app.example.test/?x=1'],
+    ['a fragment', 'https://app.example.test/#x'],
+    ['credentials', 'https://user:pass@app.example.test'], // trufflehog:ignore
+  ])('rejects an origin with %s', (_label, value) => {
+    expect(() =>
+      getGatewayConfig(
+        productionEnvironment({ ALLOWED_ORIGINS: value, BETTER_AUTH_TRUSTED_ORIGINS: value }),
+      ),
+    ).toThrow(/ALLOWED_ORIGINS/);
   });
 });

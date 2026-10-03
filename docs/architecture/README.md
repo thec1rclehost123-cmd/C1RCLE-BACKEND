@@ -99,7 +99,7 @@ ever reads `process.env`; no frontend code ever runs a query.**
 | `src/plugins/error-handler.ts` | Maps `DomainError`→`(status,code,message)` (403 forbidden, 404 not_found for all *-not-found, 409 conflict for VersionConflict + StateTransition, 400 validation for InvalidOperation, else 500). **5xx internals never leak** (`body.message = 'Internal server error'` after logging). Everything not a domain error falls back to Fastify status + code map. Note: route files also have their own local error mapper (`mapDomainError` in `events.ts`, reused by `organizations.ts`/`venues.ts`) that runs *before* this one for caught errors — keep both in sync when adding a new domain error code (a past gap here caused a silently-swallowed 500, see `docs/roadmap/phase-00-foundation.md`). |
 | `src/plugins/auth.ts` | B10 — builds the Better Auth instance (Firestore-backed, `STORAGE_DRIVER=firestore` only) and a global `onRequest` hook that resolves the session + real organization membership into `request.user`/`request.authContext`, which `lib/v2-services.ts`'s `buildActorContext` reads. No-ops on the memory driver. |
 | `src/routes/v2/auth/index.ts` | B10 — `signup/login/refresh/logout/session` routes. Calls `auth.api.*` directly (not proxied through Better Auth's own HTTP handler) so the response body is exactly the frontend contract, never Better Auth's native shape. |
-| `src/routes/v2/route-manifest.ts` | The single registration authority (T14 pattern). Registers `internalRoutes`, `auth/*` (B10), and `partner/{organizations,venues,events}` (B11) directly under `/api/v2` — no `/partner` path prefix (see `docs/architecture/decisions.md` "Open questions" #2, now resolved). **Still-BLOCKED slices (orders/payments/…) exist nowhere in this file** — they are absent, so they 404 by absence, never a 501 stub. |
+| `src/routes/v2/route-manifest.ts` | The single registration authority (T14 pattern). Registers `internal`, `auth/*` (+ OTP), `public`, and every partner/orders/checkout/tickets/wallet/door/finance/admin/social/notifications/support route group directly under `/api/v2`. Anything not registered is absent and 404s by absence, never a 501 stub (D-006) — no `501` route remains in `routes/v2/**`. |
 | `src/routes/v2/partner/{organizations,venues,events}.ts` | B11 — thin routes per T16: validate → actor → one service call → serialize. Full current route list and what's deliberately not registered (invitations, venue menu/availability) are in `docs/roadmap/phase-00-foundation.md` §C, not repeated here. |
 | `src/routes/v2/internal/index.ts` | `/health`, `/version`, `/readiness` (no auth). Return the V2 success shape. Known: version hard-coded in dev (no `process.env` in routes — the guardrail would flag it). |
 | `src/app.test.ts` | Boot smoke tests: health 200, x-request-id echo, **blocked path → 404 with V2 envelope**, version string. These encode the "404 never 501" rule. |
@@ -213,13 +213,12 @@ localhost:3001, log in → create org → venue → event on the new backend.
 See `docs/README.md` for the full documentation map. Most relevant from here:
 
 - `task.md` (repo root) — the original B-series execution plan (with live T↔B hand-in-hand map). Historical record of Phase 0's design; current status lives in `docs/roadmap/`, not here.
-- `docs/architecture/decisions.md` — decision log (D-001 … D-008 + open questions).
+- `docs/architecture/decisions.md` — decision log (D-001 … D-030).
 - `docs/roadmap/ROADMAP.md` — the full-platform phased roadmap and the source of truth for **what's implemented vs remaining** (Phase 0 = this slice, done; Phases 1–8 = everything beyond it). Read this before starting any work not covered by `task.md`'s B-series.
 - `docs/reference/` — **self-contained copy** of the authoritative V2
   docs from the frozen `thec1rcle` repo (`docs/V2-Partners_Frontend/*`):
   - `task.md` — T-series (gateway build authority)
-  - `route-manifest.ts` + `API_V2_ROUTE_MANIFEST.md` — route surface + policies
-  - `API_ROUTE_CATALOG.generated.md` — generated route catalog
+  - `route-manifest.ts` — planning route surface + policies (live registration: `apps/api-gateway/src/routes/v2/route-manifest.ts`)
   - `MASTER_LAUNCH_IMPLEMENTATION_PLAN.md`, `Dream Architecture Implementation Plan.md`,
     `chatgpt_response.md` — destination architecture + rationale
   - `frontend-api-map.md` — the current `C1RCLE-FRONTEND` route/contract mapping

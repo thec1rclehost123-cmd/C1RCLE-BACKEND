@@ -60,10 +60,46 @@ export class ResendEmailSender implements EmailSender {
     }
   }
 
+  async sendPasswordResetEmail(recipient: string, resetUrl: string): Promise<void> {
+    if (!this.apiKey) {
+      if (this.nodeEnv === 'production') {
+        throw new Error('Email provider not configured');
+      }
+      this.logger.info('dev_email_password_reset', { recipient, resetUrl });
+      return;
+    }
+
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: 'noreply@thec1rcle.com',
+        to: recipient,
+        subject: 'Reset your password',
+        html: `
+                <div style="background-color:#000;color:#fff;padding:40px;font-family:sans-serif;text-align:center;">
+                    <h1 style="color:#FF5A00;text-transform:uppercase;letter-spacing:5px;">THE C1RCLE</h1>
+                    <p style="text-transform:uppercase;letter-spacing:2px;color:#666;font-size:12px;">Password Reset</p>
+                    <p style="color:#fff;font-size:16px;margin:24px 0;">Click below to choose a new password. The link expires in 1 hour.</p>
+                    <a href="${resetUrl}" style="display:inline-block;background:#FF5A00;color:#fff;text-transform:uppercase;letter-spacing:2px;font-size:14px;font-weight:700;padding:16px 32px;text-decoration:none;border-radius:6px;">Reset password</a>
+                </div>
+            `,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = (await response.json().catch(() => ({}))) as { message?: string };
+      throw new Error(errorData.message ?? 'Unable to send password reset email.');
+    }
+  }
+
   /**
    * Notifies an onboarding applicant that an admin asked for changes. Same
    * fail-closed/dev-logging split as `sendOtpEmail`; callers (the onboarding
-   * service) are expected to log-and-swallow a throw here, not propagate it.
+   * service) log-and-swallow a throw here rather than propagate it.
    */
   async sendOnboardingChangesRequestedEmail(
     recipient: string,

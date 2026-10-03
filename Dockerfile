@@ -17,11 +17,11 @@
 FROM node:24-slim AS base
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
-# Upgrade tar to fix CVE-2026-73566 (tar < 7.5.21, HIGH).
-# node:24-slim ships an older Debian tar; pulling the patched version here
-# means every downstream stage (deps, build, runtime) inherits it.
+# Upgrade OS packages to fix known HIGH CVEs before any downstream stage.
+#   tar   — CVE-2026-73566 (tar < 7.5.21, HIGH)
+#   pcre2 — CVE-2026-86145 / CVE-2026-89161 (libpcre2-8-0 < 10.42-1+deb12u1, HIGH)
 RUN apt-get update -qq \
- && apt-get install -y --no-install-recommends tar \
+ && apt-get install -y --no-install-recommends tar libpcre2-8-0 \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 RUN corepack enable && pnpm config set store-dir /pnpm/store

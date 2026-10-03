@@ -39,10 +39,25 @@ export type Permission =
   | 'event.cancel'
   /** Ask a venue for a slot — the host side of the same conversation. */
   | 'slot-request.create'
-  /** Phase 5: door staff overriding a denied scan (manual admission). */
-  | 'ticket.override';
+  /** Read a caller's own (in/out-bound) slot requests. */
+  | 'slot-request.list'
 
-const READ_ONLY: readonly Permission[] = ['organization.read', 'venue.read', 'event.read'];
+  /** Phase 5: door staff overriding a denied scan (manual admission). */
+  | 'ticket.override'
+  /**
+   * Phase 5: minting, listing and revoking the door codes that authorize a
+   * scanner device, and closing the sessions they opened. Separate from
+   * `ticket.override` because it is a credential-management right, not a
+   * door-staff one: whoever holds it can hand out entry to the event.
+   */
+  | 'door.manage';
+
+const READ_ONLY: readonly Permission[] = [
+  'organization.read',
+  'venue.read',
+  'event.read',
+  'slot-request.list',
+];
 
 /**
  * Role → permissions. Owner and admin run the tenant; manager operates it;
@@ -64,7 +79,9 @@ export const ROLE_PERMISSIONS: Readonly<Record<OrganizationRole, readonly Permis
     'event.publish',
     'event.cancel',
     'slot-request.create',
+    'slot-request.list',
     'ticket.override',
+    'door.manage',
   ],
   admin: [
     'organization.read',
@@ -80,7 +97,9 @@ export const ROLE_PERMISSIONS: Readonly<Record<OrganizationRole, readonly Permis
     'event.publish',
     'event.cancel',
     'slot-request.create',
+    'slot-request.list',
     'ticket.override',
+    'door.manage',
   ],
   manager: [
     'organization.read',
@@ -92,7 +111,9 @@ export const ROLE_PERMISSIONS: Readonly<Record<OrganizationRole, readonly Permis
     'event.update',
     'event.publish',
     'slot-request.create',
+    'slot-request.list',
     'ticket.override',
+    'door.manage',
   ],
   member: READ_ONLY,
 };

@@ -38,7 +38,7 @@ const write = (org: string) => ({
 /** Creates org → venue → event → one ticket tier; returns everything checkout needs. */
 async function seed(
   server: Server,
-  options: { priceInPaise?: number; quantity?: number } = {},
+  options: { priceInPaise?: number; quantity?: number; maxPerUser?: number } = {},
 ): Promise<{ org: string; eventId: string; tierId: string; priceInPaise: number }> {
   const created = await server.inject({
     method: 'POST',
@@ -70,7 +70,12 @@ async function seed(
     method: 'POST',
     url: `/events/${eventId}/ticket-tiers`,
     headers: write(org),
-    payload: { name: 'General', priceInPaise, quantity },
+    payload: {
+      name: 'General',
+      priceInPaise,
+      quantity,
+      ...(options.maxPerUser !== undefined ? { maxPerUser: options.maxPerUser } : {}),
+    },
   });
   const tierId: string = tier.json().id;
 
@@ -213,6 +218,44 @@ describe('POST /checkout/holds', () => {
     expect(first.statusCode).toBe(201);
     expect(second.statusCode).toBe(201);
     expect(second.json().holdId).toBe(first.json().holdId);
+    await server.close();
+  });
+
+  it('binds tier.maxPerUser across holds and paid orders for the same user', async () => {
+    const server = await buildServer();
+    const { eventId, tierId } = await seed(server, { maxPerUser: 2 });
+
+    // The cap counts live holds too, not just settled orders.
+    const first = await server.inject({
+      method: 'POST',
+      url: '/checkout/holds',
+      headers: { 'idempotency-key': 'hold-key-cap-1' },
+      payload: { eventId, lines: [{ tierId, quantity: 2 }] },
+    });
+    expect(first.statusCode).toBe(201);
+
+    // A second basket pushed by the same user (memory driver: any request
+    // without an explicit user resolves to `user_1`) exceeds the cap.
+    const second = await server.inject({
+      method: 'POST',
+      url: '/checkout/holds',
+      headers: { 'idempotency-key': 'hold-key-cap-2' },
+      payload: { eventId, lines: [{ tierId, quantity: 1 }] },
+    });
+    expect(second.statusCode).toBe(400);
+    expect(second.json()).toMatchObject({
+      code: 'validation',
+      message: 'General has a maximum of 2 per user',
+    });
+
+    // A different user (distinct x-user-id) is unaffected by the cap.
+    const otherUser = await server.inject({
+      method: 'POST',
+      url: '/checkout/holds',
+      headers: { 'idempotency-key': 'hold-key-cap-3', 'x-user-id': 'user_other' },
+      payload: { eventId, lines: [{ tierId, quantity: 1 }] },
+    });
+    expect(otherUser.statusCode).toBe(201);
     await server.close();
   });
 

@@ -8,13 +8,13 @@ import {
   createOnboardingRequest,
   missingDocuments,
   platformFeePercentFor,
-  rejectKycDocument,
+  rejectOnboardingDocument,
   rejectOnboardingRequest,
   requestOnboardingChanges,
   sanitizeApplicantProfile,
   submitOnboardingRequest,
   updateOnboardingProfile,
-  verifyKycDocument,
+  verifyOnboardingDocument,
 } from './models/onboarding.js';
 
 /**
@@ -102,11 +102,9 @@ describe('the applicant’s side', () => {
       { label: 'id_front', storagePath: 'a.jpg' },
       NOW,
     );
-    const verified = verifyKycDocument(uploaded, 'id_front', 'admin_a', LATER);
+    const verified = verifyOnboardingDocument(uploaded, 'id_front', 'admin_a', LATER);
     expect(verified.documents[0]?.status).toBe('verified');
 
-    // A re-upload of an already-verified label must be re-reviewed, not
-    // silently stay verified.
     const reUploaded = addOnboardingDocument(
       verified,
       { label: 'id_front', storagePath: 'c.jpg' },
@@ -166,9 +164,16 @@ describe('the applicant’s side', () => {
 
 describe('the admin’s side', () => {
   const submitted = () => submitOnboardingRequest(withDocuments(), LATER);
+  const verifiedAndSubmitted = () => {
+    let subject = submitted();
+    for (const label of ['id_front', 'id_back', 'selfie']) {
+      subject = verifyOnboardingDocument(subject, label, 'admin_kyc', LATER);
+    }
+    return subject;
+  };
 
   it('approves, recording who decided and what was provisioned', () => {
-    const approved = approveOnboardingRequest(submitted(), {
+    const approved = approveOnboardingRequest(verifiedAndSubmitted(), {
       reviewedBy: 'admin_a',
       provisionedOrganizationId: 'org_new',
       note: 'Docs check out',
@@ -180,6 +185,31 @@ describe('the admin’s side', () => {
       reviewedBy: 'admin_a',
       provisionedOrganizationId: 'org_new',
     });
+  });
+
+  it('refuses to approve while a required document is still unverified', () => {
+    expect(() =>
+      approveOnboardingRequest(submitted(), {
+        reviewedBy: 'admin_a',
+        provisionedOrganizationId: 'org_new',
+        now: LATER,
+      }),
+    ).toThrow(InvalidOperationError);
+  });
+
+  it('refuses to approve when a required document was rejected, not verified', () => {
+    let subject = submitted();
+    subject = verifyOnboardingDocument(subject, 'id_front', 'admin_kyc', LATER);
+    subject = verifyOnboardingDocument(subject, 'id_back', 'admin_kyc', LATER);
+    subject = rejectOnboardingDocument(subject, 'selfie', 'admin_kyc', 'Face not visible', LATER);
+
+    expect(() =>
+      approveOnboardingRequest(subject, {
+        reviewedBy: 'admin_a',
+        provisionedOrganizationId: 'org_new',
+        now: LATER,
+      }),
+    ).toThrow(InvalidOperationError);
   });
 
   it('requires a note when asking for changes', () => {
@@ -230,8 +260,7 @@ describe('the admin’s side', () => {
 
 describe('the KYC document desk', () => {
   it('verifies one uploaded document, stamping who and when', () => {
-    const subject = withDocuments();
-    const verified = verifyKycDocument(subject, 'id_front', 'admin_a', LATER);
+    const verified = verifyOnboardingDocument(withDocuments(), 'id_front', 'admin_a', LATER);
     expect(verified.documents.find((d) => d.label === 'id_front')).toMatchObject({
       status: 'verified',
       reviewedBy: 'admin_a',
@@ -244,11 +273,11 @@ describe('the KYC document desk', () => {
 
   it('rejects one uploaded document, requiring a reason', () => {
     const subject = withDocuments();
-    expect(() => rejectKycDocument(subject, 'selfie', '', 'admin_a', LATER)).toThrow(
+    expect(() => rejectOnboardingDocument(subject, 'selfie', 'admin_a', '', LATER)).toThrow(
       InvalidOperationError,
     );
 
-    const rejected = rejectKycDocument(subject, 'selfie', 'Blurry photo', 'admin_a', LATER);
+    const rejected = rejectOnboardingDocument(subject, 'selfie', 'admin_a', 'Blurry photo', LATER);
     expect(rejected.documents.find((d) => d.label === 'selfie')).toMatchObject({
       status: 'rejected',
       reviewedBy: 'admin_a',
@@ -257,29 +286,56 @@ describe('the KYC document desk', () => {
   });
 
   it('refuses to review a label that was never uploaded', () => {
-    expect(() => verifyKycDocument(request(), 'passport', 'admin_a', LATER)).toThrow(
+    expect(() => verifyOnboardingDocument(request(), 'passport', 'admin_a', LATER)).toThrow(
       InvalidOperationError,
     );
-    expect(() => rejectKycDocument(request(), 'passport', 'Not valid', 'admin_a', LATER)).toThrow(
-      InvalidOperationError,
-    );
+    expect(() =>
+      rejectOnboardingDocument(request(), 'passport', 'admin_a', 'Not valid', LATER),
+    ).toThrow(InvalidOperationError);
   });
 
-  it('gates on every required document being verified, per entity type', () => {
+  it('gates on every required document being verified', () => {
     const subject = withDocuments();
     expect(allRequiredDocumentsVerified(subject)).toBe(false);
 
-    const oneVerified = verifyKycDocument(subject, 'id_front', 'admin_a', LATER);
+    const oneVerified = verifyOnboardingDocument(subject, 'id_front', 'admin_a', LATER);
     expect(allRequiredDocumentsVerified(oneVerified)).toBe(false);
 
     const allVerified = ['id_front', 'id_back', 'selfie'].reduce(
-      (acc, label) => verifyKycDocument(acc, label, 'admin_a', LATER),
+      (acc, label) => verifyOnboardingDocument(acc, label, 'admin_a', LATER),
       subject,
     );
     expect(allRequiredDocumentsVerified(allVerified)).toBe(true);
 
     // A rejected (not merely missing) required document still blocks the gate.
-    const oneRejected = rejectKycDocument(allVerified, 'selfie', 'Retake', 'admin_a', LATER);
+    const oneRejected = rejectOnboardingDocument(allVerified, 'selfie', 'admin_a', 'Retake', LATER);
     expect(allRequiredDocumentsVerified(oneRejected)).toBe(false);
+  });
+
+  it('gates a business applicant on the business set, not the individual labels', () => {
+    let subject = createOnboardingRequest({
+      id: 'onb_biz',
+      userId: 'user_biz',
+      requestedType: 'venue',
+      plan: 'basic',
+      profile: {
+        legalName: 'Biz Co',
+        contactPerson: 'A Person',
+        phone: '+910000000000',
+        city: 'Mumbai',
+        entityType: 'business',
+      },
+      now: NOW,
+    });
+    const labels = ['registration_certificate', 'sig_id_front', 'sig_id_back', 'sig_selfie'];
+    for (const label of labels) {
+      subject = addOnboardingDocument(subject, { label, storagePath: `kyc/${label}.jpg` }, NOW);
+    }
+    expect(allRequiredDocumentsVerified(subject)).toBe(false);
+    const verified = labels.reduce(
+      (acc, label) => verifyOnboardingDocument(acc, label, 'admin_a', LATER),
+      subject,
+    );
+    expect(allRequiredDocumentsVerified(verified)).toBe(true);
   });
 });

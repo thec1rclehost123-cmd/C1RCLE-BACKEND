@@ -9,6 +9,7 @@ import type {
   ScanDenyReason,
 } from '../../domain/models/scan-ledger.js';
 import type {
+  ScanAdmissionStats,
   ScanLedgerRepository,
   Page,
   PaginationQuery,
@@ -141,6 +142,28 @@ export class MemoryScanLedgerRepository implements ScanLedgerRepository {
       .length;
   }
 
+  async getAdmissionStats(
+    eventId: EntityId,
+    tierNames: readonly string[],
+  ): Promise<ScanAdmissionStats> {
+    const byEntryType: Record<string, number> = {};
+    for (const tierName of tierNames) byEntryType[tierName] = 0;
+
+    let admitted = 0;
+    let attributed = 0;
+    for (const scan of this.scans.values()) {
+      if (scan.eventId !== eventId) continue;
+      if (scan.admittedCount <= 0) continue;
+      admitted += scan.admittedCount;
+      const key = scan.tierName;
+      if (key !== null && key in byEntryType) {
+        byEntryType[key] = (byEntryType[key] ?? 0) + scan.admittedCount;
+        attributed += scan.admittedCount;
+      }
+    }
+    return { admitted, byEntryType, unattributed: Math.max(0, admitted - attributed) };
+  }
+
   async countConsumedByEntitlement(entitlementId: EntityId): Promise<number> {
     return [...this.scans.values()].filter(
       (s) => s.entitlementId === entitlementId && s.status === 'consumed',
@@ -148,8 +171,11 @@ export class MemoryScanLedgerRepository implements ScanLedgerRepository {
   }
 
   async findOfflineScans(eventId: EntityId, before: Date): Promise<ScanLedger[]> {
-    return [...this.scans.values()].filter(
-      (s) => s.eventId === eventId && s.isOffline && new Date(s.scannedAt) < before,
-    );
+    // Same bound as the Firestore adapter (`offlineSyncRequestSchema` cap) so
+    // both drivers honour the same contract — a caller must loop for more.
+    const MAX_SYNC_SCANS = 500;
+    return [...this.scans.values()]
+      .filter((s) => s.eventId === eventId && s.isOffline && new Date(s.scannedAt) < before)
+      .slice(0, MAX_SYNC_SCANS);
   }
 }
