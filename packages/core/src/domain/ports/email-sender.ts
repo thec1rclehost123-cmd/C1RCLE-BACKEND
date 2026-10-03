@@ -9,11 +9,21 @@ import type { Logger } from '../../telemetry/logger.js';
  * needs `process.env`/network access that `packages/core` may not touch.
  */
 
+export interface OnboardingChangesRequestedEmailParams {
+  legalName: string;
+  note: string;
+}
+
 export interface EmailSender {
   readonly name: string;
   sendOtpEmail(recipient: string, code: string): Promise<void>;
   /** Sends the password-reset link (Better Auth `sendResetPassword` callback). */
   sendPasswordResetEmail(recipient: string, resetUrl: string): Promise<void>;
+  /** Notifies an applicant that their onboarding application needs changes. */
+  sendOnboardingChangesRequestedEmail(
+    recipient: string,
+    params: OnboardingChangesRequestedEmailParams,
+  ): Promise<void>;
 }
 
 /**
@@ -33,5 +43,17 @@ export class LoggingEmailSender implements EmailSender {
 
   async sendPasswordResetEmail(recipient: string, resetUrl: string): Promise<void> {
     this.logger.info('dev_email_password_reset', { recipient, resetUrl });
+  }
+
+  async sendOnboardingChangesRequestedEmail(
+    recipient: string,
+    params: OnboardingChangesRequestedEmailParams,
+  ): Promise<void> {
+    // Note text is admin-authored review feedback: log its length, not content.
+    this.logger.info('dev_email_onboarding_changes_requested', {
+      recipient,
+      legalName: params.legalName,
+      noteLength: params.note.length,
+    });
   }
 }
