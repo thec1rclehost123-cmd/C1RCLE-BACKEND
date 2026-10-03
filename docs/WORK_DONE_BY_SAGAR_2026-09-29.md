@@ -1,5 +1,7 @@
 # Work done by Sagar — 2026-09-29
 
+> **Historical log, as of 2026-09-29; see [ROADMAP.md](roadmap/ROADMAP.md) for current status.**
+
 **Task:** Phase 8 — Social / discovery / notifications (`docs/roadmap/phase-08-social-notifications.md`)
 **Branch:** `feat/phase-08-social-notifications` (cut from `staging` @ `b46d1f1`, already up to date with `origin/staging`)
 **Focus:** pub/sub architecture — every notification is produced by an event-bus subscriber, never inline by the request that caused it.
@@ -108,6 +110,6 @@ List responses add `nextCursor` next to the shared `pageInfo`, because the share
 
 - **Chat / DM / typing / blocks / reports:** not built. No frontend need exists, and the phase doc says not to spec it until one does.
 - **Fan-out runs in-process:** the bus drains on append, so the publish request waits for the fan-out. That is fine at current scale. When B12 (durable queue) lands, move the subscriber to a worker. It is already isolated, so no publisher changes are needed.
-- **Partner-side (org-scoped) notifications:** the partner-dashboard UI still uses mocks. It needs a product decision on which partner events to notify about, and then it would be another subscriber writing to the same `v2_notifications` collection.
+- **Partner-side (org-scoped) notifications (since built: `GET/PATCH /organizations/:organizationId/notifications…`, `notifications/notifications-routes.ts`):** at this date the partner-dashboard UI still used mocks. It needs a product decision on which partner events to notify about, and then it would be another subscriber writing to the same `v2_notifications` collection.
 - **Frontend wiring:** guest-portal follow buttons and the inbox, and partner-dashboard `PartnerNotifications` → these endpoints.
 - **Deploy:** run `firebase deploy --only firestore:indexes` before these routes serve real traffic, or the ordered queries will fail on Firestore.
