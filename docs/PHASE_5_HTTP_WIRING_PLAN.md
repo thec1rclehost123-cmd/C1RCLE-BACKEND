@@ -14,7 +14,7 @@
 > as the original wiring-plan reference; live truth is
 > `docs/roadmap/phase-05-door-scanner-cover-wallet.md`.
 
-Supersedes `docs/phase-05-implementation-plan.md` (untracked draft — written as
+Superseded an earlier draft implementation plan (since deleted — written as
 if 5A/5B didn't exist yet; they do, see below). Domain models, repository
 ports, memory + Firestore adapters, application services, and Phase 5
 contracts are ALL already built and wired into `v2-services.ts`. Verified

@@ -1,5 +1,7 @@
 # Partner Connections: Discover + Accept/Reject Fix
 
+> **Historical log, as of 2026-09-16; see [ROADMAP.md](../roadmap/ROADMAP.md) for current status.**
+
 **Date:** 2026-09-16
 **Scope:** Partner-network tab of the partner dashboard (Discover view, Requests accept/reject/withdraw, partner names)
 **Repos touched:** `C1RCLE-BACKEND` (gateway + core + contracts), `C1RCLE-FRONTEND` (generated contracts mirror only — byte-identical, no content change)

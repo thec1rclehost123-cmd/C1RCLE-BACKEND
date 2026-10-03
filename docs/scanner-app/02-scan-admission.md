@@ -161,7 +161,7 @@ There is no offline admission queue in the standard app. On a network
 failure show "Scanner offline — entry denied until connectivity returns"
 and store nothing to replay. `GET /door/offline-manifest` /
 `POST /door/offline-sync` exist only for venues that explicitly opt into
-pre-authorized offline mode — the standard app never calls them.
+pre-authorized offline mode — the standard app never calls them. The manifest is signed per entry (HMAC-SHA256 keyed by `MAGIC_TICKET_SECRET`, 12 h TTL) and sync re-runs the full atomic admission.
 
 ## 8. Verification
 

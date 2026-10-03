@@ -167,13 +167,14 @@ original doc are now **done**.
 - `POST /api/v2/payments/attempts` (PAYMENT_COMMAND)
 - `POST /api/v2/payments/:id/verify` (PAYMENT_COMMAND)
 - `GET /api/v2/orders` (AUTH_READ)
-- `POST /api/v2/orders` (STANDARD_COMMAND + Idempotency-Key + If-Match)
+- ~~`POST /api/v2/orders`~~ — **not registered**: orders are created by the checkout/payment/webhook flow, never directly by a client (`orders-routes.ts` is read-only: list, get, status)
 - `GET /api/v2/orders/:id` (AUTH_READ, NO_STORE)
 - `GET /api/v2/orders/:id/status` (AUTH_READ, NO_STORE)
 - `GET /api/v2/tickets/:id` (STANDARD_COMMAND, NO_STORE)
-- `POST /api/v2/tickets/:id/transfer` (STANDARD_COMMAND + Idempotency-Key + If-Match)
-- `POST /api/v2/tickets/:id/claim` (STANDARD_COMMAND + Idempotency-Key + If-Match)
-- `POST /api/v2/tickets/:id/cancel-transfer` (STANDARD_COMMAND + Idempotency-Key + If-Match)
+- ~~`POST /api/v2/tickets/:id/transfer`~~ — **not registered** (404 by absence, D-006): the `Entitlement` model has no transfer state yet
+- ~~`POST /api/v2/tickets/:id/claim`~~ — **not registered** (see transfer)
+- ~~`POST /api/v2/tickets/:id/cancel-transfer`~~ — **not registered** (see transfer)
+- `GET /api/v2/tickets/:id/qr` (owner-only QR minting, door module) and `POST /api/v2/rsvp` (free-ticket booking, no provider) — registered later
 - `GET /api/v2/wallet` (AUTH_READ, NO_STORE)
 - `GET /api/v2/wallet/tickets` (AUTH_READ, NO_STORE)
 - `GET /api/v2/wallet/orders` (AUTH_READ, NO_STORE)
@@ -186,6 +187,7 @@ original doc are now **done**.
 - `GET /api/v2/public/hosts/:slug` (PUBLIC_READ, PUBLIC_CDN cache)
 - `GET /api/v2/public/discovery` (PUBLIC_READ, PUBLIC_CDN cache)
 - `GET /api/v2/public/search` (PUBLIC_READ, PUBLIC_CDN cache)
+- Also live: `/public/events/:idOrSlug/{ticket-tiers,tiers}`, `/public/{hosts,venues}/by-id/:id`, `/public/promoter-links/:handle/:slug`, `POST /public/promoter-links/click`
 
 **7. Service Wiring** ✅
 - `ServiceDeps` extended with `paymentProvider`, `pricing`, `inventory`, `cartReservations`, `orders`, `entitlements`, `promoRedemptions`
@@ -211,8 +213,8 @@ All Phase 4 route files committed and registered in `route-manifest.ts`:
 - `checkout/checkout-routes.ts` + test — quote, holds
 - `checkout/payment-routes.ts` + test — payment attempts, verify
 - `checkout/webhook-routes.ts` + test — Razorpay webhook
-- `orders/orders-routes.ts` + test — list, create, get, status
-- `tickets/ticket-routes.ts` + test — get, transfer, claim, cancel-transfer
+- `orders/orders-routes.ts` + test — list, get, status
+- `tickets/ticket-routes.ts` + test — get only (transfer/claim/cancel-transfer remain unregistered)
 - `wallet/wallet-routes.ts` + test — wallet, tickets, orders
 - `public/discovery.ts` + test — events, venues, hosts, discovery, search
 

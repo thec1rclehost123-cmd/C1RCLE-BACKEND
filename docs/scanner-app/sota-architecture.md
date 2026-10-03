@@ -1,7 +1,7 @@
 # C1RCLE Scanner App — SOTA Architecture Blueprint
 
 > **Status:** Definitive reference for the door-scanning system (backend
-> complete, frontend not yet built).
+> complete, frontend workspace scaffolded in `C1RCLE-FRONTEND/apps/scanner-app`; wiring status tracked there).
 > **Last verified:** 2026-09-23, branch `feat/scanner-app-backend`.
 >
 > Companion docs: [`../api-contracts/scanner-app.md`](../api-contracts/scanner-app.md)
@@ -38,7 +38,7 @@
 ```mermaid
 graph TB
   subgraph Device["Door device"]
-    App["Scanner app (not yet built)<br/>device identity in Keychain/Keystore<br/>scanner-session token in Keychain/Keystore"]
+    App["Scanner app (frontend repo, wiring tracked there)<br/>device identity in Keychain/Keystore<br/>scanner-session token in Keychain/Keystore"]
   end
 
   subgraph Edge["Public edge"]

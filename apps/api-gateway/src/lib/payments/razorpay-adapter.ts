@@ -91,6 +91,29 @@ function isRazorpayErrorResponseDataWithDescription(
 }
 
 /**
+ * Razorpay ids are a `prefix_` token plus an alphanumeric body — `pay_…`,
+ * `order_…`, `rfnd_…`, `cust_…`. Allowing only that shape is what makes an id
+ * safe to interpolate into a request path: it cannot contain `/`, `.`, `\`, a
+ * scheme separator, a query or fragment delimiter, or a newline, so it cannot
+ * climb out of `/payments/` or repoint the request at another host.
+ *
+ * The id arrives here straight from the client on the redirect-confirm path, so
+ * it is untrusted. `checkout-service.ts` already declines to trust it for the
+ * money decision; this keeps it from being trusted for the request shape either.
+ *
+ * The error message deliberately does not echo the rejected value, so a hostile
+ * id cannot smuggle newlines or terminal escapes into logs or error responses.
+ */
+const PROVIDER_ID_PATTERN = /^[A-Za-z0-9_]{1,64}$/;
+
+function assertProviderId(value: string, field: string): string {
+  if (!PROVIDER_ID_PATTERN.test(value)) {
+    throw new InvalidOperationError(`Invalid Razorpay ${field}`);
+  }
+  return value;
+}
+
+/**
  * ─── Razorpay PaymentProvider Adapter ──────────────────────────────────────────
  * Implements the PaymentProvider interface using Razorpay API.
  * Webhook HMAC verification is NOT optional (D-022).
@@ -170,7 +193,8 @@ export class RazorpayPaymentProvider {
     paymentId: string,
     amountPaise?: number,
   ): Promise<PaymentVerificationResponse> {
-    const response = await fetch(`${this.baseUrl}/payments/${paymentId}/capture`, {
+    const id = assertProviderId(paymentId, 'payment id');
+    const response = await fetch(`${this.baseUrl}/payments/${id}/capture`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -202,7 +226,8 @@ export class RazorpayPaymentProvider {
   }
 
   async refundPayment(request: RefundRequest): Promise<RefundResponse> {
-    const response = await fetch(`${this.baseUrl}/payments/${request.paymentId}/refund`, {
+    const id = assertProviderId(request.paymentId, 'payment id');
+    const response = await fetch(`${this.baseUrl}/payments/${id}/refund`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -236,7 +261,8 @@ export class RazorpayPaymentProvider {
   }
 
   async getPayment(paymentId: string): Promise<PaymentVerificationResponse> {
-    const response = await fetch(`${this.baseUrl}/payments/${paymentId}`, {
+    const id = assertProviderId(paymentId, 'payment id');
+    const response = await fetch(`${this.baseUrl}/payments/${id}`, {
       headers: {
         Authorization: this.authHeader,
       },
