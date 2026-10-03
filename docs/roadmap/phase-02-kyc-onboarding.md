@@ -6,7 +6,8 @@
 
 - Applicant: `/onboarding/{me,applications,applications/:id,.../documents,.../documents/upload-url,.../submit,verify-document}`.
 - Admin: queue/detail, `POST .../documents/:label/{verify,reject}`, `GET .../documents/:label/read-url`, approve/reject/request-changes via `/admin/onboarding/applications/:id/:action`.
-- **Approve gate not on `staging`:** `OnboardingService.approve` only requires status `submitted`; it does not yet require every document to be `verified`. Per-document verification is recorded and audited but advisory.
+- **Approve gate (on `staging`, enforced server-side):** `OnboardingService.approve` requires status `submitted` (else 400 `InvalidOperationError`) and then every required document `verified` — individual: `id_front,id_back,selfie`; `entityType: 'business'`: `registration_certificate,sig_id_front,sig_id_back,sig_selfie`. A `pending` or `rejected` document blocks approval with HTTP 400, **before** any organization is provisioned. Domain: `approveOnboardingRequest` + `allRequiredDocumentsVerified` (`domain/models/onboarding.ts`). A re-upload resets a document to `pending`.
+- Request-changes emails the applicant best-effort (`EmailSender.sendOnboardingChangesRequestedEmail` via `UserDirectoryPort`); a send failure or missing email is logged and never fails the review.
 - Phone verification (`documentType: 'phone'`) verifies a Firebase ID token via `firebase-admin` `verifyIdToken` (`lib/verification/firebase-phone-verifier.ts`); other document types use the format-check provider (D-018). Email OTP is separate: `POST /auth/otp/{send,verify}`.
 
 Currently explicitly BLOCKED in every C1RCLE-BACKEND doc

@@ -13,7 +13,7 @@
 
 | Feature | Backend route | Frontend desk | Notes |
 |---|---|---|---|
-| Onboarding review (approve/reject/request-changes + KYC doc read URLs + per-document verify/reject) | `onboarding-review.ts` (13+ routes) | `/onboarding` | TIER2 approve (does not yet require all docs verified); doc URLs any admin |
+| Onboarding review (approve/reject/request-changes + KYC doc read URLs + per-document verify/reject) | `onboarding-review.ts` (13+ routes) | `/onboarding` | TIER2 approve (server requires every required doc `verified`, else 400); doc URLs any admin |
 | Support desk (list/detail, assign, reply, notes, priority, link, merge, resolve, delete) | `support.ts` (11 routes) | `/support` | shipped 2026-09-20, `cec80b7`; guest intake in `support/intake-routes.ts` |
 | Refunds (amount-tiered approvals 0/1/2) | `refunds.ts` (5 routes) | `/refunds` | <₹500 auto, <₹5k single, ≥₹5k dual |
 | Payouts (freeze/release/batch-run) | `payouts.ts` (5 routes) | `/payouts` | freeze/release = TIER3; batch-run = TIER2 |

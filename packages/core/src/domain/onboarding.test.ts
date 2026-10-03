@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { InvalidOperationError, StateTransitionError } from './errors.js';
 import {
   addOnboardingDocument,
+  allRequiredDocumentsVerified,
   approveOnboardingRequest,
   createOnboardingRequest,
   missingDocuments,
@@ -79,6 +80,66 @@ describe('the applicant’s side', () => {
     // Keeping both invites an admin approving the stale copy.
     expect(twice.documents).toHaveLength(1);
     expect(twice.documents[0]?.storagePath).toBe('b.jpg');
+  });
+
+  it('starts every uploaded document pending, with no reviewer', () => {
+    const uploaded = addOnboardingDocument(
+      request(),
+      { label: 'id_front', storagePath: 'a.jpg' },
+      NOW,
+    );
+    expect(uploaded.documents[0]).toMatchObject({
+      status: 'pending',
+      reviewedBy: null,
+      reviewedAt: null,
+      rejectionReason: null,
+    });
+  });
+
+  it('resets a re-uploaded document to pending, never inheriting the old review', () => {
+    const uploaded = addOnboardingDocument(
+      request(),
+      { label: 'id_front', storagePath: 'a.jpg' },
+      NOW,
+    );
+    const verified = verifyOnboardingDocument(uploaded, 'id_front', 'admin_a', LATER);
+    expect(verified.documents[0]?.status).toBe('verified');
+
+    const reUploaded = addOnboardingDocument(
+      verified,
+      { label: 'id_front', storagePath: 'c.jpg' },
+      LATER,
+    );
+    expect(reUploaded.documents[0]).toMatchObject({
+      status: 'pending',
+      reviewedBy: null,
+      reviewedAt: null,
+      rejectionReason: null,
+      storagePath: 'c.jpg',
+    });
+  });
+
+  it('requires the business document set for a business applicant, not the individual one', () => {
+    const businessRequest = createOnboardingRequest({
+      id: 'onb_biz',
+      userId: 'user_biz',
+      requestedType: 'venue',
+      plan: 'basic',
+      profile: {
+        legalName: 'Biz Co',
+        contactPerson: 'A Person',
+        phone: '+910000000000',
+        city: 'Mumbai',
+        entityType: 'business',
+      },
+      now: NOW,
+    });
+    expect(missingDocuments(businessRequest)).toEqual([
+      'registration_certificate',
+      'sig_id_front',
+      'sig_id_back',
+      'sig_selfie',
+    ]);
   });
 
   it('refuses to submit without the required documents', () => {
@@ -194,5 +255,87 @@ describe('the admin’s side', () => {
         now: LATER,
       }),
     ).toThrow(StateTransitionError);
+  });
+});
+
+describe('the KYC document desk', () => {
+  it('verifies one uploaded document, stamping who and when', () => {
+    const verified = verifyOnboardingDocument(withDocuments(), 'id_front', 'admin_a', LATER);
+    expect(verified.documents.find((d) => d.label === 'id_front')).toMatchObject({
+      status: 'verified',
+      reviewedBy: 'admin_a',
+      reviewedAt: LATER.toISOString(),
+      rejectionReason: null,
+    });
+    // Reviewing one document must not disturb the others.
+    expect(verified.documents.find((d) => d.label === 'id_back')?.status).toBe('pending');
+  });
+
+  it('rejects one uploaded document, requiring a reason', () => {
+    const subject = withDocuments();
+    expect(() => rejectOnboardingDocument(subject, 'selfie', 'admin_a', '', LATER)).toThrow(
+      InvalidOperationError,
+    );
+
+    const rejected = rejectOnboardingDocument(subject, 'selfie', 'admin_a', 'Blurry photo', LATER);
+    expect(rejected.documents.find((d) => d.label === 'selfie')).toMatchObject({
+      status: 'rejected',
+      reviewedBy: 'admin_a',
+      rejectionReason: 'Blurry photo',
+    });
+  });
+
+  it('refuses to review a label that was never uploaded', () => {
+    expect(() => verifyOnboardingDocument(request(), 'passport', 'admin_a', LATER)).toThrow(
+      InvalidOperationError,
+    );
+    expect(() =>
+      rejectOnboardingDocument(request(), 'passport', 'admin_a', 'Not valid', LATER),
+    ).toThrow(InvalidOperationError);
+  });
+
+  it('gates on every required document being verified', () => {
+    const subject = withDocuments();
+    expect(allRequiredDocumentsVerified(subject)).toBe(false);
+
+    const oneVerified = verifyOnboardingDocument(subject, 'id_front', 'admin_a', LATER);
+    expect(allRequiredDocumentsVerified(oneVerified)).toBe(false);
+
+    const allVerified = ['id_front', 'id_back', 'selfie'].reduce(
+      (acc, label) => verifyOnboardingDocument(acc, label, 'admin_a', LATER),
+      subject,
+    );
+    expect(allRequiredDocumentsVerified(allVerified)).toBe(true);
+
+    // A rejected (not merely missing) required document still blocks the gate.
+    const oneRejected = rejectOnboardingDocument(allVerified, 'selfie', 'admin_a', 'Retake', LATER);
+    expect(allRequiredDocumentsVerified(oneRejected)).toBe(false);
+  });
+
+  it('gates a business applicant on the business set, not the individual labels', () => {
+    let subject = createOnboardingRequest({
+      id: 'onb_biz',
+      userId: 'user_biz',
+      requestedType: 'venue',
+      plan: 'basic',
+      profile: {
+        legalName: 'Biz Co',
+        contactPerson: 'A Person',
+        phone: '+910000000000',
+        city: 'Mumbai',
+        entityType: 'business',
+      },
+      now: NOW,
+    });
+    const labels = ['registration_certificate', 'sig_id_front', 'sig_id_back', 'sig_selfie'];
+    for (const label of labels) {
+      subject = addOnboardingDocument(subject, { label, storagePath: `kyc/${label}.jpg` }, NOW);
+    }
+    expect(allRequiredDocumentsVerified(subject)).toBe(false);
+    const verified = labels.reduce(
+      (acc, label) => verifyOnboardingDocument(acc, label, 'admin_a', LATER),
+      subject,
+    );
+    expect(allRequiredDocumentsVerified(verified)).toBe(true);
   });
 });
