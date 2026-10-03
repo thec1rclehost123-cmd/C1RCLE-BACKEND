@@ -1,6 +1,6 @@
 # Phase 8 — Social / discovery / notifications
 
-**Status:** follow graph + notifications LIVE (branch `feat/phase-08-social-notifications`) · chat/DM not started
+**Status:** partial — follow graph + guest notifications + partner (org-scoped) notification inbox LIVE on `staging` (`e5fa729`, 2026-09-29) · chat/DM not started
 
 v1 has a substantial social/dating layer bolted onto the event platform
 (`social.ts`, 36 endpoints — follow, DM/chat, typing indicators, blocks,
@@ -21,7 +21,7 @@ start this phase until a frontend need for it actually exists; re-audit
 
 ## Firestore collections
 
-`v2_follows`, `v2_notifications`, `v2_notification_reads`, plus chat
+`v2_follows`, `v2_notifications` (`v2_notification_reads` was dropped — `readAt` is inline, see session log), plus chat
 collections only if/when this phase actually starts (not enumerated here to
 avoid speccing detail that may drift before it's relevant).
 
@@ -51,5 +51,6 @@ Built:
   `POST /notifications/me/read-all`.
 
 Open: fan-out runs in-process inside the publish request (bus drains on
-append) — move to the durable queue worker when B12 lands. Partner-side
-(org-scoped) notifications and chat/DM remain unbuilt.
+append) — move to the durable queue worker when B12 lands. Chat/DM remains unbuilt.
+
+**Update (verified 2026-10-02):** partner-side org-scoped notifications are now live too: `GET /organizations/:organizationId/notifications`, `PATCH .../:notificationId/read`, `PATCH .../read-all`, `POST .../:notificationId/action` (`notifications/notifications-routes.ts`, gated by `organization.read`).

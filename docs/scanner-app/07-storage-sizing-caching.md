@@ -138,7 +138,7 @@ flowchart LR
 | `v2_scanner_sessions` | 2-3 | One redemption per device per shift (12h token, one shift usually fits in one token life) |
 | `v2_entitlements` | 300-500 | 1:1 with ticket *units* sold, per SOTA-7 — a couple ticket is still one doc with `scanCountAllowed:2` |
 | `v2_scan_ledger` | ~450-1,500 | **Not 1:1 with guests** — it's 1 row per scan *attempt*. Low estimate: every guest scans clean once (300-500 rows). Realistic estimate: ~20-30% of scans are a retry/re-scan/wrong-gate-then-right-gate/couple-ticket's two ledger entries (verify + confirm can each log), pushing this to 1.5-3x guest count |
-| `v2_cover_wallets` | 0-500 | Only relevant if the venue runs the wallet feature (Phase 2, not built yet) — at most one per attendee |
+| `v2_cover_wallets` | 0-500 | Only relevant if the venue runs the wallet feature (backend built: `/cover-wallets/*`, `/door/wallet-*`) — at most one per attendee |
 | `v2_cover_wallet_txns` | 0-3,000 | If wallets are used: a typical attendee taps a bar tab 2-6 times a night |
 | `v2_door_sales` | 0-100 | Walk-in/dine-in headcount sales — usually a small fraction of a pre-sold 300-500 person event, larger for a walk-up-heavy venue |
 

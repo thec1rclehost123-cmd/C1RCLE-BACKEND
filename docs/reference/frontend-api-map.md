@@ -1,5 +1,8 @@
 # V2 Frontend → API Gateway Mapping (source of truth: `C1RCLE-BACKEND/docs/reference/*` + `C1RCLE-BACKEND/task.md`)
 
+> ⚠️ **REFERENCE ONLY — snapshot as of 2026-08-12.** Every `BLOCKED`/`PLANNED` label below predates Phases 1–8; checkout, orders, payments, finance, payouts, door, admin, social and more are now live. Live routes: `apps/api-gateway/src/routes/v2/route-manifest.ts`; status: `docs/roadmap/ROADMAP.md`.
+
+
 > Contract principle: **backend owns the API gateway; the frontend imports it.**
 > All network traffic must go through `@c1rcle/api-client` → Fastify gateway
 > (`/api/v2`) only. No direct Firebase, no app-local business APIs, no

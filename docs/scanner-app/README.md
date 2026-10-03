@@ -13,8 +13,8 @@ agent-metadata:
 > **Living documentation** for the door-scanning system: the backend
 > surface (`apps/api-gateway/src/routes/v2/door/*`, built by Sagar,
 > branch `feat/scanner-app-backend`) and the frontend that will consume it
-> (not yet built — no scaffold exists anywhere in this workspace as of this
-> writing).
+> (an Expo workspace `C1RCLE-FRONTEND/apps/scanner-app` exists as of 2026-10-02;
+> its wiring status lives in the frontend repo, not here).
 > Verified against live code 2026-09-23.
 > Binding authority: `docs/architecture/decisions.md` (ADR D-025–D-029) →
 > live code. Wire contract **FROZEN**: `docs/api-contracts/scanner-app.md`.

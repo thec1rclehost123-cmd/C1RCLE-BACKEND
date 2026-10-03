@@ -1,5 +1,7 @@
 I've completed the investigation. Here's the report.
 
+> ⚠️ **REFERENCE ONLY — V1 admin-console audit (input to `docs/roadmap/ADMIN-DASHBOARD-GAPS.md`).** Describes V1, not V2.
+
 ---
 
 # **V1 Admin Console — Ground-Truth Feature & Logic Audit**
