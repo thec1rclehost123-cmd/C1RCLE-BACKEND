@@ -6,6 +6,7 @@ import {
 } from '../../domain/errors.js';
 import {
   addOnboardingDocument,
+  allRequiredDocumentsVerified,
   approveOnboardingRequest,
   createOnboardingRequest,
   missingDocuments,
@@ -14,6 +15,7 @@ import {
   rejectOnboardingRequest,
   requestOnboardingChanges,
   REQUIRED_DOCUMENT_LABELS,
+  REQUIRED_DOCUMENT_LABELS_BUSINESS,
   sanitizeApplicantProfile,
   submitOnboardingRequest,
   updateOnboardingProfile,
@@ -55,6 +57,12 @@ import type { ServiceDeps } from '../context.js';
  * partner type is a request; the plan determines the platform fee; and
  * `sanitizeApplicantProfile` drops everything else a client sends.
  */
+
+/** Every KYC label either entity-type path can upload. */
+const ALL_DOCUMENT_LABELS: readonly string[] = [
+  ...REQUIRED_DOCUMENT_LABELS,
+  ...REQUIRED_DOCUMENT_LABELS_BUSINESS,
+];
 
 /** How many verification attempts one applicant gets, and over what window. */
 const VERIFICATION_ATTEMPT_LIMIT = 5;
@@ -178,9 +186,13 @@ export class OnboardingService {
   ): Promise<UploadUrlGrant> {
     const request = await this.requireOwn(userId, command.requestId);
 
-    if (!REQUIRED_DOCUMENT_LABELS.includes(command.label)) {
+    // Validated against both entity-type label sets, not just this applicant's:
+    // `entityType` can still change while the request is a draft, and minting
+    // an upload URL has no side effect worth gating more tightly than "is this
+    // a real KYC label". Business applicants need the registration/signatory set.
+    if (!ALL_DOCUMENT_LABELS.includes(command.label)) {
       throw new InvalidOperationError(
-        `Unknown document label — expected one of ${REQUIRED_DOCUMENT_LABELS.join(', ')}`,
+        `Unknown document label — expected one of ${ALL_DOCUMENT_LABELS.join(', ')}`,
       );
     }
     if (!ALLOWED_UPLOAD_CONTENT_TYPES.includes(command.contentType)) {
@@ -414,6 +426,14 @@ export class OnboardingService {
     if (request.status !== 'submitted') {
       throw new InvalidOperationError(`Only a submitted application can be approved`);
     }
+    // Enforce the KYC gate BEFORE provisioning: `approveOnboardingRequest`
+    // re-checks it, but by then the organization would already be saved, and a
+    // refused approval must not leave an orphan organization behind.
+    if (!allRequiredDocumentsVerified(request)) {
+      throw new InvalidOperationError(
+        'All required documents must be verified on the KYC desk before this application can be approved',
+      );
+    }
 
     const now = this.deps.config.clock.now();
     const organization = createOrganization({
@@ -475,7 +495,7 @@ export class OnboardingService {
     command: ReviewCommand,
     meta?: AuditRequestMeta,
   ): Promise<OnboardingRequest> {
-    return this.review(
+    const updated = await this.review(
       adminUserId,
       command,
       'onboarding.request_changes',
@@ -483,6 +503,32 @@ export class OnboardingService {
         requestOnboardingChanges(request, { reviewedBy: admin.id, note: command.note, now }),
       meta,
     );
+
+    // Best-effort notification. The decision is already persisted and audited:
+    // an email-provider outage (or no resolvable email, e.g. memory/test
+    // driver) must not roll it back or block the admin. Every failure is
+    // logged, never silently swallowed.
+    try {
+      const email = await this.deps.userDirectory.getEmailById(updated.userId);
+      if (email) {
+        await this.deps.emailSender.sendOnboardingChangesRequestedEmail(email, {
+          legalName: updated.profile.legalName,
+          note: updated.reviewNote ?? '',
+        });
+      } else {
+        this.deps.logger.info('onboarding.changes_requested_email_skipped', {
+          requestId: updated.id,
+          reason: 'no_email_on_file',
+        });
+      }
+    } catch (error) {
+      this.deps.logger.error('onboarding.changes_requested_email_failed', {
+        requestId: updated.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    return updated;
   }
 
   private async review(
