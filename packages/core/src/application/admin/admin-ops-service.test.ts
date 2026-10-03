@@ -4,8 +4,10 @@ import { createCoreConfig, type CoreConfig } from '../../config/index.js';
 import { ForbiddenError } from '../../domain/errors.js';
 import { createPlatformAdmin, type AdminRole } from '../../domain/models/admin-authority.js';
 import { createPromoterAssignment } from '../../domain/models/event-catalog.js';
+import { LoggingEmailSender } from '../../domain/ports/email-sender.js';
 import { EchoObjectStorage } from '../../domain/ports/object-storage.js';
 import { MemoryPaymentProvider } from '../../domain/ports/payment-provider.js';
+import { NullUserDirectory } from '../../domain/ports/user-directory.js';
 import { FormatCheckVerificationProvider } from '../../domain/ports/verification.js';
 import { MemoryAdminAuditRepository } from '../../infrastructure/memory/memory-audit-repository.js';
 import { MemoryOutboxStore } from '../../infrastructure/memory/memory-outbox-store.js';
@@ -60,6 +62,8 @@ describe('AdminOperationsService — promoter & settings authority', () => {
       adminAudit,
       verification: new FormatCheckVerificationProvider(),
       objectStorage: new EchoObjectStorage(),
+      emailSender: new LoggingEmailSender(noopLogger),
+      userDirectory: new NullUserDirectory(),
       paymentProvider: new MemoryPaymentProvider('test_webhook_secret'),
       pricing: new PricingService({ eventCatalog: repositories.catalog }),
       inventory: new InventoryService({
