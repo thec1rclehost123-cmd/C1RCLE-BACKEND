@@ -1,0 +1,11 @@
+generated/**
+*.generated.ts
+**/node_modules/**
+**/dist/**
+**/coverage/**
+**/.turbo/**
+**/*.tsbuildinfo
+**/next-env.d.ts
+**/pnpm-lock.yaml
+**/firebase-debug.log
+**/.vercel/**

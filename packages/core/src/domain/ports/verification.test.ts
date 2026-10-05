@@ -24,7 +24,7 @@ describe('FormatCheckVerificationProvider', () => {
   it('passes a well-formed Aadhaar number', async () => {
     const result = await provider.verify({
       documentType: 'aadhaar',
-      documentNumber: '234567890123',
+      documentNumber: '234567890124',
     });
     expect(result).toEqual({ passed: true, provider: 'format-check', reason: 'format_ok' });
   });
@@ -74,7 +74,7 @@ describe('CompositeVerificationProvider', () => {
     );
     const result = await composite.verify({
       documentType: 'aadhaar',
-      documentNumber: '234567890123',
+      documentNumber: '234567890124',
     });
     expect(result.provider).toBe('format-check');
   });

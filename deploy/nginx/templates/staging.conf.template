@@ -2,8 +2,16 @@
 # intentionally not guessed here. Provide every value explicitly at runtime.
 
 upstream c1rcle_fastify {
-    server ${FASTIFY_UPSTREAM};
+    # least_conn across the primary server plus optional FASTIFY_UPSTREAM_2.._4
+    # (rendered into the gen include by the entrypoint, which also carries
+    # `zone` when NGINX_UPSTREAM_RESOLVE=1). A one-server pool never retries.
+    least_conn;
+    include /etc/nginx/c1rcle-gen/upstream-fastify*.inc;
+    server ${FASTIFY_UPSTREAM} max_fails=3 fail_timeout=10s${NGINX_UPSTREAM_OPTS};
     keepalive 32;
+    keepalive_requests 1000;
+    keepalive_time 1h;
+    keepalive_timeout 60s;
 }
 
 map $scheme $c1rcle_forwarded_proto {
@@ -26,6 +34,16 @@ map $host $c1rcle_host_allowed {
 map $http_x_readiness_token $c1rcle_readiness_allowed {
     default 0;
     "${NGINX_READINESS_TOKEN}" 1;
+}
+
+# Catch-all: the LB probe /healthz answers for ANY Host header; everything
+# else on an unknown Host is dropped (444).
+server {
+    listen ${NGINX_HTTP_PORT} default_server;
+    server_name _;
+
+    include /etc/nginx/snippets/c1rcle/edge-healthz.conf;
+    location / { return 444; }
 }
 
 server {

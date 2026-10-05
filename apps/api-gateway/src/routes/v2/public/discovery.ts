@@ -17,6 +17,7 @@ import type { Organization, TicketTier, Venue } from '@c1rcle/core/domain';
 
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
+import { tierToDto } from '../partner/event-catalog.js';
 import { eventToDto, mapDomainError } from '../partner/events.js';
 import { venueToDto } from '../partner/venues.js';
 
@@ -99,7 +100,7 @@ export default async function publicDiscoveryRoutes(fastify: FastifyInstance) {
         reply,
         request,
         publicTierListSchema,
-        tiers.map(publicTierToDto),
+        tiers.map(tierToDto),
       );
       if (!validated) return reply;
       return reply.send(validated);

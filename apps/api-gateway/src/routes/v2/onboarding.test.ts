@@ -69,7 +69,7 @@ async function uploadRequiredDocuments(userId: string, requestId: string) {
       method: 'POST',
       url: `/onboarding/applications/${requestId}/documents`,
       headers: asUser(userId),
-      payload: { label, storagePath: `kyc/${userId}/${label}.jpg` },
+      payload: { label, storagePath: `kyc/${userId}/${requestId}/${label}` },
     });
     expect(response.statusCode).toBe(200);
   }
@@ -239,7 +239,7 @@ describe('applicant onboarding', () => {
       method: 'POST',
       url: '/onboarding/verify-document',
       headers: asUser('user_a'),
-      payload: { documentType: 'aadhaar', documentNumber: '234567890123' },
+      payload: { documentType: 'aadhaar', documentNumber: '234567890124' },
     });
     expect(response.statusCode).toBe(200);
     const body = response.json();

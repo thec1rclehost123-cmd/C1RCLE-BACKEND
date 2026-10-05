@@ -19,7 +19,7 @@ validate_upstream() {
     variable_name="$1"
     eval "variable_value=\${$variable_name:-}"
     case "$variable_value" in
-        *://*|*/*|*" "*|*\?*)
+        *://*|*/*|*" "*|*\?*|*\;*|*\{*|*\}*|*\$*|*\'*|*\"*)
             echo "$variable_name must be a host:port value without a scheme, path, or spaces" >&2
             exit 64
             ;;
@@ -118,7 +118,78 @@ if [ "$topology" = "full-edge" ]; then
     validate_upstream BFF_ADMIN_UPSTREAM
 fi
 
-envsubst '${FASTIFY_UPSTREAM} ${BFF_GUEST_UPSTREAM} ${BFF_PARTNER_UPSTREAM} ${BFF_ADMIN_UPSTREAM} ${NGINX_HTTP_PORT} ${NGINX_HTTPS_PORT} ${NGINX_SERVER_NAME} ${NGINX_API_SERVER_NAME} ${NGINX_GUEST_SERVER_NAME} ${NGINX_PARTNER_SERVER_NAME} ${NGINX_ADMIN_SERVER_NAME} ${NGINX_READINESS_TOKEN} ${NGINX_FORWARDED_PROTO} ${NGINX_TLS_CERTIFICATE} ${NGINX_TLS_CERTIFICATE_KEY}' \
+# ---------------------------------------------------------------------------
+# Generated, env-driven fragments (see docs/nginx/load-balancing.md):
+#   realip.conf        TRUSTED_PROXY_CIDRS -> set_real_ip_from + real_ip_header
+#   resolver.conf      NGINX_UPSTREAM_RESOLVE=1 -> `resolver` (DNS re-resolution)
+#   upstream-*.inc     optional <UPSTREAM>_2.._4 servers (+ `zone` for resolve)
+# ---------------------------------------------------------------------------
+gen_dir=/etc/nginx/c1rcle-gen
+mkdir -p "$gen_dir"
+rm -f "$gen_dir"/*.conf "$gen_dir"/*.inc
+
+: > "$gen_dir/realip.conf"
+cidr_count=0
+if [ -n "${TRUSTED_PROXY_CIDRS:-}" ]; then
+    for cidr in $(printf '%s' "$TRUSTED_PROXY_CIDRS" | tr ',' ' '); do
+        case "$cidr" in
+            ''|*[!0-9a-fA-F:./]*)
+                echo "TRUSTED_PROXY_CIDRS contains an invalid entry: $cidr" >&2
+                exit 64
+                ;;
+        esac
+        echo "set_real_ip_from $cidr;" >> "$gen_dir/realip.conf"
+        cidr_count=$((cidr_count + 1))
+    done
+    if [ "$cidr_count" -gt 0 ]; then
+        printf 'real_ip_header X-Forwarded-For;\nreal_ip_recursive on;\n' >> "$gen_dir/realip.conf"
+    fi
+fi
+
+NGINX_UPSTREAM_OPTS=""
+: > "$gen_dir/resolver.conf"
+if [ "${NGINX_UPSTREAM_RESOLVE:-0}" = "1" ]; then
+    resolver_addr="${NGINX_RESOLVER:-}"
+    if [ -z "$resolver_addr" ] && [ -r /etc/resolv.conf ]; then
+        resolver_addr=$(awk '/^nameserver/ {print $2; exit}' /etc/resolv.conf)
+    fi
+    case "$resolver_addr" in
+        ''|*[!0-9a-fA-F:.\[\]]*)
+            echo "NGINX_UPSTREAM_RESOLVE=1 needs a valid NGINX_RESOLVER (or a nameserver in /etc/resolv.conf)" >&2
+            exit 64
+            ;;
+    esac
+    case "$resolver_addr" in
+        \[*) : ;;
+        *:*) resolver_addr="[$resolver_addr]" ;;
+    esac
+    echo "resolver $resolver_addr valid=${NGINX_RESOLVER_VALID:-10s} ipv6=off;" > "$gen_dir/resolver.conf"
+    NGINX_UPSTREAM_OPTS=" resolve"
+fi
+export NGINX_UPSTREAM_OPTS
+
+# gen_upstream <file-suffix> <zone-name> <env-var-base>
+gen_upstream() {
+    out="$gen_dir/upstream-$1.inc"
+    : > "$out"
+    if [ -n "$NGINX_UPSTREAM_OPTS" ]; then
+        echo "zone $2 64k;" >> "$out"
+    fi
+    for n in 2 3 4; do
+        eval "extra=\${${3}_$n:-}"
+        [ -z "$extra" ] && continue
+        validate_upstream "${3}_$n"
+        echo "server $extra max_fails=3 fail_timeout=10s${NGINX_UPSTREAM_OPTS};" >> "$out"
+    done
+}
+gen_upstream fastify c1rcle_fastify FASTIFY_UPSTREAM
+if [ "$topology" = "full-edge" ]; then
+    gen_upstream bff-guest c1rcle_bff_guest BFF_GUEST_UPSTREAM
+    gen_upstream bff-partner c1rcle_bff_partner BFF_PARTNER_UPSTREAM
+    gen_upstream bff-admin c1rcle_bff_admin BFF_ADMIN_UPSTREAM
+fi
+
+envsubst '${NGINX_UPSTREAM_OPTS} ${FASTIFY_UPSTREAM} ${BFF_GUEST_UPSTREAM} ${BFF_PARTNER_UPSTREAM} ${BFF_ADMIN_UPSTREAM} ${NGINX_HTTP_PORT} ${NGINX_HTTPS_PORT} ${NGINX_SERVER_NAME} ${NGINX_API_SERVER_NAME} ${NGINX_GUEST_SERVER_NAME} ${NGINX_PARTNER_SERVER_NAME} ${NGINX_ADMIN_SERVER_NAME} ${NGINX_READINESS_TOKEN} ${NGINX_FORWARDED_PROTO} ${NGINX_TLS_CERTIFICATE} ${NGINX_TLS_CERTIFICATE_KEY}' \
     < "$template_path" \
     > /etc/nginx/conf.d/c1rcle-api.conf
 

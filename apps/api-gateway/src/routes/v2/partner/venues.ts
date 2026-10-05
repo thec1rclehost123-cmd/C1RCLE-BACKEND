@@ -296,7 +296,12 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
   // (docs/architecture/decisions.md D-014/D-016), so neither is a stub.
   fastify.get(
     '/venues/:venueId/profile',
-    { preHandler: fastify.validateV2({ params: venueIdParam, headers: venueHeaders }) },
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({ params: venueIdParam, headers: venueHeaders }),
+      ],
+    },
     async (request, reply) => {
       const { venueId } = request.params as z.infer<typeof venueIdParam>;
       const actor = services.actor(request);

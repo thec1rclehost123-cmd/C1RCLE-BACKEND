@@ -419,7 +419,7 @@ export default async function partnerEventCatalogRoutes(fastify: FastifyInstance
 
 /* ─── Serializers ──────────────────────────────────────────────────────────── */
 
-function tierToDto(tier: TicketTier) {
+export function tierToDto(tier: TicketTier) {
   return {
     id: tier.id,
     eventId: tier.eventId,
