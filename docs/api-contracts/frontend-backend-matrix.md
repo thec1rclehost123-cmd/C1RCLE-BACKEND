@@ -9,19 +9,25 @@
 FIXTURE = frontend uses sample data; MISSING = no endpoint yet;
 LIVE = endpoint exists and is tested; BLOCKED = 404 by absence (a later phase).
 
-## Live vs blocked (backend, as of 2026-08-29)
+## Live vs blocked (backend; verified against `route-manifest.ts` 2026-10-02)
 
 - **LIVE:** `/api/v2/auth/*`, `/api/v2/onboarding/*`, `/api/v2/organizations*`
   (+ `/members`, `/invitations`, `/access`), `/api/v2/venues*`,
   `/api/v2/events*` (+ lifecycle), `/api/v2/events/:id/{ticket-tiers,
   promo-codes,table-packages,promoter-assignments}`,
   `/api/v2/organizations/:id/{partnerships,promoter-connections,analytics/overview}`,
-  `/api/v2/events/:id/{analytics,referral-links}`, `/api/v2/admin/*`, and the
+  `/api/v2/events/:id/{analytics,referral-links}`, `/api/v2/admin/*`, Phase 4
+  guest checkout (`/api/v2/checkout/*`, `/api/v2/orders/*`,
+  `/api/v2/payments/*`, `/api/v2/tickets/*`, `/api/v2/wallet/*`,
+  `/api/v2/public/*`, Razorpay webhook) and the
   Phase 5 door/scanner/cover-wallet routes (`/api/v2/door/*`,
   `/api/v2/cover-wallets/*`, `/api/v2/tickets/:id/qr`).
-- **BLOCKED (404 — no route):** checkout, orders, payments, refunds, payouts,
-  entitlement/ticket lists, `/api/v2/public/*` discovery, webhooks. Guest-portal
-  and partner finance/orders screens stay FIXTURE until those land.
+- **Also LIVE since the original table:** Phase 6 finance (`/api/v2/organizations/:id/{finance/*,payouts,bank-accounts,disputes}`, `/leaderboard`),
+  `/api/v2/admin/*` desks (refunds, payouts, disputes, orders, tickets, support, settings, …),
+  guest `/api/v2/{rsvp,profile/me,support/tickets}`, session-scoped social (`/follows*`, `/notifications/me*`) and the
+  org notification inbox (`/organizations/:id/notifications*`), SSE `GET /door/stats/stream`, signed `GET /door/offline-manifest`.
+- **BLOCKED (404 by absence, D-006):** ticket transfer/claim/cancel-transfer (`/tickets/:id/{transfer,claim,cancel-transfer}`), chat/DM, safety reports.
+  Frontend status columns below are a frontend-side snapshot and may lag — the endpoint rows above are the backend truth.
 
 ## Shared transport and session
 
@@ -42,7 +48,7 @@ LIVE = endpoint exists and is tested; BLOCKED = 404 by absence (a later phase).
 | /event/:eventId | event-detail.fixture.ts | /api/v2/public/events/:eventIdOrSlug | public | FIXTURE |
 | /checkout/:id | booking.fixture.ts | quotes -> reservations -> orders -> payment intents | public/auth at defined steps | FIXTURE; integration MISSING |
 | /confirmation/:id | booking fixture | /api/v2/orders/:orderId plus payment state | authenticated | FIXTURE |
-| /tickets | tickets.fixture.ts | /api/v2/me/tickets | authenticated | FIXTURE |
+| /tickets | tickets.fixture.ts | /api/v2/wallet/tickets (+ `/wallet`, `/wallet/orders`) | authenticated | FIXTURE |
 | /profile | profile.fixture.ts | session + user profile contract | authenticated | FIXTURE |
 | /profile/:userId | public profile fixture | public profile endpoint | public | FIXTURE |
 | /hosts, /host/:id | directory fixtures | /api/v2/public/hosts/:slug | public | FIXTURE |
@@ -52,22 +58,22 @@ LIVE = endpoint exists and is tested; BLOCKED = 404 by absence (a later phase).
 
 | Frontend surface | Current source | Target endpoint | Auth/permission | Status |
 | --- | --- | --- | --- | --- |
-| Login/bootstrap | login/PageClient.tsx, DashboardAuthProvider.tsx | /api/v2/session | session | MOCK/local handlers |
-| Onboarding/OTP | onboard/PageClient.tsx | approved onboarding/auth contract | public then authenticated | MOCK/local handlers |
-| KYC status | verify/PageClient.tsx | approved KYC endpoint | organization/KYC permission | MOCK/local handlers |
-| KYC upload | verify/PageClient.tsx | backend-issued upload session | authenticated | MISSING authoritative upload |
+| Login/bootstrap | login/PageClient.tsx, DashboardAuthProvider.tsx | /api/v2/auth/session | session | MOCK/local handlers |
+| Onboarding/OTP | onboard/PageClient.tsx | `/api/v2/auth/otp/*` + `/api/v2/onboarding/*` | public then authenticated | MOCK/local handlers |
+| KYC status | verify/PageClient.tsx | `/api/v2/onboarding/me`, `.../verify-document` | organization/KYC permission | MOCK/local handlers |
+| KYC upload | verify/PageClient.tsx | `POST /onboarding/applications/:id/documents/upload-url` (pre-signed) | authenticated | backend LIVE; frontend mock |
 | Venue/host overview | partner repositories and venue screens | organization/venue overview | venue.read | FIXTURE |
 | Events/create/edit | venue event screens | organization events + event commands | event.* | FIXTURE/endpoint mapping required |
 | Guests/check-in | venue guest/door screens | event guests + door/check-in routes | guest/door permissions | UI exists; backend mapping required |
 | Promoters/links | promoter/host repository interfaces | assignments + referral-links | scoped partner permissions | FIXTURE; adapter uses legacy /api/v1 |
 | Finance/orders | finance screens/repositories | organization orders/finance routes | order/finance permissions | FIXTURE |
-| Notifications | notification screens/models | organization notifications | authenticated | Presentation only; service missing |
+| Notifications | notification screens/models | `/api/v2/organizations/:id/notifications*` | authenticated | backend LIVE; frontend presentation only |
 
 ## Admin Console
 
 | Frontend surface | Current source | Target endpoint | Auth/permission | Status |
 | --- | --- | --- | --- | --- |
-| Shell/landing | apps/admin-console/src/app/page.tsx | Admin contract to be assigned | platform admin | Placeholder; MISSING data layer |
+| Shell/landing | apps/admin-console/src/app/page.tsx | `/api/v2/admin/*` (see `docs/roadmap/phase-07-admin-console.md`) | platform admin | backend LIVE; frontend desks wired (see frontend docs) |
 
 ## Integration gates
 

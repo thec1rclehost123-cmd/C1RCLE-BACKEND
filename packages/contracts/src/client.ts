@@ -40,6 +40,9 @@ export type {
   OtpSendRequest,
   OtpVerifyRequest,
   OtpAckResponse,
+  ForgotPasswordRequest,
+  ResetPasswordRequest,
+  PasswordResetAck,
 } from './contracts/auth.js';
 
 export {
@@ -52,6 +55,9 @@ export {
   otpSendRequestSchema,
   otpVerifyRequestSchema,
   otpAckResponseSchema,
+  forgotPasswordRequestSchema,
+  resetPasswordRequestSchema,
+  passwordResetAckSchema,
 } from './contracts/auth.js';
 
 // Organization, Venue, Member
@@ -65,11 +71,15 @@ export type {
   CreateVenueInput,
   OrganizationMemberDto,
   InviteMemberInput,
+  VenueAddress,
   VenueProfileDto,
   VenueSlotDto,
   CreateVenueBlockInput,
   SlotRequestDto,
   CreateSlotRequestInput,
+  SlotRequestListResponse,
+  SlotRequestActor,
+  SlotRequestDetailDto,
   InvitationStatus,
   InvitationDto,
   CreateInvitationRequest,
@@ -88,11 +98,15 @@ export {
   createVenueSchema,
   organizationMemberDtoSchema,
   inviteMemberSchema,
+  venueAddressSchema,
   venueProfileDtoSchema,
   venueSlotDtoSchema,
   createVenueBlockSchema,
   slotRequestDtoSchema,
   createSlotRequestSchema,
+  slotRequestListResponseSchema,
+  slotRequestActorSchema,
+  slotRequestDetailDtoSchema,
   invitationStatusSchema,
   invitationDtoSchema,
   createInvitationSchema,
@@ -116,11 +130,14 @@ export type {
   PosterUploadUrlDto,
   TicketTierDto,
   CreateTicketTierRequest,
+  PublicTicketTierDto,
+  PublicTicketTierListResponse,
   PromoCodeDto,
   CreatePromoCodeRequest,
   TablePackageDto,
   CreateTablePackageRequest,
   PromoterAssignmentDto,
+  PromoterAssignedEventDto,
   AssignPromoterRequest,
 } from './contracts/event.js';
 
@@ -136,11 +153,14 @@ export {
   ticketTierStatusSchema,
   ticketTierDtoSchema,
   createTicketTierSchema,
+  publicTicketTierDtoSchema,
+  publicTicketTierListResponseSchema,
   promoCodeDtoSchema,
   createPromoCodeSchema,
   tablePackageDtoSchema,
   createTablePackageSchema,
   promoterAssignmentDtoSchema,
+  promoterAssignedEventDtoSchema,
   assignPromoterSchema,
 } from './contracts/event.js';
 
@@ -149,8 +169,15 @@ export type {
   PartnershipDto,
   RequestPartnershipRequest,
   ResolvePartnershipRequest,
+  SetVenueShareRequest,
   PartnerAccessDto,
   OrganizationOverviewDto,
+  OrganizationTrendsDto,
+  TrendGranularity,
+  TrendBucketDto,
+  OrganizationCalendarDto,
+  OrganizationEventCardDto,
+  OrganizationEventCardListResponse,
   EventAnalyticsDto,
   ReferralLinkDto,
   CreateReferralLinkRequest,
@@ -166,9 +193,16 @@ export {
   partnershipDtoSchema,
   requestPartnershipSchema,
   resolvePartnershipSchema,
+  setVenueShareRequestSchema,
   partnerPermissionSchema,
   partnerAccessDtoSchema,
   organizationOverviewDtoSchema,
+  organizationTrendsDtoSchema,
+  trendGranularitySchema,
+  trendBucketDtoSchema,
+  organizationCalendarDtoSchema,
+  organizationEventCardDtoSchema,
+  organizationEventCardListResponseSchema,
   eventAnalyticsDtoSchema,
   referralLinkDtoSchema,
   createReferralLinkSchema,
@@ -189,9 +223,11 @@ export type {
   OnboardingDocumentLabel,
   DocumentUploadUrlRequest,
   DocumentUploadUrlDto,
+  DocumentReadUrlDto,
   VerifyDocumentRequest,
   VerificationResultDto,
   ReviewOnboardingRequest,
+  RejectKycDocumentRequest,
   ProvisionedOrganizationDto,
   ApproveOnboardingResult,
   PlatformAdminDto,
@@ -199,12 +235,18 @@ export type {
   ProposeActionRequest,
   ResolveProposalRequest,
   AdminAuditRecordDto,
+  AdminLookupResultItem,
+  AdminLookupResponse,
+  AdminAlertCategory,
+  AdminAlertsResponse,
+  AdminAlertCategoryKey,
 } from './contracts/onboarding.js';
 
 export {
   onboardingStatusSchema,
   onboardingPlanSchema,
   onboardingProfileSchema,
+  onboardingDocumentStatusSchema,
   onboardingDocumentSchema,
   onboardingRequestDtoSchema,
   startOnboardingSchema,
@@ -213,9 +255,11 @@ export {
   onboardingDocumentLabelSchema,
   documentUploadUrlRequestSchema,
   documentUploadUrlDtoSchema,
+  documentReadUrlDtoSchema,
   verifyDocumentSchema,
   verificationResultDtoSchema,
   reviewOnboardingSchema,
+  rejectKycDocumentSchema,
   provisionedOrganizationDtoSchema,
   approveOnboardingResultSchema,
   adminRoleSchema,
@@ -226,9 +270,11 @@ export {
   proposeActionSchema,
   resolveProposalSchema,
   adminAuditRecordDtoSchema,
+  adminLookupResultItemSchema,
+  adminLookupResponseSchema,
 } from './contracts/onboarding.js';
 
-// Checkout / Orders / Payments / Entitlements
+// Checkout / Orders / Payments / Entitlements / RSVP
 export type {
   PricingLineDto,
   PricingBreakdownDto,
@@ -240,6 +286,8 @@ export type {
   PaymentAttemptResponse,
   PaymentConfirmRequest,
   PaymentConfirmResponse,
+  RsvpRequest,
+  RsvpResponse,
   CheckoutOrderDto,
   OrderDto,
   OrdersListResponse,
@@ -267,6 +315,8 @@ export {
   paymentAttemptResponseSchema,
   paymentConfirmRequestSchema,
   paymentConfirmResponseSchema,
+  rsvpRequestSchema,
+  rsvpResponseSchema,
   checkoutOrderDtoSchema,
   orderDtoSchema,
   ordersListResponseSchema,
@@ -284,6 +334,40 @@ export {
 
 // Phase 5: Door / Scanner / Cover Wallet
 export type {
+  CoverWalletPresetItem,
+  WalletChargeView,
+  WalletQrResolveBody,
+  WalletChargeBody,
+  WalletChargeResponse,
+  DoorTicketSaleBody,
+  DoorTicketSaleResponse,
+  DoorEventListQuery,
+  DoorEventSummary,
+  DoorEventListResponse,
+  DoorTierSummary,
+  StartShiftResponse,
+  ScannerDeviceBindBody,
+  ScannerDeviceReauthorizeBody,
+  ScannerDeviceDto,
+  ScannerDeviceListResponse,
+  ScannerHeartbeatBody,
+  ConfirmCoupleBody,
+  StaffDenyBody,
+  DoorGuest,
+  DoorGuestListQuery,
+  DoorGuestListResponse,
+  ManualCheckInBody,
+  ManualCheckInResponse,
+  ScanDenyReasonCode,
+  EventCodeType,
+  EventCodeCreateBody,
+  EventCodeDto,
+  EventCodeListResponse,
+  RevokeReasonBody,
+  ScannerSessionTokenHeader,
+  TicketLookupResponse,
+  CheckInDto,
+  CheckInListResponse,
   ScannerSessionCreateBody,
   ScannerSessionDto,
   ScanRequest,
@@ -312,6 +396,44 @@ export type {
 } from './contracts/phase5.js';
 
 export {
+  coverWalletPresetItemSchema,
+  walletChargeViewSchema,
+  walletQrResolveBodySchema,
+  walletChargeBodySchema,
+  walletChargeResponseSchema,
+  doorTicketSaleBodySchema,
+  doorTicketSaleResponseSchema,
+  doorEventListQuerySchema,
+  doorEventSummarySchema,
+  doorEventListResponseSchema,
+  doorTierSummarySchema,
+  startShiftResponseSchema,
+  scannerDeviceBindBodySchema,
+  scannerDeviceReauthorizeBodySchema,
+  scannerDeviceDtoSchema,
+  scannerDeviceListResponseSchema,
+  scannerHeartbeatBodySchema,
+  confirmCoupleBodySchema,
+  staffDenyBodySchema,
+  doorGuestSchema,
+  doorGuestListQuerySchema,
+  doorGuestListResponseSchema,
+  attendanceReportQuerySchema,
+  attendanceReportGuestSchema,
+  attendanceReportTierBreakdownSchema,
+  attendanceReportDtoSchema,
+  manualCheckInBodySchema,
+  manualCheckInResponseSchema,
+  scanDenyReasonSchema,
+  eventCodeTypeSchema,
+  eventCodeCreateBodySchema,
+  eventCodeDtoSchema,
+  eventCodeListResponseSchema,
+  revokeReasonBodySchema,
+  scannerSessionTokenHeaderSchema,
+  ticketLookupResponseSchema,
+  checkInDtoSchema,
+  checkInListResponseSchema,
   scannerSessionCreateBodySchema,
   scannerSessionDtoSchema,
   scanRequestSchema,
@@ -339,6 +461,109 @@ export {
   phase5ErrorCodeSchema,
 } from './contracts/phase5.js';
 
+// Phase 7: Admin directory (venues / events / hosts / users)
+export type {
+  AdminVenueDto,
+  AdminVenueListResponse,
+  AdminEventDto,
+  AdminEventListResponse,
+  AdminHostDto,
+  AdminHostListResponse,
+  AdminUserDto,
+  AdminUserListResponse,
+} from './contracts/admin.js';
+
+export {
+  adminVenueDtoSchema,
+  adminVenueListResponseSchema,
+  adminEventDtoSchema,
+  adminEventListResponseSchema,
+  adminHostDtoSchema,
+  adminHostListResponseSchema,
+  adminUserDtoSchema,
+  adminUserListResponseSchema,
+} from './contracts/admin.js';
+
+// Phase 7: Admin orders desk (platform-wide read-only order list)
+export type {
+  AdminOrderContactDto,
+  AdminOrderDto,
+  AdminOrderListResponse,
+} from './contracts/admin-orders.js';
+
+export {
+  adminOrderContactDtoSchema,
+  adminOrderDtoSchema,
+  adminOrderListResponseSchema,
+} from './contracts/admin-orders.js';
+
+// Phase 7: Admin analytics desk (platform-wide revenue/ticket/event summary)
+export type {
+  AdminAnalyticsTopOrgDto,
+  AdminAnalyticsSummaryDto,
+} from './contracts/admin-analytics.js';
+
+export {
+  adminAnalyticsTopOrgDtoSchema,
+  adminAnalyticsSummaryDtoSchema,
+} from './contracts/admin-analytics.js';
+
+// Phase 7: Admin tickets desk (platform-wide entitlement ledger)
+export type {
+  AdminTicketStatus,
+  AdminTicketDto,
+  AdminTicketListResponse,
+} from './contracts/admin-tickets.js';
+
+export {
+  adminTicketStatusSchema,
+  adminTicketDtoSchema,
+  adminTicketListResponseSchema,
+} from './contracts/admin-tickets.js';
+
+// Phase 7: Admin promotions desk (platform-wide, read-only promo code listing)
+export type {
+  AdminPromoType,
+  AdminPromoDiscountType,
+  AdminPromoDto,
+  AdminPromoListResponse,
+} from './contracts/admin-promotions.js';
+
+export {
+  adminPromoTypeSchema,
+  adminPromoDiscountTypeSchema,
+  adminPromoDtoSchema,
+  adminPromoListResponseSchema,
+} from './contracts/admin-promotions.js';
+
+// Phase 7: Admin promoters desk (platform-wide, read-only assignment listing)
+export type {
+  AdminPromoterAssignmentStatus,
+  AdminPromoterAssignmentDto,
+  AdminPromoterAssignmentListResponse,
+  AdminPromoterSuspendRequest,
+  AdminPromoterActionResponse,
+} from './contracts/admin-promoters.js';
+
+export {
+  adminPromoterAssignmentStatusSchema,
+  adminPromoterAssignmentDtoSchema,
+  adminPromoterAssignmentListResponseSchema,
+  adminPromoterSuspendRequestSchema,
+  adminPromoterActionResponseSchema,
+} from './contracts/admin-promoters.js';
+
+// Phase 7: Admin platform settings
+export type {
+  PlatformSettingsDto,
+  PlatformSettingsUpdateRequest,
+} from './contracts/admin-settings.js';
+
+export {
+  platformSettingsDtoSchema,
+  platformSettingsUpdateRequestSchema,
+} from './contracts/admin-settings.js';
+
 // Phase 6: Finance / Ledger / Payouts
 export type {
   LedgerEntryDto,
@@ -350,31 +575,181 @@ export type {
   RaiseDisputeRequest,
   ResolveDisputeRequest,
   DisputeResponse,
+  DisputeResolutionOutcome,
+  AdminDisputeStatus,
+  AdminResolveDisputeInput,
   LeaderboardPeriodType,
   LeaderboardQuery,
   LeaderboardStatResponse,
+  RequestRefundInput,
+  RejectRefundRequestInput,
+  AdminRefundRequestStatus,
+  AdminRefundRequestDto,
+  AdminPayoutStatus,
+  RunPayoutBatchInput,
+  PayoutBatchResult,
+  FinanceOrderDto,
 } from './contracts/phase6.js';
 
 export {
   ledgerEntryDtoSchema,
   ledgerEntryListResponseSchema,
   balanceSummaryResponseSchema,
+  financeOrderDtoSchema,
+  financeOrderListResponseSchema,
   payoutRequestSchema,
   payoutResponseSchema,
   payoutListResponseSchema,
+  adminPayoutStatusSchema,
+  runPayoutBatchSchema,
+  payoutBatchResultSchema,
   bankAccountRequestSchema,
   bankAccountResponseSchema,
   bankAccountListResponseSchema,
   raiseDisputeRequestSchema,
   resolveDisputeRequestSchema,
+  disputeResolutionOutcomeSchema,
   disputeResponseSchema,
   disputeListResponseSchema,
+  adminDisputeStatusSchema,
+  adminResolveDisputeSchema,
   leaderboardPeriodTypeSchema,
   leaderboardQuerySchema,
   leaderboardStatResponseSchema,
   leaderboardTopResponseSchema,
+  requestRefundSchema,
+  rejectRefundRequestSchema,
+  adminRefundApprovalDtoSchema,
+  adminRefundRequestStatusSchema,
+  adminRefundRequestDtoSchema,
+  adminRefundRequestListResponseSchema,
 } from './contracts/phase6.js';
 
-// Public / discovery (Phase 4 PR1)
-export type { HostPublicDto, DiscoveryFeedDto } from './contracts/public.js';
-export { hostPublicDtoSchema, discoveryFeedDtoSchema } from './contracts/public.js';
+// Phase 7: Trust & safety + admin desks
+export type {
+  SupportTicketStatus,
+  SupportTicketPriority,
+  SupportTicketCategory,
+  SupportTicketMessageDto,
+  SupportInternalNoteDto,
+  SupportTimelineEventDto,
+  SupportTicketLinksDto,
+  SupportSlaDto,
+  SupportTicketRequesterDto,
+  SupportTicketDto,
+  SubmitSupportTicketInput,
+  SupportTicketMessageInput,
+  AssignSupportTicketInput,
+  ChangeSupportTicketPriorityInput,
+  SupportTicketLinkInput,
+  ResolveSupportTicketInput,
+  MergeSupportTicketInput,
+  SupportTicketQuery,
+  SupportTicketIdParam,
+} from './contracts/phase7.js';
+
+export {
+  supportTicketStatusSchema,
+  supportTicketPrioritySchema,
+  supportTicketCategorySchema,
+  supportTicketMessageDtoSchema,
+  supportInternalNoteDtoSchema,
+  supportTimelineEventDtoSchema,
+  supportTicketLinksDtoSchema,
+  supportSlaDtoSchema,
+  supportTicketRequesterDtoSchema,
+  supportTicketAssigneeDtoSchema,
+  supportTicketDtoSchema,
+  supportTicketListResponseSchema,
+  submitSupportTicketSchema,
+  supportTicketMessageSchema,
+  assignSupportTicketSchema,
+  changeSupportTicketPrioritySchema,
+  supportTicketLinkSchema,
+  resolveSupportTicketSchema,
+  mergeSupportTicketSchema,
+  supportTicketQuerySchema,
+  supportTicketIdParamSchema,
+} from './contracts/phase7.js';
+
+// Guest profile (guest-portal signup onboarding)
+export type { GuestProfileDto, UpsertGuestProfileRequest } from './contracts/guest-profile.js';
+export { guestProfileDtoSchema, upsertGuestProfileSchema } from './contracts/guest-profile.js';
+export type {
+  HostPublicDto,
+  VenuePublicDetailDto,
+  EventVenuePublicDto,
+  EventOrganizerPublicDto,
+  EventPublicDetailDto,
+  DiscoveryFeedDto,
+} from './contracts/public.js';
+export {
+  hostPublicDtoSchema,
+  venuePublicDetailDtoSchema,
+  eventVenuePublicDtoSchema,
+  eventOrganizerPublicDtoSchema,
+  eventPublicDetailDtoSchema,
+  discoveryFeedDtoSchema,
+} from './contracts/public.js';
+
+// Phase 8: guest follow graph + notification inbox (session-scoped).
+// NotificationDto/notificationDtoSchema are aliased — the V2 partner-inbox
+// exports below use the same names for a distinct DTO (org-tenant inbox vs
+// guest follow notifications). Every other name here is already distinct
+// (this file pluralizes "notification[s]ListResponse" etc.), so only those
+// two need it.
+export type {
+  CreateFollowRequest,
+  FollowDto,
+  FollowListResponse,
+  FollowStatusDto,
+  FollowTargetTypeDto,
+  MarkNotificationsReadRequest,
+  MarkReadResultDto,
+  NotificationDto as SocialNotificationDto,
+  NotificationListResponse,
+  UnreadCountDto,
+} from './contracts/social.js';
+export {
+  createFollowSchema,
+  followDtoSchema,
+  followListResponseSchema,
+  followStatusDtoSchema,
+  followTargetParamsSchema,
+  followTargetTypeSchema,
+  listMyFollowsQuerySchema,
+  listNotificationsQuerySchema,
+  markNotificationsReadSchema,
+  markReadResultDtoSchema,
+  notificationDtoSchema as socialNotificationDtoSchema,
+  notificationListResponseSchema,
+  notificationTypeSchema,
+  unreadCountDtoSchema,
+} from './contracts/social.js';
+
+// Notifications (V2 partner inbox)
+export type {
+  NotificationRecipientTypeDto,
+  NotificationActionTypeDto,
+  NotificationActionDto,
+  NotificationPriorityDto,
+  NotificationDto,
+  NotificationsListResponse,
+  NotificationReadRequest,
+  MarkAllNotificationsReadResult,
+  NotificationDecisionDto,
+  NotificationActionRequestDto,
+} from './contracts/notifications.js';
+
+export {
+  notificationRecipientTypeSchema,
+  notificationActionTypeSchema,
+  notificationActionSchema,
+  notificationPrioritySchema,
+  notificationDtoSchema,
+  notificationsListResponseSchema,
+  notificationReadRequestSchema,
+  markAllNotificationsReadResultSchema,
+  notificationDecisionSchema,
+  notificationActionRequestSchema,
+} from './contracts/notifications.js';

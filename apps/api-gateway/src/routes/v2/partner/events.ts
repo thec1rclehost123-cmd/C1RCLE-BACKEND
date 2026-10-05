@@ -5,6 +5,7 @@ import {
   paginationQuerySchema,
   versionHeaderSchema,
   eventDtoSchema,
+  promoterAssignedEventDtoSchema,
   updateEventSchema,
   cancelEventSchema,
   posterUploadUrlRequestSchema,
@@ -66,6 +67,17 @@ const createEventBody = z
     startAt: z.iso.datetime(),
     endAt: z.iso.datetime().nullable().optional(),
     tags: z.array(z.string().min(1).max(40)).max(50).optional(),
+    compensation: z
+      .object({
+        model: z.enum(['standard', 'custom', 'salary']),
+        globalRatePercent: z.number().int().min(0).max(100).nullable(),
+        tierRates: z.record(z.string(), z.number().int().min(0).max(100)),
+        salaryAmountPaise: z.number().int().positive().nullable(),
+        salaryPeriod: z.enum(['per_event', 'per_day', 'per_month']).nullable(),
+        salaryNotes: z.string().max(2000).nullable(),
+      })
+      .nullable()
+      .optional(),
   })
   .strict();
 
@@ -81,8 +93,56 @@ const readHeaders = z.looseObject({
 });
 
 const eventListSchema = paginatedSchema(eventDtoSchema);
+const assignedEventListSchema = z.array(promoterAssignedEventDtoSchema);
 
 export default async function partnerEventRoutes(fastify: FastifyInstance) {
+  // Promoters see only events with an active assignment to their own org.
+  // This is intentionally separate from the owner-scoped organization list.
+  fastify.get(
+    '/promoters/:promoterId/events',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({
+          params: z.object({ promoterId: opaqueIdSchema }),
+          headers: readHeaders,
+        }),
+        fastify.requirePermission('event.read'),
+      ],
+    },
+    async (request, reply) => {
+      const { promoterId } = request.params as { promoterId: string };
+      const actor = services.actor(request);
+      const events = await services.catalog
+        .listAssignedEvents(actor, promoterId)
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, promoterId, error, { hideForbidden: true }),
+        );
+      if (events === undefined) return reply;
+      const validated = validateV2Response(
+        reply,
+        request,
+        assignedEventListSchema,
+        events.map(({ event, assignment }) => ({
+          event: eventToDto(event),
+          assignment: {
+            id: assignment.id,
+            eventId: assignment.eventId,
+            promoterId: assignment.promoterId,
+            status: assignment.status,
+            terms: assignment.terms,
+            endedAt: assignment.endedAt,
+            version: assignment.version,
+            createdAt: assignment.createdAt,
+            updatedAt: assignment.updatedAt,
+          },
+        })),
+      );
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
   // ── LIST (org-scoped path, matches task.md §5) ────────────────────────────
   fastify.get(
     '/organizations/:organizationId/events',
@@ -185,6 +245,7 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
             startAt: body.startAt,
             endAt: body.endAt ?? null,
             tags: body.tags,
+            compensation: body.compensation ?? null,
           });
           const validated = validateV2Response(reply, request, eventDtoSchema, eventToDto(event));
           if (validated === undefined) throw new Error('v2 response validation failed');
@@ -441,6 +502,7 @@ export function eventToDto(event: Event) {
     startingPricePaise: event.startingPricePaise,
     isFree: event.isFree,
     cancellationReason: event.cancellationReason,
+    compensation: event.compensation ?? null,
     version: event.version,
     createdAt: event.createdAt,
     updatedAt: event.updatedAt,
@@ -465,10 +527,14 @@ export function mapDomainError(
     'organization_not_found',
     'venue_not_found',
     'event_not_found',
+    'promoter_assignment_not_found',
     'slot_request_not_found',
     'partnership_not_found',
+    'ticket_tier_not_found',
+    'promoter_assignment_not_found',
     'onboarding_request_not_found',
     'proposal_not_found',
+    'notification_not_found',
     // The generic `NotFoundError` (domain/errors.ts) carries this exact code —
     // previously missing here, so an order/ticket "not found" fell through
     // every branch below into the unmapped-error 500 (docs/architecture/
@@ -494,6 +560,20 @@ export function mapDomainError(
         status: 401,
         message: known.message ?? 'Authentication required',
         code: 'unauthorized',
+        requestId: request.id,
+      }),
+    );
+    return undefined;
+  }
+  if (known?.code === 'device_not_authorized') {
+    // Never masked as a 404, even on routes that hide `forbidden`: door staff
+    // need to be told the handset is deauthorized, and there is nothing to
+    // hide from a caller who already proved tenancy and a live session.
+    reply.status(403).send(
+      buildV2ErrorResponse({
+        status: 403,
+        message: known.message ?? 'Device not authorized',
+        code: 'forbidden',
         requestId: request.id,
       }),
     );
@@ -525,6 +605,20 @@ export function mapDomainError(
           expectedVersion: known.expectedVersion,
           currentVersion: known.currentVersion,
         },
+      }),
+    );
+    return undefined;
+  }
+  // Business-rule duplicate (e.g. a second RSVP for the same user+event) —
+  // distinct from optimistic-locking (`version_conflict`) and key reuse
+  // (`idempotency_*`): the request itself is disallowed by current state.
+  if (known?.code === 'conflict') {
+    reply.status(409).send(
+      buildV2ErrorResponse({
+        status: 409,
+        message: known.message ?? 'Conflict',
+        code: 'conflict',
+        requestId: request.id,
       }),
     );
     return undefined;

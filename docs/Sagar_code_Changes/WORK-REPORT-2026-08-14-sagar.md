@@ -1,5 +1,7 @@
 # Work report — 14 Aug 2026
 
+> **Historical log, as of 2026-08-14; see [ROADMAP.md](../roadmap/ROADMAP.md) for current status.**
+
 **Author:** Sagar · **Repo:** `C1RCLE-BACKEND` · **Branch:** `main`
 **Range:** `f075c0a` → `fc630c8` (8 commits) · 92 files changed, +12,393 / −212
 **Suite at end of day:** 276 tests green · boundaries clean · contract parity clean

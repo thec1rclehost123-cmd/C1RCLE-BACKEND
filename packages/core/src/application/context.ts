@@ -11,8 +11,10 @@ import { domainEvent, type DomainEventType, type EventPayloads } from '../domain
 import type { CoreConfig } from '../config/index.js';
 import type { EntityId } from '../domain/identity.js';
 import type { InventoryService } from './inventory/inventory-service.js';
+import type { PricingService } from './pricing/pricing-service.js';
 import type { OrganizationRole, Capability } from '../domain/models/organization.js';
 import type { AdminAuditRepository } from '../domain/ports/audit.js';
+import type { EmailSender } from '../domain/ports/email-sender.js';
 import type { ObjectStoragePort } from '../domain/ports/object-storage.js';
 import type { OutboxWriter } from '../domain/ports/outbox.js';
 import type { PaymentProvider } from '../domain/ports/payment-provider.js';
@@ -39,6 +41,7 @@ import type {
   ScanLedgerRepository,
   EventCodeRepository,
   ScannerSessionRepository,
+  ScannerDeviceRepository,
   DoorSaleRepository,
   CoverWalletRepository,
   CoverWalletTxnRepository,
@@ -49,10 +52,20 @@ import type {
   DisputeRepository,
   LeaderboardRepository,
   EmailOtpRepository,
+  GuestProfileRepository,
+  FollowRepository,
+  SocialNotificationRepository,
+  AdminRefundRequestRepository,
+  UserAccountRepository,
+  UserBanRepository,
+  PlatformSettingsRepository,
+  SupportTicketRepository,
+  SafetyReportRepository,
+  NotificationRepository,
 } from '../domain/ports/repositories.js';
+import type { UserDirectoryPort } from '../domain/ports/user-directory.js';
 import type { VerificationProvider } from '../domain/ports/verification.js';
 import type { Logger } from '../telemetry/logger.js';
-import type { PricingService } from './pricing/pricing-service.js';
 
 /** Who is making this call and in which tenant/role. Set by gateway auth. */
 export interface ActorContext {
@@ -86,6 +99,17 @@ export interface ServiceDeps {
    * `EchoObjectStorage` on the memory driver; Firebase Storage v4 on firestore.
    */
   objectStorage: ObjectStoragePort;
+  /**
+   * Phase 2 gap-closure: outbound transactional email beyond OTP (currently:
+   * notifying an applicant their onboarding request needs changes).
+   */
+  emailSender: EmailSender;
+  /**
+   * Phase 2 gap-closure: resolves a `userId` to an email for the services
+   * that need to reach a user outside their own session. `NullUserDirectory`
+   * on the memory driver; reads Better Auth's own store on firestore.
+   */
+  userDirectory: UserDirectoryPort;
   /** Phase 4: Payment provider (pluggable) */
   paymentProvider: PaymentProvider;
   /** Phase 4: Pricing engine */
@@ -117,6 +141,8 @@ export interface ServiceDeps {
     scanLedger: ScanLedgerRepository;
     eventCodes: EventCodeRepository;
     scannerSessions: ScannerSessionRepository;
+    /** Phase 5: handsets a venue has authorized to work its door. */
+    scannerDevices: ScannerDeviceRepository;
     doorSales: DoorSaleRepository;
     coverWallets: CoverWalletRepository;
     coverWalletTxns: CoverWalletTxnRepository;
@@ -128,6 +154,23 @@ export interface ServiceDeps {
     disputes: DisputeRepository;
     leaderboard: LeaderboardRepository;
     emailOtp: EmailOtpRepository;
+    guestProfiles: GuestProfileRepository;
+    /** Phase 8: guest → venue/host follow edges. */
+    follows: FollowRepository;
+    /** Phase 8: per-user in-app inbox, written by bus consumers. */
+    socialNotifications: SocialNotificationRepository;
+    refundRequests: AdminRefundRequestRepository;
+    /** Platform support tickets (guest intake + admin desk). */
+    supportTickets: SupportTicketRepository;
+    /** Platform safety reports (guest intake + admin desk). */
+    safetyReports: SafetyReportRepository;
+    /** Platform user directory (admin users view) — read-only. */
+    users: UserAccountRepository;
+    /** Platform user ban state — Phase 7 trust & safety. */
+    userBans: UserBanRepository;
+    platformSettings: PlatformSettingsRepository;
+    /** V2 partner-dashboard inbox (org-tenant recipient). */
+    notifications: NotificationRepository;
   };
 }
 

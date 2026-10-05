@@ -10,6 +10,8 @@ fat `/api/v2/session` bootstrap; memberships come from `GET /api/v2/organization
 and permissions from `GET /api/v2/organizations/:id/access`. See
 `docs/api-contracts/auth-and-permissions.md`. The migration order in this doc
 matches `C1RCLE-FRONTEND/docs/superpowers/plans/2026-08-27-auth-foundation-plan.md`.
+> **Point-in-time frontend inventory (audited 2026-08-20).** The `MISSING`/`FIXTURE` statuses below describe the frontend then, not the backend: the matching `/api/v2` endpoints (checkout, payments, wallet, KYC upload, notifications, admin, finance) are now live — see `docs/roadmap/ROADMAP.md` and `docs/api-contracts/frontend-backend-matrix.md`.
+
 **Audited:** 2026-08-20 · **Audited HEAD:** cecbc85 on staging (pre-api-client-rebuild)
 
 This is the authoritative index for frontend service and service-like layers in

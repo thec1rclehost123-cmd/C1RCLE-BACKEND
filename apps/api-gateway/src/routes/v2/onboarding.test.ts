@@ -269,6 +269,18 @@ describe('applicant onboarding', () => {
 });
 
 describe('admin review', () => {
+  /** Verifies the three labels `uploadRequiredDocuments` uploaded — the KYC-desk gate `approve` now enforces. */
+  async function verifyRequiredDocuments(adminUserId: string, requestId: string) {
+    for (const label of ['id_front', 'id_back', 'selfie']) {
+      const response = await server.inject({
+        method: 'POST',
+        url: `/admin/onboarding/applications/${requestId}/documents/${label}/verify`,
+        headers: asUser(adminUserId),
+      });
+      expect(response.statusCode).toBe(200);
+    }
+  }
+
   async function submittedApplication(
     plan: 'basic' | 'silver' | 'diamond' = 'basic',
   ): Promise<string> {
@@ -279,6 +291,8 @@ describe('admin review', () => {
       url: `/onboarding/applications/${created.id}/submit`,
       headers: asUser('user_a'),
     });
+    await seedAdmin('admin_kyc', 'ops');
+    await verifyRequiredDocuments('admin_kyc', created.id);
     return created.id;
   }
 
@@ -300,6 +314,78 @@ describe('admin review', () => {
       headers: asUser('admin_support'),
     });
     expect(response.statusCode).toBe(403);
+  });
+
+  it('refuses approval while a required document is still unverified — the KYC gate', async () => {
+    const created = await startApplication('user_a');
+    await uploadRequiredDocuments('user_a', created.id);
+    await server.inject({
+      method: 'POST',
+      url: `/onboarding/applications/${created.id}/submit`,
+      headers: asUser('user_a'),
+    });
+    await seedAdmin('admin_ops', 'ops');
+
+    const response = await server.inject({
+      method: 'POST',
+      url: `/admin/onboarding/applications/${created.id}/approve`,
+      headers: asUser('admin_ops'),
+    });
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('KYC desk verify/reject never changes the application status', async () => {
+    const created = await startApplication('user_a');
+    await uploadRequiredDocuments('user_a', created.id);
+    await server.inject({
+      method: 'POST',
+      url: `/onboarding/applications/${created.id}/submit`,
+      headers: asUser('user_a'),
+    });
+    await seedAdmin('admin_kyc', 'ops');
+
+    const verified = await server.inject({
+      method: 'POST',
+      url: `/admin/onboarding/applications/${created.id}/documents/id_front/verify`,
+      headers: asUser('admin_kyc'),
+    });
+    expect(verified.statusCode).toBe(200);
+    const verifiedBody = verified.json<{
+      status: string;
+      documents: { label: string; status: string }[];
+    }>();
+    expect(verifiedBody.status).toBe('submitted');
+    expect(verifiedBody.documents.find((d) => d.label === 'id_front')?.status).toBe('verified');
+
+    const rejected = await server.inject({
+      method: 'POST',
+      url: `/admin/onboarding/applications/${created.id}/documents/id_back/reject`,
+      headers: asUser('admin_kyc'),
+      payload: { reason: 'Blurry photo' },
+    });
+    expect(rejected.statusCode).toBe(200);
+    const rejectedBody = rejected.json<{
+      status: string;
+      documents: { label: string; status: string; rejectionReason: string | null }[];
+    }>();
+    expect(rejectedBody.status).toBe('submitted');
+    const idBack = rejectedBody.documents.find((d) => d.label === 'id_back');
+    expect(idBack?.status).toBe('rejected');
+    expect(idBack?.rejectionReason).toBe('Blurry photo');
+  });
+
+  it('rejecting a document without a reason is refused', async () => {
+    const created = await startApplication('user_a');
+    await uploadRequiredDocuments('user_a', created.id);
+    await seedAdmin('admin_kyc', 'ops');
+
+    const response = await server.inject({
+      method: 'POST',
+      url: `/admin/onboarding/applications/${created.id}/documents/id_front/reject`,
+      headers: asUser('admin_kyc'),
+      payload: {},
+    });
+    expect(response.statusCode).toBe(422);
   });
 
   it('provisions an organization carrying the plan platform fee', async () => {
@@ -371,6 +457,146 @@ describe('admin review', () => {
     expect(withNote.json().status).toBe('changes_requested');
   });
 
+  describe('KYC document desk', () => {
+    /** Submitted application whose documents are still all `pending` (no KYC review yet). */
+    async function unreviewedApplication(): Promise<string> {
+      const created = await startApplication('user_a');
+      await uploadRequiredDocuments('user_a', created.id);
+      await server.inject({
+        method: 'POST',
+        url: `/onboarding/applications/${created.id}/submit`,
+        headers: asUser('user_a'),
+      });
+      return created.id;
+    }
+
+    it('verifies each document and lets approval through once all are verified', async () => {
+      const requestId = await unreviewedApplication();
+      await seedAdmin('admin_ops', 'ops');
+
+      for (const label of ['id_front', 'id_back', 'selfie']) {
+        const verify = await server.inject({
+          method: 'POST',
+          url: `/admin/onboarding/applications/${requestId}/documents/${label}/verify`,
+          headers: asUser('admin_ops'),
+        });
+        expect(verify.statusCode).toBe(200);
+        expect(
+          verify
+            .json<{ documents: { label: string; status: string }[] }>()
+            .documents.find((d) => d.label === label)?.status,
+        ).toBe('verified');
+      }
+
+      const approved = await server.inject({
+        method: 'POST',
+        url: `/admin/onboarding/applications/${requestId}/approve`,
+        headers: asUser('admin_ops'),
+      });
+      expect(approved.statusCode).toBe(200);
+    });
+
+    it('blocks approval while any required document is unverified, provisioning nothing', async () => {
+      const requestId = await unreviewedApplication();
+      await seedAdmin('admin_ops', 'ops');
+
+      // Only two of the three required documents verified.
+      for (const label of ['id_front', 'id_back']) {
+        await server.inject({
+          method: 'POST',
+          url: `/admin/onboarding/applications/${requestId}/documents/${label}/verify`,
+          headers: asUser('admin_ops'),
+        });
+      }
+
+      const orgsBefore = await services.repos().organizations.listActive(100);
+
+      const approved = await server.inject({
+        method: 'POST',
+        url: `/admin/onboarding/applications/${requestId}/approve`,
+        headers: asUser('admin_ops'),
+      });
+      expect(approved.statusCode).toBe(400);
+
+      // A refused approval must not leave a half-provisioned organization behind.
+      expect(await services.repos().organizations.listActive(100)).toHaveLength(orgsBefore.length);
+    });
+
+    it('rejects a document with a reason, and refuses one with no reason', async () => {
+      const requestId = await unreviewedApplication();
+      await seedAdmin('admin_ops', 'ops');
+
+      const noReason = await server.inject({
+        method: 'POST',
+        url: `/admin/onboarding/applications/${requestId}/documents/selfie/reject`,
+        headers: asUser('admin_ops'),
+        payload: {},
+      });
+      expect(noReason.statusCode).toBe(422);
+
+      const rejected = await server.inject({
+        method: 'POST',
+        url: `/admin/onboarding/applications/${requestId}/documents/selfie/reject`,
+        headers: asUser('admin_ops'),
+        payload: { reason: 'Blurry photo' },
+      });
+      expect(rejected.statusCode).toBe(200);
+      const doc = rejected
+        .json<{ documents: { label: string; status: string; rejectionReason: string | null }[] }>()
+        .documents.find((d) => d.label === 'selfie');
+      expect(doc).toMatchObject({ status: 'rejected', rejectionReason: 'Blurry photo' });
+    });
+
+    it('404s document review for an unknown request, and 422s an unknown label', async () => {
+      await seedAdmin('admin_ops', 'ops');
+      const unknownRequest = await server.inject({
+        method: 'POST',
+        url: '/admin/onboarding/applications/no_such_request/documents/id_front/verify',
+        headers: asUser('admin_ops'),
+      });
+      expect(unknownRequest.statusCode).toBe(404);
+
+      const requestId = await unreviewedApplication();
+      const unknownLabel = await server.inject({
+        method: 'POST',
+        url: `/admin/onboarding/applications/${requestId}/documents/passport/verify`,
+        headers: asUser('admin_ops'),
+      });
+      expect(unknownLabel.statusCode).toBe(422);
+    });
+
+    it('refuses document verify to a caller who is not a platform admin', async () => {
+      const requestId = await unreviewedApplication();
+      const response = await server.inject({
+        method: 'POST',
+        url: `/admin/onboarding/applications/${requestId}/documents/id_front/verify`,
+        headers: { 'x-user-id': 'user_a', 'idempotency-key': 'k1' },
+      });
+      expect(response.statusCode).toBe(401);
+    });
+
+    it('replays an idempotency key rather than reviewing the document twice', async () => {
+      const requestId = await unreviewedApplication();
+      await seedAdmin('admin_ops', 'ops');
+      const headers = { 'x-user-id': 'admin_ops', 'idempotency-key': 'verify-key-1' };
+
+      const first = await server.inject({
+        method: 'POST',
+        url: `/admin/onboarding/applications/${requestId}/documents/id_front/verify`,
+        headers,
+      });
+      expect(first.statusCode).toBe(200);
+
+      const replay = await server.inject({
+        method: 'POST',
+        url: `/admin/onboarding/applications/${requestId}/documents/id_front/verify`,
+        headers,
+      });
+      expect(replay.statusCode).toBe(200);
+      expect(replay.json()).toEqual(first.json());
+    });
+  });
+
   it('lets the applicant edit again after changes are requested', async () => {
     const requestId = await submittedApplication();
     await seedAdmin('admin_ops', 'ops');
@@ -388,6 +614,66 @@ describe('admin review', () => {
       payload: { bio: 'Rooftop bar in Bandra' },
     });
     expect(edit.statusCode).toBe(200);
+  });
+});
+
+describe('admin document read URLs', () => {
+  async function submittedApplication(): Promise<string> {
+    const created = await startApplication('user_a');
+    await uploadRequiredDocuments('user_a', created.id);
+    await server.inject({
+      method: 'POST',
+      url: `/onboarding/applications/${created.id}/submit`,
+      headers: asUser('user_a'),
+    });
+    return created.id;
+  }
+
+  it('any admin (even support, below TIER2) can mint a read URL for an uploaded document', async () => {
+    const requestId = await submittedApplication();
+    await seedAdmin('admin_support', 'support');
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/admin/onboarding/applications/${requestId}/documents/id_front/read-url`,
+      headers: { 'x-user-id': 'admin_support' },
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json<{ readUrl: string; expiresAt: number }>();
+    expect(body.readUrl.length).toBeGreaterThan(0);
+    expect(body.expiresAt).toBeGreaterThan(Date.now());
+  });
+
+  it('refuses a non-admin', async () => {
+    const requestId = await submittedApplication();
+    const response = await server.inject({
+      method: 'GET',
+      url: `/admin/onboarding/applications/${requestId}/documents/id_front/read-url`,
+      headers: { 'x-user-id': 'not_an_admin' },
+    });
+    expect(response.statusCode).toBe(401);
+  });
+
+  it('404s for a label that was never uploaded', async () => {
+    const requestId = await submittedApplication();
+    await seedAdmin('admin_ops', 'ops');
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/admin/onboarding/applications/${requestId}/documents/registration_certificate/read-url`,
+      headers: { 'x-user-id': 'admin_ops' },
+    });
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('404s for an unknown request id', async () => {
+    await seedAdmin('admin_ops', 'ops');
+    const response = await server.inject({
+      method: 'GET',
+      url: '/admin/onboarding/applications/req_missing/documents/id_front/read-url',
+      headers: { 'x-user-id': 'admin_ops' },
+    });
+    expect(response.statusCode).toBe(404);
   });
 });
 
@@ -475,6 +761,110 @@ describe('dual control', () => {
     expect(provisioned.statusCode).toBe(201);
     const body = provisioned.json();
     expect(body).toMatchObject({ id: 'user_new_admin', role: 'ops', isActive: true });
+  });
+
+  it('updates an admin role once two different super admins have signed', async () => {
+    await seedAdmin('admin_super', 'super');
+    await seedAdmin('admin_super2', 'super');
+    await seedAdmin('admin_ops', 'ops');
+
+    const proposed = await server.inject({
+      method: 'POST',
+      url: '/admin/proposals',
+      headers: asUser('admin_super'),
+      payload: {
+        action: 'ADMIN_ROLE_UPDATE',
+        reason: 'Promoting to finance',
+        payload: { targetUserId: 'admin_ops', role: 'finance' },
+      },
+    });
+    expect(proposed.statusCode).toBe(201);
+    const proposalId = proposed.json().id as string;
+
+    const approved = await server.inject({
+      method: 'POST',
+      url: `/admin/proposals/${proposalId}/approve`,
+      headers: asUser('admin_super2'),
+    });
+    expect(approved.statusCode).toBe(200);
+
+    const executed = await server.inject({
+      method: 'POST',
+      url: `/admin/proposals/${proposalId}/update-admin-role`,
+      headers: asUser('admin_super2'),
+    });
+    expect(executed.statusCode).toBe(200);
+    expect(executed.json()).toMatchObject({ id: 'admin_ops', role: 'finance' });
+  });
+
+  it('refuses to demote the last active super admin, even racing two approved proposals', async () => {
+    await seedAdmin('admin_super', 'super');
+    await seedAdmin('admin_super2', 'super');
+
+    // Two proposals in flight at once: each supers demotes the other,
+    // each approved by the other while both are still super. Both reach
+    // 'approved' — the demotion-time guard, not the approval step, is
+    // what has to catch the second execution.
+    async function raiseAndApprove(proposer: string, approver: string, target: string) {
+      const proposed = await server.inject({
+        method: 'POST',
+        url: '/admin/proposals',
+        headers: asUser(proposer),
+        payload: {
+          action: 'ADMIN_ROLE_UPDATE',
+          reason: 'Stepping down',
+          payload: { targetUserId: target, role: 'ops' },
+        },
+      });
+      const proposalId = proposed.json().id as string;
+      await server.inject({
+        method: 'POST',
+        url: `/admin/proposals/${proposalId}/approve`,
+        headers: asUser(approver),
+      });
+      return proposalId;
+    }
+
+    const proposalA = await raiseAndApprove('admin_super', 'admin_super2', 'admin_super');
+    const proposalB = await raiseAndApprove('admin_super2', 'admin_super', 'admin_super2');
+
+    const firstExecute = await server.inject({
+      method: 'POST',
+      url: `/admin/proposals/${proposalA}/update-admin-role`,
+      headers: asUser('admin_super'),
+    });
+    expect(firstExecute.statusCode).toBe(200);
+
+    const secondExecute = await server.inject({
+      method: 'POST',
+      url: `/admin/proposals/${proposalB}/update-admin-role`,
+      headers: asUser('admin_super2'),
+    });
+    expect(secondExecute.statusCode).toBe(400);
+  });
+
+  it('refuses to update a role from a proposal nobody has approved', async () => {
+    await seedAdmin('admin_super', 'super');
+    await seedAdmin('admin_ops', 'ops');
+
+    const proposed = await server.inject({
+      method: 'POST',
+      url: '/admin/proposals',
+      headers: asUser('admin_super'),
+      payload: {
+        action: 'ADMIN_ROLE_UPDATE',
+        reason: 'test',
+        payload: { targetUserId: 'admin_ops', role: 'finance' },
+      },
+    });
+    const proposalId = proposed.json().id as string;
+
+    const executed = await server.inject({
+      method: 'POST',
+      url: `/admin/proposals/${proposalId}/update-admin-role`,
+      headers: asUser('admin_super'),
+    });
+    expect(executed.statusCode).toBe(403);
   });
 
   it('revokes authority without a second signature, and never one’s own', async () => {

@@ -6,9 +6,9 @@ name: Security
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, staging]
   push:
-    branches: [main]
+    branches: [main, staging]
   schedule:
     # Mondays 06:15 UTC. Catches CVEs published against unchanged code.
     - cron: '15 6 * * 1'
@@ -45,6 +45,7 @@ jobs:
               - 'package.json'
               - 'pnpm-lock.yaml'
               - 'pnpm-workspace.yaml'
+              - 'governance/**'
               - 'turbo.json'
               - 'tsconfig.base.json'
               - 'eslint.config.mjs'
@@ -57,7 +58,10 @@ jobs:
   # Skip if no code changes (docs-only PRs).
   codeql:
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    # PR-gate only. A push to main/staging is always a merge of a PR that
+    # already ran this — re-scanning the merge commit is a duplicate scan of
+    # the same diff, not new signal.
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'push'
     name: CodeQL
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -121,7 +125,8 @@ jobs:
   scan:
     name: Dependency, secret & config scan
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    # PR-gate only — see `codeql`'s comment above for why push is excluded.
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
@@ -150,6 +155,15 @@ jobs:
       - name: Audit dependencies
         id: audit
         run: pnpm audit --audit-level=high
+
+      # `pnpm audit` only sees the lockfile, so a lockfile-only advisory fix
+      # looks clean here and then reverts on the next `pnpm install`. This walks
+      # the PR's commits and rejects that shape: a security commit touching
+      # pnpm-lock.yaml without touching pnpm-workspace.yaml. Needs history, which
+      # is why it lives here (fetch-depth: 0) rather than in CI's static job.
+      - name: Durable security pins
+        id: pins
+        run: node scripts/check-security-pins.mjs --base "${{ github.event.pull_request.base.sha || github.sha }}"
 
       - name: Scan for verified secrets
         id: secrets
@@ -216,6 +230,7 @@ jobs:
             echo "| Scan | Result |"
             echo "| --- | :--- |"
             echo "| pnpm audit | ${{ steps.audit.outcome }} |"
+            echo "| Durable security pins | ${{ steps.pins.outcome }} |"
             echo "| Secrets | ${{ steps.secrets.outcome }} |"
             echo "| Config misconfiguration | ${{ steps.config.outcome }} |"
             echo "| Dependency CVEs | ${{ steps.cve.outcome }} |"
@@ -224,8 +239,10 @@ jobs:
   # ── Supply-chain posture ───────────────────────────────────────────────────
   scorecard:
     name: OSSF Scorecard
-    # Scorecard grades the default branch; running it per-PR is noise.
-    if: github.event_name != 'pull_request'
+    # Scorecard's own action refuses anything but the default branch
+    # ("validating options: only default branch is supported") — it must
+    # exclude staging pushes, not just pull_request events.
+    if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

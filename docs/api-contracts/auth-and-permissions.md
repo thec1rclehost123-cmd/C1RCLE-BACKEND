@@ -25,6 +25,8 @@ not a separately minted JWT. Real auth requires `STORAGE_DRIVER=firestore`
 | POST | `/api/v2/auth/login` | `loginRequestSchema` `{ email, password }` `.strict()` | 200 `authBridgeResponseSchema` | `SENSITIVE_COMMAND` |
 | POST | `/api/v2/auth/refresh` | none (httpOnly cookie only) | 200 `authBridgeResponseSchema` | `SENSITIVE_COMMAND` |
 | POST | `/api/v2/auth/logout` | none | 204 (+ Set-Cookie clear; revokes the server session) | — |
+| POST | `/api/v2/auth/forgot-password`, `/api/v2/auth/reset-password` | see `auth/index.ts` | generic acknowledgement (no account oracle) | `SENSITIVE_COMMAND` |
+| POST | `/api/v2/auth/otp/send`, `/api/v2/auth/otp/verify` | email OTP for signup verification (`otp-routes.ts`) | generic ack (`If valid, a code has been sent.`) | `OTP_SEND` / `OTP_VERIFY` |
 | GET | `/api/v2/auth/session` | none | 200 `sessionSchema` `{ user, expiresAt }` or 401 | `AUTH_READ` (240/60s) |
 
 `user` = `userSchema` `{ id, email, displayName, role: 'guest'|'partner'|'admin',

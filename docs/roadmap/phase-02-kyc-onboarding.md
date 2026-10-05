@@ -1,6 +1,14 @@
 # Phase 2 — KYC / Onboarding
 
-**Status:** substantially done (2026-08-14) · **Depends on:** Phase 0 (auth)
+**Status:** done (2026-08-14); pre-signed upload URLs 2026-08-30 (`2a9a4b3`); admin per-document verify/reject/read-url routes on `staging` · **Depends on:** Phase 0 (auth)
+
+**Current state (verified against `staging`, 2026-10-02):**
+
+- Applicant: `/onboarding/{me,applications,applications/:id,.../documents,.../documents/upload-url,.../submit,verify-document}`.
+- Admin: queue/detail, `POST .../documents/:label/{verify,reject}`, `GET .../documents/:label/read-url`, approve/reject/request-changes via `/admin/onboarding/applications/:id/:action`.
+- **Approve gate (on `staging`, enforced server-side):** `OnboardingService.approve` requires status `submitted` (else 400 `InvalidOperationError`) and then every required document `verified` — individual: `id_front,id_back,selfie`; `entityType: 'business'`: `registration_certificate,sig_id_front,sig_id_back,sig_selfie`. A `pending` or `rejected` document blocks approval with HTTP 400, **before** any organization is provisioned. Domain: `approveOnboardingRequest` + `allRequiredDocumentsVerified` (`domain/models/onboarding.ts`). A re-upload resets a document to `pending`.
+- Request-changes emails the applicant best-effort (`EmailSender.sendOnboardingChangesRequestedEmail` via `UserDirectoryPort`); a send failure or missing email is logged and never fails the review.
+- Phone verification (`documentType: 'phone'`) verifies a Firebase ID token via `firebase-admin` `verifyIdToken` (`lib/verification/firebase-phone-verifier.ts`); other document types use the format-check provider (D-018). Email OTP is separate: `POST /auth/otp/{send,verify}`.
 
 Currently explicitly BLOCKED in every C1RCLE-BACKEND doc
 (`docs/reference/frontend-api-map.md`: "no manifest entry exists for KYC/onboarding/
@@ -89,10 +97,14 @@ the organization with the plan's fee and the single capability applied for).
 
 ## Deferred, and why
 
-- **Signed storage upload.** `addDocument` takes a `storagePath` the client has
+- ~~**Signed storage upload.** `addDocument` takes a `storagePath` the client has
   already written to; issuing signed upload URLs needs a Firebase Storage
   bucket decision that has not been made. The label→path convention from v1
-  (`kyc/{userId}/{label}.{ext}`) is what the tests use.
+  (`kyc/{userId}/{label}.{ext}`) is what the tests use.~~
+  **✅ DONE 2026-08-30 (`2a9a4b3`)** — the storage-bucket decision was made
+  and pre-signed upload URLs are implemented. The Firebase Admin SDK stays
+  behind the infrastructure adapter; routes hand the client a signed URL rather
+  than proxying bytes.
 - **Approval email.** No mail transport exists in V2 yet; it belongs with
   notifications (Phase 8) rather than bolted onto this path.
 - **`v2_verification_attempts` sub-collection shape.** Stored flat with a

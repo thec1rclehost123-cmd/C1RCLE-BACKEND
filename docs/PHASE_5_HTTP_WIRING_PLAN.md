@@ -1,12 +1,20 @@
 # Phase 5 HTTP wiring plan (2026-08-21)
 
-> **Partially superseded (2026-09-07).** Points 3 (freeze/unfreeze = 501),
-> Builder B's stats stub, and the override/offline-manifest 501s have been
-> implemented in commits `0342d80`, `53727c8`, `2ec1e61`. Only 2 honest 501s
-> remain: `/door/stats/ws` (needs `@fastify/websocket`) and scanner
-> manifest-signing. Kept as the original wiring plan reference.
+> **Fully superseded (verified 2026-09-28).** The 501s this plan set out to
+> remove are all gone. Points 3 (freeze/unfreeze), Builder B's stats stub, and
+> the override/offline-manifest 501s landed in `0342d80`, `53727c8`, `2ec1e61`.
+> The two that remained as of 2026-09-07 are also closed (both in `efb8a17`,
+> 2026-09-16): `/door/offline-manifest` now returns a signed manifest, and
+> `/door/stats/ws` was **not** built as a WebSocket — `@fastify/websocket` was
+> deliberately skipped in favour of SSE at `GET /door/stats/stream` (D-028;
+> one-way data, so SSE inherits the existing auth/CORS/rate-limit controls
+> rather than putting a token in a WebSocket query string). So the plan's
+> "Week 3 Gate" ask of "WebSocket connects" was met by a different mechanism,
+> not by the one written here. **No 501 stubs remain in Phase 5.** Kept only
+> as the original wiring-plan reference; live truth is
+> `docs/roadmap/phase-05-door-scanner-cover-wallet.md`.
 
-Supersedes `docs/phase-05-implementation-plan.md` (untracked draft — written as
+Superseded an earlier draft implementation plan (since deleted — written as
 if 5A/5B didn't exist yet; they do, see below). Domain models, repository
 ports, memory + Firestore adapters, application services, and Phase 5
 contracts are ALL already built and wired into `v2-services.ts`. Verified

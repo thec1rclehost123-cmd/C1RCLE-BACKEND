@@ -76,6 +76,24 @@ export class ForbiddenError extends DomainError {
   }
 }
 
+/**
+ * The presented scanner-session token is valid, but the handset it belongs to
+ * is no longer authorized by the venue (unbound, or never bound).
+ *
+ * Its own type rather than a plain `ForbiddenError` because the two must get
+ * different answers at the edge. A cross-tenant `ForbiddenError` is masked as
+ * a 404 so it cannot confirm that another club's resource exists; this one
+ * must stay a plain 403, because the door staff standing there need to be
+ * told "this phone is no longer authorized" rather than "no such event" —
+ * and there is nothing to hide, since the caller has already proved both
+ * tenant membership and a live session.
+ */
+export class DeviceNotAuthorizedError extends DomainError {
+  constructor(message = 'This device is not authorized to scan for this venue') {
+    super(message, 'device_not_authorized');
+  }
+}
+
 /** No valid session (B10) — distinct from `ForbiddenError` (valid session, wrong scope). */
 export class UnauthorizedError extends DomainError {
   constructor(message = 'Authentication required') {
@@ -115,6 +133,18 @@ export class InvalidOperationError extends DomainError {
   }
 }
 
+/**
+ * The request conflicts with current state (e.g. an RSVP already exists for
+ * this user+event). Maps to HTTP 409 with code `conflict` — distinct from
+ * `VersionConflictError` (optimistic-locking) and `IdempotencyConflictError`
+ * (key reuse): this is a business-rule duplicate, not a concurrency accident.
+ */
+export class ConflictError extends DomainError {
+  constructor(message: string) {
+    super(message, 'conflict');
+  }
+}
+
 export class IdempotencyConflictError extends DomainError {
   constructor(idempotencyKey: string) {
     super(
@@ -136,5 +166,11 @@ export class IdempotencyInFlightError extends DomainError {
 export class NotFoundError extends DomainError {
   constructor(resource: string, id: string) {
     super(`${resource} ${id} not found`, 'not_found');
+  }
+}
+
+export class NotificationNotFoundError extends DomainError {
+  constructor(notificationId: string) {
+    super(`Notification ${notificationId} not found`, 'notification_not_found');
   }
 }

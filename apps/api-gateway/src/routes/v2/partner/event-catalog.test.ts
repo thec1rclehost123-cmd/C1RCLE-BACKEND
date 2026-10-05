@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
+import notificationRoutes from '../notifications/notifications-routes.js';
 
 import partnerEventCatalogRoutes from './event-catalog.js';
 import partnerEventRoutes from './events.js';
@@ -22,6 +23,7 @@ const buildServer = () =>
       partnerVenueRoutes,
       partnerEventRoutes,
       partnerEventCatalogRoutes,
+      notificationRoutes,
     ],
   });
 
@@ -70,7 +72,21 @@ describe('ticket tiers', () => {
       method: 'POST',
       url: `/events/${eventId}/ticket-tiers`,
       headers: write(org),
-      payload: { name: 'Early Bird', priceInPaise: 150_000, quantity: 100 },
+      payload: {
+        name: 'Early Bird',
+        priceInPaise: 150_000,
+        quantity: 100,
+        pricingPhases: [
+          {
+            id: 'p1',
+            name: 'Early Bird',
+            priceInPaise: 150_000,
+            startDate: '01-01',
+            endDate: '02-01',
+            quantity: 100,
+          },
+        ],
+      },
     });
 
     expect(created.statusCode).toBe(201);
@@ -89,6 +105,134 @@ describe('ticket tiers', () => {
     });
     expect(listed.statusCode).toBe(200);
     expect(listed.json()).toHaveLength(1);
+    await server.close();
+  });
+
+  it('round-trips independent access, audience, phase, benefit, and table fields', async () => {
+    const server = await buildServer();
+    const { org, eventId } = await seed(server);
+    const response = await server.inject({
+      method: 'POST',
+      url: '/events/' + eventId + '/ticket-tiers',
+      headers: write(org),
+      payload: {
+        name: 'VIP Table',
+        priceInPaise: 2_500_000,
+        quantity: 10,
+        accessType: 'TABLE',
+        audienceType: 'GENERAL',
+        guestCount: 6,
+        pricingPhases: [
+          {
+            id: 'phase-1',
+            name: 'Early Bird',
+            priceInPaise: 2_000_000,
+            startDate: '01-01',
+            endDate: '01-02',
+            quantity: 5,
+          },
+        ],
+        benefits: ['Entry', 'Bottle'],
+        doorPriceInPaise: 3_000_000,
+        minAge: 21,
+        maxPerUser: 2,
+        tableConfig: {
+          capacity: 6,
+          minimumSpendPaise: 1_000_000,
+          redeemableAmountPaise: 500_000,
+          tableCount: 10,
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      accessType: 'TABLE',
+      audienceType: 'GENERAL',
+      guestCount: 6,
+      doorPriceInPaise: 3_000_000,
+      benefits: ['Entry', 'Bottle'],
+      tableConfig: { capacity: 6, tableCount: 10 },
+    });
+    await server.close();
+  });
+
+  it('rejects a paid RSVP at the domain boundary', async () => {
+    const server = await buildServer();
+    const { org, eventId } = await seed(server);
+    const response = await server.inject({
+      method: 'POST',
+      url: '/events/' + eventId + '/ticket-tiers',
+      headers: write(org),
+      payload: { name: 'RSVP', priceInPaise: 1, quantity: 10, accessType: 'RSVP' },
+    });
+
+    expect(response.statusCode).toBe(422);
+    await server.close();
+  });
+
+  it('rejects a table ticket without table configuration', async () => {
+    const server = await buildServer();
+    const { org, eventId } = await seed(server);
+    const response = await server.inject({
+      method: 'POST',
+      url: '/events/' + eventId + '/ticket-tiers',
+      headers: write(org),
+      payload: {
+        name: 'Table',
+        priceInPaise: 1_000,
+        quantity: 2,
+        accessType: 'TABLE',
+        pricingPhases: [
+          {
+            id: 'p1',
+            name: 'Phase',
+            priceInPaise: 1_000,
+            startDate: '01-01',
+            endDate: '02-01',
+            quantity: 2,
+          },
+        ],
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    await server.close();
+  });
+
+  it('rejects overlapping pricing phases', async () => {
+    const server = await buildServer();
+    const { org, eventId } = await seed(server);
+    const response = await server.inject({
+      method: 'POST',
+      url: '/events/' + eventId + '/ticket-tiers',
+      headers: write(org),
+      payload: {
+        name: 'Phased',
+        priceInPaise: 1_000,
+        quantity: 2,
+        pricingPhases: [
+          {
+            id: 'phase-1',
+            name: 'One',
+            priceInPaise: 1_000,
+            startDate: '01-01',
+            endDate: '10-01',
+            quantity: null,
+          },
+          {
+            id: 'phase-2',
+            name: 'Two',
+            priceInPaise: 2_000,
+            startDate: '09-01',
+            endDate: '20-01',
+            quantity: null,
+          },
+        ],
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
     await server.close();
   });
 
@@ -116,7 +260,21 @@ describe('ticket tiers', () => {
       method: 'POST',
       url: `/events/${eventId}/ticket-tiers`,
       headers: read(org),
-      payload: { name: 'No Key', priceInPaise: 1000, quantity: 1 },
+      payload: {
+        name: 'No Key',
+        priceInPaise: 1000,
+        quantity: 1,
+        pricingPhases: [
+          {
+            id: 'p1',
+            name: 'Phase',
+            priceInPaise: 1000,
+            startDate: '01-01',
+            endDate: '02-01',
+            quantity: 1,
+          },
+        ],
+      },
     });
 
     expect(response.statusCode).toBe(422);
@@ -128,7 +286,21 @@ describe('ticket tiers', () => {
     const server = await buildServer();
     const { org, eventId } = await seed(server);
     const headers = write(org);
-    const payload = { name: 'Replayed', priceInPaise: 5000, quantity: 5 };
+    const payload = {
+      name: 'Replayed',
+      priceInPaise: 5000,
+      quantity: 5,
+      pricingPhases: [
+        {
+          id: 'p1',
+          name: 'Phase',
+          priceInPaise: 5000,
+          startDate: '01-01',
+          endDate: '02-01',
+          quantity: 5,
+        },
+      ],
+    };
 
     const first = await server.inject({
       method: 'POST',
@@ -256,6 +428,60 @@ describe('table packages', () => {
 });
 
 describe('promoter assignments', () => {
+  it('shows active assigned event details and frozen terms to that promoter only', async () => {
+    const server = await buildServer();
+    const { org, eventId } = await seed(server);
+    await server.inject({
+      method: 'POST',
+      url: `/events/${eventId}/promoter-assignments`,
+      headers: write(org),
+      payload: { promoterId: org, ratePercent: 22, flatPaise: 5000 },
+    });
+
+    const assigned = await server.inject({
+      method: 'GET',
+      url: `/promoters/${org}/events`,
+      headers: read(org),
+    });
+    expect(assigned.statusCode).toBe(200);
+    expect(assigned.json()).toHaveLength(1);
+    expect(assigned.json()[0]).toMatchObject({
+      event: { id: eventId, title: 'Sky Night' },
+      assignment: {
+        promoterId: org,
+        status: 'active',
+        terms: { ratePercent: 22, flatPaise: 5000 },
+      },
+    });
+
+    const notifications = await server.inject({
+      method: 'GET',
+      url: `/organizations/${org}/notifications`,
+      headers: read(org),
+    });
+    expect(notifications.statusCode).toBe(200);
+    expect(notifications.json().items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          recipientId: org,
+          recipientType: 'promoter',
+          type: 'promoter_assignment.created',
+          title: 'You have been assigned to an event',
+          body: 'You have been assigned to "Sky Night".',
+          data: expect.objectContaining({ eventTitle: 'Sky Night' }),
+        }),
+      ]),
+    );
+
+    const otherPromoter = await server.inject({
+      method: 'GET',
+      url: `/promoters/another_promoter/events`,
+      headers: read(org),
+    });
+    expect(otherPromoter.statusCode).toBe(404);
+    await server.close();
+  });
+
   it('freezes the commission terms into the assignment', async () => {
     const server = await buildServer();
     const { org, eventId } = await seed(server);

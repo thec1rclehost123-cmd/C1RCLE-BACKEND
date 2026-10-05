@@ -179,6 +179,29 @@ export function updateVenue(venue: Venue, update: VenueUpdate, now?: Date): Venu
 }
 
 /**
+ * Suspends a venue (admin resolution for `VENUE_SUSPEND`). Mirrors
+ * `suspendOrganization`'s shape.
+ */
+export function suspendVenue(venue: Venue, now?: Date): Venue {
+  if (venue.status === 'suspended') return venue;
+  const ts = (now ?? new Date()).toISOString();
+  return { ...venue, status: 'suspended', version: venue.version + 1, updatedAt: ts };
+}
+
+/**
+ * Reinstates a suspended venue (admin resolution for `VENUE_REINSTATE`).
+ * Always restores the single literal `'active'` status — v1's console
+ * wrote a divergent `'reinstated'` string on this path, which silently
+ * dropped the venue from every query filtering on `status === 'active'`.
+ * No-op if already active.
+ */
+export function reinstateVenue(venue: Venue, now?: Date): Venue {
+  if (venue.status === 'active') return venue;
+  const ts = (now ?? new Date()).toISOString();
+  return { ...venue, status: 'active', version: venue.version + 1, updatedAt: ts };
+}
+
+/**
  * ─── Venue slots ──────────────────────────────────────────────────────────────
  * A slot is an offered time window (recurring intents handled upstream).
  */

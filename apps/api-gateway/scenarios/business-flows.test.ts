@@ -3,8 +3,6 @@ import { createHmac } from 'node:crypto';
 import { MemoryPaymentProvider, createPlatformAdmin } from '@c1rcle/core/domain';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import type { ActorContext } from '@c1rcle/core/application';
-
 import { buildApp } from '../src/app.js';
 import { createV2Services } from '../src/lib/v2-services.js';
 
@@ -37,13 +35,6 @@ let keySeq = 0;
 const ik = (prefix: string) => `${prefix}-${++keySeq}-${Date.now()}`;
 
 const services = createV2Services();
-
-const STAFF: ActorContext = {
-  userId: 'staff_1',
-  organizationId: 'org_placeholder',
-  role: 'owner',
-  capabilities: [],
-};
 
 /** Header set for an org-scoped host actor (fabricated on the memory driver). */
 const host = (orgId: string) => ({
@@ -134,6 +125,27 @@ async function onboardAndApproveHost(
     .platformAdmins.save(
       createPlatformAdmin({ id: 'ops_1', email: 'ops@c1rcle.test', role: 'ops' }),
     );
+
+  // Approval is gated on every required document being verified on the KYC
+  // desk first — a separate admin action from the application decision.
+  // Prove the gate is real before proving it opens.
+  const blocked = await server.inject({
+    method: 'POST',
+    url: `/api/v2/admin/onboarding/applications/${requestId}/approve`,
+    headers: asUser('ops_1'),
+    payload: {},
+  });
+  expect(blocked.statusCode, JSON.stringify(blocked.json())).toBe(400);
+
+  for (const label of ['id_front', 'id_back', 'selfie']) {
+    const verify = await server.inject({
+      method: 'POST',
+      url: `/api/v2/admin/onboarding/applications/${requestId}/documents/${label}/verify`,
+      headers: asUser('ops_1'),
+      payload: {},
+    });
+    expect(verify.statusCode, JSON.stringify(verify.json())).toBe(200);
+  }
 
   const approve = await server.inject({
     method: 'POST',
@@ -294,6 +306,161 @@ describe('scenario: host lifecycle (onboarding -> publish -> public discovery)',
   });
 });
 
+describe('scenario: KYC document reject, re-upload, request-changes, and the approve gate', () => {
+  it('walks the full document review lifecycle through the real HTTP routes', async () => {
+    const applicantId = 'applicant_kyc_1';
+    const start = await server.inject({
+      method: 'POST',
+      url: '/api/v2/onboarding/applications',
+      headers: asUser(applicantId),
+      payload: { requestedType: 'venue', plan: 'basic', profile: FULL_PROFILE },
+    });
+    expect(start.statusCode, JSON.stringify(start.json())).toBe(201);
+    const requestId: string = start.json().id;
+
+    for (const label of ['id_front', 'id_back', 'selfie']) {
+      const doc = await server.inject({
+        method: 'POST',
+        url: `/api/v2/onboarding/applications/${requestId}/documents`,
+        headers: asUser(applicantId),
+        payload: { label, storagePath: `kyc/${applicantId}/${label}.jpg` },
+      });
+      expect(doc.statusCode).toBe(200);
+    }
+
+    const submit = await server.inject({
+      method: 'POST',
+      url: `/api/v2/onboarding/applications/${requestId}/submit`,
+      headers: asUser(applicantId),
+    });
+    expect(submit.statusCode).toBe(200);
+
+    await services
+      .repos()
+      .platformAdmins.save(
+        createPlatformAdmin({ id: 'ops_kyc', email: 'ops.kyc@c1rcle.test', role: 'ops' }),
+      );
+    const admin = { ...asUser('ops_kyc'), 'idempotency-key': ik('admin-kyc') };
+
+    // An admin may mint a read URL for one document without it being a decision.
+    const readUrl = await server.inject({
+      method: 'GET',
+      url: `/api/v2/admin/onboarding/applications/${requestId}/documents/id_front/read-url`,
+      headers: { 'x-user-id': 'ops_kyc' },
+    });
+    expect(readUrl.statusCode, JSON.stringify(readUrl.json())).toBe(200);
+    expect(typeof readUrl.json().readUrl).toBe('string');
+
+    // Reject one document — a reason is required.
+    const reject = await server.inject({
+      method: 'POST',
+      url: `/api/v2/admin/onboarding/applications/${requestId}/documents/id_front/reject`,
+      headers: admin,
+      payload: { reason: 'Photo is blurry, re-upload needed' },
+    });
+    expect(reject.statusCode, JSON.stringify(reject.json())).toBe(200);
+    const afterReject = reject
+      .json()
+      .documents.find((d: { label: string }) => d.label === 'id_front');
+    expect(afterReject.status).toBe('rejected');
+    expect(afterReject.rejectionReason).toBe('Photo is blurry, re-upload needed');
+
+    // The applicant re-uploads — the new copy must be pending again, never
+    // inheriting the stale rejected status.
+    const reupload = await server.inject({
+      method: 'POST',
+      url: `/api/v2/onboarding/applications/${requestId}/documents`,
+      headers: asUser(applicantId),
+      payload: { label: 'id_front', storagePath: `kyc/${applicantId}/id_front-v2.jpg` },
+    });
+    expect(reupload.statusCode).toBe(200);
+    const afterReupload = reupload
+      .json()
+      .documents.find((d: { label: string }) => d.label === 'id_front');
+    expect(afterReupload.status).toBe('pending');
+    expect(afterReupload.rejectionReason).toBeNull();
+
+    // Approval is still blocked — id_front is pending again after the re-upload.
+    const stillBlocked = await server.inject({
+      method: 'POST',
+      url: `/api/v2/admin/onboarding/applications/${requestId}/approve`,
+      headers: admin,
+      payload: {},
+    });
+    expect(stillBlocked.statusCode).toBe(400);
+
+    for (const label of ['id_front', 'id_back', 'selfie']) {
+      const verify = await server.inject({
+        method: 'POST',
+        url: `/api/v2/admin/onboarding/applications/${requestId}/documents/${label}/verify`,
+        headers: { ...asUser('ops_kyc'), 'idempotency-key': ik(`verify-kyc-${label}`) },
+      });
+      expect(verify.statusCode, JSON.stringify(verify.json())).toBe(200);
+    }
+
+    const approve = await server.inject({
+      method: 'POST',
+      url: `/api/v2/admin/onboarding/applications/${requestId}/approve`,
+      headers: { ...asUser('ops_kyc'), 'idempotency-key': ik('approve-kyc') },
+      payload: {},
+    });
+    expect(approve.statusCode, JSON.stringify(approve.json())).toBe(200);
+  });
+
+  it('requests changes with a note the applicant can read back on their own application', async () => {
+    const applicantId = 'applicant_kyc_2';
+    const start = await server.inject({
+      method: 'POST',
+      url: '/api/v2/onboarding/applications',
+      headers: asUser(applicantId),
+      payload: { requestedType: 'venue', plan: 'basic', profile: FULL_PROFILE },
+    });
+    const requestId: string = start.json().id;
+
+    for (const label of ['id_front', 'id_back', 'selfie']) {
+      await server.inject({
+        method: 'POST',
+        url: `/api/v2/onboarding/applications/${requestId}/documents`,
+        headers: asUser(applicantId),
+        payload: { label, storagePath: `kyc/${applicantId}/${label}.jpg` },
+      });
+    }
+    await server.inject({
+      method: 'POST',
+      url: `/api/v2/onboarding/applications/${requestId}/submit`,
+      headers: asUser(applicantId),
+    });
+
+    await services
+      .repos()
+      .platformAdmins.save(
+        createPlatformAdmin({ id: 'ops_kyc2', email: 'ops.kyc2@c1rcle.test', role: 'ops' }),
+      );
+
+    const requestChanges = await server.inject({
+      method: 'POST',
+      url: `/api/v2/admin/onboarding/applications/${requestId}/request-changes`,
+      headers: { ...asUser('ops_kyc2'), 'idempotency-key': ik('request-changes-kyc') },
+      payload: { note: 'Your ID photo is cropped — please re-upload showing all four corners.' },
+    });
+    expect(requestChanges.statusCode, JSON.stringify(requestChanges.json())).toBe(200);
+    expect(requestChanges.json().status).toBe('changes_requested');
+
+    // The applicant's own view of the application must carry the same note —
+    // this is what the partner-dashboard's changes-requested banner reads.
+    const mine = await server.inject({
+      method: 'GET',
+      url: '/api/v2/onboarding/me',
+      headers: asUser(applicantId),
+    });
+    expect(mine.statusCode).toBe(200);
+    expect(mine.json().request.status).toBe('changes_requested');
+    expect(mine.json().request.reviewNote).toBe(
+      'Your ID photo is cropped — please re-upload showing all four corners.',
+    );
+  });
+});
+
 describe('scenario: guest purchase + door check-in + finance settlement', () => {
   it('lets a guest buy a ticket, be admitted at the door, and settle the host ledger', async () => {
     const { orgId } = await onboardAndApproveHost(server);
@@ -361,20 +528,15 @@ describe('scenario: guest purchase + door check-in + finance settlement', () => 
     expect(tickets.length).toBe(1);
     const entitlementId: string = tickets[0].id;
 
-    // ── Door admission (standard event-code path) ───────────────────────────
-    const eventCode = await services.scanner.createEventCode(
-      {
-        eventId,
-        organizationId: orgId,
-        venueId: null,
-        type: 'full',
-        gate: null,
-        createdBy: STAFF.userId,
-        createdByName: 'Staff One',
-        expiresAt: null,
-      },
-      { ...STAFF, organizationId: orgId },
-    );
+    // ── Door admission (mint a door code over HTTP, redeem it, scan) ────────
+    const codeResponse = await server.inject({
+      method: 'POST',
+      url: `/api/v2/events/${eventId}/door-codes`,
+      headers: { 'x-organization-id': orgId },
+      payload: { type: 'full', gate: null, expiresAt: null },
+    });
+    expect(codeResponse.statusCode, JSON.stringify(codeResponse.json())).toBe(201);
+    const doorCode: string = codeResponse.json().code;
 
     const deviceId = `device_scenario_${keySeq}`;
     const session = await server.inject({
@@ -383,27 +545,35 @@ describe('scenario: guest purchase + door check-in + finance settlement', () => 
       headers: { 'x-organization-id': orgId },
       payload: {
         eventId,
-        code: eventCode.code,
+        code: doorCode,
         deviceId,
         deviceName: 'Gate iPad 1',
         sessionType: 'staff',
       },
     });
     expect(session.statusCode, JSON.stringify(session.json())).toBe(201);
+    const scannerToken: string = session.json().sessionToken;
+    expect(scannerToken).toEqual(expect.any(String));
 
     const checkIn = await server.inject({
       method: 'POST',
       url: '/api/v2/door/check-ins',
-      headers: { 'x-organization-id': orgId },
-      payload: {
-        eventId,
-        qrPayload: entitlementId,
-        scannedBy: { uid: STAFF.userId, name: 'Staff One', role: 'staff' },
-        deviceId,
-      },
+      headers: { 'x-organization-id': orgId, 'x-scanner-session-token': scannerToken },
+      payload: { eventId, qrPayload: entitlementId, operatorName: 'Staff One' },
     });
     expect(checkIn.statusCode, JSON.stringify(checkIn.json())).toBe(200);
     expect(checkIn.json()).toMatchObject({ status: 'consumed', checkInId: expect.any(String) });
+
+    // The same ticket a second time is refused — the entitlement was actually
+    // spent, not merely logged.
+    const replay = await server.inject({
+      method: 'POST',
+      url: '/api/v2/door/check-ins',
+      headers: { 'x-organization-id': orgId, 'x-scanner-session-token': scannerToken },
+      payload: { eventId, qrPayload: entitlementId },
+    });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json()).toMatchObject({ status: 'denied', denyReason: 'already_used' });
 
     // ── Host finance ledger has the settlement split ────────────────────────
     const ledger = await server.inject({

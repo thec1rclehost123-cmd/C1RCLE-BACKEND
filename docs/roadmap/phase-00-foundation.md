@@ -88,7 +88,7 @@ surfaced.
   (`requirePathOrg`, pre-existing pattern in `venues.ts`, now also applied in
   `events.ts`'s list/create). Cross-tenant → 404 (IDOR-safe) or 403 depending
   on route, matching the existing convention.
-- **Not implemented this phase, deferred:** dedicated rate-limit plugin and
+- **Not implemented this phase, deferred (since closed — see D-012 and the follow-up section below):** dedicated rate-limit plugin and
   cache plugin (`task.md` B10 also lists these). No route-level rate limiting
   exists yet beyond the idempotency layer. Flagging explicitly rather than
   claiming this is done — pick up in Phase 1 alongside the dashboard routes
@@ -296,7 +296,7 @@ work is Phases 1–8.
     (runs clean — 33/33 checks pass against the real `C1RCLE-FRONTEND`
     contract), and two independently-found bug fixes (flat error envelope,
     `publish()` FSM walk — D-009/D-010).
-  - **Still available, not yet applied:** `requirePermission` (RBAC) and
+  - **Still available, not yet applied at the time (since closed, D-012):** `requirePermission` (RBAC) and
     `cached` decorators are registered but not wired into the partner routes
     — needs a careful per-route permission/cache-class mapping that wasn't
     rushed under time pressure. Do this properly in Phase 1, not by copying

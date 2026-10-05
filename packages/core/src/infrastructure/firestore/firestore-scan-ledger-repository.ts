@@ -1,3 +1,5 @@
+import { AggregateField } from 'firebase-admin/firestore';
+
 import { createScanLedger, overrideScan } from '../../domain/models/scan-ledger.js';
 
 import { paginateQuery } from './pagination.js';
@@ -10,6 +12,7 @@ import type {
   ScanDenyReason,
 } from '../../domain/models/scan-ledger.js';
 import type {
+  ScanAdmissionStats,
   ScanLedgerRepository,
   Page,
   PaginationQuery,
@@ -25,6 +28,18 @@ export class FirestoreScanLedgerRepository implements ScanLedgerRepository {
     return this.db.collection(COLLECTION);
   }
 
+  /**
+   * Appends an audit row. The id comes from `createScanLedger` — random, not
+   * deterministic — so this `set` is always a fresh create and never clobbers
+   * an earlier attempt.
+   *
+   * Duplicate-*admission* prevention is deliberately NOT this method's job:
+   * two concurrent scans of one ticket each record their own row (both may
+   * still fail the real guard, `EntitlementRepository.claimAdmission`), because
+   * the ledger must capture every attempt — successful or denied — as an
+   * append-only trail. Callers that need "did this ticket already scan?" use
+   * `findByEventAndEntitlement` as a hint, never as a lock.
+   */
   async create(input: ScanLedgerCreateInput): Promise<ScanLedger> {
     const scan = createScanLedger(input);
     await this.collection.doc(scan.id).set(toDoc(scan));
@@ -137,6 +152,57 @@ export class FirestoreScanLedgerRepository implements ScanLedgerRepository {
     return snap.data().count;
   }
 
+  /**
+   * Two server-side aggregates, not a document read: the total comes from a
+   * `sum(admittedCount)` and the breakdown from one `sum` per entry class.
+   * A busy night is tens of thousands of rows and the door polls this every
+   * 20 seconds — reading them to add up a number in Node would cost more than
+   * the scanning does.
+   */
+  /**
+   * Server-side aggregates only — never a document read.
+   *
+   * One `sum(admittedCount)` for the total, then one more per tier the event
+   * actually sells. Tier lists are small (typically two to six), so this is a
+   * handful of aggregate queries whose cost does not grow with attendance —
+   * which matters because the door polls this every few seconds all night.
+   *
+   * An earlier version sampled 5,000 ledger rows to derive the breakdown.
+   * That was exact for a small night and silently wrong for a big one: the
+   * total stayed right while the categories understated, which is the worst
+   * kind of wrong because nothing looks broken. `unattributed` closes the
+   * remainder so the parts always sum to the total.
+   */
+  async getAdmissionStats(
+    eventId: EntityId,
+    tierNames: readonly string[],
+  ): Promise<ScanAdmissionStats> {
+    const admittedRows = this.collection
+      .where('eventId', '==', eventId)
+      .where('admittedCount', '>', 0);
+
+    const [totalSnap, ...tierSnaps] = await Promise.all([
+      admittedRows.aggregate({ admitted: AggregateField.sum('admittedCount') }).get(),
+      ...tierNames.map((tierName) =>
+        admittedRows
+          .where('tierName', '==', tierName)
+          .aggregate({ admitted: AggregateField.sum('admittedCount') })
+          .get(),
+      ),
+    ]);
+
+    const byEntryType: Record<string, number> = {};
+    let attributed = 0;
+    tierNames.forEach((tierName, index) => {
+      const admitted = tierSnaps[index]?.data().admitted ?? 0;
+      byEntryType[tierName] = admitted;
+      attributed += admitted;
+    });
+
+    const admitted = totalSnap.data().admitted ?? 0;
+    return { admitted, byEntryType, unattributed: Math.max(0, admitted - attributed) };
+  }
+
   async countConsumedByEntitlement(entitlementId: EntityId): Promise<number> {
     const snap = await this.collection
       .where('entitlementId', '==', entitlementId)
@@ -147,10 +213,17 @@ export class FirestoreScanLedgerRepository implements ScanLedgerRepository {
   }
 
   async findOfflineScans(eventId: EntityId, before: Date): Promise<ScanLedger[]> {
+    // Bounded to the offline-sync schema's per-request cap (offlineSyncRequest
+    // `.max(500)`): a backlog larger than this needs another sync pass, and a
+    // bare `.get()` here would let one shift's backlog balloon into a huge
+    // in-memory read. Requires composite index: eventId ↑, isOffline ↑,
+    // scannedAt ↑ (see the deployment checklist in scanner-threat-model.md).
+    const MAX_SYNC_SCANS = 500;
     const snap = await this.collection
       .where('eventId', '==', eventId)
       .where('isOffline', '==', true)
       .where('scannedAt', '<', before.toISOString())
+      .limit(MAX_SYNC_SCANS)
       .get();
     return snap.docs.map((doc) => toScanLedger(doc.data()));
   }

@@ -1,14 +1,29 @@
-import { InvalidOperationError, VersionConflictError } from '../../domain/errors.js';
+import { createHash } from 'node:crypto';
+
+import {
+  ConflictError,
+  EventNotFoundError,
+  InvalidOperationError,
+  TicketTierNotFoundError,
+  UnauthorizedError,
+  VersionConflictError,
+} from '../../domain/errors.js';
 import { issueEntitlements } from '../../domain/models/entitlement.js';
+import { effectiveTierPricePaise } from '../../domain/models/event-catalog.js';
 import { platformFeePercentFor } from '../../domain/models/onboarding.js';
 import { commissionTierFor } from '../../domain/models/partnership.js';
-import { SYSTEM_ACTOR } from '../context.js';
+import { isSystemActor, SYSTEM_ACTOR } from '../context.js';
 import { createFinanceService } from '../finance/finance-service.js';
 import { createLeaderboardService } from '../finance/leaderboard-service.js';
+import {
+  ReferralLinkService,
+  signPromoterAttribution,
+} from '../promoters/referral-link-service.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type { CartReservation } from '../../domain/models/cart-reservation.js';
 import type { Entitlement } from '../../domain/models/entitlement.js';
+import type { CommissionTerms } from '../../domain/models/event-catalog.js';
 import type { Order } from '../../domain/models/order.js';
 import type { PricingBreakdown } from '../../domain/models/pricing.js';
 import type { ActorContext, ServiceDeps } from '../context.js';
@@ -20,6 +35,21 @@ export interface CheckoutAttribution {
   referralLinkId: EntityId;
   promoterId: EntityId;
   code: string;
+  assignmentId: EntityId;
+  assignmentVersion: number;
+  termsSnapshot: CommissionTerms;
+  attributionSignature: string;
+  promoterCommissionPaise: number;
+}
+
+/**
+ * Deterministic RSVP order id for one user+event. Hashed (not concatenated)
+ * so the result always fits the 64-char opaque-id cap regardless of id
+ * lengths — same reason `entitlementId` hashes rather than concatenates.
+ */
+export function rsvpOrderId(eventId: EntityId, userId: EntityId): EntityId {
+  const digest = createHash('sha256').update(`rsvp:${eventId}:${userId}`).digest('hex');
+  return `RSVP-${digest.slice(0, 32)}`;
 }
 
 /**
@@ -58,27 +88,37 @@ export class CheckoutService {
 
     const pricingLines = lines.map((l) => ({ tierId: l.tierId, quantity: l.quantity }));
 
-    // Build referral attribution if code provided. Previously computed and
-    // then discarded (dead `_attribution` local) — `createHold` needs this to
-    // freeze attribution onto the hold/order, so it must actually be
-    // returned to the caller rather than thrown away here.
-    let attribution: CheckoutAttribution | null = null;
-    if (referralCode) {
-      const link = await this.deps.repositories.referralLinks.findByCode(eventId, referralCode);
-      if (link && link.isActive) {
-        attribution = {
-          referralLinkId: link.id,
-          promoterId: link.promoterId,
-          code: link.code,
-        };
-      }
-    }
-
     const pricing = await this.deps.pricing.calculate({
       eventId,
       lines: pricingLines,
       promoCode,
     });
+
+    let attribution: CheckoutAttribution | null = null;
+    if (referralCode) {
+      const signed = await new ReferralLinkService(this.deps).resolveAttribution(
+        eventId,
+        referralCode,
+      );
+      if (signed) {
+        const promoterCommissionPaise = commissionForLines(pricing.lines, signed.terms);
+        if (promoterCommissionPaise > pricing.grandTotalPaise - pricing.platformFeePaise) {
+          throw new InvalidOperationError(
+            'The assigned promoter commission exceeds this order’s distributable total',
+          );
+        }
+        attribution = {
+          referralLinkId: signed.referralLinkId,
+          promoterId: signed.promoterId,
+          code: signed.code,
+          assignmentId: signed.assignmentId,
+          assignmentVersion: signed.assignmentVersion,
+          termsSnapshot: signed.terms,
+          attributionSignature: signPromoterAttribution(signed, this.deps.config.magicTicketSecret),
+          promoterCommissionPaise,
+        };
+      }
+    }
 
     return { pricing, attribution };
   }
@@ -94,7 +134,7 @@ export class CheckoutService {
     lines: { tierId: EntityId; tierName: string; quantity: number; unitPricePaise: number }[];
     pricing: PricingBreakdown;
     appliedPromoCode: string | null;
-    attribution: { referralLinkId: EntityId; promoterId: EntityId; code: string } | null;
+    attribution: CheckoutAttribution | null;
     userId?: EntityId | null;
     idempotencyKey: string;
     reservationTtlMs?: number;
@@ -116,6 +156,9 @@ export class CheckoutService {
       await this.deps.repositories.cartReservations.getByIdempotencyKey(idempotencyKey);
     if (existing) return existing;
 
+    const now = new Date();
+    const buyerId = userId ?? input.actor.userId;
+
     // Check inventory availability
     for (const line of lines) {
       const available = await this.deps.inventory.getAvailableQuantity(eventId, line.tierId);
@@ -124,15 +167,42 @@ export class CheckoutService {
       }
     }
 
+    // Per-user ticket caps (`tier.maxPerUser`): count what this user already
+    // holds (live carts) and owns (paid orders) for each capped tier, so the
+    // knob binds across orders, not just within one basket. Guests without
+    // any identity (`buyerId` null) fall through — there is no stable key to
+    // count against, and v1 never enforced a per-user tier cap either.
+    if (buyerId) {
+      for (const line of lines) {
+        const tier = await this.deps.repositories.catalog.getTierById(line.tierId);
+        if (!tier?.maxPerUser) continue;
+        const alreadyHeld = await this.deps.repositories.cartReservations.countActiveQuantity(
+          buyerId,
+          eventId,
+          line.tierId,
+          now,
+        );
+        const alreadyBought = await this.deps.repositories.orders.countPaidQuantityByUserAndEvent(
+          buyerId,
+          eventId,
+          line.tierId,
+        );
+        if (alreadyHeld + alreadyBought + line.quantity > tier.maxPerUser) {
+          throw new InvalidOperationError(
+            `${tier.name} has a maximum of ${tier.maxPerUser} per user`,
+          );
+        }
+      }
+    }
+
     const holdId = `HOLD-${idempotencyKey}`;
-    const now = new Date();
     const ttl = reservationTtlMs ?? 10 * 60 * 1000;
 
     const hold: CartReservation = {
       id: holdId,
       eventId,
       organizationId,
-      userId: userId ?? input.actor.userId,
+      userId: buyerId,
       lines: lines.map((l) => ({ ...l })),
       pricing,
       appliedPromoCode,
@@ -148,6 +218,132 @@ export class CheckoutService {
 
     await this.deps.repositories.cartReservations.create(hold);
     return hold;
+  }
+
+  /**
+   * RSVP — direct free-ticket fulfillment with no payment provider involved.
+   * One call: eligibility (free event + zero-price tier) → 1-per-event check
+   * → inventory check → paid zero-total order + entitlements.
+   *
+   * Rules:
+   * - Auth required: the 1-per-account guarantee needs a real user id.
+   * - Quantity is fixed at 1 (no quantity input) — one RSVP per user per event.
+   * - Settlement is deliberately skipped: a ₹0 order contributes nothing to
+   *   the partner ledger or the promoter leaderboard.
+   * - A concurrent double-tap converges on the winner (same pattern as
+   *   `confirmPayment`'s webhook/redirect race); a sequential second RSVP is
+   *   a 409 `ConflictError`.
+   */
+  async createRsvp(input: {
+    actor: ActorContext;
+    eventId: EntityId;
+    tierId: EntityId;
+  }): Promise<{ order: Order; entitlements: Entitlement[] }> {
+    const { actor, eventId, tierId } = input;
+
+    if (!actor.userId || isSystemActor(actor)) {
+      throw new UnauthorizedError('Authentication is required to book tickets');
+    }
+
+    const event =
+      (await this.deps.repositories.events.getById(eventId)) ??
+      (await this.deps.repositories.events.getBySlug(eventId));
+    if (!event) throw new EventNotFoundError(eventId);
+    if (event.status !== 'published') {
+      throw new InvalidOperationError(`Event is ${event.status}, RSVP is unavailable`);
+    }
+    if (!event.isFree) {
+      throw new InvalidOperationError('RSVP is available only for free events');
+    }
+
+    const tier = await this.deps.repositories.catalog.getTierById(tierId);
+    if (!tier || tier.eventId !== event.id) {
+      throw new TicketTierNotFoundError(tierId);
+    }
+    if (tier.status !== 'active') {
+      throw new InvalidOperationError(`Tier ${tier.name} is ${tier.status}`);
+    }
+    // Legacy tolerance: tiers written before `priceInPaise` existed price via
+    // `doorPriceInPaise` (or nothing) — see `effectiveTierPricePaise`.
+    const unitPricePaise = effectiveTierPricePaise(tier);
+    if (unitPricePaise !== 0) {
+      throw new InvalidOperationError('RSVP is available only for zero-price tiers');
+    }
+
+    // Deterministic id from the RESOLVED event id (callers may pass id or
+    // slug — both must converge on one RSVP): one RSVP per user per event.
+    // Same rationale as entitlement ids — a retried RSVP collides with itself
+    // at the storage layer instead of minting a second ticket.
+    const orderId = rsvpOrderId(event.id, actor.userId);
+    const existing = await this.deps.repositories.orders.getById(orderId);
+    if (existing && existing.status === 'paid') {
+      throw new ConflictError('An RSVP already exists for this event');
+    }
+
+    await this.deps.inventory.assertAvailable(event.id, tierId, 1);
+
+    const now = new Date();
+    const order: Order = {
+      id: orderId,
+      eventId: event.id,
+      organizationId: event.organizationId,
+      userId: actor.userId,
+      contact: { name: 'RSVP Guest', email: '', phone: '' },
+      status: 'paid',
+      lines: [
+        {
+          tierId: tier.id,
+          tierName: tier.name,
+          quantity: 1,
+          unitPricePaise: 0,
+          subtotalPaise: 0,
+        },
+      ],
+      currency: tier.currency,
+      subtotalPaise: 0,
+      discountPaise: 0,
+      discountedSubtotalPaise: 0,
+      platformFeePaise: 0,
+      paymentFeePaise: 0,
+      gstPaise: 0,
+      grandTotalPaise: 0,
+      appliedPromoCode: null,
+      attribution: null,
+      paymentIntentId: null,
+      paymentId: orderId,
+      paidAt: now.toISOString(),
+      reservationExpiresAt: now.toISOString(),
+      failureReason: null,
+      refundedPaise: 0,
+      version: 1,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+    };
+
+    try {
+      await this.deps.repositories.orders.save(order);
+    } catch (error) {
+      // Lost a concurrent race with a double-tap on the same RSVP — converge
+      // on the winner rather than failing the guest.
+      if (error instanceof VersionConflictError) {
+        const winner = await this.deps.repositories.orders.getById(orderId);
+        if (winner) {
+          const winnerEntitlements = await this.deps.repositories.entitlements.getByOrderId(
+            winner.id,
+          );
+          return { order: winner, entitlements: winnerEntitlements };
+        }
+      }
+      throw error;
+    }
+
+    const issuedEntitlements = issueEntitlements({ order, now });
+    for (const e of issuedEntitlements) {
+      await this.deps.repositories.entitlements.save(e);
+    }
+
+    const entitlements = await this.deps.repositories.entitlements.getByOrderId(orderId);
+    return { order, entitlements };
   }
 
   /**
@@ -288,6 +484,7 @@ export class CheckoutService {
       paidAt: now.toISOString(),
       reservationExpiresAt: hold.expiresAt,
       failureReason: null,
+      refundedPaise: 0,
       version: 1,
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
@@ -352,20 +549,39 @@ export class CheckoutService {
    * is never the right actor for this write; `requireOrgAccess` treats a
    * system actor as pre-authorized (see `context.ts`).
    */
+  /**
+   * Public because a door ticket sale is also "a paid order became money",
+   * and it must land in the same ledger through the same writer rather than
+   * growing a second settlement path that can drift from this one.
+   */
+  async settleOrder(order: Order): Promise<void> {
+    return this.recordSettlement(order);
+  }
+
   private async recordSettlement(order: Order): Promise<void> {
     const hostOrganizationId = order.organizationId;
 
-    // Venue org: resolved via the host<->venue Partnership for the event's
-    // venue. A host-run event with no venue partnership settles entirely to
-    // the host — there is no separate venue party to pay.
+    // Venue org + share: resolved via the host<->venue Partnership for the
+    // event's venue. A host-run event with no venue partnership settles
+    // entirely to the host — there is no separate venue party to pay.
     let venueOrganizationId = hostOrganizationId;
+    let venueShareRate = 0;
     const event = await this.deps.repositories.events.getById(order.eventId);
     if (event?.venueId) {
       const partnership = await this.deps.repositories.partnerships.findByPair(
         hostOrganizationId,
         event.venueId,
       );
-      if (partnership) venueOrganizationId = partnership.venueOrganizationId;
+      if (partnership) {
+        venueOrganizationId = partnership.venueOrganizationId;
+        // The negotiated venue share (whole-number % on the Partnership, v1's
+        // venueCommissionRate convention) → settlement ratio. `null` (never
+        // negotiated) settles 0 to the venue — the long-documented fail-safe,
+        // see phase-06-*.md. A live partnership wins; otherwise the most recent
+        // resolved one is returned by findByPair, so a blocked pair still pays
+        // its last-agreed rate (the venue did host the event).
+        venueShareRate = (partnership.venueShareRate ?? 0) / 100;
+      }
     }
 
     // Platform fee rate: the host's onboarding plan tier (Phase 2), the only
@@ -375,13 +591,6 @@ export class CheckoutService {
     const onboarding =
       await this.deps.repositories.onboarding.findByProvisionedOrganizationId(hostOrganizationId);
     const platformFeeRate = platformFeePercentFor(onboarding?.plan ?? 'basic') / 100;
-
-    // Venue revenue-share rate: no persisted source exists yet anywhere in
-    // the domain (Partnership carries no negotiated rate field). Rather than
-    // fabricating a number that would misallocate real money, this settles
-    // 0 to the venue until a rate is actually configurable — tracked in
-    // docs/roadmap/phase-06-finance-ledger-payouts.md.
-    const venueShareRate = 0;
 
     // Promoter commission rate: the v1-proven performance tier, keyed by the
     // promoter's total attributed conversions across all their links.
@@ -408,9 +617,19 @@ export class CheckoutService {
         platformFeeRate,
         venueShareRate,
         promoterCommissionRate,
+        promoterCommissionPaise: order.attribution?.promoterCommissionPaise ?? null,
       },
       SYSTEM_ACTOR,
     );
+
+    if (order.attribution) {
+      await this.deps.repositories.referralLinks.recordSale(
+        order.attribution.referralLinkId,
+        order.id,
+        order.grandTotalPaise,
+        order.attribution.promoterCommissionPaise,
+      );
+    }
 
     // Leaderboard: increments in the same call as the ledger write it is
     // derived from (v1's "Option 3" time & location matrix), keyed by the
@@ -444,4 +663,15 @@ export class CheckoutService {
     }
     return map;
   }
+}
+
+function commissionForLines(lines: PricingBreakdown['lines'], terms: CommissionTerms): number {
+  return lines.reduce((sum, line) => {
+    const rate = terms.tierRates?.[line.tierId] ?? terms;
+    return (
+      sum +
+      Math.floor((line.subtotalPaise * rate.ratePercent) / 100) +
+      rate.flatPaise * line.quantity
+    );
+  }, 0);
 }

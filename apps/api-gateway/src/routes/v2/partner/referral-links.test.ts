@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 
+import partnerEventCatalogRoutes from './event-catalog.js';
 import partnerEventRoutes from './events.js';
 import partnerOrganizationRoutes from './organizations.js';
 import partnerReferralLinkRoutes from './referral-links.js';
@@ -20,6 +21,7 @@ const buildServer = () =>
       partnerOrganizationRoutes,
       partnerVenueRoutes,
       partnerEventRoutes,
+      partnerEventCatalogRoutes,
       partnerReferralLinkRoutes,
     ],
   });
@@ -58,6 +60,33 @@ async function seed(server: Server): Promise<{ org: string; eventId: string }> {
 }
 
 describe('creating referral links', () => {
+  it('lets an assigned promoter generate a referral link without event-owner permissions', async () => {
+    const server = await buildServer();
+    const { org, eventId } = await seed(server);
+    const assignment = await server.inject({
+      method: 'POST',
+      url: `/events/${eventId}/promoter-assignments`,
+      headers: write(org),
+      payload: { promoterId: org },
+    });
+
+    const created = await server.inject({
+      method: 'POST',
+      url: `/promoter-assignments/${assignment.json().id}/referral-links`,
+      headers: write(org),
+      payload: { label: 'Guest portal' },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({
+      eventId,
+      promoterId: org,
+      organizationId: org,
+      label: 'Guest portal',
+      isActive: true,
+    });
+    await server.close();
+  });
+
   it('creates a link with a supplied code and lists it', async () => {
     const server = await buildServer();
     const { org, eventId } = await seed(server);
@@ -66,7 +95,7 @@ describe('creating referral links', () => {
       method: 'POST',
       url: `/events/${eventId}/referral-links`,
       headers: write(org),
-      payload: { promoterId: 'promoter_1', code: 'summer-24', label: 'Instagram' },
+      payload: { promoterId: 'promoter_a', code: 'summer-24', label: 'Instagram' },
     });
 
     expect(created.statusCode).toBe(201);
@@ -96,7 +125,7 @@ describe('creating referral links', () => {
       method: 'POST',
       url: `/events/${eventId}/referral-links`,
       headers: write(org),
-      payload: { promoterId: 'promoter_1' },
+      payload: { promoterId: 'promoter_b' },
     });
 
     const code: string = created.json().code;
@@ -109,7 +138,7 @@ describe('creating referral links', () => {
   it('refuses a duplicate code for the same event', async () => {
     const server = await buildServer();
     const { org, eventId } = await seed(server);
-    const payload = { promoterId: 'promoter_1', code: 'DUPE24' };
+    const payload = { promoterId: 'promoter_c', code: 'DUPE24' };
 
     await server.inject({
       method: 'POST',
@@ -121,7 +150,7 @@ describe('creating referral links', () => {
       method: 'POST',
       url: `/events/${eventId}/referral-links`,
       headers: write(org),
-      payload: { ...payload, promoterId: 'promoter_2' },
+      payload: { ...payload, promoterId: 'promoter_d' },
     });
 
     // A collision would silently hand one promoter another's attribution.
@@ -137,7 +166,7 @@ describe('creating referral links', () => {
       method: 'POST',
       url: `/events/${eventId}/referral-links`,
       headers: write(org),
-      payload: { promoterId: 'promoter_1', code: 'BAD!!CODE' },
+      payload: { promoterId: 'promoter_e', code: 'BAD!!CODE' },
     });
 
     expect(response.statusCode).toBe(422);
@@ -152,7 +181,7 @@ describe('creating referral links', () => {
       method: 'POST',
       url: '/events/evt_someone_else/referral-links',
       headers: write(org),
-      payload: { promoterId: 'promoter_1' },
+      payload: { promoterId: 'promoter_f' },
     });
 
     expect(response.statusCode).toBe(404);
@@ -169,7 +198,7 @@ describe('deactivating a link', () => {
       method: 'POST',
       url: `/events/${eventId}/referral-links`,
       headers: write(org),
-      payload: { promoterId: 'promoter_1', code: 'OLDLINK' },
+      payload: { promoterId: 'promoter_g', code: 'OLDLINK' },
     });
     const linkId: string = created.json().id;
 

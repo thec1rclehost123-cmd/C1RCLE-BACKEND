@@ -21,10 +21,42 @@ overrides:
   # tar: remediate CVE-2026-73566 (tar < 7.5.21). Primary fix is the pnpm
   # version bump + Dockerfile apt/sed patch; this is the npm-layer backstop.
   tar: '>=7.5.21'
-  # fast-uri ^3 (ajv/@fastify/ajv-compiler) and ^4 (fast-json-stringify) — pin to
+  # fast-uri ^3 (ajv) and ^4 (fast-json-stringify/@fastify/ajv-compiler) — pin to
   # patched releases that satisfy each dependent's declared range.
-  #   fast-uri -> 3.1.6 / 4.1.4   fixes CVE-2026-75899/75931/75975/76172 (SSRF, host confusion)
+  #   fast-uri -> 3.1.8 / 4.1.5   fixes CVE-2026-75899/75931/75975/76172 (SSRF, host confusion)
+  #             + CVE-2026-84292 (authority injection via unvalidated port) + CVE-2026-84394
+  #             (host confusion via unbalanced URI brackets) — 3.1.6 is vulnerable, 3.1.7/4.1.4 are fixed,
+  #             3.1.8 is the newest patched 3.x (matches origin/staging so #48 merges without downgrading it),
+  #             4.1.5 additionally fixes GHSA-hrr3-gc8f-f4qj (mailto header injection) + GHSA-jvvf-x445-j334.
   #   nanoid   -> 3.3.18          fixes CVE-2026-67213 (DoS via infinite loop)
-  'fast-uri@^3.0.0': '3.1.6'
-  'fast-uri@^4.0.0': '4.1.4'
+  'fast-uri@^3.0.0': '3.1.8'
+  'fast-uri@^4.0.0': '4.1.5'
   'nanoid@^3.0.0': '3.3.18'
+  # brace-expansion: THIRD advisory family GHSA-q2hr-2g5m-vwhr (quadratic-time
+  # CPU DoS on `{a},b}` rewrites) on top of GHSA-qhr7-859c-m2p7 +
+  # GHSA-6j4f-fj2g-mc7p (uncontrolled recursion). minimatch@3.x pulls the 1.x
+  # line, minimatch@10.x the 5.x line — 1.1.18 / 5.0.9 are all flagged (HIGH by
+  # pnpm audit AND Trivy CVE-2026-102276 / CVE-2026-102278). 1.1.21 / 5.0.12 are
+  # the newest patched releases covering every advisory above.
+  'brace-expansion@<2': '1.1.21'
+  'brace-expansion@>=2 <6': '5.0.12'
+  # uuid < 11.1.1 (GHSA-w5hq-g745-h8pq — missing buffer bounds check in v3/v5/v6
+  # when a caller-provided buffer is used). Tree resolves 9.0.1 via firebase-admin
+  # -> google-gax -> google-auth-library -> gaxios, all of which are CommonJS;
+  # per the pnpm deprecation note, CommonJS codebases must stay on uuid@11
+  # (uuid >= 12 dropped the CJS build). Pin 11.1.1 exactly — do NOT use
+  # '>=11.1.1', it resolves to an ESM-only major that breaks require().
+  uuid: '11.1.1'
+  # js-yaml >= 4.3.2 fixes GHSA-2883-xcg3-v3hh (CPU exhaustion via empty merge
+  # sources in YAML). Affects @commitlint, eslint, and 29 other transitive paths.
+  js-yaml: '>=4.3.2'
+  # @grpc/grpc-js 1.14.0-1.14.4 (GHSA-m9gg-hp2v-232j): getAuthContext can
+  # return unauthorized certificates as though they were authorized. Pulled in
+  # via firebase-admin -> @google-cloud/firestore -> google-gax. 1.14.5 is the
+  # patched release.
+  '@grpc/grpc-js': '>=1.14.5'
+  # @fastify/busboy 3.2.0 and earlier: Denial of Service (GHSA-xjh9-v7x6-24jw,
+  # GHSA-x8mw-p69m-v3mx; Trivy CVE-2026-19481 / CVE-2026-19484). 3.2.1 is the
+  # patched release. Floor, not an exact pin, so a newer patched release needs
+  # no manifest edit.
+  '@fastify/busboy': '>=3.2.1'
