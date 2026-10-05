@@ -413,3 +413,21 @@ describe('RazorpayPaymentProvider — payment id validation', () => {
     }
   });
 });
+
+describe('RazorpayPaymentProvider - fail-closed signatures', () => {
+  it('returns false (not a RangeError) for a wrong-length webhook signature', () => {
+    expect(provider().verifyWebhookSignature('{}', 'short')).toBe(false);
+  });
+
+  it('rejects a wrong-length payment signature as an invalid signature', async () => {
+    await expect(
+      provider().verifyPayment({ paymentId: 'pay_1', orderId: 'order_1', signature: 'x' }),
+    ).rejects.toThrow('Invalid payment signature');
+  });
+
+  it('refuses to sign or verify when the webhook secret is empty', () => {
+    const p = new RazorpayPaymentProvider({ ...CONFIG, webhookSecret: '' });
+    expect(() => p.verifyWebhookSignature('{}', 'a')).toThrow('not configured');
+    expect(() => p.generateSignature({ paymentId: 'p', orderId: 'o' })).toThrow('not configured');
+  });
+});

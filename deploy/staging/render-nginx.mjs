@@ -40,6 +40,7 @@ export function renderStagingNginx(environment = process.env) {
     NGINX_TLS_CERTIFICATE_KEY: result.values.tlsCertificateKey,
     NGINX_READINESS_TOKEN: result.values.readinessToken,
     NGINX_FORWARDED_PROTO: result.values.forwardedProto,
+    NGINX_UPSTREAM_OPTS: '',
   };
 
   for (const [name, value] of Object.entries(replacements)) {

@@ -78,7 +78,7 @@ COPY deploy/docker/sidecar-entrypoint.sh /usr/local/bin/c1rcle-sidecar-entrypoin
 RUN groupadd --gid 1001 app \
  && useradd  --uid 1001 --gid app --home-dir /app app \
  && chmod 0755 /usr/local/bin/c1rcle-nginx-entrypoint /usr/local/bin/c1rcle-sidecar-entrypoint \
- && mkdir -p /var/lib/nginx/body /var/lib/nginx/proxy \
+ && mkdir -p /var/lib/nginx/body /var/lib/nginx/proxy /etc/nginx/c1rcle-gen \
  && chown -R app:app /etc/nginx /var/log/nginx /var/lib/nginx /run
 
 COPY --from=build --chown=app:app /app /app

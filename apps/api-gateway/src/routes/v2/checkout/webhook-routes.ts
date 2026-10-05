@@ -156,7 +156,10 @@ export default async function webhookRoutes(fastify: FastifyInstance) {
         // Signature was valid but the shape wasn't what we expect — ack with
         // 200 so Razorpay does not retry-storm an event type we don't model,
         // but never call into fulfillment with an unparsed payload.
-        request.log.warn({ event: request.body }, 'razorpay_webhook_unrecognized_payload');
+        request.log.warn(
+          { issues: parsed.error.issues.length },
+          'razorpay_webhook_unrecognized_payload',
+        );
         return reply.status(200).send({ received: true });
       }
 
@@ -171,7 +174,11 @@ export default async function webhookRoutes(fastify: FastifyInstance) {
       const paymentIntentId = entity.order_id ?? undefined;
 
       if (!holdId || !paymentIntentId) {
-        request.log.error({ entity }, 'razorpay_webhook_missing_correlation_ids');
+        // ids only: the entity carries the payer's email/contact (PII).
+        request.log.error(
+          { paymentId: entity.id, orderId: entity.order_id },
+          'razorpay_webhook_missing_correlation_ids',
+        );
         return sendFlatError(
           reply,
           request,

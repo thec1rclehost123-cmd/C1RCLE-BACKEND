@@ -60,3 +60,6 @@ overrides:
   # patched release. Floor, not an exact pin, so a newer patched release needs
   # no manifest edit.
   '@fastify/busboy': '>=3.2.1'
+  # fastify < 5.12.5: DoS via unhandled exception on HTTP/2 trailer responses
+  # (GHSA-4mh8-r7rc-xpvc / CVE-2026-92081). Floor so newer patches need no edit.
+  fastify: '>=5.12.5'

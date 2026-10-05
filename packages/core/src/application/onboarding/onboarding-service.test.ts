@@ -128,6 +128,24 @@ const PROFILE = {
   city: 'Mumbai',
 };
 
+describe('OnboardingService.addDocument - storage path scoping', () => {
+  it("rejects a path outside the caller's own request prefix", async () => {
+    const { service } = buildDeps();
+    const created = await service.start('user_a', {
+      requestedType: 'venue',
+      plan: 'basic',
+      profile: PROFILE,
+    });
+    await expect(
+      service.addDocument('user_a', {
+        requestId: created.id,
+        label: 'id_front',
+        storagePath: 'kyc/user_b/OTHER/id_front',
+      }),
+    ).rejects.toThrow('does not belong');
+  });
+});
+
 async function submittedRequest(service: OnboardingService) {
   const created = await service.start('user_a', {
     requestedType: 'venue',
@@ -138,7 +156,7 @@ async function submittedRequest(service: OnboardingService) {
     await service.addDocument('user_a', {
       requestId: created.id,
       label,
-      storagePath: `kyc/${label}.jpg`,
+      storagePath: `kyc/user_a/${created.id}/${label}`,
     });
   }
   return service.submit('user_a', created.id);

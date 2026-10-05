@@ -191,15 +191,19 @@ export default async function authRoutes(
     },
   );
 
-  fastify.post('/logout', async (request, reply) => {
-    if (!auth) return sendAuthUnavailable(reply, request);
-    const response = await auth.api.signOut({
-      headers: toWebHeaders(request.headers),
-      asResponse: true,
-    });
-    forwardSetCookie(reply, response);
-    return reply.status(204).send();
-  });
+  fastify.post(
+    '/logout',
+    { preHandler: fastify.rateLimit('STANDARD_COMMAND') },
+    async (request, reply) => {
+      if (!auth) return sendAuthUnavailable(reply, request);
+      const response = await auth.api.signOut({
+        headers: toWebHeaders(request.headers),
+        asResponse: true,
+      });
+      forwardSetCookie(reply, response);
+      return reply.status(204).send();
+    },
+  );
 
   fastify.get(
     '/session',

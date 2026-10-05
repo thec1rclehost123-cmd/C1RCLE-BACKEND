@@ -112,6 +112,13 @@
       "why": "Denial of Service in @fastify/busboy 3.2.0 and earlier; fixed in 3.2.1. A floor rather than an exact pin so a newer patched release needs no manifest edit.",
       "overrides": { "@fastify/busboy": ">=3.2.1" },
       "minResolved": "3.2.1"
+    },
+    {
+      "name": "fastify",
+      "advisories": ["GHSA-4mh8-r7rc-xpvc", "CVE-2026-92081"],
+      "why": "Denial of Service via unhandled exception on HTTP/2 trailer responses in fastify < 5.12.5. A floor so a newer patched release needs no manifest edit.",
+      "overrides": { "fastify": ">=5.12.5" },
+      "minResolved": "5.12.5"
     }
   ]
 }

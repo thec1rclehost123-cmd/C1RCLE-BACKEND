@@ -349,7 +349,9 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
   // ── PREVIEWS ──────────────────────────────────────────────────────────────
   fastify.get(
     '/events/:eventId/previews',
-    { preHandler: fastify.validateV2({ params: eventIdParam }) },
+    {
+      preHandler: [fastify.rateLimit('PUBLIC_READ'), fastify.validateV2({ params: eventIdParam })],
+    },
     async (request, reply) => {
       const { eventId } = request.params as z.infer<typeof eventIdParam>;
       const preview = await services.events

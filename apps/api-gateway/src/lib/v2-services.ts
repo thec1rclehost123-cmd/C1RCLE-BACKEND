@@ -309,13 +309,17 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   // storage): memory driver never makes a network call, firestore driver
   // talks to the real provider. Without this branch, `pnpm test`/CI would
   // hit `api.razorpay.com` for every checkout/payment test.
+  // Placeholder credentials exist only so non-production boots without real
+  // keys; in production an unset secret stays empty and the adapter refuses to
+  // sign/verify with it (never a public, guessable HMAC key).
+  const placeholder = (value: string): string => (gw.NODE_ENV === 'production' ? '' : value);
   const paymentProvider: PaymentProvider =
     gw.STORAGE_DRIVER === 'memory'
       ? new MemoryPaymentProvider(gwConfig.RAZORPAY_WEBHOOK_SECRET ?? 'test_webhook_secret')
       : new RazorpayPaymentProvider({
-          keyId: gwConfig.RAZORPAY_KEY_ID ?? 'test_key_id',
-          keySecret: gwConfig.RAZORPAY_KEY_SECRET ?? 'test_key_secret',
-          webhookSecret: gwConfig.RAZORPAY_WEBHOOK_SECRET ?? 'test_webhook_secret',
+          keyId: gwConfig.RAZORPAY_KEY_ID ?? placeholder('test_key_id'),
+          keySecret: gwConfig.RAZORPAY_KEY_SECRET ?? placeholder('test_key_secret'),
+          webhookSecret: gwConfig.RAZORPAY_WEBHOOK_SECRET ?? placeholder('test_webhook_secret'),
         });
   const pricing = new PricingService({ eventCatalog: repositories.catalog });
   const inventory = new InventoryService({

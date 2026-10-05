@@ -6,25 +6,46 @@
 # with NGINX_TOPOLOGY=full-edge (default is api-only, unchanged behavior).
 #
 # Hostnames are deployment-owned. Provide every value explicitly at runtime.
+# Per-app route maps live in snippets/bff-*.conf (see docs/nginx/bff-routing.md).
 
 upstream c1rcle_fastify {
-    server ${FASTIFY_UPSTREAM};
+    least_conn;
+    include /etc/nginx/c1rcle-gen/upstream-fastify*.inc;
+    server ${FASTIFY_UPSTREAM} max_fails=3 fail_timeout=10s${NGINX_UPSTREAM_OPTS};
     keepalive 32;
+    keepalive_requests 1000;
+    keepalive_time 1h;
+    keepalive_timeout 60s;
 }
 
 upstream c1rcle_bff_guest {
-    server ${BFF_GUEST_UPSTREAM};
+    least_conn;
+    include /etc/nginx/c1rcle-gen/upstream-bff-guest*.inc;
+    server ${BFF_GUEST_UPSTREAM} max_fails=3 fail_timeout=10s${NGINX_UPSTREAM_OPTS};
     keepalive 32;
+    keepalive_requests 1000;
+    keepalive_time 1h;
+    keepalive_timeout 60s;
 }
 
 upstream c1rcle_bff_partner {
-    server ${BFF_PARTNER_UPSTREAM};
+    least_conn;
+    include /etc/nginx/c1rcle-gen/upstream-bff-partner*.inc;
+    server ${BFF_PARTNER_UPSTREAM} max_fails=3 fail_timeout=10s${NGINX_UPSTREAM_OPTS};
     keepalive 32;
+    keepalive_requests 1000;
+    keepalive_time 1h;
+    keepalive_timeout 60s;
 }
 
 upstream c1rcle_bff_admin {
-    server ${BFF_ADMIN_UPSTREAM};
+    least_conn;
+    include /etc/nginx/c1rcle-gen/upstream-bff-admin*.inc;
+    server ${BFF_ADMIN_UPSTREAM} max_fails=3 fail_timeout=10s${NGINX_UPSTREAM_OPTS};
     keepalive 32;
+    keepalive_requests 1000;
+    keepalive_time 1h;
+    keepalive_timeout 60s;
 }
 
 map $scheme $c1rcle_forwarded_proto {
@@ -52,9 +73,17 @@ map $http_x_readiness_token $c1rcle_readiness_allowed {
     "${NGINX_READINESS_TOKEN}" 1;
 }
 
-# ── API edge: guest/partner/admin BFFs proxy authorized calls here, and the
-#    mobile/standalone clients call it directly. Rate limits + edge errors
-#    come from the shared api-locations snippet.
+# Catch-all: the LB probe /healthz answers for ANY Host header; everything
+# else on an unknown Host is dropped (444).
+server {
+    listen ${NGINX_HTTP_PORT} default_server;
+    server_name _;
+
+    include /etc/nginx/snippets/c1rcle/edge-healthz.conf;
+    location / { return 444; }
+}
+
+# ── API edge: browsers/mobile call the allow-listed /api/v2/* paths directly.
 server {
     listen ${NGINX_HTTP_PORT};
     server_name ${NGINX_API_SERVER_NAME};
@@ -70,7 +99,7 @@ server {
     include /etc/nginx/snippets/c1rcle/api-locations.conf;
 }
 
-# ── Guest portal BFF (Next.js) — browse/explore/checkout pages.
+# ── Guest portal BFF (Next.js).
 server {
     listen ${NGINX_HTTP_PORT};
     server_name ${NGINX_GUEST_SERVER_NAME};
@@ -84,26 +113,12 @@ server {
 
     include /etc/nginx/snippets/c1rcle/security-headers-bff.conf;
 
-    location / {
-        include /etc/nginx/snippets/c1rcle/proxy-bff-common.conf;
-        proxy_pass http://c1rcle_bff_guest;
-    }
-
-    error_page 502 = @c1rcle_bff_gateway_error;
-    error_page 504 = @c1rcle_bff_gateway_timeout;
-    location @c1rcle_bff_gateway_error {
-        default_type application/json;
-        add_header X-Request-Id $request_id always;
-        return 502 '{"status":502,"code":"bff_upstream_unavailable","message":"Guest portal unavailable","requestId":"$request_id"}';
-    }
-    location @c1rcle_bff_gateway_timeout {
-        default_type application/json;
-        add_header X-Request-Id $request_id always;
-        return 504 '{"status":504,"code":"bff_upstream_timeout","message":"Guest portal timed out","requestId":"$request_id"}';
-    }
+    set $c1rcle_bff_upstream c1rcle_bff_guest;
+    include /etc/nginx/snippets/c1rcle/bff-locations.conf;
+    include /etc/nginx/snippets/c1rcle/bff-guest-locations.conf;
 }
 
-# ── Partner dashboard BFF (Next.js) — venue/promoter/partner auth+onboarding.
+# ── Partner dashboard BFF (Next.js).
 server {
     listen ${NGINX_HTTP_PORT};
     server_name ${NGINX_PARTNER_SERVER_NAME};
@@ -117,26 +132,12 @@ server {
 
     include /etc/nginx/snippets/c1rcle/security-headers-bff.conf;
 
-    location / {
-        include /etc/nginx/snippets/c1rcle/proxy-bff-common.conf;
-        proxy_pass http://c1rcle_bff_partner;
-    }
-
-    error_page 502 = @c1rcle_bff_partner_gateway_error;
-    error_page 504 = @c1rcle_bff_partner_gateway_timeout;
-    location @c1rcle_bff_partner_gateway_error {
-        default_type application/json;
-        add_header X-Request-Id $request_id always;
-        return 502 '{"status":502,"code":"bff_upstream_unavailable","message":"Partner dashboard unavailable","requestId":"$request_id"}';
-    }
-    location @c1rcle_bff_partner_gateway_timeout {
-        default_type application/json;
-        add_header X-Request-Id $request_id always;
-        return 504 '{"status":504,"code":"bff_upstream_timeout","message":"Partner dashboard timed out","requestId":"$request_id"}';
-    }
+    set $c1rcle_bff_upstream c1rcle_bff_partner;
+    include /etc/nginx/snippets/c1rcle/bff-locations.conf;
+    include /etc/nginx/snippets/c1rcle/bff-partner-locations.conf;
 }
 
-# ── Admin console BFF (Next.js) — internal operations app.
+# ── Admin console BFF (Next.js).
 server {
     listen ${NGINX_HTTP_PORT};
     server_name ${NGINX_ADMIN_SERVER_NAME};
@@ -150,21 +151,7 @@ server {
 
     include /etc/nginx/snippets/c1rcle/security-headers-bff.conf;
 
-    location / {
-        include /etc/nginx/snippets/c1rcle/proxy-bff-common.conf;
-        proxy_pass http://c1rcle_bff_admin;
-    }
-
-    error_page 502 = @c1rcle_bff_admin_gateway_error;
-    error_page 504 = @c1rcle_bff_admin_gateway_timeout;
-    location @c1rcle_bff_admin_gateway_error {
-        default_type application/json;
-        add_header X-Request-Id $request_id always;
-        return 502 '{"status":502,"code":"bff_upstream_unavailable","message":"Admin console unavailable","requestId":"$request_id"}';
-    }
-    location @c1rcle_bff_admin_gateway_timeout {
-        default_type application/json;
-        add_header X-Request-Id $request_id always;
-        return 504 '{"status":504,"code":"bff_upstream_timeout","message":"Admin console timed out","requestId":"$request_id"}';
-    }
+    set $c1rcle_bff_upstream c1rcle_bff_admin;
+    include /etc/nginx/snippets/c1rcle/bff-locations.conf;
+    include /etc/nginx/snippets/c1rcle/bff-admin-locations.conf;
 }

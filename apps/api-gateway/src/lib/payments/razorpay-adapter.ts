@@ -106,6 +106,13 @@ function isRazorpayErrorResponseDataWithDescription(
  */
 const PROVIDER_ID_PATTERN = /^[A-Za-z0-9_]{1,64}$/;
 
+/** Length-guarded constant-time compare: `timingSafeEqual` throws on unequal lengths (a 500). */
+function safeEqualHex(expected: string, provided: string): boolean {
+  const a = Buffer.from(expected);
+  const b = Buffer.from(provided);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
 function assertProviderId(value: string, field: string): string {
   if (!PROVIDER_ID_PATTERN.test(value)) {
     throw new InvalidOperationError(`Invalid Razorpay ${field}`);
@@ -173,6 +180,13 @@ export class RazorpayPaymentProvider {
     };
   }
 
+  /** Fail closed: an unset secret must never degrade to a guessable HMAC key. */
+  private requireWebhookSecret(): void {
+    if (!this.config.webhookSecret) {
+      throw new InvalidOperationError('Razorpay webhook secret is not configured');
+    }
+  }
+
   async verifyPayment(request: PaymentVerificationRequest): Promise<PaymentVerificationResponse> {
     // HMAC verification is NOT optional (D-022)
     const expectedSignature = this.generateSignature({
@@ -180,7 +194,7 @@ export class RazorpayPaymentProvider {
       orderId: request.orderId,
     });
 
-    if (!timingSafeEqual(Buffer.from(expectedSignature), Buffer.from(request.signature))) {
+    if (!safeEqualHex(expectedSignature, request.signature)) {
       throw new InvalidOperationError('Invalid payment signature');
     }
 
@@ -298,6 +312,7 @@ export class RazorpayPaymentProvider {
    * Uses deterministic JSON.stringify (D-022).
    */
   generateSignature(payload: { paymentId: string; orderId: string }): string {
+    this.requireWebhookSecret();
     // Deterministic stringification: sort keys for consistency
     const sortedKeys = Object.keys(payload).sort();
     const canonical = sortedKeys.map((k) => `${k}=${payload[k as keyof typeof payload]}`).join('&');
@@ -309,9 +324,10 @@ export class RazorpayPaymentProvider {
    * Uses timingSafeEqual to prevent timing attacks.
    */
   verifyWebhookSignature(rawBody: string, signature: string): boolean {
+    this.requireWebhookSecret();
     const expectedSignature = createHmac('sha256', this.config.webhookSecret)
       .update(rawBody)
       .digest('hex');
-    return timingSafeEqual(Buffer.from(expectedSignature), Buffer.from(signature));
+    return safeEqualHex(expectedSignature, signature);
   }
 }

@@ -138,11 +138,11 @@ export default fp<RateLimitOptions>(
 function compoundKey(request: FastifyRequest, limitClass: RateLimitClass): string {
   const ip = request.ip || 'unknown-ip';
   const userId = request.authUser?.id ?? 'anonymous';
-  const organizationId =
-    request.actor?.organizationId ??
-    (typeof request.headers['x-organization-id'] === 'string'
-      ? request.headers['x-organization-id']
-      : 'no-org');
+  // Only the VERIFIED org (resolved from session membership by plugins/auth.ts)
+  // may widen the key. The raw `X-Organization-Id` header is client-controlled:
+  // keying on it lets any caller (anonymous OTP-send included) mint a fresh
+  // bucket per request by rotating the header, defeating every limit class.
+  const organizationId = request.actor?.organizationId ?? 'no-org';
   return `${limitClass}|${ip}|${userId}|${organizationId}`;
 }
 

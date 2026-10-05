@@ -217,6 +217,13 @@ export class OnboardingService {
 
   async addDocument(userId: EntityId, command: AddDocumentCommand): Promise<OnboardingRequest> {
     const request = await this.requireOwn(userId, command.requestId);
+    // The path must be the one `issueDocumentUploadUrl` minted for THIS user and
+    // request. Otherwise an applicant could point a document at another
+    // applicant's KYC object (or any bucket key) and the admin read-URL signer
+    // would hand a signed link to it.
+    if (!command.storagePath.startsWith(`kyc/${userId}/${request.id}/`)) {
+      throw new InvalidOperationError('Document storage path does not belong to this request');
+    }
     const updated = addOnboardingDocument(
       request,
       {
