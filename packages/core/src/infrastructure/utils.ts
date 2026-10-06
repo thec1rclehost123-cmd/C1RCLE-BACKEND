@@ -55,6 +55,8 @@ import {
   FirestoreUserBanRepository,
   FirestorePlatformSettingsRepository,
   FirestoreNotificationRepository,
+  FirestoreFollowRepository,
+  FirestoreSocialNotificationRepository,
 } from './firestore/index.js';
 import {
   MemoryOrganizationRepository,
@@ -98,6 +100,8 @@ import {
   MemoryUserBanRepository,
   MemoryPlatformSettingsRepository,
   MemoryNotificationRepository,
+  MemoryFollowRepository,
+  MemorySocialNotificationRepository,
 } from './memory/index.js';
 import { MemoryIdempotencyStore } from './memory/memory-idempotency-store.js';
 
@@ -167,6 +171,8 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
       userBans: new MemoryUserBanRepository(),
       platformSettings: new MemoryPlatformSettingsRepository(),
       notifications: new MemoryNotificationRepository(),
+      follows: new MemoryFollowRepository(),
+      socialNotifications: new MemorySocialNotificationRepository(),
     };
   }
 
@@ -225,6 +231,8 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
     userBans: new FirestoreUserBanRepository(db),
     platformSettings: new FirestorePlatformSettingsRepository(db),
     notifications: new FirestoreNotificationRepository(db),
+    follows: new FirestoreFollowRepository(db),
+    socialNotifications: new FirestoreSocialNotificationRepository(db),
   };
 }
 

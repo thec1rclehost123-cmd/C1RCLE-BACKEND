@@ -85,6 +85,11 @@ import type {
 } from '../models/scan-ledger.js';
 import type { ScannerDevice } from '../models/scanner-device.js';
 import type {
+  Follow,
+  FollowTargetType,
+  Notification as SocialNotification,
+} from '../models/social.js';
+import type {
   SupportTicket,
   SupportTicketCategory,
   SupportTicketPriority,
@@ -1245,6 +1250,35 @@ export interface GuestProfileRepository {
   save(profile: GuestProfile): Promise<void>;
 }
 
+// ─── Guest Social (Phase 8) ──────────────────────────────────────────────────
+
+export interface FollowRepository {
+  get(id: EntityId): Promise<Follow | null>;
+  save(follow: Follow): Promise<void>;
+  delete(id: EntityId): Promise<boolean>;
+  listByFollower(
+    followerId: EntityId,
+    query: PaginationQuery & { targetType?: FollowTargetType },
+  ): Promise<Page<Follow>>;
+  listFollowers(
+    targetType: FollowTargetType,
+    targetId: EntityId,
+    query: PaginationQuery,
+  ): Promise<Page<Follow>>;
+  countFollowers(targetType: FollowTargetType, targetId: EntityId): Promise<number>;
+}
+
+export interface SocialNotificationRepository {
+  createIfAbsent(notification: SocialNotification): Promise<boolean>;
+  listForUser(
+    userId: EntityId,
+    query: PaginationQuery & { unreadOnly?: boolean },
+  ): Promise<Page<SocialNotification>>;
+  countUnread(userId: EntityId): Promise<number>;
+  markRead(userId: EntityId, ids: EntityId[], readAt: string): Promise<number>;
+  markAllRead(userId: EntityId, readAt: string): Promise<number>;
+}
+
 // ─── Platform settings (singleton doc) ──────────────────────────────────────
 
 /**
@@ -1271,4 +1305,6 @@ export type {
   Notification,
   GuestProfile,
   PlatformSettings,
+  Follow,
+  SocialNotification,
 };

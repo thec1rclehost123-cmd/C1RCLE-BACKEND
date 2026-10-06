@@ -203,3 +203,5 @@ export type {
   NotificationDecision,
 } from './notifications/notification-service.js';
 export { createNotificationConsumer } from './notifications/notification-consumer.js';
+export { SocialService } from './social/social-service.js';
+export { createFollowerFanOutConsumer } from './social/notification-consumers.js';

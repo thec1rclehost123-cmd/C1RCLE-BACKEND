@@ -58,6 +58,8 @@ import type {
   SupportTicketRepository,
   SafetyReportRepository,
   NotificationRepository,
+  FollowRepository,
+  SocialNotificationRepository,
 } from '../domain/ports/repositories.js';
 import type { VerificationProvider } from '../domain/ports/verification.js';
 import type { Logger } from '../telemetry/logger.js';
@@ -151,6 +153,8 @@ export interface ServiceDeps {
     userBans: UserBanRepository;
     platformSettings: PlatformSettingsRepository;
     notifications: NotificationRepository;
+    follows: FollowRepository;
+    socialNotifications: SocialNotificationRepository;
   };
 }
 
