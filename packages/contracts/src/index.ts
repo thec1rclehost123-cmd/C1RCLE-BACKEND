@@ -523,3 +523,34 @@ export {
   notificationDecisionSchema,
   notificationActionRequestSchema,
 } from './contracts/notifications.js';
+
+// Social (Follows + Notifications)
+export type {
+  FollowTargetTypeDto,
+  CreateFollowRequest,
+  FollowDto,
+  FollowListResponse,
+  FollowStatusDto,
+  SocialNotificationDto,
+  SocialNotificationListResponse,
+  UnreadCountDto,
+  MarkNotificationsReadRequest,
+  MarkReadResultDto,
+} from './client.js';
+
+export {
+  followTargetTypeSchema,
+  createFollowSchema,
+  followTargetParamsSchema,
+  followDtoSchema,
+  listMyFollowsQuerySchema,
+  followListResponseSchema,
+  followStatusDtoSchema,
+  socialNotificationTypeSchema,
+  socialNotificationDtoSchema,
+  listNotificationsQuerySchema,
+  socialNotificationListResponseSchema,
+  unreadCountDtoSchema,
+  markNotificationsReadSchema,
+  markReadResultDtoSchema,
+} from './client.js';
