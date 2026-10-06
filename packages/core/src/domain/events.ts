@@ -62,6 +62,16 @@ export interface EventPayloads {
     venueName: string;
     hostName: string;
   };
+  'follow.created': {
+    followerId: EntityId;
+    targetType: 'host' | 'venue';
+    targetId: EntityId;
+  };
+  'follow.removed': {
+    followerId: EntityId;
+    targetType: 'host' | 'venue';
+    targetId: EntityId;
+  };
 }
 
 export type DomainEventType = keyof EventPayloads;
