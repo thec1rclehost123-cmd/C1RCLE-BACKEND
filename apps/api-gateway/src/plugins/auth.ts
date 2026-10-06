@@ -12,12 +12,18 @@
  * actor for exactly that driver. `STORAGE_DRIVER=firestore` is where auth is
  * actually enforced.
  */
+import { buildV2ErrorResponse } from '@c1rcle/contracts';
 import { betterAuth } from 'better-auth';
 import { bearer } from 'better-auth/plugins';
 import { firestoreAdapter } from 'better-auth-firestore';
 import fp from 'fastify-plugin';
 
-import type { OrganizationRepository, OrganizationRole, Capability } from '@c1rcle/core/domain';
+import type {
+  OrganizationRepository,
+  OrganizationRole,
+  Capability,
+  StaffRotationStore,
+} from '@c1rcle/core/domain';
 import type { Firestore } from '@c1rcle/core/infrastructure';
 
 import { getBetterAuthTrustedOrigins, type GatewayConfig } from '../config/index.js';
@@ -80,6 +86,30 @@ export function buildBetterAuth(gw: GatewayConfig, db: Firestore) {
 export interface AuthContextPluginOptions {
   auth: BetterAuthInstance | null;
   organizations: OrganizationRepository;
+  rotationStore: StaffRotationStore;
+}
+
+/**
+ * Auth paths that stay usable while an account owes its first-login password
+ * rotation. Everything else 403s with `password_change_required` until the
+ * rotation completes — a temporary credential must not unlock the app.
+ */
+const PASSWORD_ROTATION_ALLOWLIST = [
+  '/api/v2/auth/login',
+  '/api/v2/auth/signup',
+  '/api/v2/auth/refresh',
+  '/api/v2/auth/session',
+  '/api/v2/auth/logout',
+  '/api/v2/auth/change-password',
+  '/api/v2/auth/otp/send',
+  '/api/v2/auth/otp/verify',
+];
+
+function isPasswordRotationExempt(url: string): boolean {
+  const path = url.split('?')[0] ?? url;
+  return PASSWORD_ROTATION_ALLOWLIST.some(
+    (allowed) => path === allowed || path.startsWith(`${allowed}/`),
+  );
 }
 
 /** Fastify request headers (string | string[] | undefined) → standard `Headers`, for `auth.api.*`. */
@@ -101,7 +131,7 @@ export function toWebHeaders(headers: Record<string, string | string[] | undefin
  * (memory driver).
  */
 export default fp(async (fastify: FastifyInstance, options: AuthContextPluginOptions) => {
-  const { auth, organizations } = options;
+  const { auth, organizations, rotationStore } = options;
   if (!auth) return;
 
   fastify.addHook('onRequest', async (request) => {
@@ -110,11 +140,15 @@ export default fp(async (fastify: FastifyInstance, options: AuthContextPluginOpt
       .catch(() => null);
     if (!sessionResult?.user?.id) return;
     const user = sessionResult.user as { id: string; role?: string | null };
+    // First-login rotation flag: fail-open on store errors (a flag-store
+    // outage must not lock every user out) — the login/session responses
+    // still surface the flag when readable.
+    const mustChangePassword = await rotationStore.isRequired(user.id).catch(() => false);
     request.user = { uid: user.id };
     // Also populated for plugins/rbac.ts + plugins/rate-limit.ts + plugins/cache.ts
     // (ported from Sagar's parallel B10 work), which read `request.authUser`/
     // `request.actor` rather than `request.user`/`request.authContext`.
-    request.authUser = { id: user.id, platformRole: user.role ?? 'guest' };
+    request.authUser = { id: user.id, platformRole: user.role ?? 'guest', mustChangePassword };
 
     // Session-only actor: authenticated, not yet scoped to any organization.
     // Routes that need an org still fail closed — the ABAC path check in
@@ -171,6 +205,26 @@ export default fp(async (fastify: FastifyInstance, options: AuthContextPluginOpt
       platformRole: user.role ?? 'guest',
     };
   });
+
+  // First-login rotation enforcement: an account on a temporary credential
+  // may only rotate it, refresh its session, or sign out — every other
+  // authenticated route 403s until then. Runs as `preHandler` (not
+  // `onRequest`) so exempt auth paths are matched against the routed URL.
+  // The `details.passwordChangeRequired` marker lets clients tell this 403
+  // apart from a permission denial without parsing the message.
+  fastify.addHook('preHandler', async (request, reply) => {
+    if (!request.authUser?.mustChangePassword) return;
+    if (isPasswordRotationExempt(request.url)) return;
+    return reply.status(403).send(
+      buildV2ErrorResponse({
+        status: 403,
+        code: 'forbidden',
+        message: 'Change your temporary password before continuing.',
+        requestId: request.id,
+        details: { passwordChangeRequired: true },
+      }),
+    );
+  });
 });
 
 declare module 'fastify' {
@@ -184,7 +238,7 @@ declare module 'fastify' {
       };
     } | null;
     /** Populated alongside `user`/`authContext` — see the onRequest hook above. */
-    authUser?: { id: string; platformRole: string };
+    authUser?: { id: string; platformRole: string; mustChangePassword?: boolean };
     actor?: {
       userId: string;
       organizationId: string;

@@ -4,8 +4,14 @@ import { createCoreConfig, type CoreConfig } from '../../config/index.js';
 import { ForbiddenError } from '../../domain/errors.js';
 import { createPlatformAdmin, type AdminRole } from '../../domain/models/admin-authority.js';
 import { createPromoterAssignment } from '../../domain/models/event-catalog.js';
+import { LoggingEmailSender } from '../../domain/ports/email-sender.js';
 import { EchoObjectStorage } from '../../domain/ports/object-storage.js';
 import { MemoryPaymentProvider } from '../../domain/ports/payment-provider.js';
+import {
+  MemoryStaffCredentialProvisioner,
+  MemoryStaffRotationStore,
+  MemoryStaffUserDirectory,
+} from '../../domain/ports/staff-credentials.js';
 import { FormatCheckVerificationProvider } from '../../domain/ports/verification.js';
 import { MemoryAdminAuditRepository } from '../../infrastructure/memory/memory-audit-repository.js';
 import { MemoryOutboxStore } from '../../infrastructure/memory/memory-outbox-store.js';
@@ -61,6 +67,10 @@ describe('AdminOperationsService — promoter & settings authority', () => {
       verification: new FormatCheckVerificationProvider(),
       objectStorage: new EchoObjectStorage(),
       paymentProvider: new MemoryPaymentProvider('test_webhook_secret'),
+      emailSender: new LoggingEmailSender(noopLogger),
+      credentialProvisioner: new MemoryStaffCredentialProvisioner(),
+      rotationStore: new MemoryStaffRotationStore(),
+      userDirectory: new MemoryStaffUserDirectory(),
       pricing: new PricingService({ eventCatalog: repositories.catalog }),
       inventory: new InventoryService({
         eventCatalog: repositories.catalog,

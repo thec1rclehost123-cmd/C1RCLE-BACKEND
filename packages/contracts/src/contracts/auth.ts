@@ -14,6 +14,12 @@ export const userSchema = z.object({
   displayName: z.string().min(1),
   role: roleSchema,
   avatarUrl: z.url().nullable(),
+  /**
+   * True when the account is still on its staff-invitation temporary
+   * password. The client must route to the password-change screen; the
+   * gateway 403s every non-auth route until the rotation completes.
+   */
+  mustChangePassword: z.boolean(),
 });
 export type User = z.infer<typeof userSchema>;
 
@@ -49,6 +55,20 @@ export const authBridgeResponseSchema = z.object({
   expiresAt: z.number().int().positive(),
 });
 export type AuthBridgeResponse = z.infer<typeof authBridgeResponseSchema>;
+
+/* ─── First-login password rotation (staff-invitation credentials) ─────── */
+
+export const changePasswordSchema = z
+  .object({
+    currentPassword: z.string().min(1).max(128),
+    newPassword: z.string().min(8).max(128),
+  })
+  .strict()
+  .refine((value) => value.newPassword !== value.currentPassword, {
+    message: 'New password must be different from the current password',
+    path: ['newPassword'],
+  });
+export type ChangePasswordRequest = z.infer<typeof changePasswordSchema>;
 
 /* ─── Email OTP (signup verification) ─────────────────────────────────────── */
 

@@ -1,3 +1,4 @@
+import { MemoryStaffRotationStore } from '@c1rcle/core/domain';
 import Fastify from 'fastify';
 import { describe, expect, it } from 'vitest';
 
@@ -33,6 +34,7 @@ async function actorFor(opts: {
   await app.register(authContextPlugin, {
     auth: fakeAuth(opts.user),
     organizations: fakeOrgRepo(opts.member ?? null),
+    rotationStore: new MemoryStaffRotationStore(),
   });
   app.get('/probe', (request, reply) => reply.send({ actor: request.actor ?? null }));
   const res = await app.inject({ method: 'GET', url: '/probe', headers: opts.headers });
@@ -83,5 +85,39 @@ describe('auth context hook — actor resolution', () => {
 
   it('sets no actor at all when there is no session', async () => {
     expect(await actorFor({ user: null })).toBeNull();
+  });
+});
+
+describe('auth plugin — first-login rotation enforcement', () => {
+  async function probeApp(flaggedUserIds: readonly string[]) {
+    const rotationStore = new MemoryStaffRotationStore();
+    for (const userId of flaggedUserIds) {
+      await rotationStore.setRequired(userId, true);
+    }
+    const app = Fastify({ logger: false });
+    await app.register(authContextPlugin, {
+      auth: fakeAuth({ id: 'u1' }),
+      organizations: fakeOrgRepo(null),
+      rotationStore,
+    });
+    app.get('/probe', (request, reply) => reply.send({ actor: request.actor ?? null }));
+    return app;
+  }
+
+  it('403s non-auth routes while the rotation is owed', async () => {
+    const app = await probeApp(['u1']);
+    const res = await app.inject({ method: 'GET', url: '/probe' });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().message).toBe('Change your temporary password before continuing.');
+    expect(res.json().details).toMatchObject({ passwordChangeRequired: true });
+    await app.close();
+  });
+
+  it('lets unflagged users through untouched', async () => {
+    const app = await probeApp([]);
+    const res = await app.inject({ method: 'GET', url: '/probe' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().actor).toMatchObject({ userId: 'u1' });
+    await app.close();
   });
 });

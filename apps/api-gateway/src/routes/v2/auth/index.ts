@@ -2,13 +2,20 @@ import { buildV2ErrorResponse } from '@c1rcle/contracts';
 import {
   signupRequestSchema,
   loginRequestSchema,
+  changePasswordSchema,
   authBridgeResponseSchema,
+  invitationDtoSchema,
+  paginatedSchema,
   sessionSchema,
   noContentSchema,
 } from '@c1rcle/contracts/client';
 
+import type { OrganizationService } from '@c1rcle/core/application';
+import type { StaffRotationStore } from '@c1rcle/core/domain';
+
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { toWebHeaders, type BetterAuthInstance } from '../../../plugins/auth.js';
+import { invitationToDto } from '../partner/organizations.js';
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { z } from 'zod';
@@ -28,9 +35,23 @@ import type { z } from 'zod';
  */
 export default async function authRoutes(
   fastify: FastifyInstance,
-  options: { auth: BetterAuthInstance | null },
+  options: {
+    auth: BetterAuthInstance | null;
+    rotationStore: StaffRotationStore;
+    organizations: OrganizationService;
+  },
 ) {
-  const { auth } = options;
+  const { auth, rotationStore, organizations } = options;
+
+  const invitationListSchema = paginatedSchema(invitationDtoSchema);
+
+  /**
+   * First-login rotation flag for the user. Fail-open on store errors (a
+   * flag-store outage must not lock every user out) — the plugin's request
+   * enforcement fails open the same way.
+   */
+  const readRotationFlag = (userId: string): Promise<boolean> =>
+    rotationStore.isRequired(userId).catch(() => false);
 
   fastify.post(
     '/signup',
@@ -43,20 +64,25 @@ export default async function authRoutes(
     async (request, reply) => {
       if (!auth) return sendAuthUnavailable(reply, request);
       const body = request.body as z.infer<typeof signupRequestSchema>;
-      const result = await runAuthFlow(auth, request, reply, () =>
-        auth.api.signUpEmail({
-          // `role` is a required additional field (better-auth's generated
-          // type confirmed this at typecheck time) — always server-set,
-          // never client-supplied (`signupRequestSchema` has no `role` field).
-          body: {
-            email: body.email,
-            password: body.password,
-            name: body.displayName,
-            role: 'partner',
-          },
-          headers: toWebHeaders(request.headers),
-          asResponse: true,
-        }),
+      const result = await runAuthFlow(
+        auth,
+        request,
+        reply,
+        () =>
+          auth.api.signUpEmail({
+            // `role` is a required additional field (better-auth's generated
+            // type confirmed this at typecheck time) — always server-set,
+            // never client-supplied (`signupRequestSchema` has no `role` field).
+            body: {
+              email: body.email,
+              password: body.password,
+              name: body.displayName,
+              role: 'partner',
+            },
+            headers: toWebHeaders(request.headers),
+            asResponse: true,
+          }),
+        { readRotationFlag },
       );
       if (result === undefined) return reply;
       const validated = validateV2Response(reply, request, authBridgeResponseSchema, result);
@@ -89,7 +115,7 @@ export default async function authRoutes(
         // Every client-side login failure returns one constant body — an
         // unknown email and a wrong password are byte-identical, so there is
         // no account-existence oracle (spec §11.7 / D-024).
-        { genericClientErrorMessage: 'Authentication failed' },
+        { genericClientErrorMessage: 'Authentication failed', readRotationFlag },
       );
       if (result === undefined) return reply;
       const validated = validateV2Response(reply, request, authBridgeResponseSchema, result);
@@ -112,7 +138,7 @@ export default async function authRoutes(
         .catch(() => null);
       if (!session?.user) return sendUnauthorized(reply, request);
       const payload = {
-        user: toUserDto(session.user),
+        user: toUserDto(session.user, await readRotationFlag(session.user.id)),
         accessToken: session.session.token,
         expiresAt: toUnixMs(session.session.expiresAt),
       };
@@ -142,16 +168,118 @@ export default async function authRoutes(
         .catch(() => null);
       if (!session?.user) return sendUnauthorized(reply, request);
       const payload = {
-        user: toUserDto(session.user),
+        user: toUserDto(session.user, await readRotationFlag(session.user.id)),
         expiresAt: toUnixMs(session.session.expiresAt),
       };
       const validated = validateV2Response(reply, request, sessionSchema, payload);
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  fastify.post(
+    '/change-password',
+    {
+      preHandler: [
+        fastify.validateV2({ body: changePasswordSchema }),
+        fastify.rateLimit('SENSITIVE_COMMAND'),
+      ],
+    },
+    async (request, reply) => {
+      if (!auth) return sendAuthUnavailable(reply, request);
+      const session = await auth.api
+        .getSession({ headers: toWebHeaders(request.headers) })
+        .catch(() => null);
+      if (!session?.user) return sendUnauthorized(reply, request);
+      const body = request.body as z.infer<typeof changePasswordSchema>;
+      try {
+        await auth.api.changePassword({
+          body: {
+            currentPassword: body.currentPassword,
+            newPassword: body.newPassword,
+            revokeOtherSessions: true,
+          },
+          headers: toWebHeaders(request.headers),
+        });
+      } catch (error) {
+        const known = error as { status?: number; message?: string };
+        const status = typeof known?.status === 'number' && known.status >= 500 ? 500 : 400;
+        reply.status(status).send(
+          buildV2ErrorResponse({
+            status,
+            message:
+              status === 500
+                ? 'Authentication request failed'
+                : (known?.message ?? 'Current password is incorrect'),
+            requestId: request.id,
+          }),
+        );
+        return reply;
+      }
+      // The rotation is complete even if the flag clear fails to persist —
+      // fail open (the next flag read retries the clear path via re-change).
+      // In practice the clear succeeds and the next session read is clean.
+      await rotationStore.setRequired(session.user.id, false).catch(() => undefined);
+      // `revokeOtherSessions` deliberately killed every session including this
+      // one (a leaked temporary password must not leave live sessions behind),
+      // so the old cookie is dead — sign straight back in with the new
+      // password and hand over the fresh session instead of 401ing on success.
+      const result = await runAuthFlow(
+        auth,
+        request,
+        reply,
+        () =>
+          auth.api.signInEmail({
+            body: { email: session.user.email, password: body.newPassword },
+            headers: toWebHeaders(request.headers),
+            asResponse: true,
+          }),
+        { readRotationFlag },
+      );
+      if (result === undefined) return reply;
+      const validated = validateV2Response(reply, request, authBridgeResponseSchema, result);
       if (validated === undefined) return reply;
       return reply.status(200).send(validated);
     },
   );
 
   void noContentSchema; // reserved for the 204 logout response's (absent) body
+
+  // The invitee's own pending invitations, across orgs. Session-email scoped
+  // (no org membership required — that is exactly what the invitee lacks), so
+  // a freshly-provisioned login with zero orgs can discover the invite and
+  // accept it instead of landing on onboarding with nowhere to go.
+  fastify.get(
+    '/invitations/mine',
+    { preHandler: fastify.rateLimit('AUTH_READ') },
+    async (request, reply) => {
+      if (!auth) return sendAuthUnavailable(reply, request);
+      const session = await auth.api
+        .getSession({ headers: toWebHeaders(request.headers) })
+        .catch(() => null);
+      if (!session?.user?.email) return sendUnauthorized(reply, request);
+      const items = await organizations.listMyInvitations(session.user.email).catch(() => null);
+      if (items === null) {
+        reply
+          .status(500)
+          .send(
+            buildV2ErrorResponse({
+              status: 500,
+              message: 'Internal server error',
+              requestId: request.id,
+            }),
+          );
+        return reply;
+      }
+      const payload = {
+        items: items.map(invitationToDto),
+        pageInfo: { page: 1, pageSize: 50, total: items.length, hasNextPage: false },
+      };
+      const validated = validateV2Response(reply, request, invitationListSchema, payload);
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
 }
 
 /**
@@ -164,7 +292,10 @@ async function runAuthFlow(
   request: FastifyRequest,
   reply: FastifyReply,
   call: () => Promise<Response>,
-  options: { genericClientErrorMessage?: string } = {},
+  options: {
+    genericClientErrorMessage?: string;
+    readRotationFlag?: (userId: string) => Promise<boolean>;
+  } = {},
 ): Promise<{ user: unknown; accessToken: string; expiresAt: number } | undefined> {
   let response: Response;
   try {
@@ -189,7 +320,7 @@ async function runAuthFlow(
   if (!session?.user) return sendUnauthorized(reply, request);
 
   return {
-    user: toUserDto(session.user),
+    user: toUserDto(session.user, (await options.readRotationFlag?.(session.user.id)) ?? false),
     accessToken: accessToken ?? session.session.token,
     expiresAt: toUnixMs(session.session.expiresAt),
   };
@@ -283,12 +414,16 @@ function toUnixMs(value: unknown): number {
   return new Date(value as string | number | Date).getTime();
 }
 
-function toUserDto(user: { id: string; email: string; name: string; image?: string | null }): {
+function toUserDto(
+  user: { id: string; email: string; name: string; image?: string | null },
+  mustChangePassword: boolean,
+): {
   id: string;
   email: string;
   displayName: string;
   role: 'guest' | 'partner' | 'admin';
   avatarUrl: string | null;
+  mustChangePassword: boolean;
 } {
   return {
     id: user.id,
@@ -303,5 +438,6 @@ function toUserDto(user: { id: string; email: string; name: string; image?: stri
     // login/signup for an account with no avatar (validateV2Response's
     // schema check failing after a successful auth).
     avatarUrl: user.image && user.image.length > 0 ? user.image : null,
+    mustChangePassword,
   };
 }

@@ -22,6 +22,9 @@ class CapturingEmailSender implements EmailSender {
   async sendOtpEmail(recipient: string, code: string): Promise<void> {
     this.sent.push({ recipient, code });
   }
+  async sendStaffInvitationEmail(): Promise<void> {
+    throw new Error('not used in OTP tests');
+  }
 }
 
 function firstSent(sender: CapturingEmailSender): { recipient: string; code: string } {

@@ -11,8 +11,10 @@ import { domainEvent, type DomainEventType, type EventPayloads } from '../domain
 import type { CoreConfig } from '../config/index.js';
 import type { EntityId } from '../domain/identity.js';
 import type { InventoryService } from './inventory/inventory-service.js';
+import type { PricingService } from './pricing/pricing-service.js';
 import type { OrganizationRole, Capability } from '../domain/models/organization.js';
 import type { AdminAuditRepository } from '../domain/ports/audit.js';
+import type { EmailSender } from '../domain/ports/email-sender.js';
 import type { ObjectStoragePort } from '../domain/ports/object-storage.js';
 import type { OutboxWriter } from '../domain/ports/outbox.js';
 import type { PaymentProvider } from '../domain/ports/payment-provider.js';
@@ -58,9 +60,13 @@ import type {
   SupportTicketRepository,
   SafetyReportRepository,
 } from '../domain/ports/repositories.js';
+import type {
+  StaffCredentialProvisioner,
+  StaffRotationStore,
+  StaffUserDirectory,
+} from '../domain/ports/staff-credentials.js';
 import type { VerificationProvider } from '../domain/ports/verification.js';
 import type { Logger } from '../telemetry/logger.js';
-import type { PricingService } from './pricing/pricing-service.js';
 
 /** Who is making this call and in which tenant/role. Set by gateway auth. */
 export interface ActorContext {
@@ -96,6 +102,17 @@ export interface ServiceDeps {
   objectStorage: ObjectStoragePort;
   /** Phase 4: Payment provider (pluggable) */
   paymentProvider: PaymentProvider;
+  /** Staff-invitation + OTP delivery (pluggable). Resend in production, logging in dev/test. */
+  emailSender: EmailSender;
+  /**
+   * Staff login provisioning + first-login rotation flags (pluggable).
+   * Better Auth-backed in production, in-memory on the memory driver.
+   */
+  credentialProvisioner: StaffCredentialProvisioner;
+  /** First-login rotation flags by login user id (same driver split). */
+  rotationStore: StaffRotationStore;
+  /** Login user-id lookup by email (same driver split). */
+  userDirectory: StaffUserDirectory;
   /** Phase 4: Pricing engine */
   pricing: PricingService;
   /** Phase 4: Inventory service */

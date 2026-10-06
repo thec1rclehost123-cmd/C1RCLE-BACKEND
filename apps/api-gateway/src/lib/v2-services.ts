@@ -64,6 +64,9 @@ import {
   FormatCheckVerificationProvider,
   CompositeVerificationProvider,
   MemoryPaymentProvider,
+  MemoryStaffCredentialProvisioner,
+  MemoryStaffRotationStore,
+  MemoryStaffUserDirectory,
 } from '@c1rcle/core/domain';
 import {
   MemoryOutboxStore,
@@ -71,6 +74,8 @@ import {
   MemoryAdminAuditRepository,
   FirestoreAdminAuditRepository,
   FirebaseObjectStorage,
+  FirestoreStaffRotationStore,
+  FirestoreStaffUserDirectory,
   buildRepositories,
   firestoreClient,
   storageClient,
@@ -82,11 +87,15 @@ import {
 import type {
   AdminAuditRepository,
   PaymentProvider,
+  StaffRotationStore,
+  StaffUserDirectory,
   VerificationProvider,
 } from '@c1rcle/core/domain';
 
-import { getGatewayConfig } from '../config/index.js';
+import { getGatewayConfig, GatewayConfigError } from '../config/index.js';
+import { buildBetterAuth, type BetterAuthInstance } from '../plugins/auth.js';
 
+import { BetterAuthStaffCredentialProvisioner } from './auth/staff-credential-provisioner.js';
 import { ResendEmailSender } from './notifications/resend-email-sender.js';
 import { RazorpayPaymentProvider } from './payments/razorpay-adapter.js';
 import { FirebasePhoneVerificationProvider } from './verification/firebase-phone-verifier.js';
@@ -186,6 +195,14 @@ export interface PartnerV2Services {
   emailOtp: EmailOtpService;
   /** Guest-portal signup onboarding profile (session-scoped, no org). */
   guestProfile: GuestProfileService;
+  /**
+   * Better Auth instance, or null on the memory driver (no persistent store
+   * backs auth — see `plugins/auth.ts`). Built here (not in the route
+   * manifest) so the staff credential provisioner below shares it.
+   */
+  auth: BetterAuthInstance | null;
+  /** First-login rotation flags, for auth routes and the request guard. */
+  rotationStore: StaffRotationStore;
 }
 
 // Each route module calls `createV2Services()` independently at import time
@@ -257,6 +274,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     // published constant that anyone reading the repo could use to mint a
     // valid door QR for any ticket. Production now fails to boot without it.
     magicTicketSecret: gw.MAGIC_TICKET_SECRET,
+    ...(gw.PARTNER_DASHBOARD_URL ? { partnerDashboardUrl: gw.PARTNER_DASHBOARD_URL } : {}),
   });
 
   const repositories: ServiceDeps['repositories'] = buildRepositories(gw);
@@ -310,15 +328,55 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
           new FormatCheckVerificationProvider(),
         );
 
+  const serviceLogger =
+    logger ??
+    createLogger({
+      info: (message, obj) => console.info(message, obj ?? {}),
+      warn: (message, obj) => console.warn(message, obj ?? {}),
+      error: (message, obj) => console.error(message, obj ?? {}),
+    });
+  // Same sender instance serves OTP delivery and staff invitations: without a
+  // key (tests, keyless dev) both log instead of sending — see
+  // `ResendEmailSender`'s fail-closed rule for production.
+  const emailSender = new ResendEmailSender(
+    gwConfig.RESEND_API_KEY,
+    gwConfig.NODE_ENV,
+    serviceLogger,
+  );
+
+  // B10: auth is only real on the firestore driver — see plugins/auth.ts and
+  // docs/roadmap/phase-00-foundation.md for why the memory driver skips it.
+  // Built here so the staff credential provisioner shares the instance.
+  let auth: BetterAuthInstance | null = null;
+  if (gw.STORAGE_DRIVER === 'firestore') {
+    if (!gw.FIREBASE_CLIENT_EMAIL || !gw.FIREBASE_PRIVATE_KEY) {
+      throw new GatewayConfigError(
+        'STORAGE_DRIVER=firestore requires FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY',
+      );
+    }
+    auth = buildBetterAuth(gw, firestoreClient(gw));
+  }
+  // Staff credentials follow the same driver split as every other port:
+  // memory implementations never touch the network (tests, keyless dev),
+  // firestore implementations talk to the real stores.
+  const rotationStore: StaffRotationStore =
+    gw.STORAGE_DRIVER === 'memory'
+      ? new MemoryStaffRotationStore()
+      : new FirestoreStaffRotationStore(firestoreClient(gw));
+  // The user directory is shared between the provisioner (duplicate-account
+  // detection) and the invitation service (already-a-member guard).
+  const userDirectory: StaffUserDirectory =
+    gw.STORAGE_DRIVER === 'memory'
+      ? new MemoryStaffUserDirectory()
+      : new FirestoreStaffUserDirectory(firestoreClient(gw), 'v2_auth_users');
+  const credentialProvisioner =
+    auth !== null
+      ? new BetterAuthStaffCredentialProvisioner(auth, userDirectory, serviceLogger)
+      : new MemoryStaffCredentialProvisioner();
+
   const deps: ServiceDeps = {
     config: coreConfig,
-    logger:
-      logger ??
-      createLogger({
-        info: (message, obj) => console.info(message, obj ?? {}),
-        warn: (message, obj) => console.warn(message, obj ?? {}),
-        error: (message, obj) => console.error(message, obj ?? {}),
-      }),
+    logger: serviceLogger,
     outbox: eventBus,
     adminAudit: adminAudits,
     // Swap here — and only here — when a real KYC provider is contracted.
@@ -330,6 +388,10 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
         : new FirebaseObjectStorage(storageClient(gw), coreConfig.storage.kycBucket),
 
     paymentProvider,
+    emailSender,
+    credentialProvisioner,
+    rotationStore,
+    userDirectory,
     pricing,
     inventory,
     repositories,
@@ -455,7 +517,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
 
   const emailOtp = createEmailOtpService({
     emailOtp: repositories.emailOtp,
-    emailSender: new ResendEmailSender(gwConfig.RESEND_API_KEY, gwConfig.NODE_ENV, deps.logger),
+    emailSender,
     config: coreConfig,
   });
 
@@ -513,5 +575,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     leaderboard,
     emailOtp,
     guestProfile,
+    auth,
+    rotationStore,
   };
 }

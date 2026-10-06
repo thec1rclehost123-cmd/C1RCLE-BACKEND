@@ -124,6 +124,12 @@ const envSchema = z.object({
   RESEND_API_KEY: z.string().min(1).optional(),
   EMAIL_OTP_SECRET: z.string().min(1).optional(),
   /**
+   * Public origin of the partner dashboard (e.g. https://partners.thec1rcle.com).
+   * Used to build absolute staff-invitation accept links in invitation emails.
+   * Optional: when absent, emails omit the link rather than linking nowhere.
+   */
+  PARTNER_DASHBOARD_URL: z.url().optional(),
+  /**
    * Escape hatch for CI's Docker smoke-boot only — it exercises the
    * production config guards (NODE_ENV=production) without real Firestore
    * credentials, by design (see ci.yml's "Smoke-boot the container" step).
