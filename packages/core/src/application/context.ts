@@ -63,6 +63,10 @@ import type {
   SafetyReportRepository,
   NotificationRepository,
 } from '../domain/ports/repositories.js';
+import type {
+  StaffCredentialProvisioner,
+  StaffRotationStore,
+} from '../domain/ports/staff-credentials.js';
 import type { UserDirectoryPort } from '../domain/ports/user-directory.js';
 import type { VerificationProvider } from '../domain/ports/verification.js';
 import type { Logger } from '../telemetry/logger.js';
@@ -100,18 +104,24 @@ export interface ServiceDeps {
    */
   objectStorage: ObjectStoragePort;
   /**
-   * Phase 2 gap-closure: outbound transactional email beyond OTP (currently:
-   * notifying an applicant their onboarding request needs changes).
+   * Outbound transactional email (onboarding changes, OTP, password reset,
+   * and staff invitations).
    */
   emailSender: EmailSender;
   /**
-   * Phase 2 gap-closure: resolves a `userId` to an email for the services
-   * that need to reach a user outside their own session. `NullUserDirectory`
-   * on the memory driver; reads Better Auth's own store on firestore.
+   * Resolves a `userId` to an email (Phase 2 onboarding changes) and looks up
+   * a `userId` by email (staff invitations).
    */
   userDirectory: UserDirectoryPort;
   /** Phase 4: Payment provider (pluggable) */
   paymentProvider: PaymentProvider;
+  /**
+   * Staff login provisioning + first-login rotation flags (pluggable).
+   * Better Auth-backed in production, in-memory on the memory driver.
+   */
+  credentialProvisioner: StaffCredentialProvisioner;
+  /** First-login rotation flags by login user id (same driver split). */
+  rotationStore: StaffRotationStore;
   /** Phase 4: Pricing engine */
   pricing: PricingService;
   /** Phase 4: Inventory service */

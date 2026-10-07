@@ -106,6 +106,18 @@ describe('accepting', () => {
     const foreign = invite({ organizationId: 'org_other' });
     expect(() => acceptInvitation(org(), foreign, 'user_2', NOW)).toThrow(InvalidOperationError);
   });
+
+  it('closes the invitation without duplicating when the user is already a member', () => {
+    // Self-accept while testing, a direct add racing the invite, or a
+    // re-invited current member: the invite still closes, but no second
+    // membership is created and the existing role is left untouched.
+    const result = acceptInvitation(org(), invite(), 'user_owner', NOW);
+
+    expect(result.invitation.status).toBe('accepted');
+    expect(result.invitation.acceptedBy).toBe('user_owner');
+    expect(result.organization.members).toHaveLength(1);
+    expect(result.organization.members[0]).toMatchObject({ userId: 'user_owner', role: 'owner' });
+  });
 });
 
 describe('revoking', () => {

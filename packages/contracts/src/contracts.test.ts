@@ -41,6 +41,7 @@ const VALID_USER = {
   displayName: 'Sky Partner',
   role: 'partner',
   avatarUrl: null,
+  mustChangePassword: false,
 };
 
 describe('client schemas — canonical fixtures', () => {

@@ -566,8 +566,9 @@ export default async function partnerOrganizationRoutes(fastify: FastifyInstance
 }
 
 /** Wire shape for an invitation. `acceptedBy` stays internal — the audit
- * trail does not need to be a public field on the partner surface. */
-function invitationToDto(invitation: OrganizationInvitation) {
+ * trail does not need to be a public field on the partner surface. Shared
+ * with the auth routes' own-invitations read. */
+export function invitationToDto(invitation: OrganizationInvitation) {
   return {
     id: invitation.id,
     organizationId: invitation.organizationId,

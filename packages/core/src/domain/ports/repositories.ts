@@ -245,6 +245,12 @@ export interface InvitationRepository {
     organizationId: EntityId,
     email: string,
   ): Promise<OrganizationInvitation | null>;
+  /**
+   * Every effectively-pending invitation for an address, across orgs. Powers
+   * the invitee's own "my invitations" read — the session email is the only
+   * authority, so no org scope applies.
+   */
+  listPendingByEmail(email: string): Promise<OrganizationInvitation[]>;
   save(invitation: OrganizationInvitation, tx?: TxContext | null): Promise<void>;
 }
 

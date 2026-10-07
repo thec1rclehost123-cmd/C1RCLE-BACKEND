@@ -52,6 +52,7 @@ export {
 export * from './models/platform-settings.js';
 export type * from './models/platform-user.js';
 export * from './ports/email-sender.js';
+export * from './ports/staff-credentials.js';
 export * from './events.js';
 export * from './ports/outbox.js';
 export type * from './ports/audit.js';
