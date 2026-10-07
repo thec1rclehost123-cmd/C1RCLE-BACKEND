@@ -77,6 +77,7 @@ export type {
   TablePackageDto,
   CreateTablePackageRequest,
   PromoterAssignmentDto,
+  PromoterAssignedEventDto,
   AssignPromoterRequest,
 } from './contracts/event.js';
 
@@ -99,6 +100,7 @@ export {
   tablePackageDtoSchema,
   createTablePackageSchema,
   promoterAssignmentDtoSchema,
+  promoterAssignedEventDtoSchema,
   assignPromoterSchema,
 } from './contracts/event.js';
 
@@ -110,6 +112,12 @@ export type {
   SetVenueShareRequest,
   PartnerAccessDto,
   OrganizationOverviewDto,
+  OrganizationTrendsDto,
+  TrendGranularity,
+  TrendBucketDto,
+  OrganizationCalendarDto,
+  OrganizationEventCardDto,
+  OrganizationEventCardListResponse,
   EventAnalyticsDto,
   ReferralLinkDto,
   CreateReferralLinkRequest,
@@ -129,6 +137,12 @@ export {
   partnerPermissionSchema,
   partnerAccessDtoSchema,
   organizationOverviewDtoSchema,
+  organizationTrendsDtoSchema,
+  trendGranularitySchema,
+  trendBucketDtoSchema,
+  organizationCalendarDtoSchema,
+  organizationEventCardDtoSchema,
+  organizationEventCardListResponseSchema,
   eventAnalyticsDtoSchema,
   referralLinkDtoSchema,
   createReferralLinkSchema,
@@ -399,12 +413,15 @@ export type {
   AdminPayoutStatus,
   RunPayoutBatchInput,
   PayoutBatchResult,
+  FinanceOrderDto,
 } from './contracts/phase6.js';
 
 export {
   ledgerEntryDtoSchema,
   ledgerEntryListResponseSchema,
   balanceSummaryResponseSchema,
+  financeOrderDtoSchema,
+  financeOrderListResponseSchema,
   payoutRequestSchema,
   payoutResponseSchema,
   payoutListResponseSchema,
@@ -479,3 +496,30 @@ export {
   supportTicketQuerySchema,
   supportTicketIdParamSchema,
 } from './contracts/phase7.js';
+
+// Notifications (V2 partner inbox)
+export type {
+  NotificationRecipientTypeDto,
+  NotificationActionTypeDto,
+  NotificationActionDto,
+  NotificationPriorityDto,
+  NotificationDto,
+  NotificationsListResponse,
+  NotificationReadRequest,
+  MarkAllNotificationsReadResult,
+  NotificationDecisionDto,
+  NotificationActionRequestDto,
+} from './contracts/notifications.js';
+
+export {
+  notificationRecipientTypeSchema,
+  notificationActionTypeSchema,
+  notificationActionSchema,
+  notificationPrioritySchema,
+  notificationDtoSchema,
+  notificationsListResponseSchema,
+  notificationReadRequestSchema,
+  markAllNotificationsReadResultSchema,
+  notificationDecisionSchema,
+  notificationActionRequestSchema,
+} from './contracts/notifications.js';

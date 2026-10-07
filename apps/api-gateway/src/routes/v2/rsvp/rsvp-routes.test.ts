@@ -69,13 +69,13 @@ async function seed(
   const eventId: string = event.json().id;
   // New events default to `isFree: true`; the paid-event case flips it.
   if (options.isFree === false) {
-    const updated = await server.inject({
-      method: 'PATCH',
-      url: `/events/${eventId}`,
-      headers: { ...write(org), 'if-match': '1' },
-      payload: { isFree: false },
+    const paidTier = await server.inject({
+      method: 'POST',
+      url: `/events/${eventId}/ticket-tiers`,
+      headers: write(org),
+      payload: { name: 'Paid', accessType: 'ENTRY', priceInPaise: 1000, quantity: 10 },
     });
-    expect(updated.statusCode).toBe(200);
+    expect(paidTier.statusCode).toBe(201);
   }
 
   const tier = await server.inject({
@@ -84,7 +84,8 @@ async function seed(
     headers: write(org),
     payload: {
       name: 'RSVP',
-      priceInPaise: options.priceInPaise ?? 0,
+      accessType: options.priceInPaise ? 'ENTRY' : 'RSVP',
+      ...(options.priceInPaise ? { priceInPaise: options.priceInPaise } : {}),
       quantity: options.quantity ?? 100,
     },
   });
@@ -228,7 +229,7 @@ describe('POST /rsvp', () => {
       method: 'POST',
       url: `/events/${eventId}/ticket-tiers`,
       headers: write(org),
-      payload: { name: 'RSVP', priceInPaise: 0, quantity: 10 },
+      payload: { name: 'RSVP', accessType: 'RSVP', quantity: 10 },
     });
 
     const response = await rsvp(server, { eventId, tierId: tier.json().id });

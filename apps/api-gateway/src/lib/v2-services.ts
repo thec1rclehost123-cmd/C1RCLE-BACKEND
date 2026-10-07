@@ -42,6 +42,10 @@ import {
   createLeaderboardService,
   createEmailOtpService,
   createGuestProfileService,
+  SocialService,
+  createFollowerFanOutConsumer,
+  NotificationService,
+  createNotificationConsumer,
   type ScannerService,
   type DoorService,
   type CoverWalletService,
@@ -75,7 +79,7 @@ import {
   FirestoreAdminAuditRepository,
   FirebaseObjectStorage,
   FirestoreStaffRotationStore,
-  FirestoreStaffUserDirectory,
+  FirestoreUserDirectory,
   buildRepositories,
   firestoreClient,
   storageClient,
@@ -86,10 +90,11 @@ import {
 
 import type {
   AdminAuditRepository,
+  EmailSender,
   PaymentProvider,
   StaffRotationStore,
-  StaffUserDirectory,
   VerificationProvider,
+  UserDirectoryPort,
 } from '@c1rcle/core/domain';
 
 import { getGatewayConfig, GatewayConfigError } from '../config/index.js';
@@ -124,6 +129,8 @@ export interface PartnerV2Services {
   events: EventService;
   catalog: EventCatalogService;
   analytics: AnalyticsService;
+  /** Phase 8: follow graph + notification inbox (guest, session-scoped). */
+  social: SocialService;
   /** Phase 2: partner applications, applicant + admin review sides. */
   onboarding: OnboardingService;
   /** Phase 2: platform-admin resolution, tiering and dual control. */
@@ -203,6 +210,10 @@ export interface PartnerV2Services {
   auth: BetterAuthInstance | null;
   /** First-login rotation flags, for auth routes and the request guard. */
   rotationStore: StaffRotationStore;
+  /** V2 partner-dashboard inbox — recipient is the org tenant. */
+  notifications: NotificationService;
+  /** Outbound transactional email (OTP + password-reset links). */
+  emailSender: EmailSender;
 }
 
 // Each route module calls `createV2Services()` independently at import time
@@ -287,6 +298,19 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   eventBus.subscribe('event.updated', createAuditConsumer(audits));
   // Future projection consumer (no-op now — wire exists for B11 projections).
   eventBus.subscribe('event.published', createProjectionConsumer);
+  // Phase 8 pub/sub: follow graph changes are audited, and every publish fans
+  // out "new event" notifications to venue + host followers. The publisher
+  // (EventService / SocialService) never calls these directly.
+  eventBus.subscribe('follow.created', createAuditConsumer(audits));
+  eventBus.subscribe('follow.removed', createAuditConsumer(audits));
+  eventBus.subscribe(
+    'event.published',
+    createFollowerFanOutConsumer({
+      events: repositories.events,
+      follows: repositories.follows,
+      notifications: repositories.socialNotifications,
+    }),
+  );
 
   const adminAudits: AdminAuditRepository =
     gw.STORAGE_DRIVER === 'memory'
@@ -328,20 +352,21 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
           new FormatCheckVerificationProvider(),
         );
 
-  const serviceLogger =
+  const resolvedLogger =
     logger ??
     createLogger({
       info: (message, obj) => console.info(message, obj ?? {}),
       warn: (message, obj) => console.warn(message, obj ?? {}),
       error: (message, obj) => console.error(message, obj ?? {}),
     });
-  // Same sender instance serves OTP delivery and staff invitations: without a
-  // key (tests, keyless dev) both log instead of sending — see
-  // `ResendEmailSender`'s fail-closed rule for production.
+
+  // Same sender instance serves OTP delivery, onboarding notifications,
+  // password reset, and staff invitations: without a key (tests, keyless dev)
+  // logs instead of sending — see `ResendEmailSender`'s fail-closed rule for production.
   const emailSender = new ResendEmailSender(
     gwConfig.RESEND_API_KEY,
     gwConfig.NODE_ENV,
-    serviceLogger,
+    resolvedLogger,
   );
 
   // B10: auth is only real on the firestore driver — see plugins/auth.ts and
@@ -354,7 +379,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
         'STORAGE_DRIVER=firestore requires FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY',
       );
     }
-    auth = buildBetterAuth(gw, firestoreClient(gw));
+    auth = buildBetterAuth(gw, firestoreClient(gw), emailSender);
   }
   // Staff credentials follow the same driver split as every other port:
   // memory implementations never touch the network (tests, keyless dev),
@@ -364,29 +389,27 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
       ? new MemoryStaffRotationStore()
       : new FirestoreStaffRotationStore(firestoreClient(gw));
   // The user directory is shared between the provisioner (duplicate-account
-  // detection) and the invitation service (already-a-member guard).
-  const userDirectory: StaffUserDirectory =
+  // detection), onboarding applicant notifications, and the invitation service.
+  const userDirectory: UserDirectoryPort =
     gw.STORAGE_DRIVER === 'memory'
       ? new MemoryStaffUserDirectory()
-      : new FirestoreStaffUserDirectory(firestoreClient(gw), 'v2_auth_users');
+      : new FirestoreUserDirectory(firestoreClient(gw));
   const credentialProvisioner =
     auth !== null
-      ? new BetterAuthStaffCredentialProvisioner(auth, userDirectory, serviceLogger)
+      ? new BetterAuthStaffCredentialProvisioner(auth, userDirectory, resolvedLogger)
       : new MemoryStaffCredentialProvisioner();
 
   const deps: ServiceDeps = {
     config: coreConfig,
-    logger: serviceLogger,
+    logger: resolvedLogger,
     outbox: eventBus,
     adminAudit: adminAudits,
     // Swap here — and only here — when a real KYC provider is contracted.
-
     verification: verificationProvider,
     objectStorage:
       gw.STORAGE_DRIVER === 'memory'
         ? new EchoObjectStorage()
         : new FirebaseObjectStorage(storageClient(gw), coreConfig.storage.kycBucket),
-
     paymentProvider,
     emailSender,
     credentialProvisioner,
@@ -397,7 +420,20 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     repositories,
   };
 
+  // V2 partner inbox producer consumer: domain events → notification rows.
+  // Subscribed to each producer event type; the handler is a named function
+  // (its `handler.name` keys the bus's per-event dedupe set).
+  const notificationConsumer = createNotificationConsumer({
+    notifications: repositories.notifications,
+    config: coreConfig,
+    logger: deps.logger,
+  });
+  eventBus.subscribe('promoter_connection.requested', notificationConsumer);
+  eventBus.subscribe('partnership.requested', notificationConsumer);
+  eventBus.subscribe('event.published', notificationConsumer);
+
   const adminAuthority = new AdminAuthorityService(deps);
+  const onboardingService = new OnboardingService(deps, adminAuthority);
 
   // Phase 5 services
   const scanner = createScannerService({
@@ -457,6 +493,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     eventCodes: repositories.eventCodes,
     doorSales: repositories.doorSales,
     scanLedger: repositories.scanLedger,
+    venues: repositories.venues,
     adminAudit: adminAudits,
     logger: deps.logger,
   });
@@ -538,7 +575,8 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     events: new EventService(deps),
     catalog: new EventCatalogService(deps),
     analytics: new AnalyticsService(deps),
-    onboarding: new OnboardingService(deps, adminAuthority),
+    onboarding: onboardingService,
+    social: new SocialService(deps),
     adminAuthority,
     adminOps,
     checkout,
@@ -577,5 +615,8 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     guestProfile,
     auth,
     rotationStore,
+    notifications: new NotificationService(deps),
+    /** Serves `buildBetterAuth`'s `emailAndPassword.sendResetPassword` callback. */
+    emailSender,
   };
 }

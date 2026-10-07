@@ -39,11 +39,6 @@ export const onboardingProfileSchema = z
   .strict();
 export type OnboardingProfileDto = z.infer<typeof onboardingProfileSchema>;
 
-/**
- * A document's KYC review state — separate from `OnboardingStatus`. `pending`
- * means uploaded but not yet reviewed; `verified`/`rejected` are a KYC
- * reviewer's explicit call, never inferred from the application's own status.
- */
 export const onboardingDocumentStatusSchema = z.enum(['pending', 'verified', 'rejected']);
 
 export const onboardingDocumentSchema = z.object({
@@ -245,6 +240,7 @@ export const approveOnboardingResultSchema = z.object({
       entityType: z.string().max(120).optional(),
     }),
     documents: z.array(onboardingDocumentSchema),
+
     missingDocuments: z.array(z.string()),
     submittedAt: z.iso.datetime().nullable(),
     reviewedBy: opaqueIdSchema.nullable(),
@@ -345,7 +341,10 @@ export type ResolveProposalRequest = z.infer<typeof resolveProposalSchema>;
 export const adminAuditRecordDtoSchema = z.object({
   id: opaqueIdSchema,
   adminId: opaqueIdSchema,
-  adminRole: z.string(),
+  // Absent on records written before adminRole existed on this trail --
+  // never backfilled, since a role change since then would misrepresent
+  // what the actor's role actually was at the time of the action.
+  adminRole: z.string().nullable(),
   action: z.string(),
   targetType: z.string(),
   targetId: opaqueIdSchema,
@@ -358,11 +357,31 @@ export const adminAuditRecordDtoSchema = z.object({
 });
 export type AdminAuditRecordDto = z.infer<typeof adminAuditRecordDtoSchema>;
 
-/**
- * Global entity lookup (the "omnibox") — O(1) parallel doc-id fetches
- * across known collections rather than a scan, ported from v1's
- * `lookup/route.js`. `type` names which collection matched.
- */
+/* ─── Admin alerts dashboard ─────────────────────────────────────────────── */
+
+/** Which attention-queue a count refers to. Grows as admin desks ship
+ * (Phase 7: refunds, support SLA). */
+export const adminAlertCategoryKeySchema = z.enum(['pending_proposals', 'pending_onboarding']);
+export type AdminAlertCategoryKey = z.infer<typeof adminAlertCategoryKeySchema>;
+
+/** Visual priority hint for the bell panel, reused by the frontend as-is. */
+export const adminAlertSeveritySchema = z.enum(['normal', 'urgent']);
+
+export const adminAlertCategorySchema = z.object({
+  key: adminAlertCategoryKeySchema,
+  label: z.string(),
+  count: z.number().int().nonnegative(),
+  severity: adminAlertSeveritySchema,
+});
+export type AdminAlertCategory = z.infer<typeof adminAlertCategorySchema>;
+
+/** Snapshot of items needing admin attention. */
+export const adminAlertsResponseSchema = z.object({
+  generatedAt: z.iso.datetime(),
+  categories: z.array(adminAlertCategorySchema),
+});
+export type AdminAlertsResponse = z.infer<typeof adminAlertsResponseSchema>;
+
 export const adminLookupResultItemSchema = z.object({
   type: z.enum(['venue', 'event', 'organization', 'user']),
   id: opaqueIdSchema,

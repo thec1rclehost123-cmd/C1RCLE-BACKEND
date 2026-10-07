@@ -74,14 +74,6 @@ export interface OnboardingProfile {
   entityType?: string;
 }
 
-/**
- * A single document's verification state, distinct from the application's
- * own `OnboardingStatus`: KYC is "is this document legitimate", onboarding
- * is "should this applicant become a partner" — approving the application
- * requires every required document to be `verified` first (see
- * `approveOnboardingRequest`), but the two decisions are made separately,
- * by different desks, and are never the same button.
- */
 export type OnboardingDocumentStatus = 'pending' | 'verified' | 'rejected';
 
 /** A KYC document the applicant has uploaded. */
@@ -91,10 +83,8 @@ export interface OnboardingDocument {
   storagePath: string;
   uploadedAt: string;
   status: OnboardingDocumentStatus;
-  /** Which admin verified or rejected this document, if any. */
   reviewedBy: EntityId | null;
   reviewedAt: string | null;
-  /** Required when `status` is `rejected`. */
   rejectionReason: string | null;
 }
 

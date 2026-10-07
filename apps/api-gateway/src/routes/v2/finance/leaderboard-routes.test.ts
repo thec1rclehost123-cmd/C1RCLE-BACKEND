@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createV2Services } from '../../../lib/v2-services.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
@@ -20,6 +20,9 @@ const buildServer = () =>
   buildPartnerTestServer({ routes: [partnerOrganizationRoutes, leaderboardRoutes] });
 
 type Server = Awaited<ReturnType<typeof buildServer>>;
+
+/** Fixed instant for seeded commissions; see the `leaderboard/me` block below. */
+const SEED_AT = new Date('2026-09-08T12:00:00.000Z');
 
 async function seedOrganization(server: Server): Promise<string> {
   const created = await server.inject({
@@ -70,10 +73,25 @@ describe('GET /leaderboard', () => {
 });
 
 describe('GET /organizations/:organizationId/leaderboard/me', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('returns the caller own standing', async () => {
+    // `periodType=month` with no `periodValue` resolves the bucket from
+    // `new Date()` at request time, while the commission is recorded at SEED_AT.
+    // Pin the clock to the same instant so the write and the read always land in
+    // the same month bucket — otherwise the read hits an empty bucket and this
+    // fails on the 1st of each month, which is a rotted test, not a real signal.
+    //
+    // Only `Date` is faked. Faking the timer functions as well stalls the test
+    // server's own scheduling and the request never resolves.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(SEED_AT);
+
     const server = await buildServer();
     const promoter = await seedOrganization(server);
-    await createV2Services().leaderboard.recordCommission(promoter, 3_000, 'Delhi', new Date());
+    await createV2Services().leaderboard.recordCommission(promoter, 3_000, 'Delhi', SEED_AT);
 
     const res = await server.inject({
       method: 'GET',

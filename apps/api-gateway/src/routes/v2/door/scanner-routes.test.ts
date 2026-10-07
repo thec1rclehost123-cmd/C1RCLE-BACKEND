@@ -237,6 +237,137 @@ describe('door codes', () => {
   });
 });
 
+const GEOFENCED_EVENT_ID = 'evt_geofenced';
+const GEOFENCED_VENUE_ID = 'venue_geofenced';
+// Real coordinates so the distance math is meaningful: this is central Delhi.
+const VENUE_LAT = 28.6139;
+const VENUE_LNG = 77.209;
+
+async function seedGeofencedEventAndVenue(): Promise<void> {
+  if (await services.repos().events.findById(GEOFENCED_EVENT_ID)) return;
+  const now = new Date().toISOString();
+  await services.repos().events.save({
+    id: GEOFENCED_EVENT_ID,
+    organizationId: ORG_ID,
+    venueId: GEOFENCED_VENUE_ID,
+    slug: 'scanner-test-geofenced',
+    title: 'Geofenced Scanner Test Event',
+    summary: '',
+    description: '',
+    imageUrl: null,
+    startAt: now,
+    endAt: null,
+    status: 'published',
+    isPublic: true,
+    tags: [],
+    startingPricePaise: null,
+    isFree: false,
+    cancellationReason: null,
+    capacity: null,
+    adminOverride: false,
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+  });
+  await services.repos().venues.save({
+    id: GEOFENCED_VENUE_ID,
+    organizationId: ORG_ID,
+    ownerId: 'staff_1',
+    status: 'active',
+    public: {
+      name: 'Geofenced Test Venue',
+      slug: 'geofenced-test-venue',
+      description: '',
+      photoUrl: null,
+      address: { lat: VENUE_LAT, lng: VENUE_LNG },
+      facilities: [],
+      menu: { sections: [], updatedAt: null },
+      settings: { showGuestList: false, activityEnabled: false },
+      capacity: null,
+    },
+    private: { contactEmail: null, contactPhone: null, socials: {}, internalNotes: '' },
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
+describe('POST /door/sessions — D-030 geofence', () => {
+  beforeEach(async () => {
+    await seedGeofencedEventAndVenue();
+  });
+
+  async function mintCodeFor(eventId: string): Promise<string> {
+    const response = await server.inject({
+      method: 'POST',
+      url: `/events/${eventId}/door-codes`,
+      headers: HEADERS,
+      payload: { type: 'full', gate: null, expiresAt: null },
+    });
+    expect(response.statusCode, response.body).toBe(201);
+    return response.json().code;
+  }
+
+  it('opens the shift when the device fix is inside the radius', async () => {
+    const code = await mintCodeFor(GEOFENCED_EVENT_ID);
+    const response = await server.inject({
+      method: 'POST',
+      url: '/door/sessions',
+      headers: HEADERS,
+      payload: {
+        eventId: GEOFENCED_EVENT_ID,
+        code,
+        deviceId: 'device_geo_near',
+        deviceName: 'Gate iPad',
+        sessionType: 'staff',
+        // ~50m from the venue — well inside the 500m radius.
+        deviceLocation: { lat: VENUE_LAT + 0.00045, lng: VENUE_LNG },
+      },
+    });
+    expect(response.statusCode, response.body).toBe(201);
+  });
+
+  it('refuses to open the shift when the device fix is far from the venue', async () => {
+    const code = await mintCodeFor(GEOFENCED_EVENT_ID);
+    const response = await server.inject({
+      method: 'POST',
+      url: '/door/sessions',
+      headers: HEADERS,
+      payload: {
+        eventId: GEOFENCED_EVENT_ID,
+        code,
+        deviceId: 'device_geo_far',
+        deviceName: 'Gate iPad',
+        sessionType: 'staff',
+        // Mumbai — ~1150km from the Delhi venue coords above.
+        deviceLocation: { lat: 19.076, lng: 72.8777 },
+      },
+    });
+    // This route masks every ForbiddenError as 404 (`hideForbidden: true`,
+    // same IDOR guard as a cross-tenant event lookup) — the geofence denial
+    // is not a special case, it reuses that existing convention rather than
+    // adding a new distinguishable status code.
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('skips the check (opens the shift) when the device sends no fix at all', async () => {
+    const code = await mintCodeFor(GEOFENCED_EVENT_ID);
+    const response = await server.inject({
+      method: 'POST',
+      url: '/door/sessions',
+      headers: HEADERS,
+      payload: {
+        eventId: GEOFENCED_EVENT_ID,
+        code,
+        deviceId: 'device_geo_nolocation',
+        deviceName: 'Gate iPad',
+        sessionType: 'staff',
+      },
+    });
+    expect(response.statusCode, response.body).toBe(201);
+  });
+});
+
 describe('POST /door/sessions', () => {
   it('returns the raw token exactly once, and never again on a read', async () => {
     const code = await createDoorCode();

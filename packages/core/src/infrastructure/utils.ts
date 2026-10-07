@@ -48,12 +48,15 @@ import {
   FirestoreLeaderboardRepository,
   FirestoreEmailOtpRepository,
   FirestoreGuestProfileRepository,
+  FirestoreFollowRepository,
+  FirestoreSocialNotificationRepository,
   FirestoreRefundRequestRepository,
   FirestoreSafetyReportRepository,
   FirestoreSupportTicketRepository,
   FirestoreUserAccountRepository,
   FirestoreUserBanRepository,
   FirestorePlatformSettingsRepository,
+  FirestoreNotificationRepository,
 } from './firestore/index.js';
 import {
   MemoryOrganizationRepository,
@@ -90,12 +93,15 @@ import {
   MemoryLeaderboardRepository,
   MemoryEmailOtpRepository,
   MemoryGuestProfileRepository,
+  MemoryFollowRepository,
+  MemorySocialNotificationRepository,
   MemoryRefundRequestRepository,
   MemorySafetyReportRepository,
   MemorySupportTicketRepository,
   MemoryUserAccountRepository,
   MemoryUserBanRepository,
   MemoryPlatformSettingsRepository,
+  MemoryNotificationRepository,
 } from './memory/index.js';
 import { MemoryIdempotencyStore } from './memory/memory-idempotency-store.js';
 
@@ -158,12 +164,16 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
       leaderboard: new MemoryLeaderboardRepository(),
       emailOtp: new MemoryEmailOtpRepository(),
       guestProfiles: new MemoryGuestProfileRepository(),
+      // Phase 8
+      follows: new MemoryFollowRepository(),
+      socialNotifications: new MemorySocialNotificationRepository(),
       refundRequests: new MemoryRefundRequestRepository(),
       supportTickets: new MemorySupportTicketRepository(),
       safetyReports: new MemorySafetyReportRepository(),
       users: new MemoryUserAccountRepository(),
       userBans: new MemoryUserBanRepository(),
       platformSettings: new MemoryPlatformSettingsRepository(),
+      notifications: new MemoryNotificationRepository(),
     };
   }
 
@@ -215,12 +225,16 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
     leaderboard: new FirestoreLeaderboardRepository(db),
     emailOtp: new FirestoreEmailOtpRepository(db),
     guestProfiles: new FirestoreGuestProfileRepository(db),
+    // Phase 8
+    follows: new FirestoreFollowRepository(db),
+    socialNotifications: new FirestoreSocialNotificationRepository(db),
     refundRequests: new FirestoreRefundRequestRepository(db),
     supportTickets: new FirestoreSupportTicketRepository(db),
     safetyReports: new FirestoreSafetyReportRepository(db),
     users: new FirestoreUserAccountRepository(db),
     userBans: new FirestoreUserBanRepository(db),
     platformSettings: new FirestorePlatformSettingsRepository(db),
+    notifications: new FirestoreNotificationRepository(db),
   };
 }
 

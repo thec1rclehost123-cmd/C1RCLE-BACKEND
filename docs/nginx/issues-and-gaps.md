@@ -173,7 +173,7 @@ URLs. See [`url-hiding-rerouting.md`](./url-hiding-rerouting.md).
 #### 10. WebSocket Proxying
 
 **Status:** Snippet prepared (`websocket.conf`) but not included
-**Impact:** No WebSocket routes exist. When they do, the snippet needs
+**Impact:** No WebSocket routes exist (live door stats ship as SSE, D-028, with its own unbuffered `location ^~ /api/v2/door/stats/stream` in `snippets/api-locations.conf` — not a WebSocket). If one is added, the snippet needs
 review and activation.
 
 **When to revisit:** When a WebSocket route is added to Fastify. The snippet
@@ -214,7 +214,7 @@ or a third-party module for active `health_check` directive.
 | Limitation | Impact | Workaround |
 |---|---|---|
 | No HSTS in staging | Browsers don't enforce HTTPS | Production template has HSTS |
-| No WebSocket support | Real-time features need polling | Add WebSocket route + activate snippet |
+| No WebSocket support | Live door stats use SSE (D-028); other real-time features poll | Add WebSocket route + activate snippet |
 | No edge caching | Every request hits Fastify | Acceptable for dynamic API |
 | Single upstream | No horizontal scaling | Measured and deliberate |
 | `client_max_body_size 1m` | Large uploads rejected | Increase if needed for file uploads |

@@ -64,6 +64,7 @@ jobs:
               - 'package.json'
               - 'pnpm-lock.yaml'
               - 'pnpm-workspace.yaml'
+              - 'governance/**'
               - 'turbo.json'
               - 'tsconfig.base.json'
               - 'eslint.config.mjs'
@@ -136,6 +137,16 @@ jobs:
         if: always()
         run: node scripts/check-nginx-config.mjs
 
+      # A dependency patched for an advisory has to be pinned in
+      # pnpm-workspace.yaml, not only in pnpm-lock.yaml. pnpm re-resolves from
+      # the manifest, so a lockfile-only fix (commit 8be206f) silently reverted
+      # on the next plain `pnpm install` and took the fixes with it. This checks
+      # the pins still hold and that the lockfile agrees with the manifest.
+      - name: Security pins
+        id: pins
+        if: always()
+        run: node scripts/check-security-pins.mjs
+
       # A focused `it.only` silently disables every other test in its file, so a
       # green suite can be hiding almost all of itself.
       - name: No focused tests committed
@@ -162,6 +173,7 @@ jobs:
             echo "| Typecheck | ${{ steps.typecheck.outcome }} |"
             echo "| Boundaries | ${{ steps.boundaries.outcome }} |"
             echo "| Nginx config | ${{ steps.nginx.outcome }} |"
+            echo "| Security pins | ${{ steps.pins.outcome }} |"
             echo "| Focused tests | ${{ steps.focused.outcome }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -510,12 +522,34 @@ jobs:
         with:
           turbo-cache: 'false'
 
+      # `--from` is the parent of the oldest commit this PR actually
+      # introduces, not the base ref. A PR whose base lags the integration
+      # branch carries that branch's history inside `base..head`, and linting it
+      # wholesale means judging the PR on commits it never authored — including
+      # squash-merge commits whose subject is the original PR title
+      # (`Fix/guest portal update (#47)`), which can never be fixed from here.
+      # `pr-commit-range.mjs` prints NONE when everything in range is already
+      # merged (a pure promotion PR), and falls back to the base ref if it
+      # cannot narrow, so this is never weaker than the previous behaviour.
       - name: Lint the commits in this pull request
         run: |
-          pnpm exec commitlint \
-            --from "origin/${{ github.base_ref }}" \
-            --to "${{ github.event.pull_request.head.sha }}" \
-            --verbose
+          # `-e` so a non-zero exit from the script (bad args, unreadable repo)
+          # fails the step instead of leaving $FROM empty and turning into
+          # `commitlint --from ""`, which lints an unintended range. `-u` catches
+          # an unset variable, and `-o pipefail` would matter if this grew a pipe.
+          set -euo pipefail
+          FROM=$(node scripts/pr-commit-range.mjs \
+            --base "origin/${{ github.base_ref }}" \
+            --head "${{ github.event.pull_request.head.sha }}")
+          if [ "$FROM" = "NONE" ]; then
+            echo "No unreviewed commits in ${{ github.base_ref }}..head — nothing to lint."
+          else
+            echo "Linting from $FROM"
+            pnpm exec commitlint \
+              --from "$FROM" \
+              --to "${{ github.event.pull_request.head.sha }}" \
+              --verbose
+          fi
 
       - name: Lint the pull-request title
         env:

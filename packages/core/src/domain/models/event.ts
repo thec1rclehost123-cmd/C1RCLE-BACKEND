@@ -139,14 +139,32 @@ export interface CreateEventInput {
   now?: Date;
 }
 
-/** Slugify like V1 (`events.ts` slug convention): lowercase, `-` for spaces. */
+/** Slugify like V1 (`events.ts` slug convention): lowercase, `-` for spaces.
+ *
+ * The dash trim is a plain index scan, not a regex. `/^-+|-+$/g` and even a
+ * lone `/-+$/` are quadratic in the length of the input: the engine retries
+ * the `-+` run from every start position and only then fails the `$` anchor.
+ * A title is partner-supplied, so that shape is reachable in principle and
+ * CodeQL reports it as `js/polynomial-redos`. The scan below is linear.
+ *
+ * The result is unchanged: it strips the whole run of leading and trailing
+ * dashes, exactly what the `g`-flagged alternation did.
+ */
 export function slugifyEventTitle(title: string): string {
-  return title
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 80);
+  return trimDashes(
+    title
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, '-'),
+  ).slice(0, 80);
+}
+
+function trimDashes(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value[start] === '-') start += 1;
+  while (end > start && value[end - 1] === '-') end -= 1;
+  return value.slice(start, end);
 }
 
 export function createEvent(input: CreateEventInput): Event {

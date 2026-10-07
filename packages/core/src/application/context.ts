@@ -53,18 +53,21 @@ import type {
   LeaderboardRepository,
   EmailOtpRepository,
   GuestProfileRepository,
+  FollowRepository,
+  SocialNotificationRepository,
   AdminRefundRequestRepository,
   UserAccountRepository,
   UserBanRepository,
   PlatformSettingsRepository,
   SupportTicketRepository,
   SafetyReportRepository,
+  NotificationRepository,
 } from '../domain/ports/repositories.js';
 import type {
   StaffCredentialProvisioner,
   StaffRotationStore,
-  StaffUserDirectory,
 } from '../domain/ports/staff-credentials.js';
+import type { UserDirectoryPort } from '../domain/ports/user-directory.js';
 import type { VerificationProvider } from '../domain/ports/verification.js';
 import type { Logger } from '../telemetry/logger.js';
 
@@ -100,10 +103,18 @@ export interface ServiceDeps {
    * `EchoObjectStorage` on the memory driver; Firebase Storage v4 on firestore.
    */
   objectStorage: ObjectStoragePort;
+  /**
+   * Outbound transactional email (onboarding changes, OTP, password reset,
+   * and staff invitations).
+   */
+  emailSender: EmailSender;
+  /**
+   * Resolves a `userId` to an email (Phase 2 onboarding changes) and looks up
+   * a `userId` by email (staff invitations).
+   */
+  userDirectory: UserDirectoryPort;
   /** Phase 4: Payment provider (pluggable) */
   paymentProvider: PaymentProvider;
-  /** Staff-invitation + OTP delivery (pluggable). Resend in production, logging in dev/test. */
-  emailSender: EmailSender;
   /**
    * Staff login provisioning + first-login rotation flags (pluggable).
    * Better Auth-backed in production, in-memory on the memory driver.
@@ -111,8 +122,6 @@ export interface ServiceDeps {
   credentialProvisioner: StaffCredentialProvisioner;
   /** First-login rotation flags by login user id (same driver split). */
   rotationStore: StaffRotationStore;
-  /** Login user-id lookup by email (same driver split). */
-  userDirectory: StaffUserDirectory;
   /** Phase 4: Pricing engine */
   pricing: PricingService;
   /** Phase 4: Inventory service */
@@ -156,6 +165,10 @@ export interface ServiceDeps {
     leaderboard: LeaderboardRepository;
     emailOtp: EmailOtpRepository;
     guestProfiles: GuestProfileRepository;
+    /** Phase 8: guest → venue/host follow edges. */
+    follows: FollowRepository;
+    /** Phase 8: per-user in-app inbox, written by bus consumers. */
+    socialNotifications: SocialNotificationRepository;
     refundRequests: AdminRefundRequestRepository;
     /** Platform support tickets (guest intake + admin desk). */
     supportTickets: SupportTicketRepository;
@@ -166,6 +179,8 @@ export interface ServiceDeps {
     /** Platform user ban state — Phase 7 trust & safety. */
     userBans: UserBanRepository;
     platformSettings: PlatformSettingsRepository;
+    /** V2 partner-dashboard inbox (org-tenant recipient). */
+    notifications: NotificationRepository;
   };
 }
 

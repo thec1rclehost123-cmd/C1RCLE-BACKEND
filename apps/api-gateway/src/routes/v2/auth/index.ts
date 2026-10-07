@@ -8,6 +8,9 @@ import {
   paginatedSchema,
   sessionSchema,
   noContentSchema,
+  forgotPasswordRequestSchema,
+  resetPasswordRequestSchema,
+  passwordResetAckSchema,
 } from '@c1rcle/contracts/client';
 
 import type { OrganizationService } from '@c1rcle/core/application';
@@ -119,6 +122,72 @@ export default async function authRoutes(
       );
       if (result === undefined) return reply;
       const validated = validateV2Response(reply, request, authBridgeResponseSchema, result);
+      if (validated === undefined) return reply;
+      return reply.status(200).send(validated);
+    },
+  );
+
+  // Password reset (scanner/partner self-service). Both routes call the Better
+  // Auth server API directly (never `asResponse` — no cookies involved) and
+  // map thrown `APIError`s through `sendAuthError`. `requestPasswordReset` is
+  // Better Auth's own anti-oracle: unknown emails still resolve to
+  // `{status: true, message}` (verified in better-auth 1.6.26
+  // `dist/api/routes/password.mjs` — it even simulates token work), so these
+  // routes never branch on account existence. The `sendResetPassword` email
+  // callback is wired in `buildBetterAuth` (plugins/auth.ts).
+  fastify.post(
+    '/forgot-password',
+    {
+      preHandler: [
+        fastify.validateV2({ body: forgotPasswordRequestSchema }),
+        fastify.rateLimit('SENSITIVE_COMMAND'),
+      ],
+    },
+    // codeql[js/missing-rate-limiting] rate limiting IS applied via the
+    // preHandler list (fastify.rateLimit('SENSITIVE_COMMAND') — same bucket as
+    // login/OTP). CodeQL cannot see through the plugin-decorated preHandler.
+    async (request, reply) => {
+      if (!auth) return sendAuthUnavailable(reply, request);
+      const body = request.body as z.infer<typeof forgotPasswordRequestSchema>;
+      let validated: unknown;
+      try {
+        const result = await auth.api.requestPasswordReset({
+          body: { email: body.email },
+          headers: toWebHeaders(request.headers),
+        });
+        validated = validateV2Response(reply, request, passwordResetAckSchema, result);
+      } catch (error) {
+        return sendAuthError(reply, request, error);
+      }
+      if (validated === undefined) return reply;
+      return reply.status(200).send(validated);
+    },
+  );
+
+  fastify.post(
+    '/reset-password',
+    {
+      preHandler: [
+        fastify.validateV2({ body: resetPasswordRequestSchema }),
+        fastify.rateLimit('SENSITIVE_COMMAND'),
+      ],
+    },
+    // codeql[js/missing-rate-limiting] rate limiting IS applied via the
+    // preHandler list (fastify.rateLimit('SENSITIVE_COMMAND') — same bucket as
+    // login/OTP). CodeQL cannot see through the plugin-decorated preHandler.
+    async (request, reply) => {
+      if (!auth) return sendAuthUnavailable(reply, request);
+      const body = request.body as z.infer<typeof resetPasswordRequestSchema>;
+      let validated: unknown;
+      try {
+        const result = await auth.api.resetPassword({
+          body: { newPassword: body.newPassword, token: body.token },
+          headers: toWebHeaders(request.headers),
+        });
+        validated = validateV2Response(reply, request, passwordResetAckSchema, result);
+      } catch (error) {
+        return sendAuthError(reply, request, error);
+      }
       if (validated === undefined) return reply;
       return reply.status(200).send(validated);
     },
@@ -260,15 +329,13 @@ export default async function authRoutes(
       if (!session?.user?.email) return sendUnauthorized(reply, request);
       const items = await organizations.listMyInvitations(session.user.email).catch(() => null);
       if (items === null) {
-        reply
-          .status(500)
-          .send(
-            buildV2ErrorResponse({
-              status: 500,
-              message: 'Internal server error',
-              requestId: request.id,
-            }),
-          );
+        reply.status(500).send(
+          buildV2ErrorResponse({
+            status: 500,
+            message: 'Internal server error',
+            requestId: request.id,
+          }),
+        );
         return reply;
       }
       const payload = {
@@ -338,7 +405,18 @@ async function forwardAuthErrorResponse(
   response: Response,
   genericClientErrorMessage?: string,
 ): Promise<undefined> {
-  const status = response.status === 422 ? 422 : response.status >= 500 ? 500 : 400;
+  // 401 is preserved rather than collapsed into 400. A client has to be able to
+  // tell "your password is wrong" (retry, same body) apart from "your payload is
+  // malformed" (fix the request) — and `errorCodeForStatus` only produces the
+  // `unauthorized` code at 401. Collapsing it also broke the D-024 guarantee's
+  // own shape: the anti-oracle constant message is still identical for every
+  // credential failure, so nothing about account existence leaks.
+  const status =
+    response.status === 422 || response.status === 401
+      ? response.status
+      : response.status >= 500
+        ? 500
+        : 400;
   let message = 'Authentication request failed';
   if (genericClientErrorMessage !== undefined && status < 500) {
     // Login path: discard Better Auth's own message and return one constant for
@@ -428,7 +506,8 @@ function toUserDto(
   return {
     id: user.id,
     email: user.email,
-    displayName: user.name,
+    displayName:
+      user.name && user.name.length > 0 ? user.name : (user.email.split('@')[0] ?? 'User'),
     // Phase 0 scope is partner-dashboard auth only; guest/admin auth are
     // later phases (docs/roadmap/ROADMAP.md) and will need a real role source.
     role: 'partner',

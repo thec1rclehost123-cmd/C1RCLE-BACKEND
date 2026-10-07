@@ -48,7 +48,7 @@ graph TB
 - Render reserves private-network port `10000` — Fastify uses `8080`
 - Both containers are on the same private Docker network
 
-### Current: Single-Service (Live on Render)
+### Single-Service (original topology; the interim sidecar in `sidecar-deployment.md` later went live on Render — confirm in the dashboard which is current)
 
 ```mermaid
 graph TB

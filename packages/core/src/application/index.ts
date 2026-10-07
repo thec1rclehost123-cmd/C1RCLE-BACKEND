@@ -74,6 +74,7 @@ export { CheckoutService, rsvpOrderId } from './checkout/checkout-service.js';
 export { InventoryService } from './inventory/inventory-service.js';
 export { PricingService } from './pricing/pricing-service.js';
 export { OrderService } from './orders/order-service.js';
+export type { FinanceOrderRow } from './orders/order-service.js';
 export { TicketService } from './tickets/ticket-service.js';
 
 // Phase 5: Scanner, Door, Cover Wallet
@@ -109,6 +110,9 @@ export type {
   ResolveWalletCommand,
   ChargeWalletCommand,
   WalletChargeResult,
+  AttendanceReport,
+  AttendanceReportGuest,
+  AttendanceReportTierBreakdown,
 } from './door/door-ops-service.js';
 export { createDoorOpsService, resolveDoorDate } from './door/door-ops-service.js';
 export type {
@@ -192,3 +196,17 @@ export type {
   GuestProfileServiceDeps,
 } from './guest-profile/guest-profile-service.js';
 export { createGuestProfileService } from './guest-profile/guest-profile-service.js';
+// Phase 8: follow graph + notifications (publisher service + bus subscribers)
+export { SocialService } from './social/social-service.js';
+export type { FollowStatus } from './social/social-service.js';
+export { createFollowerFanOutConsumer } from './social/notification-consumers.js';
+export type { FollowerFanOutDeps } from './social/notification-consumers.js';
+
+// V2 partner-dashboard inbox (org-tenant recipient)
+export { NotificationService } from './notifications/notification-service.js';
+export type {
+  RecordNotificationInput,
+  NotificationListResult,
+  NotificationDecision,
+} from './notifications/notification-service.js';
+export { createNotificationConsumer } from './notifications/notification-consumer.js';

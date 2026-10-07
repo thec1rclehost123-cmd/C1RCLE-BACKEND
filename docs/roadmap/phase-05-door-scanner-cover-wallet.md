@@ -1,6 +1,6 @@
 # Phase 5 — Door / Scanner / Cover-wallet
 
-**Status:** done, hardened 2026-09-11 — 1 honest 501 remains (`/door/stats/ws`, needs `@fastify/websocket`). The offline manifest is now real. See the 2026-09-11 session log for the six security findings closed. · **Depends on:** Phase 4 (entitlements must exist)
+**Status:** done, hardened 2026-09-11, **no 501 stubs remain** (re-verified 2026-09-28) — the last honest 501, `/door/stats/ws`, was closed by shipping SSE at `GET /door/stats/stream` instead (`efb8a17`, 2026-09-16; D-028). The offline manifest is real. See the 2026-09-11 session log for the six security findings closed, and the 2026-09-28 entry for the doc-truth repair. · **Depends on:** Phase 4 (entitlements must exist)
 
 ## v1 proven logic to port (`thec1rcle`)
 
@@ -57,8 +57,7 @@ it as a past finding, not a guaranteed-current state.
 
 ## Execution plan
 
-Superseded by `docs/PHASE_5_HTTP_WIRING_PLAN.md` — that doc is the current,
-accurate breakdown of what shipped and what remains. (An older pre-implementation
+The original wiring plan is `docs/PHASE_5_HTTP_WIRING_PLAN.md` (historical — itself fully superseded; this file's session log is the current record). (An older pre-implementation
 "Execution Plan (Agent-driven)" section lived here inline; it had been duplicated
 into the file as a line-number-prefixed paste and was removed 2026-09-01.)
 
@@ -96,6 +95,13 @@ Verified: `pnpm --filter @c1rcle/core build` clean, gateway typecheck clean,
 231/232 with `compare-and-set.test.ts` failing — **that measurement was on the
 uncommitted tree; see the 2026-09-01 entry, it is now 232/232.**
 
+> **⚠️ PARTIALLY SUPERSEDED (verified 2026-09-28).** Three of the "still open"
+> items below have since landed: live door stats (as **SSE** at
+> `GET /door/stats/stream`, not WebSocket — D-028), `/door/override`
+> (`0342d80`), `/door/offline-manifest` (`efb8a17`, 2026-09-16), and
+> cover-wallet freeze/unfreeze (`53727c8`). See the 2026-09-28 session-log entry
+> at the foot of this file. The original text is kept for history.
+
 Still open, by design (see `docs/PHASE_5_HTTP_WIRING_PLAN.md`): live door stats
 + WebSocket, `/door/override` (FSM has no `denied → overridden` transition),
 `/door/offline-manifest` (nothing signs one), cover-wallet freeze/unfreeze (no
@@ -129,8 +135,9 @@ Phase 5 now has 2 honest 501s by design:
   with `NN:` prefixes and a second `**Status:** not started` line).
 - **Still to do for Phase 5 (as of 2026-09-01):** the 6 honest 501s (Founder
   Tasks A2 + B1 + B2), and **5 domain-model unit test files**. **All completed
-  as of 2026-09-07** — see session log entry above. Only 2 honest 501s remain
-  (stats/ws, scanner manifest-signing).
+   as of 2026-09-07** — see session log entry above. Only 2 honest 501s remained
+   then (stats/ws, scanner manifest-signing); **both are now closed** (2026-09-16,
+   `efb8a17`) — see the 2026-09-28 entry at the foot of this file.
 
 ### 2026-09-11 — Scanner hardening: the door is now safe for multiple clubs
 
@@ -175,8 +182,10 @@ verifies), `SCANNER_COMMAND` rate class (300/min — a club door genuinely
 scans faster than `STANDARD_COMMAND` allows), `X-Scanner-Session-Token` added
 to the pino redaction list.
 
-**Still open, deliberately:** `GET /door/stats/ws` (no `@fastify/websocket`);
-an override does not credit a scan back to the ticket.
+**Still open, deliberately:** ~~`GET /door/stats/ws` (no `@fastify/websocket`)~~
+— **closed 2026-09-16** (`efb8a17`): live push shipped as SSE at
+`GET /door/stats/stream` instead (D-028). An override still does not credit a
+scan back to the ticket.
 
 **Verified:** `pnpm check` fully green — format, lint, typecheck, boundaries,
 825 tests (core 470, gateway 342, contracts 13) + 2 end-to-end scenarios,
@@ -222,6 +231,8 @@ the admission path's security). Full reasoning in
 **Also:** `DeviceNotAuthorizedError` (403, never masked as 404 — door staff
 need to be told the handset is deauthorized, and there is nothing to hide
 from a caller who already proved tenancy and a live session).
+
+> **Superseded (verified 2026-10-02):** wallet-QR recognition + charge (`POST /door/wallet-qr`, `POST /door/wallet-charge`), the paid walk-up sale (`POST /door/ticket-sale`, D-027) and live stats (SSE, D-028) all shipped after this entry; no 501 remains. Original text kept for history.
 
 **NOT built, tracked not hidden:** Cover-Wallet charging on the Scan tab
 (wallet-QR recognition + preset items + charge-by-item — the wallet itself
@@ -300,3 +311,24 @@ understating categories.
 
 **Verified:** `pnpm check` green — 906 tests (core 488, gateway 405, contracts
 13) + 2 end-to-end scenarios, boundaries clean.
+
+### 2026-09-28 — Doc-truth repair: Phase 5 has no 501 stubs left
+
+Re-verified against the working tree rather than against these notes.
+
+- **No 501 remains anywhere in `apps/api-gateway/src/routes/v2/**`.** The two
+  named in the 2026-09-11 entry are both closed, in `efb8a17` (2026-09-16):
+  - `/door/offline-manifest` is a real signed manifest (the sync path verifies it).
+  - `/door/stats/ws` was **not** built as a WebSocket. `@fastify/websocket` was
+    deliberately skipped in favour of **SSE at `GET /door/stats/stream`**
+    (D-028). The route lives in `routes/v2/phase5-routes.ts:101`, not under
+    `routes/v2/door/` — worth knowing, since the 501 it replaced also lived in
+    `phase5-routes.ts`. The WebSocket path is now *absent* rather than stubbed,
+    per D-006. The roadmap's "Week 3 Gate" wording ("WebSocket connects") was
+    met by a different mechanism; `docs/PHASE_5_HTTP_WIRING_PLAN.md` is
+    banner-marked accordingly.
+- A stale comment at `routes/v2/door/door-sale-routes.ts` that described `/door/stats` + `/door/stats/ws` as honest stubs has since been rewritten as a historical note.
+
+**Still open in Phase 5** (unchanged, and genuinely so): an override does not
+credit a scan back to the ticket; the per-club `ScannerSession` org attribution
+workaround noted on 2026-09-11.

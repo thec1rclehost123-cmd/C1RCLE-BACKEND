@@ -66,11 +66,11 @@ describe('AdminOperationsService — promoter & settings authority', () => {
       adminAudit,
       verification: new FormatCheckVerificationProvider(),
       objectStorage: new EchoObjectStorage(),
-      paymentProvider: new MemoryPaymentProvider('test_webhook_secret'),
       emailSender: new LoggingEmailSender(noopLogger),
+      userDirectory: new MemoryStaffUserDirectory(),
+      paymentProvider: new MemoryPaymentProvider('test_webhook_secret'),
       credentialProvisioner: new MemoryStaffCredentialProvisioner(),
       rotationStore: new MemoryStaffRotationStore(),
-      userDirectory: new MemoryStaffUserDirectory(),
       pricing: new PricingService({ eventCatalog: repositories.catalog }),
       inventory: new InventoryService({
         eventCatalog: repositories.catalog,

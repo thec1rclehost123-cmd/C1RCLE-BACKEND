@@ -1,5 +1,7 @@
 # Work done by Sagar — 2026-09-15
 
+> **Historical log, as of 2026-09-15; see [ROADMAP.md](../roadmap/ROADMAP.md) for current status.**
+
 > Running record of what was built, what it fixed, what is verified, and what
 > is still outstanding. Written to be readable by someone who is not in the
 > code every day.

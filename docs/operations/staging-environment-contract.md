@@ -78,7 +78,9 @@ in staging so development defaults cannot silently activate:
 | `PUBLIC_API_URL` | Verified HTTPS API base URL; hostname must match `NGINX_SERVER_NAME`. |
 | `BETTER_AUTH_URL` | Verified HTTPS Better Auth base URL. |
 | `BETTER_AUTH_SECRET` | Secret-manager value at least 32 characters; never the development default. |
-| `MAGIC_TICKET_SECRET` | Secret-manager value at least 32 characters. Signs rotating door QRs and offline admission manifests; a leak or a shared default lets anyone mint a valid ticket QR. |
+| `EMAIL_OTP_SECRET` | Required in production (config fails boot without it). HMAC key for hashing email-OTP codes at rest. |
+| `RESEND_API_KEY` | Email OTP delivery; without it the OTP routes fail in production. |
+| `MAGIC_TICKET_SECRET` | Required in production, at least 32 characters (boot fails otherwise). Signs rotating door QRs and offline admission manifests; a leak or a shared default lets anyone mint a valid ticket QR. |
 | `TRUSTED_PROXY_CIDRS` | Exact proxy peer list from the edge section. |
 | `APP_VERSION` | Semantic version returned by `/api/v2/internal/version`. |
 | `BUILD_SHA` | Optional explicit immutable commit SHA. On Render, the gateway and preflight fall back to documented `RENDER_GIT_COMMIT`. |
@@ -92,9 +94,10 @@ Fastify upstream port mismatch. Development/test defaults remain available for
 local tests only.
 
 Razorpay variables (`RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, and
-`RAZORPAY_WEBHOOK_SECRET`) are required only if the corresponding payment
-routes are activated in staging. They are not required by the current route
-manifest and must not be fabricated.
+`RAZORPAY_WEBHOOK_SECRET`) are schema-optional, but the checkout, payment and
+webhook routes are registered in `route-manifest.ts`, so payments only work
+when all three are set (the webhook rejects unsigned calls, D-022). Supply real
+staging test-mode values; never fabricate them.
 
 ## Render staging split
 
