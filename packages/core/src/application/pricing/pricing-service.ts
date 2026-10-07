@@ -49,6 +49,15 @@ export class PricingService {
           `${tier.name} requires at least ${tier.minPerOrder} ticket(s)`,
         );
       }
+      if (
+        tier.maxPerUser !== null &&
+        tier.maxPerUser !== undefined &&
+        l.quantity > tier.maxPerUser
+      ) {
+        throw new InvalidOperationError(
+          `${tier.name} allows at most ${tier.maxPerUser} ticket(s) per user`,
+        );
+      }
       const phase = (tier.pricingPhases ?? []).find(
         (candidate) => Date.parse(candidate.startsAt) <= now && Date.parse(candidate.endsAt) > now,
       );

@@ -55,6 +55,7 @@ import type {
   LeaderboardStat,
 } from '../models/leaderboard.js';
 import type { LedgerEntry, LedgerEntryType } from '../models/ledger.js';
+import type { Notification } from '../models/notification.js';
 import type { OnboardingRequest, OnboardingStatus } from '../models/onboarding.js';
 import type { Order } from '../models/order.js';
 import type {
@@ -83,6 +84,11 @@ import type {
   ScanDenyReason,
 } from '../models/scan-ledger.js';
 import type { ScannerDevice } from '../models/scanner-device.js';
+import type {
+  Follow,
+  FollowTargetType,
+  Notification as SocialNotification,
+} from '../models/social.js';
 import type {
   SupportTicket,
   SupportTicketCategory,
@@ -196,6 +202,22 @@ export interface ReferralLinkRepository {
   getById(linkId: EntityId): Promise<ReferralLink | null>;
   /** The guest-facing lookup: resolve a shared code to its link. */
   findByCode(eventId: EntityId, code: string): Promise<ReferralLink | null>;
+  /** Promoter-wide code identity used across every event link. */
+  findByCodeGlobal(code: string): Promise<ReferralLink | null>;
+  /** Existing link used only to recover the promoter's stable code. */
+  findAnyByPromoter(promoterId: EntityId): Promise<ReferralLink | null>;
+  findByVanity(prefix: string, slug: string): Promise<ReferralLink | null>;
+  claimVanityAlias(prefix: string, slug: string, linkId: EntityId): Promise<boolean>;
+  claimGlobalCode(code: string, promoterId: EntityId): Promise<boolean>;
+  getOrCreatePromoterCode(promoterId: EntityId, proposedCode: string): Promise<string | null>;
+  recordClick(linkId: EntityId): Promise<boolean>;
+  /** Atomic paid-order counters, idempotency is owned by the order settlement path. */
+  recordSale(
+    linkId: EntityId,
+    orderId: EntityId,
+    revenuePaise: number,
+    commissionPaise: number,
+  ): Promise<void>;
   listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<ReferralLink>>;
   listByPromoter(promoterId: EntityId, query: PaginationQuery): Promise<Page<ReferralLink>>;
   save(link: ReferralLink, tx?: TxContext | null): Promise<void>;
@@ -303,6 +325,8 @@ export interface EventRepository {
   /** Platform-wide event directory (admin events view) — global, includes non-public. */
   listAll(query: PaginationQuery): Promise<Page<Event>>;
   listPublic(query: PaginationQuery): Promise<Page<Event>>;
+  /** Upcoming public events, ordered by start time and bounded at the query. */
+  listUpcomingPublic(startAtOrAfter: string, limit: number): Promise<Event[]>;
   save(event: Event, tx?: TxContext | null): Promise<void>;
   delete(eventId: EntityId, tx?: TxContext | null): Promise<void>;
 }
@@ -388,6 +412,121 @@ export interface EventAnalytics {
   noShowRate: number;
   repeatGuests: number;
   conversionRate: number;
+}
+
+/** Bucket width for a trends series. */
+export type TrendGranularity = 'hour' | 'day' | 'month';
+
+/**
+ * ─── Organization trends (derived) ────────────────────────────────────────
+ *
+ * One bucket per `granularity` step across `[from, to]` inclusive. The array is
+ * **dense and zero-filled**: a day with no sales is a real data point, and
+ * dropping it would silently compress a quiet week into a busy one when the UI
+ * plots it.
+ *
+ * Granularity is a first-class field rather than a client-side rendering choice
+ * because a dashboard's ranges are genuinely different shapes, not one range at
+ * three zooms: "today" wants hours, "this week" wants days, "all time" wants
+ * months. Coarsening 24 hourly points into one daily point — or asking for 400
+ * daily points to draw twelve bars — would be either useless or unreadable.
+ *
+ * `key` is the bucket's own identity at that granularity, so a consumer never
+ * has to re-derive the bucket boundaries: `YYYY-MM` for `month`, `YYYY-MM-DD`
+ * for `day`, and `YYYY-MM-DDTHH:00` for `hour`. All UTC.
+ *
+ * Revenue is net paise (`grandTotalPaise - refundedPaise`) on captured orders,
+ * matching `OrganizationOverview.totalRevenuePaise` exactly — two different
+ * endpoints must never disagree about the same money. Tickets are order lines.
+ *
+ * There is deliberately **no `clicks` series**. Referral-link clicks are a
+ * per-promoter vanity counter that the authoritative attribution does not
+ * support (see `ReferralLinkDto.clicks`); an org-level rollup of it would be a
+ * number that looks authoritative and is not.
+ */
+export interface OrganizationTrends {
+  organizationId: EntityId;
+  granularity: TrendGranularity;
+  /** Inclusive first bucket key, clamped to the bucket cap. */
+  from: string;
+  /** Inclusive last bucket key. */
+  to: string;
+  /** Ascending by key. At most `MAX_TREND_BUCKETS` entries. */
+  buckets: TrendBucket[];
+  /**
+   * Lifetime totals over everything the scan saw, which is **not** the sum of
+   * `buckets` whenever data falls outside the requested window. Conflating them
+   * would make a legitimately narrow range look like data loss.
+   */
+  totals: {
+    revenuePaise: number;
+    tickets: number;
+    checkIns: number;
+  };
+}
+
+export interface TrendBucket {
+  /** Bucket start, formatted for `granularity`. See `OrganizationTrends`. */
+  key: string;
+  revenuePaise: number;
+  tickets: number;
+  checkIns: number;
+}
+
+/**
+ * An event as an overview card needs it: identity plus the sell-through numbers
+ * and the venue name, which live in three different aggregates.
+ *
+ * `venueName` is resolved server-side. The client has a `venueId` and a separate
+ * venues list, and joining them client-side would mean either shipping every
+ * venue to every dashboard render or rendering a card that says "Venue: —".
+ *
+ * `capacity` is the venue's *public* reported capacity, which may legitimately be
+ * `null` — an event at a venue that has never declared one. It is NOT zero: the
+ * UI divides by it, and zero would render as a divide-by-zero rather than
+ * "not declared". `ticketsSold` counts order lines on captured orders, the same
+ * rule as `OrganizationOverview.totalTicketsSold`.
+ *
+ * `status` is passed through unmapped for the same reason order status is: label
+ * wording is the client's business.
+ */
+export interface OrganizationEventCard {
+  eventId: EntityId;
+  title: string;
+  startAt: string;
+  status: string;
+  venueId: EntityId | null;
+  /** `null` when the event has no venue, or the venue was since deleted. */
+  venueName: string | null;
+  imageUrl: string | null;
+  ticketsSold: number;
+  /** `null` when capacity was never declared. Never `0` to mean "unknown". */
+  capacity: number | null;
+}
+
+/**
+ * Per-day event counts for one calendar month, for the overview's month grid.
+ * `firstDayOffset` is the number of blank cells before day 1 (0 = the 1st is a
+ * Monday with a Monday-first grid) — computed server-side so the client cannot
+ * disagree with the server about which day of the week the month starts on.
+ *
+ * Only events a partner would recognise are counted: an `archived` or `cancelled`
+ * event is not "something happening that day", and counting it would put
+ * strikes on the calendar that the user can then click into.
+ */
+export interface OrganizationCalendar {
+  organizationId: EntityId;
+  /** `YYYY-MM`. */
+  month: string;
+  /** Weekday index of the 1st, 0 = Monday. */
+  firstDayOffset: number;
+  days: CalendarDay[];
+}
+
+export interface CalendarDay {
+  /** Day of month, 1..31. Every day is present, `eventCount: 0` when idle. */
+  day: number;
+  eventCount: number;
 }
 
 /** Read-model access. Writes happen through projections/workers, not routes. */
@@ -534,6 +673,10 @@ export interface OrderRepository {
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Order>>;
   /** Lists orders for an event. */
   listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<Order>>;
+  /** Lists all orders platform-wide (admin read-only dashboard). */
+  listAll(query: PaginationQuery): Promise<Page<Order>>;
+  /** Hard-deletes an order (support operation). */
+  delete(orderId: EntityId, tx?: TxContext | null): Promise<void>;
   /**
    * Sum of `quantity` across a user's *paid* orders for `(tierId, eventId)`.
    * Drives per-user ticket-caps (`tier.maxPerUser`) at hold creation: only
@@ -546,8 +689,6 @@ export interface OrderRepository {
     eventId: EntityId,
     tierId: EntityId,
   ): Promise<number>;
-  /** Lists all orders platform-wide (admin read-only dashboards). */
-  listAll(query: PaginationQuery): Promise<Page<Order>>;
   /** Saves (create or update). Version is checked for optimistic locking. */
   save(order: Order, tx?: TxContext | null): Promise<void>;
 }
@@ -1065,6 +1206,32 @@ export interface EmailOtpRepository {
   delete(recipient: EntityId): Promise<void>;
 }
 
+// ─── Notifications (V2 partner inbox) ─────────────────────────────────────
+
+/**
+ * Partner-dashboard inbox, addressed to the ORGANIZATION (recipientId), not
+ * to a person — matches the org-scoped RBAC model. List reads are bounded by
+ * `PaginationQuery`; `markAllRead` returns how many rows flipped so the
+ * route can report a real count.
+ */
+export interface NotificationRepository {
+  create(notification: Notification, tx?: TxContext | null): Promise<void>;
+  save(notification: Notification, tx?: TxContext | null): Promise<void>;
+  getById(notificationId: EntityId): Promise<Notification | null>;
+  /**
+   * Newest-first. The Firestore adapter materializes the per-recipient rows
+   * and sorts in memory (same bound/pattern as venue overlapping slots), so
+   * no composite `recipientId + createdAt` index must be provisioned.
+   */
+  listByRecipient(recipientId: EntityId, query: PaginationQuery): Promise<Page<Notification>>;
+  listUnreadByRecipient(recipientId: EntityId, query: PaginationQuery): Promise<Page<Notification>>;
+  /** Marks one read; resolves null when the row is gone. */
+  markRead(notificationId: EntityId, nowIso: string): Promise<Notification | null>;
+  /** Marks every unread row for the recipient; returns the count flipped. */
+  markAllRead(recipientId: EntityId, nowIso: string): Promise<number>;
+  countUnread(recipientId: EntityId): Promise<number>;
+}
+
 /**
  * One doc per session user id, fully replaced on each save — no
  * optimistic-lock version (matches `EmailOtpRepository`'s `docRef.set`
@@ -1074,6 +1241,44 @@ export interface GuestProfileRepository {
   getByUserId(userId: EntityId): Promise<GuestProfile | null>;
   save(profile: GuestProfile): Promise<void>;
 }
+// ─── Phase 8: follow graph + notifications ─────────────────────────────────
+/** One edge doc per (follower, target); `save` is an idempotent upsert. */
+export interface FollowRepository {
+  get(id: EntityId): Promise<Follow | null>;
+  save(follow: Follow): Promise<void>;
+  /** Returns false when the edge did not exist (unfollow stays idempotent). */
+  delete(id: EntityId): Promise<boolean>;
+  listByFollower(
+    followerId: EntityId,
+    query: PaginationQuery & { targetType?: FollowTargetType },
+  ): Promise<Page<Follow>>;
+  listFollowers(
+    targetType: FollowTargetType,
+    targetId: EntityId,
+    query: PaginationQuery,
+  ): Promise<Page<Follow>>;
+  countFollowers(targetType: FollowTargetType, targetId: EntityId): Promise<number>;
+}
+
+/**
+ * Inbox per user for follow-graph notifications ("X you follow published an
+ * event"). Distinct from the V2 partner-dashboard `NotificationRepository`
+ * above — this one is per-USER (guest, session-scoped), that one is
+ * per-ORGANIZATION. `createIfAbsent` is the consumer-side idempotency guard:
+ * a redelivered event never overwrites (and so never un-reads) a row.
+ */
+export interface SocialNotificationRepository {
+  createIfAbsent(notification: SocialNotification): Promise<boolean>;
+  listForUser(
+    userId: EntityId,
+    query: PaginationQuery & { unreadOnly?: boolean },
+  ): Promise<Page<SocialNotification>>;
+  countUnread(userId: EntityId): Promise<number>;
+  /** Marks only the caller's own unread rows; returns how many changed. */
+  markRead(userId: EntityId, ids: EntityId[], readAt: string): Promise<number>;
+  markAllRead(userId: EntityId, readAt: string): Promise<number>;
+}
+
 // ─── Platform settings (singleton doc) ──────────────────────────────────────
 
 /**
@@ -1097,6 +1302,7 @@ export type {
   LeaderboardBucket,
   LeaderboardPeriodType,
   EmailOtp,
+  Notification,
   GuestProfile,
   PlatformSettings,
 };

@@ -1,0 +1,117 @@
+{
+  "$comment": [
+    "Packages whose pinned release exists ONLY to clear a security advisory.",
+    "",
+    "These are the overrides that must never be expressed as a lockfile-only",
+    "edit. pnpm resolves every version from the manifest, so a pnpm-lock.yaml",
+    "that pins brace-expansion@1.1.21 with nothing in pnpm-workspace.yaml to",
+    "back it up is undone by the first plain `pnpm install` — the tree silently",
+    "returns to the vulnerable release and `pnpm audit` goes red again. That is",
+    "exactly what happened in 8be206f; `scripts/check-security-pins.mjs` exists so",
+    "the next one is blocked at CI instead of discovered by a Trivy scan.",
+    "",
+    "Per pin, the checker enforces three invariants:",
+    "  1. every key in `overrides` is present in pnpm-workspace.yaml with exactly",
+    "     the declared value (the durable pin);",
+    "  2. every key is recorded in the pnpm-lock.yaml `overrides` block with the",
+    "     same value (proof the lockfile was generated WITH the override);",
+    "  3. what the lockfile actually resolved agrees with the override:",
+    "       `resolved`     - exact set of versions allowed in the tree. Use when",
+    "                      the override value is an exact version; any other",
+    "                      version of the package in the tree is a violation.",
+    "       `minResolved`  - floor for every resolved version. Use when the",
+    "                      override value is a range (`>=x.y.z`), so a newer",
+    "                      patched release does not need a manifest edit.",
+    "",
+    "Adding a pin is deliberate, not automatic: a fourth advisory family means",
+    "editing this file in the same PR that adds the override. Removing a pin is",
+    "legitimate once an upstream release makes the override unnecessary.",
+    "",
+    "Range-qualified keys (`brace-expansion@<2`) are pnpm override syntax, not",
+    "semver ranges to evaluate here — they are compared as literal strings."
+  ],
+  "pins": [
+    {
+      "name": "brace-expansion",
+      "advisories": [
+        "GHSA-q2hr-2g5m-vwhr",
+        "GHSA-qhr7-859c-m2p7",
+        "GHSA-6j4f-fj2g-mc7p",
+        "CVE-2026-102276",
+        "CVE-2026-102278"
+      ],
+      "why": "Quadratic-time CPU DoS on `{a},b}` rewrites, plus uncontrolled recursion. minimatch@3.x pulls the 1.x line, minimatch@10.x the 5.x line; both were flagged HIGH by pnpm audit and by Trivy.",
+      "overrides": {
+        "brace-expansion@<2": "1.1.21",
+        "brace-expansion@>=2 <6": "5.0.12"
+      },
+      "resolved": ["1.1.21", "5.0.12"]
+    },
+    {
+      "name": "fast-uri",
+      "advisories": [
+        "CVE-2026-75899",
+        "CVE-2026-75931",
+        "CVE-2026-75975",
+        "CVE-2026-76172",
+        "CVE-2026-84292",
+        "CVE-2026-84394",
+        "GHSA-hrr3-gc8f-f4qj",
+        "GHSA-jvvf-x445-j334"
+      ],
+      "why": "SSRF and host confusion (unvalidated port, unbalanced URI brackets) plus mailto header injection. fast-uri@3 serves ajv, fast-uri@4 serves fast-json-stringify/@fastify/ajv-compiler, so both majors need pinning.",
+      "overrides": {
+        "fast-uri@^3.0.0": "3.1.8",
+        "fast-uri@^4.0.0": "4.1.5"
+      },
+      "resolved": ["3.1.8", "4.1.5"]
+    },
+    {
+      "name": "nanoid",
+      "advisories": ["CVE-2026-67213"],
+      "why": "Denial of service via an infinite loop on crafted input.",
+      "overrides": { "nanoid@^3.0.0": "3.3.18" },
+      "resolved": ["3.3.18"]
+    },
+    {
+      "name": "uuid",
+      "advisories": ["GHSA-w5hq-g745-h8pq"],
+      "why": "Missing buffer bounds check in v3/v5/v6 when a caller-provided buffer is used. Pinned EXACTLY to 11.1.1: a '>=11.1.1' range resolves to an ESM-only major and breaks require() in the CommonJS gaxios -> firebase-admin chain. uuid@12 dropped the CJS build.",
+      "overrides": { "uuid": "11.1.1" },
+      "resolved": ["11.1.1"]
+    },
+    {
+      "name": "js-yaml",
+      "advisories": ["GHSA-2883-xcg3-v3hh"],
+      "why": "CPU exhaustion via empty merge sources in YAML. Affects @commitlint, eslint and ~29 other transitive paths, so this is a floor rather than an exact pin.",
+      "overrides": { "js-yaml": ">=4.3.2" },
+      "minResolved": "4.3.2"
+    },
+    {
+      "name": "tar",
+      "advisories": ["CVE-2026-73566"],
+      "why": "tar < 7.5.21. The primary fix is the pnpm version bump plus an apt/sed patch in the Dockerfile; this npm-layer override is the backstop.",
+      "overrides": { "tar": ">=7.5.21" },
+      "minResolved": "7.5.21"
+    },
+    {
+      "name": "@grpc/grpc-js",
+      "advisories": ["GHSA-m9gg-hp2v-232j"],
+      "why": "getAuthContext can return unauthorized certificates as though they were authorized, in 1.14.0-1.14.4. Pulled in via firebase-admin -> @google-cloud/firestore -> google-gax.",
+      "overrides": { "@grpc/grpc-js": ">=1.14.5" },
+      "minResolved": "1.14.5"
+    },
+    {
+      "name": "@fastify/busboy",
+      "advisories": [
+        "GHSA-xjh9-v7x6-24jw",
+        "GHSA-x8mw-p69m-v3mx",
+        "CVE-2026-19481",
+        "CVE-2026-19484"
+      ],
+      "why": "Denial of Service in @fastify/busboy 3.2.0 and earlier; fixed in 3.2.1. A floor rather than an exact pin so a newer patched release needs no manifest edit.",
+      "overrides": { "@fastify/busboy": ">=3.2.1" },
+      "minResolved": "3.2.1"
+    }
+  ]
+}

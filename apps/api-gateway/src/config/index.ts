@@ -65,18 +65,35 @@ export function createTrustedProxyMatcher(entries: readonly string[]) {
   };
 }
 
+/**
+ * Validates a comma-separated origin list and returns each entry in canonical
+ * `URL.origin` form. `@fastify/cors` and Better Auth compare origins as exact
+ * strings, and a browser's `Origin` header is always canonical (lower-case
+ * host, no default port, no trailing slash). Without normalising, a value
+ * like `https://app.example.com/` passes validation yet silently never
+ * matches, so every cross-origin preflight from that frontend is refused.
+ */
 function validateOrigins(value: string, field: string): string[] {
   const origins = parseList(value);
   if (origins.length === 0) throw new Error(`${field} must contain at least one origin`);
+  const normalized: string[] = [];
   for (const origin of origins) {
     if (origin === '*' || origin.includes('*'))
       throw new Error(`${field} cannot contain a wildcard origin`);
     const parsed = new URL(origin);
-    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.pathname !== '/') {
+    if (
+      !['http:', 'https:'].includes(parsed.protocol) ||
+      parsed.pathname !== '/' ||
+      parsed.search !== '' ||
+      parsed.hash !== '' ||
+      parsed.username !== '' ||
+      parsed.password !== ''
+    ) {
       throw new Error(`${field} must contain origin URLs without paths: ${origin}`);
     }
+    if (!normalized.includes(parsed.origin)) normalized.push(parsed.origin);
   }
-  return origins;
+  return normalized;
 }
 
 const envSchema = z.object({
@@ -129,6 +146,13 @@ const envSchema = z.object({
    * Optional: when absent, emails omit the link rather than linking nowhere.
    */
   PARTNER_DASHBOARD_URL: z.url().optional(),
+   * Comma-separated list of exact browser origins allowed to call the gateway
+   * cross-origin (CORS) and trusted by Better Auth, e.g.
+   * `https://c1rcle-v2-admin-console.vercel.app,https://partners.example.com`.
+   * Unset -> the local dev frontend origins outside production, and no
+   * cross-origin browser access at all in production. See `allowedBrowserOrigins`.
+   */
+  CORS_ALLOWED_ORIGINS: z.string().optional(),
   /**
    * Escape hatch for CI's Docker smoke-boot only — it exercises the
    * production config guards (NODE_ENV=production) without real Firestore
@@ -141,6 +165,69 @@ const envSchema = z.object({
     .default('false')
     .transform((v) => v === 'true'),
 });
+
+/** The three frontends' `pnpm dev` ports: guest-portal, partner-dashboard, admin-console. */
+const DEV_FRONTEND_ORIGINS: readonly string[] = [
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'http://localhost:3002',
+];
+
+interface ParsedOrigins {
+  readonly origins: string[];
+  readonly errors: string[];
+}
+
+/**
+ * Parses `CORS_ALLOWED_ORIGINS`. Every entry must be an exact origin
+ * (`scheme://host[:port]`, no path/query, no wildcard): the allow-list is the
+ * only thing standing between a credentialed browser request and the API, so
+ * anything looser than an exact match is rejected rather than interpreted.
+ */
+function parseOriginList(raw: string, requireHttps: boolean): ParsedOrigins {
+  const origins: string[] = [];
+  const errors: string[] = [];
+  for (const entry of raw.split(',')) {
+    const candidate = entry.trim().replace(/\/+$/, '');
+    if (candidate.length === 0) continue;
+    if (candidate.includes('*')) {
+      // `new URL('https://*.vercel.app')` parses and round-trips, so wildcards
+      // must be refused explicitly — this list is exact-match only.
+      errors.push(`"${candidate}" must not contain a wildcard`);
+      continue;
+    }
+    let url: URL;
+    try {
+      url = new URL(candidate);
+    } catch {
+      errors.push(`"${candidate}" is not a valid origin`);
+      continue;
+    }
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+      errors.push(`"${candidate}" must use http:// or https://`);
+    } else if (url.origin !== candidate) {
+      // Catches paths, queries, credentials and default-port noise.
+      errors.push(`"${candidate}" must be an exact origin like https://app.example.com`);
+    } else if (requireHttps && url.protocol !== 'https:') {
+      errors.push(`"${candidate}" must be https:// in production`);
+    } else if (!origins.includes(candidate)) {
+      origins.push(candidate);
+    }
+  }
+  return { origins, errors };
+}
+
+/**
+ * Browser origins allowed to make cross-origin (CORS) requests to the gateway,
+ * and trusted by Better Auth's origin check. Single source of truth for both.
+ */
+export function allowedBrowserOrigins(config: GatewayConfig): readonly string[] {
+  const raw = config.CORS_ALLOWED_ORIGINS;
+  if (raw !== undefined && raw.trim().length > 0) {
+    return parseOriginList(raw, config.NODE_ENV === 'production').origins;
+  }
+  return config.NODE_ENV === 'production' ? [] : DEV_FRONTEND_ORIGINS;
+}
 
 /** Fail closed: STORAGE_DRIVER=firestore requires real credentials, never a silent memory fallback. */
 const validatedEnvSchema = envSchema.superRefine((value, ctx) => {
@@ -194,6 +281,13 @@ const validatedEnvSchema = envSchema.superRefine((value, ctx) => {
         path: ['FIREBASE_PRIVATE_KEY'],
         message: 'Required when STORAGE_DRIVER=firestore',
       });
+    }
+  }
+
+  if (value.CORS_ALLOWED_ORIGINS !== undefined) {
+    const { errors } = parseOriginList(value.CORS_ALLOWED_ORIGINS, value.NODE_ENV === 'production');
+    for (const message of errors) {
+      ctx.addIssue({ code: 'custom', path: ['CORS_ALLOWED_ORIGINS'], message });
     }
   }
 

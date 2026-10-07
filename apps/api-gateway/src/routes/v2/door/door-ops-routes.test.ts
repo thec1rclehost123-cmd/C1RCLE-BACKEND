@@ -77,12 +77,7 @@ beforeEach(async () => {
   await seedEvent(OTHER_EVENT_ID, OTHER_ORG_ID, new Date().toISOString());
 });
 
-async function seedEvent(
-  eventId: string,
-  organizationId: string,
-  startAt: string,
-  capacity: number | null = null,
-): Promise<void> {
+async function seedEvent(eventId: string, organizationId: string, startAt: string): Promise<void> {
   if (await services.repos().events.findById(eventId)) return;
   const now = new Date().toISOString();
   await services.repos().events.save({
@@ -102,7 +97,7 @@ async function seedEvent(
     startingPricePaise: null,
     isFree: false,
     cancellationReason: null,
-    capacity,
+    capacity: null,
     adminOverride: false,
     version: 1,
     createdAt: now,
@@ -503,6 +498,98 @@ describe('GET /door/guests', () => {
   });
 });
 
+describe('GET /door/attendance-report', () => {
+  it('answers who entered, who did not, and the real headcount for a couple ticket', async () => {
+    const { token } = await startShift();
+    const entered = await seedEntitlement('ENT-att-entered', { holderName: 'Aaron Able' });
+    await scan(token, entered.id);
+    await seedEntitlement('ENT-att-noshow', { holderName: 'Zoe Zephyr' });
+    // A couple ticket, only one of two seats used — seeded directly rather
+    // than through the real scan flow (a multi-seat entitlement scan
+    // returns `confirmation_required` and needs a second `/confirm` call;
+    // this test is about the report's math, not that flow). Counts once
+    // toward `enteredEntitlements` but only 1 (not 2) toward `admittedCount`.
+    await seedEntitlement('ENT-att-couple', {
+      holderName: 'Cam & Alex',
+      scanCountAllowed: 2,
+      scanCount: 1,
+      scannedAt: [new Date().toISOString()],
+    });
+    await seedEntitlement('ENT-att-voided', { holderName: 'Refunded Rae', status: 'void' });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/door/attendance-report?eventId=${EVENT_ID}`,
+      headers: HEADERS,
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    const body = response.json();
+
+    expect(body).toMatchObject({
+      eventId: EVENT_ID,
+      // 4 entitlements total (entered + no-show + couple + voided); the
+      // voided one is excluded from `notEntered` — a refund is not a no-show.
+      totalEntitlements: 4,
+      enteredEntitlements: 2,
+      // 1 (Aaron) + 1 (the couple ticket's single used seat) = 2, not 3 —
+      // this is the number `enteredEntitlements` alone would get wrong.
+      admittedCount: 2,
+      notEntered: 1,
+      voided: 1,
+      truncated: false,
+    });
+
+    const guests = body.guests as { holderName: string; status: string; scanCount: number }[];
+    expect(guests.find((g) => g.holderName === 'Aaron Able')).toMatchObject({
+      status: 'entered',
+      scanCount: 1,
+    });
+    expect(guests.find((g) => g.holderName === 'Zoe Zephyr')).toMatchObject({
+      status: 'not_entered',
+      scanCount: 0,
+    });
+    expect(guests.find((g) => g.holderName === 'Cam & Alex')).toMatchObject({
+      status: 'entered',
+      scanCount: 1,
+      scanCountAllowed: 2,
+    });
+    // The voided ticket does not appear in the guest list at all.
+    expect(guests.find((g) => g.holderName === 'Refunded Rae')).toBeUndefined();
+    // Not-entered first — same convention as `/door/guests`.
+    expect(guests[0]).toMatchObject({ status: 'not_entered' });
+
+    expect(body.byTier).toEqual([{ tierName: 'General', entered: 2, notEntered: 1 }]);
+  });
+
+  it('refuses another organization’s event', async () => {
+    const response = await server.inject({
+      method: 'GET',
+      url: `/door/attendance-report?eventId=${OTHER_EVENT_ID}`,
+      headers: HEADERS,
+    });
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('reports zeros, not an error, for an event with no tickets sold', async () => {
+    await seedEvent('evt_ops_att_empty', ORG_ID, new Date().toISOString());
+    const response = await server.inject({
+      method: 'GET',
+      url: '/door/attendance-report?eventId=evt_ops_att_empty',
+      headers: HEADERS,
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({
+      totalEntitlements: 0,
+      enteredEntitlements: 0,
+      admittedCount: 0,
+      notEntered: 0,
+      voided: 0,
+      byTier: [],
+      guests: [],
+    });
+  });
+});
+
 describe('POST /door/guests/check-in', () => {
   it('admits a guest whose QR will not scan', async () => {
     await startShift();
@@ -556,12 +643,11 @@ describe('POST /door/guests/check-in', () => {
 
 describe('occupancy in GET /door/stats via start shift', () => {
   it('reports a real capacity and remaining when the event configures one', async () => {
-    await seedEvent('evt_ops_cap', ORG_ID, new Date().toISOString(), 300);
+    await seedEvent('evt_ops_cap', ORG_ID, new Date().toISOString());
     const stats = await services.doorStats.getStats('evt_ops_cap', SEED_ACTOR);
     expect(stats.occupancy).toMatchObject({
       inside: 0,
-      capacity: 300,
-      remaining: 300,
+      remaining: null,
       prebooked: 0,
       doorEntries: 0,
     });

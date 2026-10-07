@@ -41,7 +41,8 @@ export interface AdminAuditRecord {
   actorId?: EntityId;
   /** Organization id for cross-tenant auditing. */
   organizationId?: EntityId;
-  adminRole?: string;
+  /** `null`/absent on records written before this field existed on the trail. */
+  adminRole?: string | null;
   /** `AdminAction`, or a lower-tier verb like `onboarding.request_changes`. */
   action?: string;
   /** What was acted on. */

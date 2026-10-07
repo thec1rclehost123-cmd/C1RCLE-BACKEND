@@ -53,18 +53,22 @@ import type {
   LeaderboardRepository,
   EmailOtpRepository,
   GuestProfileRepository,
+  FollowRepository,
+  SocialNotificationRepository,
   AdminRefundRequestRepository,
   UserAccountRepository,
   UserBanRepository,
   PlatformSettingsRepository,
   SupportTicketRepository,
   SafetyReportRepository,
+  NotificationRepository,
 } from '../domain/ports/repositories.js';
 import type {
   StaffCredentialProvisioner,
   StaffRotationStore,
   StaffUserDirectory,
 } from '../domain/ports/staff-credentials.js';
+import type { UserDirectoryPort } from '../domain/ports/user-directory.js';
 import type { VerificationProvider } from '../domain/ports/verification.js';
 import type { Logger } from '../telemetry/logger.js';
 
@@ -100,6 +104,17 @@ export interface ServiceDeps {
    * `EchoObjectStorage` on the memory driver; Firebase Storage v4 on firestore.
    */
   objectStorage: ObjectStoragePort;
+  /**
+   * Phase 2 gap-closure: outbound transactional email beyond OTP (currently:
+   * notifying an applicant their onboarding request needs changes).
+   */
+  emailSender: EmailSender;
+  /**
+   * Phase 2 gap-closure: resolves a `userId` to an email for the services
+   * that need to reach a user outside their own session. `NullUserDirectory`
+   * on the memory driver; reads Better Auth's own store on firestore.
+   */
+  userDirectory: UserDirectoryPort;
   /** Phase 4: Payment provider (pluggable) */
   paymentProvider: PaymentProvider;
   /** Staff-invitation + OTP delivery (pluggable). Resend in production, logging in dev/test. */
@@ -156,6 +171,10 @@ export interface ServiceDeps {
     leaderboard: LeaderboardRepository;
     emailOtp: EmailOtpRepository;
     guestProfiles: GuestProfileRepository;
+    /** Phase 8: guest → venue/host follow edges. */
+    follows: FollowRepository;
+    /** Phase 8: per-user in-app inbox, written by bus consumers. */
+    socialNotifications: SocialNotificationRepository;
     refundRequests: AdminRefundRequestRepository;
     /** Platform support tickets (guest intake + admin desk). */
     supportTickets: SupportTicketRepository;
@@ -166,6 +185,8 @@ export interface ServiceDeps {
     /** Platform user ban state — Phase 7 trust & safety. */
     userBans: UserBanRepository;
     platformSettings: PlatformSettingsRepository;
+    /** V2 partner-dashboard inbox (org-tenant recipient). */
+    notifications: NotificationRepository;
   };
 }
 

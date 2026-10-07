@@ -12,6 +12,7 @@ import {
   MemoryStaffRotationStore,
   MemoryStaffUserDirectory,
 } from '../../domain/ports/staff-credentials.js';
+import { NullUserDirectory } from '../../domain/ports/user-directory.js';
 import { FormatCheckVerificationProvider } from '../../domain/ports/verification.js';
 import { MemoryAdminAuditRepository } from '../../infrastructure/memory/memory-audit-repository.js';
 import { MemoryOutboxStore } from '../../infrastructure/memory/memory-outbox-store.js';
@@ -66,6 +67,8 @@ describe('AdminOperationsService — promoter & settings authority', () => {
       adminAudit,
       verification: new FormatCheckVerificationProvider(),
       objectStorage: new EchoObjectStorage(),
+      emailSender: new LoggingEmailSender(noopLogger),
+      userDirectory: new NullUserDirectory(),
       paymentProvider: new MemoryPaymentProvider('test_webhook_secret'),
       emailSender: new LoggingEmailSender(noopLogger),
       credentialProvisioner: new MemoryStaffCredentialProvisioner(),

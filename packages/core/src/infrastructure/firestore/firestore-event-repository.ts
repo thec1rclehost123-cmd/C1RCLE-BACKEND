@@ -49,13 +49,23 @@ export class FirestoreEventRepository implements EventRepository {
     return paginateQuery(base, query, toEvent);
   }
 
+  async listAll(query: PaginationQuery): Promise<Page<Event>> {
+    return paginateQuery(this.collection, query, toEvent);
+  }
+
   async listPublic(query: PaginationQuery): Promise<Page<Event>> {
     const base = this.collection.where('isPublic', '==', true);
     return paginateQuery(base, query, toEvent);
   }
 
-  async listAll(query: PaginationQuery): Promise<Page<Event>> {
-    return paginateQuery(this.collection, query, toEvent);
+  async listUpcomingPublic(startAtOrAfter: string, limit: number): Promise<Event[]> {
+    const snap = await this.collection
+      .where('isPublic', '==', true)
+      .where('startAt', '>=', startAtOrAfter)
+      .orderBy('startAt', 'asc')
+      .limit(limit)
+      .get();
+    return snap.docs.map((doc) => toEvent(doc.data()));
   }
 
   async save(event: Event, _tx?: TxContext | null): Promise<void> {

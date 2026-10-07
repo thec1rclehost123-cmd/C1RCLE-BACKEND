@@ -107,8 +107,13 @@ function createDoorServiceImpl(deps: DoorServiceDeps): DoorService {
       action,
       targetType,
       targetId,
-      before: before as Record<string, unknown> | undefined,
-      after: after as Record<string, unknown> | undefined,
+      // `AdminAuditRecord.before` is documented as `null` for a create (no
+      // prior state) — passing the bare `undefined` an omitted parameter
+      // produces isn't the same value to the Firestore Admin SDK, which
+      // rejects a literal `undefined` field outright. Every walk-in/dine-in
+      // creation hit this: `500 Cannot use "undefined" as a Firestore value`.
+      before: (before as Record<string, unknown> | undefined) ?? null,
+      after: (after as Record<string, unknown> | undefined) ?? null,
       occurredAt: Date.now(),
     };
   }

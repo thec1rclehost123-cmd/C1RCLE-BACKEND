@@ -31,13 +31,87 @@ const services = createV2Services();
 
 const eventIdParam = z.object({ eventId: opaqueIdSchema });
 const linkIdParam = z.object({ referralLinkId: opaqueIdSchema });
+const assignmentIdParam = z.object({ assignmentId: opaqueIdSchema });
 
 const readHeaders = z.looseObject({ 'x-organization-id': opaqueIdSchema });
 const commandHeaders = readHeaders.extend({ 'idempotency-key': idempotencyKeySchema });
 
 const linkListSchema = paginatedSchema(referralLinkDtoSchema);
+const promoterCreateLinkSchema = z
+  .object({
+    label: z.string().min(1).max(120).optional(),
+    code: z
+      .string()
+      .min(4)
+      .max(16)
+      .regex(/^[A-Za-z0-9 -]+$/)
+      .optional(),
+    vanitySlug: z
+      .string()
+      .min(1)
+      .max(60)
+      .regex(/^[A-Za-z0-9 -]+$/)
+      .optional(),
+  })
+  .strict();
 
 export default async function partnerReferralLinkRoutes(fastify: FastifyInstance) {
+  fastify.post(
+    '/promoter-assignments/:assignmentId/referral-links',
+    {
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({
+          params: assignmentIdParam,
+          headers: commandHeaders,
+          body: promoterCreateLinkSchema,
+        }),
+        // The service applies the tighter boundary: active assignment belongs
+        // to the caller's promoter organization.
+        fastify.requirePermission('event.read'),
+      ],
+    },
+    async (request, reply) => {
+      const { assignmentId } = request.params as z.infer<typeof assignmentIdParam>;
+      const body = request.body as z.infer<typeof promoterCreateLinkSchema>;
+      const actor = services.actor(request);
+      const v2Headers = request.v2Headers ?? {};
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: actor.userId,
+        commandName: 'promoter-assignment.referral-link.create',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { assignmentId }, body },
+        run: async () => {
+          const link = await services.referralLinks.createForAssignment(
+            actor,
+            assignmentId,
+            body.label,
+            body.code,
+            body.vanitySlug,
+          );
+          const validated = validateV2Response(
+            reply,
+            request,
+            referralLinkDtoSchema,
+            linkToDto(link),
+          );
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 201, body: validated };
+        },
+      }).catch((error: unknown) =>
+        isIdempotencyConflict(error)
+          ? mapDomainError(reply, request, assignmentId, error, {
+              conflictId: v2Headers['idempotency-key'],
+            })
+          : mapDomainError(reply, request, assignmentId, error),
+      );
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
+
   fastify.get(
     '/events/:eventId/referral-links',
     {
@@ -163,11 +237,21 @@ function linkToDto(link: ReferralLink) {
     eventId: link.eventId,
     promoterId: link.promoterId,
     organizationId: link.organizationId,
+    assignmentId: link.assignmentId,
+    assignmentVersion: link.assignmentVersion,
+    termsSnapshot: link.termsSnapshot,
+    attributionSignature: link.attributionSignature,
+    eventTitle: link.eventTitle,
+    campaignLabel: link.campaignLabel,
+    vanityPrefix: link.vanityPrefix,
+    vanitySlug: link.vanitySlug,
     code: link.code,
     label: link.label,
     isActive: link.isActive,
     clicks: link.clicks,
     conversions: link.conversions,
+    revenuePaise: link.revenuePaise,
+    commissionPaise: link.commissionPaise,
     version: link.version,
     createdAt: link.createdAt,
     updatedAt: link.updatedAt,

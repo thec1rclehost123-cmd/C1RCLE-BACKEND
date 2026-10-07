@@ -14,11 +14,24 @@ const base = {
 
 describe('ticket tier extensions', () => {
   it('keeps legacy tiers valid with safe defaults', () => {
-    const tier = createTicketTier(base);
+    const tier = createTicketTier({
+      ...base,
+      pricingPhases: [
+        {
+          id: 'P1',
+          name: 'Phase 1',
+          priceInPaise: 100_000,
+          startDate: '01-01',
+          endDate: '02-01',
+          quantity: null,
+        },
+      ],
+      now: new Date('2026-01-01T00:00:00.000Z'),
+    });
     expect(tier.accessType).toBe('ENTRY');
     expect(tier.audienceType).toBe('GENERAL');
     expect(tier.guestCount).toBe(1);
-    expect(tier.pricingPhases).toEqual([]);
+    expect(tier.pricingPhases).toHaveLength(1);
   });
 
   it('rejects paid RSVP tickets', () => {
@@ -54,6 +67,21 @@ describe('ticket tier extensions', () => {
   });
 
   it('requires table configuration for table tickets', () => {
-    expect(() => createTicketTier({ ...base, accessType: 'TABLE' })).toThrow(InvalidOperationError);
+    expect(() =>
+      createTicketTier({
+        ...base,
+        accessType: 'TABLE',
+        pricingPhases: [
+          {
+            id: 'P1',
+            name: 'Phase 1',
+            priceInPaise: 100_000,
+            startDate: '01-01',
+            endDate: '02-01',
+            quantity: null,
+          },
+        ],
+      }),
+    ).toThrow(InvalidOperationError);
   });
 });

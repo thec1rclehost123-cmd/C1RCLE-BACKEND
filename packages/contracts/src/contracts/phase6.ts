@@ -34,6 +34,57 @@ export const balanceSummaryResponseSchema = z.object({
 });
 export type BalanceSummaryResponse = z.infer<typeof balanceSummaryResponseSchema>;
 
+/**
+ * ─── Partner-scoped order list (Phase 6 finance) ─────────────────────────────
+ *
+ * The ledger says where money went; this says where it came from. A partner's
+ * finance desk needs the *orders* behind their balance, and the only pre-existing
+ * order listing (`GET /orders`) is scoped to the **buyer**, so it can never
+ * serve this. Hence its own DTO rather than a reuse of
+ * `checkoutOrderDtoSchema` — which is deliberately not exported here: that
+ * shape carries the full pricing breakdown, the payment intent id and the
+ * guest's address, none of which a partner's money view needs, and
+ * `order.contact.email`/`phone` are the two PII fields this endpoint has no
+ * business widening.
+ *
+ * PII, deliberately narrowed: the buyer is identified by **name only**. An
+ * organizer running a door does need to know who bought a ticket, but that is a
+ * guest-list question answered by Phase 5's roster/entitlement endpoints —
+ * not a finance one, and putting an email address on a payouts screen is the
+ * kind of thing that ends up in a support screenshot. If a partner screen ever
+ * genuinely needs contact details, that is a new, separately-reviewed
+ * decision, not a field to add to this schema.
+ */
+export const financeOrderDtoSchema = z.object({
+  id: opaqueIdSchema,
+  /** Denormalized for the table's Event column — resolved server-side, never client-side. */
+  eventId: opaqueIdSchema,
+  eventName: z.string(),
+  /** Buyer display name, from the frozen `OrderContact.name`. */
+  buyerName: z.string(),
+  /** Sum of `lines[].quantity` — what "3 tickets" means on the row. */
+  ticketCount: z.number().int().nonnegative(),
+  currency: z.string().length(3),
+  grandTotalPaise: z.number().int().nonnegative(),
+  refundedPaise: z.number().int().nonnegative(),
+  /** The full `OrderStatus` enum, unmapped — the client owns label wording. */
+  status: z.enum([
+    'pending',
+    'awaiting_payment',
+    'paid',
+    'expired',
+    'cancelled',
+    'failed',
+    'refund_requested',
+    'refunded',
+  ]),
+  paidAt: z.iso.datetime().nullable(),
+  createdAt: z.iso.datetime(),
+});
+export type FinanceOrderDto = z.infer<typeof financeOrderDtoSchema>;
+
+export const financeOrderListResponseSchema = paginatedSchema(financeOrderDtoSchema);
+
 // Payout
 export const payoutRequestSchema = z
   .object({

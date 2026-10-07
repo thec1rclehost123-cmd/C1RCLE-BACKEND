@@ -25,6 +25,105 @@ export interface TicketPricingPhase {
   quantity: number | null;
 }
 
+export interface PartialDateTicketPricingPhaseInput {
+  id: string;
+  name: string;
+  priceInPaise: number;
+  startDate: string;
+  endDate: string;
+  quantity: number | null;
+}
+
+export type CreateTicketPricingPhaseInput = PartialDateTicketPricingPhaseInput | TicketPricingPhase;
+
+function resolvePricingPhase(input: CreateTicketPricingPhaseInput, now: Date): TicketPricingPhase {
+  if ('startsAt' in input) return input;
+  const dateParts = (value: string) => {
+    const match = /^(\d{2})-(\d{2})$/.exec(value);
+    if (!match) throw new InvalidOperationError('Phase dates must use DD-MM');
+    const day = Number(match[1]);
+    const month = Number(match[2]);
+    if (month < 1 || month > 12 || day < 1 || day > 31)
+      throw new InvalidOperationError('Invalid phase date');
+    return { day, month };
+  };
+  const startDate = dateParts(input.startDate);
+  const endDate = dateParts(input.endDate);
+  // Event calendar dates use the current editor timezone: Asia/Kolkata (UTC+05:30).
+  const localNow = new Date(now.getTime() + 330 * 60_000);
+  const validDay = (date: { day: number; month: number }, year: number) => {
+    const stamp = Date.UTC(year, date.month - 1, date.day);
+    return (
+      new Date(stamp).getUTCMonth() === date.month - 1 && new Date(stamp).getUTCDate() === date.day
+    );
+  };
+  const isoAt = (
+    date: { day: number; month: number },
+    time: { hour: number; minute: number; second?: number; millisecond?: number },
+    year: number,
+  ) =>
+    new Date(
+      Date.UTC(
+        year,
+        date.month - 1,
+        date.day,
+        time.hour,
+        time.minute,
+        time.second ?? 0,
+        time.millisecond ?? 0,
+      ) -
+        330 * 60_000,
+    ).toISOString();
+  const localTodayStamp = Date.UTC(
+    localNow.getUTCFullYear(),
+    localNow.getUTCMonth(),
+    localNow.getUTCDate(),
+  );
+  let startYear = localNow.getUTCFullYear();
+  let startsAt = '';
+  for (let yearOffset = 0; yearOffset <= 8; yearOffset += 1) {
+    const year = startYear + yearOffset;
+    if (!validDay(startDate, year)) continue;
+    const candidate = Date.UTC(year, startDate.month - 1, startDate.day);
+    if (candidate >= localTodayStamp) {
+      startYear = year;
+      startsAt = isoAt(startDate, { hour: 0, minute: 0 }, year);
+      break;
+    }
+  }
+  if (!startsAt) throw new InvalidOperationError('Could not resolve phase start date');
+  let endYear = startYear;
+  const startTuple = startDate.month * 100 + startDate.day;
+  const endTuple = endDate.month * 100 + endDate.day;
+  if (endTuple < startTuple) endYear += 1;
+  let resolvedEndDate = false;
+  for (let yearOffset = 0; yearOffset <= 8; yearOffset += 1) {
+    if (validDay(endDate, endYear + yearOffset)) {
+      endYear += yearOffset;
+      resolvedEndDate = true;
+      break;
+    }
+  }
+  if (!resolvedEndDate) throw new InvalidOperationError('Could not resolve phase end date');
+  const endExclusiveDate = new Date(Date.UTC(endYear, endDate.month - 1, endDate.day + 1));
+  endYear = endExclusiveDate.getUTCFullYear();
+  const endExclusive = {
+    day: endExclusiveDate.getUTCDate(),
+    month: endExclusiveDate.getUTCMonth() + 1,
+  };
+  const endsAt = isoAt(endExclusive, { hour: 0, minute: 0 }, endYear);
+  if (Date.parse(startsAt) >= Date.parse(endsAt))
+    throw new InvalidOperationError('Pricing phase must start before it ends');
+  return {
+    id: input.id,
+    name: input.name,
+    priceInPaise: input.priceInPaise,
+    startsAt,
+    endsAt,
+    quantity: input.quantity,
+  };
+}
+
 export interface TicketTier extends VersionedEntity {
   id: EntityId;
   eventId: EntityId;
@@ -71,7 +170,7 @@ export interface CreateTicketTierInput {
   description?: string;
   entryType?: string;
   currency?: string;
-  priceInPaise: number;
+  priceInPaise?: number;
   quantity: number;
   salesStartAt?: string | null;
   salesEndAt?: string | null;
@@ -79,7 +178,7 @@ export interface CreateTicketTierInput {
   accessType?: TicketAccessType;
   audienceType?: TicketAudienceType;
   guestCount?: number;
-  pricingPhases?: TicketPricingPhase[];
+  pricingPhases?: CreateTicketPricingPhaseInput[];
   doorPriceInPaise?: number | null;
   benefits?: string[];
   minAge?: number | null;
@@ -92,10 +191,23 @@ export interface CreateTicketTierInput {
 }
 
 export function createTicketTier(input: CreateTicketTierInput): TicketTier {
+  const accessType = input.accessType ?? 'ENTRY';
+  const priceInPaise = input.priceInPaise ?? 0;
+  if (
+    accessType === 'RSVP' &&
+    (input.priceInPaise !== undefined ||
+      input.pricingPhases?.length ||
+      input.commissionEligible !== undefined ||
+      input.doorPriceInPaise !== undefined)
+  )
+    throw new InvalidOperationError(
+      'RSVP tickets cannot include price, phases, door price, or commission',
+    );
+  if (accessType !== 'RSVP' && priceInPaise <= 0)
+    throw new InvalidOperationError('Paid tickets require a positive price');
   if (input.quantity < 0)
     throw new InvalidOperationError('Ticket tier quantity cannot be negative');
-  if (input.priceInPaise < 0)
-    throw new InvalidOperationError('Ticket tier price cannot be negative');
+  if (priceInPaise < 0) throw new InvalidOperationError('Ticket tier price cannot be negative');
   const guestCount = input.guestCount ?? 1;
   if (!Number.isInteger(guestCount) || guestCount < 1)
     throw new InvalidOperationError('Guest count must be at least 1');
@@ -105,30 +217,30 @@ export function createTicketTier(input: CreateTicketTierInput): TicketTier {
     throw new InvalidOperationError('Maximum tickets per user must be positive');
   if (input.minPerOrder && input.maxPerOrder && input.minPerOrder > input.maxPerOrder)
     throw new InvalidOperationError('Minimum tickets per order cannot exceed maximum');
-  if ((input.accessType ?? 'ENTRY') === 'RSVP' && input.priceInPaise !== 0)
-    throw new InvalidOperationError('RSVP tickets must be free');
+  const phases = (input.pricingPhases ?? []).map((phase) =>
+    resolvePricingPhase(phase, input.now ?? new Date()),
+  );
   if (
     input.salesStartAt &&
     input.salesEndAt &&
     Date.parse(input.salesStartAt) >= Date.parse(input.salesEndAt)
   )
     throw new InvalidOperationError('Ticket sales must start before they end');
-  for (const phase of input.pricingPhases ?? []) {
-    if (phase.priceInPaise < 0 || (phase.quantity !== null && phase.quantity < 0))
-      throw new InvalidOperationError('Pricing phase values cannot be negative');
+  for (const phase of phases) {
+    if (phase.priceInPaise <= 0 || (phase.quantity !== null && phase.quantity < 0))
+      throw new InvalidOperationError(
+        'Paid phase prices must be positive and quantities cannot be negative',
+      );
     if (Date.parse(phase.startsAt) >= Date.parse(phase.endsAt))
       throw new InvalidOperationError('Pricing phase must start before it ends');
   }
-  const phases = [...(input.pricingPhases ?? [])].sort(
-    (a, b) => Date.parse(a.startsAt) - Date.parse(b.startsAt),
-  );
-  for (let index = 1; index < phases.length; index += 1) {
-    const prevPhase = phases[index - 1];
-    const currPhase = phases[index];
+  const sortedPhases = [...phases].sort((a, b) => Date.parse(a.startsAt) - Date.parse(b.startsAt));
+  for (let index = 1; index < sortedPhases.length; index += 1) {
+    const prevPhase = sortedPhases[index - 1];
+    const currPhase = sortedPhases[index];
     if (prevPhase && currPhase && Date.parse(prevPhase.endsAt) > Date.parse(currPhase.startsAt))
       throw new InvalidOperationError('Pricing phases cannot overlap');
   }
-  const accessType = input.accessType ?? 'ENTRY';
   if (accessType === 'TABLE' && !input.tableConfig)
     throw new InvalidOperationError('Table tickets require table configuration');
   if (
@@ -147,7 +259,7 @@ export function createTicketTier(input: CreateTicketTierInput): TicketTier {
     description: input.description ?? '',
     entryType: input.entryType ?? 'general',
     currency: input.currency ?? 'INR',
-    priceInPaise: input.priceInPaise,
+    priceInPaise,
     quantity: input.quantity,
     status: 'active',
     salesStartAt: input.salesStartAt ?? null,
@@ -156,8 +268,8 @@ export function createTicketTier(input: CreateTicketTierInput): TicketTier {
     accessType,
     audienceType: input.audienceType ?? 'GENERAL',
     guestCount,
-    pricingPhases: input.pricingPhases ?? [],
-    doorPriceInPaise: input.doorPriceInPaise ?? null,
+    pricingPhases: accessType === 'RSVP' ? [] : phases,
+    doorPriceInPaise: accessType === 'RSVP' ? null : (input.doorPriceInPaise ?? null),
     benefits: input.benefits ?? [],
     minAge: input.minAge ?? null,
     maxAge: input.maxAge ?? null,
@@ -165,7 +277,7 @@ export function createTicketTier(input: CreateTicketTierInput): TicketTier {
     maxPerUser: input.maxPerUser ?? null,
     tableConfig: input.tableConfig ?? null,
     commissionEligible:
-      input.commissionEligible ?? (accessType !== 'RSVP' && input.priceInPaise > 0),
+      accessType === 'RSVP' ? false : (input.commissionEligible ?? priceInPaise > 0),
     ...newVersionedEntity(input.now ?? new Date()),
   };
 }

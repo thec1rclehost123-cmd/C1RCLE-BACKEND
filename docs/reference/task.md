@@ -1,5 +1,7 @@
 # TASK.md — V2 Partner Slice: Contract → Slice → URL → Gateway
 
+> ⚠️ **REFERENCE ONLY — historical partner-slice task list (2026-08).** Checkboxes and the BLOCKED list are not current; see `docs/roadmap/ROADMAP.md`. References to the deleted `API_V2_ROUTE_MANIFEST.md` are left as history.
+
 > Execution list for the partner V2 rebuild. Complete tasks **one by one, in order**.
 > Each task has an exit gate; do not start the next until the gate passes.
 > Scope: **organizations, venues, events, event-catalog, partners analytics**.

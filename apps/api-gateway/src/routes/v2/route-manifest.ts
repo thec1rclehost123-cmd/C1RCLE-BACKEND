@@ -31,6 +31,7 @@ import phase5ScannerRoutes from './door/scanner-routes.js';
 import financeRoutes from './finance/finance-routes.js';
 import leaderboardRoutes from './finance/leaderboard-routes.js';
 import { internalRoutes } from './internal/index.js';
+import notificationRoutes from './notifications/notifications-routes.js';
 import onboardingRoutes from './onboarding.js';
 import orderRoutes from './orders/orders-routes.js';
 import partnerAnalyticsRoutes from './partner/analytics.js';
@@ -46,6 +47,7 @@ import phase5Routes from './phase5-routes.js';
 import guestProfileRoutes from './profile.js';
 import publicDiscoveryRoutes from './public/discovery.js';
 import rsvpRoutes from './rsvp/rsvp-routes.js';
+import socialRoutes from './social/social-routes.js';
 import supportIntakeRoutes from './support/intake-routes.js';
 import ticketRoutes from './tickets/ticket-routes.js';
 import walletRoutes from './wallet/wallet-routes.js';
@@ -82,6 +84,26 @@ export async function registerV2Routes(
   // `createV2Services` (which throws `GatewayConfigError` when the firestore
   // driver lacks credentials), so the staff credential provisioner shares it.
   const auth = services.auth;
+
+  // B10: auth is only real on the firestore driver — see plugins/auth.ts and
+  // docs/roadmap/phase-00-foundation.md for why the memory driver skips it.
+  let auth: BetterAuthInstance | null = null;
+  if (gw.STORAGE_DRIVER === 'firestore') {
+    if (!gw.FIREBASE_CLIENT_EMAIL || !gw.FIREBASE_PRIVATE_KEY) {
+      throw new GatewayConfigError(
+        'STORAGE_DRIVER=firestore requires FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY',
+      );
+    }
+    auth = buildBetterAuth(
+      gw,
+      getFirestoreClient({
+        projectId: gw.FIRESTORE_PROJECT_ID,
+        clientEmail: gw.FIREBASE_CLIENT_EMAIL,
+        privateKey: gw.FIREBASE_PRIVATE_KEY,
+      }),
+      services.emailSender,
+    );
+  }
 
   await app.register(authContextPlugin, {
     auth,
@@ -169,6 +191,10 @@ export async function registerV2Routes(
       await leaderboardRoutes(v2);
       // Phase 7: support intake for the guest/requester.
       await supportIntakeRoutes(v2);
+      // Phase 8: guest follow graph + notification inbox (session-scoped).
+      await socialRoutes(v2);
+      // V2 partner-dashboard inbox (org-tenant recipient).
+      await notificationRoutes(v2);
     },
     { prefix: '/api/v2' },
   );

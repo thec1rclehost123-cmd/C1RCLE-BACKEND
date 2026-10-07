@@ -242,9 +242,12 @@ so a preview can never be mistaken for an admission.
 a network failure show a clear "Scanner offline — entry denied until
 connectivity returns" and do **not** store the scan to replay later.
 
-(Endpoints `GET /door/offline-manifest` and `POST /door/offline-sync` exist for
+(Endpoints `GET /door/offline-manifest?eventId=` and `POST /door/offline-sync` exist for
 venues that opt into pre-authorized offline mode. The standard app does not
-use them.)
+use them. The manifest is `{ manifest: [{ entitlementId, validFrom, validTo, signature }], signedAt, expiresAt }`
+(12 h TTL); each entry carries its own HMAC-SHA256 signature keyed by `MAGIC_TICKET_SECRET` over
+`manifest:<eventId>:<entitlementId>:<signedAt>:<expiresAt>`. Syncing replays every scan through the same
+atomic server-side admission, so the device's decision is never trusted — refused entries come back as `conflicts`.)
 
 ---
 

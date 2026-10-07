@@ -1,6 +1,6 @@
 # C1RCLE-BACKEND documentation map
 
-Four kinds of document live here, each with a different job. Don't mix them —
+Several kinds of document live here, each with a different job. Don't mix them —
 that's what caused this folder to need reorganizing once already.
 
 ```
@@ -8,8 +8,17 @@ docs/
 ├── README.md            you are here — index only, no content of its own
 ├── roadmap/              WHAT'S IMPLEMENTED VS REMAINING (start here)
 ├── architecture/         HOW the system is built, and WHY (design + decisions)
-└── reference/            Point-in-time material copied in from elsewhere —
-                          not maintained, read for context, not truth
+├── reference/            Point-in-time material copied in from elsewhere —
+│                         not maintained, read for context, not truth
+├── api-contracts/        wire contracts the frontends code against (auth, errors, scanner app)
+├── admin-dashboard/      per-desk admin console docs (tiers, proposals, support desk)
+├── scanner-app/          door scanner backend/app docs (SOTA blueprint, topic docs, task/impl logs)
+├── integration-flows/    checkout + ticket-booking frontend↔gateway flows
+├── frontend-services/    point-in-time frontend service inventory
+├── nginx/ operations/    edge/deploy docs (nginx, Render staging, env contract, rollback)
+├── ci-cd.md              CI/CD + deploy pipeline
+├── Intern/ Sagar_code_Changes/ WORK_DONE_BY_SAGAR_*.md   historical work logs (bannered)
+└── PHASE_5_HTTP_WIRING_PLAN.md   historical, fully superseded Phase 5 plan
 ```
 
 ## `docs/roadmap/` — implemented vs remaining (the status tracker)
@@ -21,14 +30,14 @@ session can resume without re-deriving context. This is the *only* place
 status is tracked — don't duplicate a "what's done" list anywhere else.
 
 - Phase 0 (Foundation: auth, persistence, the frozen partner slice) — **done**.
-- Phase 1 (Partner dashboards) — **substantially done**; finance blocked on Phase 6.
-- Phase 2 (KYC/Onboarding) — **substantially done**; storage-upload signing deferred.
+- Phase 1 (Partner dashboards) — **done**; finance/analytics shipped with Phase 6, `venueShareRate` shipped 2026-09-17.
+- Phase 2 (KYC/Onboarding) — **done**; pre-signed storage upload URLs shipped 2026-08-30.
 - Phase 3 (Event-catalog & scheduling) — **done**.
 - Phase 4 (Guest checkout & tickets) — **done** (verified 2026-09-07).
-- Phase 5 (Door/Scanner/Cover-wallet) — **done** (verified 2026-09-07); 2 honest 501s remain.
-- Phase 6 (Finance/Ledger/Payouts) — **in progress** (started 2026-09-07).
-- Phase 7 (Admin console backend) — **done** (2026-09-16); Phase C deferrals in `roadmap/ADMIN-DASHBOARD-GAPS.md`.
-- Phase 8 (Social/notifications) — not started.
+- Phase 5 (Door/Scanner/Cover-wallet) — **done** (verified 2026-09-28); both former 501s are now implemented.
+- Phase 6 (Finance/Ledger/Payouts) — **done** (verified 2026-09-08); `venueShareRate` closed 2026-09-17, analytics fallback 2026-09-19.
+- Phase 7 (Admin console backend) — **done** (A/B/D 2026-09-16; support desk + guest intake 2026-09-20); safety/content moderation and invite-by-email deferred, see `roadmap/ADMIN-DASHBOARD-GAPS.md`.
+- Phase 8 (Social/notifications) — **partial**: follow graph + guest notifications + partner notification inbox live; chat/DM not started.
 
 ## `docs/architecture/` — how the system is built, and why
 
@@ -43,7 +52,7 @@ just when a task finishes.
 - [`IMPLEMENTATION-STATUS-2026-08-31.md`](architecture/IMPLEMENTATION-STATUS-2026-08-31.md)
   — point-in-time implementation-vs-design gap analysis (target architecture,
   the 25 non-negotiable rules, a 15-item cross-doc contradiction log, a
-  per-domain LIVE/NO-BACKEND status table, the complete honest-501 list).
+  per-domain LIVE/NO-BACKEND status table, the honest-501 list as of that date, all since closed).
   Numbers are dated to its audited commit — cross-check `ROADMAP.md` /
   `git log` / `pnpm check` before citing a count as current.
 
@@ -57,8 +66,8 @@ for context, not as current truth** — if it disagrees with live code or with
 - `frontend-api-map.md` — `C1RCLE-FRONTEND` route/contract mapping as of
   2026-08-12. Useful for "what does the frontend expect," not for "what's
   live in this backend today" (that's `docs/roadmap/`).
-- `task.md`, `route-manifest.ts`, `API_V2_ROUTE_MANIFEST.md`,
-  `API_ROUTE_CATALOG.generated.md`, `V1_TO_V2_PARITY.md`,
+- `task.md`, `V1 admin dashboard.md`, `V2 Backend Engineering — Senior Developer - IT Team Master Prompt.md`, `route-manifest.ts` (planning manifest; live registration is
+  `apps/api-gateway/src/routes/v2/route-manifest.ts`), `V1_TO_V2_PARITY.md`,
   `MASTER_LAUNCH_IMPLEMENTATION_PLAN.md`,
   `Dream Architecture Implementation Plan.md`, `chatgpt_response.md` — the
   T-series design authority and full-platform destination plans, copied from
@@ -74,7 +83,7 @@ for context, not as current truth** — if it disagrees with live code or with
 
 ## Rule of thumb for adding new docs
 
-Ask which of the three folders it belongs to before creating a file:
+Ask which of the core folders (roadmap, architecture, reference) it belongs to before creating a file:
 - Tracking what's built vs not, phase by phase → `docs/roadmap/`
 - Explaining a lasting design choice or how a layer works → `docs/architecture/`
 - Copying in outside material for one-time reference → `docs/reference/`
