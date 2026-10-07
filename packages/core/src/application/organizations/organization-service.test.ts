@@ -22,8 +22,8 @@ import type { EmailSender, StaffInvitationEmail } from '../../domain/ports/email
 import type {
   StaffCredentialProvisioner,
   StaffRotationStore,
-  StaffUserDirectory,
 } from '../../domain/ports/staff-credentials.js';
+import type { UserDirectoryPort } from '../../domain/ports/user-directory.js';
 import type { ActorContext, ServiceDeps } from '../context.js';
 
 class CapturingEmailSender implements EmailSender {
@@ -35,6 +35,8 @@ class CapturingEmailSender implements EmailSender {
   async sendOtpEmail(): Promise<void> {
     throw new Error('not used in invitation tests');
   }
+  async sendPasswordResetEmail(): Promise<void> {}
+  async sendOnboardingChangesRequestedEmail(): Promise<void> {}
 }
 
 class FailingEmailSender implements EmailSender {
@@ -45,6 +47,8 @@ class FailingEmailSender implements EmailSender {
   async sendOtpEmail(): Promise<void> {
     throw new Error('not used in invitation tests');
   }
+  async sendPasswordResetEmail(): Promise<void> {}
+  async sendOnboardingChangesRequestedEmail(): Promise<void> {}
 }
 
 class FailingProvisioner extends MemoryStaffCredentialProvisioner {
@@ -58,7 +62,7 @@ function makeDeps(
   partnerDashboardUrl?: string,
   credentialProvisioner?: StaffCredentialProvisioner,
   rotationStore?: StaffRotationStore,
-  userDirectory?: StaffUserDirectory,
+  userDirectory?: UserDirectoryPort,
 ): ServiceDeps {
   const repositories = buildRepositories({
     STORAGE_DRIVER: 'memory',

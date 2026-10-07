@@ -1,5 +1,8 @@
 import { randomBytes } from 'node:crypto';
 
+import type { EntityId } from '../identity.js';
+import type { UserDirectoryPort } from './user-directory.js';
+
 /**
  * ─── Staff credential ports ─────────────────────────────────────────────────
  * Invited staff sign in with real login credentials (email + temporary
@@ -84,15 +87,23 @@ export function displayNameForInviteEmail(email: string): string {
  * Test/memory defaults: track provisioned addresses and rotation flags in
  * memory. Never used in production.
  */
-export class MemoryStaffUserDirectory implements StaffUserDirectory {
+export class MemoryStaffUserDirectory implements StaffUserDirectory, UserDirectoryPort {
+  readonly name = 'memory-staff-user-directory';
   private readonly ids = new Map<string, string>();
+  private readonly emails = new Map<string, string>();
 
   seed(normalizedEmail: string, userId: string): void {
-    this.ids.set(normalizedEmail, userId);
+    const norm = normalizedEmail.trim().toLowerCase();
+    this.ids.set(norm, userId);
+    this.emails.set(userId, normalizedEmail.trim());
   }
 
   async findUserIdByEmail(email: string): Promise<string | null> {
     return this.ids.get(email.trim().toLowerCase()) ?? null;
+  }
+
+  async getEmailById(userId: EntityId): Promise<string | null> {
+    return this.emails.get(userId) ?? null;
   }
 }
 

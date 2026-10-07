@@ -57,6 +57,10 @@ class FakeEmailSender implements EmailSender {
     // unused by these tests
   }
 
+  async sendStaffInvitationEmail(): Promise<void> {
+    // unused by these tests
+  }
+
   async sendOnboardingChangesRequestedEmail(
     recipient: string,
     params: OnboardingChangesRequestedEmailParams,
@@ -72,6 +76,10 @@ class FakeUserDirectory implements UserDirectoryPort {
 
   async getEmailById(userId: string): Promise<string | null> {
     return this.emails.get(userId) ?? null;
+  }
+
+  async findUserIdByEmail(): Promise<string | null> {
+    return null;
   }
 }
 
