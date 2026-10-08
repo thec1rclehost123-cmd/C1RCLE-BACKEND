@@ -7,7 +7,11 @@ import { createPromoterAssignment } from '../../domain/models/event-catalog.js';
 import { LoggingEmailSender } from '../../domain/ports/email-sender.js';
 import { EchoObjectStorage } from '../../domain/ports/object-storage.js';
 import { MemoryPaymentProvider } from '../../domain/ports/payment-provider.js';
-import { NullUserDirectory } from '../../domain/ports/user-directory.js';
+import {
+  MemoryStaffCredentialProvisioner,
+  MemoryStaffRotationStore,
+  MemoryStaffUserDirectory,
+} from '../../domain/ports/staff-credentials.js';
 import { FormatCheckVerificationProvider } from '../../domain/ports/verification.js';
 import { MemoryAdminAuditRepository } from '../../infrastructure/memory/memory-audit-repository.js';
 import { MemoryOutboxStore } from '../../infrastructure/memory/memory-outbox-store.js';
@@ -63,8 +67,11 @@ describe('AdminOperationsService — promoter & settings authority', () => {
       verification: new FormatCheckVerificationProvider(),
       objectStorage: new EchoObjectStorage(),
       emailSender: new LoggingEmailSender(noopLogger),
-      userDirectory: new NullUserDirectory(),
+      userDirectory: new MemoryStaffUserDirectory(),
       paymentProvider: new MemoryPaymentProvider('test_webhook_secret'),
+      credentialProvisioner: new MemoryStaffCredentialProvisioner(),
+      rotationStore: new MemoryStaffRotationStore(),
+
       pricing: new PricingService({ eventCatalog: repositories.catalog }),
       inventory: new InventoryService({
         eventCatalog: repositories.catalog,

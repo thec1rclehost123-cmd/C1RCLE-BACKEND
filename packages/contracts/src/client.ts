@@ -37,6 +37,7 @@ export type {
   SignupRequest,
   LoginRequest,
   AuthBridgeResponse,
+  ChangePasswordRequest,
   OtpSendRequest,
   OtpVerifyRequest,
   OtpAckResponse,
@@ -52,6 +53,7 @@ export {
   signupRequestSchema,
   loginRequestSchema,
   authBridgeResponseSchema,
+  changePasswordSchema,
   otpSendRequestSchema,
   otpVerifyRequestSchema,
   otpAckResponseSchema,
@@ -675,6 +677,7 @@ export {
 // Guest profile (guest-portal signup onboarding)
 export type { GuestProfileDto, UpsertGuestProfileRequest } from './contracts/guest-profile.js';
 export { guestProfileDtoSchema, upsertGuestProfileSchema } from './contracts/guest-profile.js';
+// Public / discovery (Phase 4 PR1)
 export type {
   HostPublicDto,
   VenuePublicDetailDto,
@@ -698,6 +701,7 @@ export {
 // guest follow notifications). Every other name here is already distinct
 // (this file pluralizes "notification[s]ListResponse" etc.), so only those
 // two need it.
+
 export type {
   CreateFollowRequest,
   FollowDto,

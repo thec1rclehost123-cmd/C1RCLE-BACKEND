@@ -3,7 +3,7 @@ import { createFollow, followId } from '../../domain/models/social.js';
 import { emit } from '../context.js';
 
 import type { EntityId } from '../../domain/identity.js';
-import type { Follow, FollowTargetType, Notification } from '../../domain/models/social.js';
+import type { Follow, FollowTargetType, SocialNotification } from '../../domain/models/social.js';
 import type { Page, PaginationQuery } from '../../domain/ports/repositories.js';
 import type { ActorContext, ServiceDeps } from '../context.js';
 
@@ -94,7 +94,7 @@ export class SocialService {
   listNotifications(
     userId: EntityId,
     query: PaginationQuery & { unreadOnly?: boolean },
-  ): Promise<Page<Notification>> {
+  ): Promise<Page<SocialNotification>> {
     return this.repos.socialNotifications.listForUser(userId, query);
   }
 
