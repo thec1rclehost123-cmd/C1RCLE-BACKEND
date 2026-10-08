@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { randomInt } from 'node:crypto';
 
 import type { UserDirectoryPort } from './user-directory.js';
 
@@ -65,10 +65,10 @@ export interface StaffRotationStore {
 const TEMPORARY_PASSWORD_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
 
 export function generateTemporaryPassword(): string {
-  const bytes = randomBytes(16);
   let password = '';
-  for (const byte of bytes) {
-    password += TEMPORARY_PASSWORD_ALPHABET.charAt(byte % TEMPORARY_PASSWORD_ALPHABET.length);
+  for (let index = 0; index < 16; index += 1) {
+    const charIndex = randomInt(TEMPORARY_PASSWORD_ALPHABET.length);
+    password += TEMPORARY_PASSWORD_ALPHABET.charAt(charIndex);
   }
   return password;
 }

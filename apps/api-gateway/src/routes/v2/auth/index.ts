@@ -64,6 +64,9 @@ export default async function authRoutes(
         fastify.rateLimit('SENSITIVE_COMMAND'),
       ],
     },
+    // codeql[js/missing-rate-limiting] rate limiting IS applied via the
+    // preHandler list (fastify.rateLimit('SENSITIVE_COMMAND')). CodeQL cannot
+    // see through the plugin-decorated preHandler.
     async (request, reply) => {
       if (!auth) return sendAuthUnavailable(reply, request);
       const body = request.body as z.infer<typeof signupRequestSchema>;
@@ -102,6 +105,9 @@ export default async function authRoutes(
         fastify.rateLimit('SENSITIVE_COMMAND'),
       ],
     },
+    // codeql[js/missing-rate-limiting] rate limiting IS applied via the
+    // preHandler list (fastify.rateLimit('SENSITIVE_COMMAND')). CodeQL cannot
+    // see through the plugin-decorated preHandler.
     async (request, reply) => {
       if (!auth) return sendAuthUnavailable(reply, request);
       const body = request.body as z.infer<typeof loginRequestSchema>;
@@ -254,6 +260,9 @@ export default async function authRoutes(
         fastify.rateLimit('SENSITIVE_COMMAND'),
       ],
     },
+    // codeql[js/missing-rate-limiting] rate limiting IS applied via the
+    // preHandler list (fastify.rateLimit('SENSITIVE_COMMAND')). CodeQL cannot
+    // see through the plugin-decorated preHandler.
     async (request, reply) => {
       if (!auth) return sendAuthUnavailable(reply, request);
       const session = await auth.api
@@ -321,6 +330,9 @@ export default async function authRoutes(
   fastify.get(
     '/invitations/mine',
     { preHandler: fastify.rateLimit('AUTH_READ') },
+    // codeql[js/missing-rate-limiting] rate limiting IS applied via the
+    // preHandler (fastify.rateLimit('AUTH_READ')). CodeQL cannot see
+    // through the plugin-decorated preHandler.
     async (request, reply) => {
       if (!auth) return sendAuthUnavailable(reply, request);
       const session = await auth.api
