@@ -79,6 +79,15 @@ export class CoreConfigError extends Error {
   }
 }
 
+/**
+ * The secret and salt that bank-account numbers were encrypted with before the
+ * gateway wired `ENCRYPTION_KEY` through. They are published in this repository,
+ * so they protect nothing; they exist only so records written under them can
+ * still be decrypted (see `getFullAccountNumber`). Never use them to encrypt.
+ */
+export const LEGACY_BANK_ENCRYPTION_SECRET = 'default-bank-encryption-secret-change-in-production';
+export const LEGACY_BANK_ENCRYPTION_SALT = 'default-bank-encryption-salt';
+
 export function createCoreConfig(input: CoreConfigInput): CoreConfig {
   if (!input.redis || typeof input.redis.url !== 'string' || input.redis.url.length === 0) {
     throw new CoreConfigError('CoreConfig requires redis.url');
@@ -112,9 +121,8 @@ export function createCoreConfig(input: CoreConfigInput): CoreConfig {
     features: input.features ?? {},
     magicTicketSecret:
       input.magicTicketSecret ?? 'default-magic-ticket-secret-change-in-production',
-    bankEncryptionSecret:
-      input.bankEncryptionSecret ?? 'default-bank-encryption-secret-change-in-production',
-    bankEncryptionSalt: input.bankEncryptionSalt ?? 'default-bank-encryption-salt',
+    bankEncryptionSecret: input.bankEncryptionSecret ?? LEGACY_BANK_ENCRYPTION_SECRET,
+    bankEncryptionSalt: input.bankEncryptionSalt ?? LEGACY_BANK_ENCRYPTION_SALT,
     emailOtpSecret: input.emailOtpSecret ?? 'default-email-otp-secret-change-in-production',
   };
 }

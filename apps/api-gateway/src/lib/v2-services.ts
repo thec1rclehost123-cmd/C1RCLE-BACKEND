@@ -97,6 +97,7 @@ import { getGatewayConfig } from '../config/index.js';
 
 import { ResendEmailSender } from './notifications/resend-email-sender.js';
 import { RazorpayPaymentProvider } from './payments/razorpay-adapter.js';
+import { UnconfiguredPaymentProvider } from './payments/unconfigured-provider.js';
 import { FirebasePhoneVerificationProvider } from './verification/firebase-phone-verifier.js';
 
 import type { GatewayConfig } from '../config/index.js';
@@ -271,6 +272,10 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     // published constant that anyone reading the repo could use to mint a
     // valid door QR for any ticket. Production now fails to boot without it.
     magicTicketSecret: gw.MAGIC_TICKET_SECRET,
+    // Same story as the magic-ticket secret: this was never passed, so bank
+    // account numbers were sealed with a key published in the repo.
+    bankEncryptionSecret: gw.ENCRYPTION_KEY,
+    bankEncryptionSalt: gw.ENCRYPTION_SALT,
   });
 
   const repositories: ServiceDeps['repositories'] = buildRepositories(gw);
@@ -309,14 +314,21 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   // storage): memory driver never makes a network call, firestore driver
   // talks to the real provider. Without this branch, `pnpm test`/CI would
   // hit `api.razorpay.com` for every checkout/payment test.
+  const {
+    RAZORPAY_KEY_ID: keyId,
+    RAZORPAY_KEY_SECRET: keySecret,
+    RAZORPAY_WEBHOOK_SECRET: webhookSecret,
+  } = gwConfig;
+  // Never construct the real provider with placeholder secrets: redirect-path
+  // payment verification is an HMAC under RAZORPAY_KEY_SECRET, so a published
+  // placeholder would make forged "paid" signatures verify. Unconfigured
+  // firestore deployments get a provider that fails closed (503) instead.
   const paymentProvider: PaymentProvider =
     gw.STORAGE_DRIVER === 'memory'
-      ? new MemoryPaymentProvider(gwConfig.RAZORPAY_WEBHOOK_SECRET ?? 'test_webhook_secret')
-      : new RazorpayPaymentProvider({
-          keyId: gwConfig.RAZORPAY_KEY_ID ?? 'test_key_id',
-          keySecret: gwConfig.RAZORPAY_KEY_SECRET ?? 'test_key_secret',
-          webhookSecret: gwConfig.RAZORPAY_WEBHOOK_SECRET ?? 'test_webhook_secret',
-        });
+      ? new MemoryPaymentProvider(webhookSecret ?? 'test_webhook_secret')
+      : keyId && keySecret && webhookSecret
+        ? new RazorpayPaymentProvider({ keyId, keySecret, webhookSecret })
+        : new UnconfiguredPaymentProvider();
   const pricing = new PricingService({ eventCatalog: repositories.catalog });
   const inventory = new InventoryService({
     eventCatalog: repositories.catalog,
