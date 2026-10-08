@@ -112,6 +112,13 @@
       "why": "Denial of Service in @fastify/busboy 3.2.0 and earlier; fixed in 3.2.1. A floor rather than an exact pin so a newer patched release needs no manifest edit.",
       "overrides": { "@fastify/busboy": ">=3.2.1" },
       "minResolved": "3.2.1"
+    },
+    {
+      "name": "source-map-js",
+      "advisories": ["CVE-2026-93749"],
+      "why": "Denial of Service via malformed indexed source maps in source-map-js < 1.2.2. Pulled in transitively by magicast and postcss.",
+      "overrides": { "source-map-js": ">=1.2.2" },
+      "minResolved": "1.2.2"
     }
   ]
 }
