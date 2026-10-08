@@ -147,6 +147,16 @@ jobs:
         if: always()
         run: node scripts/check-security-pins.mjs
 
+      # Firestore rejects an unindexed composite query with FAILED_PRECONDITION,
+      # which the gateway returns as a bare 500. The memory adapters and unit
+      # tests never hit it (GET /public/discovery shipped broken that way), so
+      # this walks every where()/orderBy() chain and checks that
+      # firestore.indexes.json declares the index it needs.
+      - name: Firestore indexes
+        id: indexes
+        if: always()
+        run: node scripts/check-firestore-indexes.mjs
+
       # A focused `it.only` silently disables every other test in its file, so a
       # green suite can be hiding almost all of itself.
       - name: No focused tests committed
@@ -173,6 +183,7 @@ jobs:
             echo "| Typecheck | ${{ steps.typecheck.outcome }} |"
             echo "| Boundaries | ${{ steps.boundaries.outcome }} |"
             echo "| Nginx config | ${{ steps.nginx.outcome }} |"
+            echo "| Firestore indexes | ${{ steps.indexes.outcome }} |"
             echo "| Security pins | ${{ steps.pins.outcome }} |"
             echo "| Focused tests | ${{ steps.focused.outcome }} |"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -376,6 +387,7 @@ jobs:
             -e ALLOWED_ORIGINS="https://smoke.invalid" \
             -e EMAIL_OTP_SECRET="$(openssl rand -hex 32)" \
             -e MAGIC_TICKET_SECRET="$(openssl rand -hex 32)" \
+            -e ENCRYPTION_KEY="$(openssl rand -hex 32)" \
             "c1rcle-backend:${GITHUB_SHA}"
           for i in $(seq 1 45); do
             if curl -fsS http://localhost:8080/api/v2/internal/health > /tmp/health.json; then
@@ -438,14 +450,17 @@ jobs:
           exit $fail
 
   # ── Cross-repo contract parity ─────────────────────────────────────────────
-  # Needs a C1RCLE-FRONTEND checkout plus built dists on both sides, so it is
-  # opt-in: set the CONTRACT_PARITY_ENABLED repository variable to 'true'.
+  # Needs a C1RCLE-FRONTEND checkout plus built dists on both sides. On by
+  # default; set the CONTRACT_PARITY_ENABLED repository variable to 'false' to
+  # turn it off. The frontend repo is private, so set the FRONTEND_REPO_TOKEN
+  # secret (read access to C1RCLE-FRONTEND). The frontend CI runs the mirror
+  # image of this job for frontend PRs.
   # Deliberately NOT `continue-on-error` — when it runs, it is a real gate.
   contract-parity:
     name: Contract parity (frontend)
     needs: changes
     # PR-gate only — see `static`'s comment above for why push is excluded.
-    if: vars.CONTRACT_PARITY_ENABLED == 'true' && needs.changes.outputs.contracts == 'true' && github.event_name != 'push'
+    if: vars.CONTRACT_PARITY_ENABLED != 'false' && needs.changes.outputs.contracts == 'true' && github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -456,7 +471,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           repository: ${{ vars.FRONTEND_REPO || 'thec1rclehost123-cmd/C1RCLE-FRONTEND' }}
-          ref: ${{ vars.FRONTEND_REF || 'main' }}
+          ref: ${{ vars.FRONTEND_REF || github.base_ref || 'main' }}
           token: ${{ secrets.FRONTEND_REPO_TOKEN || github.token }}
           path: frontend
           persist-credentials: false
