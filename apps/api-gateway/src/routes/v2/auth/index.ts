@@ -59,6 +59,12 @@ export default async function authRoutes(
   fastify.post(
     '/signup',
     {
+      config: {
+        rateLimit: {
+          max: 10,
+          timeWindow: '1 minute',
+        },
+      },
       preHandler: [
         fastify.validateV2({ body: signupRequestSchema }),
         fastify.rateLimit('SENSITIVE_COMMAND'),
@@ -100,6 +106,12 @@ export default async function authRoutes(
   fastify.post(
     '/login',
     {
+      config: {
+        rateLimit: {
+          max: 10,
+          timeWindow: '1 minute',
+        },
+      },
       preHandler: [
         fastify.validateV2({ body: loginRequestSchema }),
         fastify.rateLimit('SENSITIVE_COMMAND'),
@@ -144,6 +156,12 @@ export default async function authRoutes(
   fastify.post(
     '/forgot-password',
     {
+      config: {
+        rateLimit: {
+          max: 10,
+          timeWindow: '1 minute',
+        },
+      },
       preHandler: [
         fastify.validateV2({ body: forgotPasswordRequestSchema }),
         fastify.rateLimit('SENSITIVE_COMMAND'),
@@ -173,6 +191,12 @@ export default async function authRoutes(
   fastify.post(
     '/reset-password',
     {
+      config: {
+        rateLimit: {
+          max: 10,
+          timeWindow: '1 minute',
+        },
+      },
       preHandler: [
         fastify.validateV2({ body: resetPasswordRequestSchema }),
         fastify.rateLimit('SENSITIVE_COMMAND'),
@@ -205,7 +229,15 @@ export default async function authRoutes(
   // longer-lived) session, which is what "no session breakage on reload" needs.
   fastify.post(
     '/refresh',
-    { preHandler: fastify.rateLimit('SENSITIVE_COMMAND') },
+    {
+      config: {
+        rateLimit: {
+          max: 10,
+          timeWindow: '1 minute',
+        },
+      },
+      preHandler: fastify.rateLimit('SENSITIVE_COMMAND'),
+    },
     async (request, reply) => {
       if (!auth) return sendAuthUnavailable(reply, request);
       const session = await auth.api
@@ -235,7 +267,15 @@ export default async function authRoutes(
 
   fastify.get(
     '/session',
-    { preHandler: fastify.rateLimit('AUTH_READ') },
+    {
+      config: {
+        rateLimit: {
+          max: 240,
+          timeWindow: '1 minute',
+        },
+      },
+      preHandler: fastify.rateLimit('AUTH_READ'),
+    },
     async (request, reply) => {
       if (!auth) return sendAuthUnavailable(reply, request);
       const session = await auth.api
@@ -255,14 +295,17 @@ export default async function authRoutes(
   fastify.post(
     '/change-password',
     {
+      config: {
+        rateLimit: {
+          max: 10,
+          timeWindow: '1 minute',
+        },
+      },
       preHandler: [
         fastify.validateV2({ body: changePasswordSchema }),
         fastify.rateLimit('SENSITIVE_COMMAND'),
       ],
     },
-    // codeql[js/missing-rate-limiting] rate limiting IS applied via the
-    // preHandler list (fastify.rateLimit('SENSITIVE_COMMAND')). CodeQL cannot
-    // see through the plugin-decorated preHandler.
     async (request, reply) => {
       if (!auth) return sendAuthUnavailable(reply, request);
       const session = await auth.api
@@ -329,10 +372,15 @@ export default async function authRoutes(
   // accept it instead of landing on onboarding with nowhere to go.
   fastify.get(
     '/invitations/mine',
-    { preHandler: fastify.rateLimit('AUTH_READ') },
-    // codeql[js/missing-rate-limiting] rate limiting IS applied via the
-    // preHandler (fastify.rateLimit('AUTH_READ')). CodeQL cannot see
-    // through the plugin-decorated preHandler.
+    {
+      config: {
+        rateLimit: {
+          max: 240,
+          timeWindow: '1 minute',
+        },
+      },
+      preHandler: fastify.rateLimit('AUTH_READ'),
+    },
     async (request, reply) => {
       if (!auth) return sendAuthUnavailable(reply, request);
       const session = await auth.api
