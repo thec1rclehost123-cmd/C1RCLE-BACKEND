@@ -99,7 +99,7 @@ async function seedPaidOrder(server: Server, guestUserId: string): Promise<void>
   const paymentIntentId: string = attempt.json().paymentIntentId;
   const paymentId = `pay_wallet_test_${++keySeq}`;
   const provider = memoryProvider();
-  provider.simulateCapture(paymentId, grandTotalPaise);
+  provider.simulateCapture(paymentId, grandTotalPaise, paymentIntentId);
   const signature = provider.generateSignature({ paymentId, orderId: paymentIntentId });
   await server.inject({
     method: 'POST',

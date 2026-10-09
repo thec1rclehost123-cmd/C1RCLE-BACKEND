@@ -633,6 +633,18 @@ export interface CartReservationRepository {
   release(reservationId: EntityId, tx?: TxContext | null): Promise<void>;
   /** Converts a hold to an order (atomic with order creation). */
   convertToOrder(reservationId: EntityId, orderId: EntityId, tx?: TxContext | null): Promise<void>;
+  /**
+   * Binds the provider order to the hold, first writer wins, and returns the
+   * order id that ended up bound (the caller's, or the one an earlier/racing
+   * attempt already bound). Returns `null` when the hold does not exist. A
+   * hold is bound to at most one provider order, which is what lets fulfilment
+   * reject a payment made against any other order.
+   */
+  bindProviderOrder(
+    reservationId: EntityId,
+    providerOrderId: string,
+    tx?: TxContext | null,
+  ): Promise<string | null>;
   /** Cleans up expired holds (called by a worker). */
   cleanupExpired(now: Date, tx?: TxContext | null): Promise<number>;
   /**

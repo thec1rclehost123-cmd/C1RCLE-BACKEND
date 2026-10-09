@@ -484,6 +484,18 @@ export class MemoryCartReservationRepository implements CartReservationRepositor
     }
   }
 
+  async bindProviderOrder(
+    reservationId: EntityId,
+    providerOrderId: string,
+    _tx?: TxContext | null,
+  ): Promise<string | null> {
+    const r = this.reservations.get(reservationId);
+    if (!r) return null;
+    if (r.providerOrderId) return r.providerOrderId;
+    this.reservations.set(reservationId, { ...r, providerOrderId });
+    return providerOrderId;
+  }
+
   async cleanupExpired(now: Date, _tx?: TxContext | null): Promise<number> {
     let count = 0;
     for (const [id, r] of this.reservations) {

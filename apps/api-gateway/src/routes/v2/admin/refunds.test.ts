@@ -104,7 +104,7 @@ async function seedPaidOrder(
   const paymentIntentId: string = attempt.json().paymentIntentId;
   const paymentId = `pay_refund_test_${++keySeq}`;
   const provider = memoryProvider();
-  provider.simulateCapture(paymentId, grandTotalPaise);
+  provider.simulateCapture(paymentId, grandTotalPaise, paymentIntentId);
   const signature = provider.generateSignature({ paymentId, orderId: paymentIntentId });
   const verify = await server.inject({
     method: 'POST',
