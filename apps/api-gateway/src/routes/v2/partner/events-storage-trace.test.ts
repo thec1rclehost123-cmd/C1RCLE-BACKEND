@@ -68,8 +68,9 @@ describe('event creation — what is passed vs what is stored', () => {
     const dto = response.json();
     const id = dto.id as string;
 
-    // WHAT the route actually validated against `createEventBody` — the
-    // request body as typed by the backend (events.ts:164-186).
+    // WHAT the route actually validated against — the shared
+    // `createEventSchema` contract (via `createEventBody = createEventSchema
+    // .strict()` in events.ts).
     console.log('── REQUEST BODY RECEIVED BY BACKEND (POST /organizations/:org/events) ──');
     console.log(JSON.stringify(frontendPayload(), null, 2));
     console.log('  + headers: x-organization-id: org_1, idempotency-key: <generated>');

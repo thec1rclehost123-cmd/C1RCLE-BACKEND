@@ -133,7 +133,7 @@
 **Goal:** payload, headers, params, query, AND response are validated.
 
 **Tasks:**
-- [x] Per-route request schemas (zod v4, `.strict()`): `createEventBody` (title/venueId/startAt/…, unknown-key rejection) at `routes/v2/partner/events.ts`; query uses `paginationQuerySchema` (bounded `limit` 1–100 + `cursor`); params `opaqueIdSchema`; headers (`X-Organization-Id`, `Idempotency-Key`, `If-Match`).
+- [x] Per-route request schemas (zod v4, `.strict()`): `createEventBody = createEventSchema.strict()` (shared `@c1rcle/contracts` shape — title/venueId/startAt/…, unknown-key rejection) at `routes/v2/partner/events.ts`; query uses `paginationQuerySchema` (bounded `limit` 1–100 + `cursor`); params `opaqueIdSchema`; headers (`X-Organization-Id`, `Idempotency-Key`, `If-Match`).
 - [x] Per-route response schemas: `validateV2Response` (`lib/v2-response-validation.ts`) checks every success payload against `eventDtoSchema`/`paginatedSchema(eventDtoSchema)` before send; mismatch → 500, raw doc never leaked.
 - [x] Shared helpers: `opaqueIdSchema`, `cursorSchema`, `paginationQuerySchema`, `idempotencyKeySchema`, `versionHeaderSchema`, `organizationIdSchema`, `eventDtoSchema` in `@c1rcle/types/client.ts`.
 - [x] `validateV2Plugin` (registered) parses headers+params+query+body; failure → 422 with `fieldErrors` (V1 `validate` plugin untouched, still frozen).
