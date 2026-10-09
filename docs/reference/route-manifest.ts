@@ -754,14 +754,29 @@ export const API_V2_ROUTES: readonly V2RouteDefinition[] = [
     idempotency: 'REQUIRED',
     expectedVersion: 'REQUIRED',
   }),
-  ...(['review', 'publish', 'pause-sales', 'resume-sales', 'cancel', 'duplicate'] as const).map(
-    (action) =>
-      defineRoute(`events.${action}`, 'POST', `/api/v2/events/:eventId/${action}`, 'events', {
-        permission: `event.${action}`,
-        scope: 'Event organization and state',
-        idempotency: 'REQUIRED',
-        expectedVersion: 'REQUIRED',
-      }),
+  // Lifecycle permissions follow the decision each action represents, not a
+  // mechanical `event.${action}`: review/pause-sales/resume-sales are edits
+  // (`event.update`), publish is its own authority (`event.publish`),
+  // duplicate creates a new event (`event.create`), cancel its own
+  // (`event.cancel`). `expectedVersion` is NONE — the handler accepts an
+  // optional `If-Match` but the FSM + repository compare-and-set own
+  // concurrency, so no caller-supplied version gates these commands.
+  ...(
+    [
+      ['review', 'event.update'],
+      ['publish', 'event.publish'],
+      ['pause-sales', 'event.update'],
+      ['resume-sales', 'event.update'],
+      ['cancel', 'event.cancel'],
+      ['duplicate', 'event.create'],
+    ] as const
+  ).map(([action, permission]) =>
+    defineRoute(`events.${action}`, 'POST', `/api/v2/events/:eventId/${action}`, 'events', {
+      permission,
+      scope: 'Event organization and state',
+      idempotency: 'REQUIRED',
+      expectedVersion: 'NONE',
+    }),
   ),
   defineRoute('event-previews.get', 'GET', '/api/v2/events/:eventId/previews', 'events', {
     permission: 'event.read',
