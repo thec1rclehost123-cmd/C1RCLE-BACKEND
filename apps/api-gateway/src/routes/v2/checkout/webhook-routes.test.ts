@@ -231,7 +231,7 @@ describe('POST /webhooks/payments/razorpay', () => {
     const { holdId, grandTotalPaise } = await seedHold(server);
     const paymentIntentId = await createPaymentIntent(server, holdId);
     const paymentId = 'pay_tampered';
-    memoryProvider().simulateCapture(paymentId, grandTotalPaise);
+    memoryProvider().simulateCapture(paymentId, grandTotalPaise, paymentIntentId);
     const body = webhookPayload({ id: paymentId, order_id: paymentIntentId, holdId });
 
     const response = await server.inject({
@@ -253,7 +253,7 @@ describe('POST /webhooks/payments/razorpay', () => {
     const { holdId, grandTotalPaise } = await seedHold(server);
     const paymentIntentId = await createPaymentIntent(server, holdId);
     const paymentId = 'pay_captured_1';
-    memoryProvider().simulateCapture(paymentId, grandTotalPaise);
+    memoryProvider().simulateCapture(paymentId, grandTotalPaise, paymentIntentId);
     const body = webhookPayload({ id: paymentId, order_id: paymentIntentId, holdId });
 
     const response = await server.inject({
@@ -273,7 +273,7 @@ describe('POST /webhooks/payments/razorpay', () => {
     const { holdId, grandTotalPaise } = await seedHold(server);
     const paymentIntentId = await createPaymentIntent(server, holdId);
     const paymentId = 'pay_authorized_only';
-    memoryProvider().simulateCapture(paymentId, grandTotalPaise);
+    memoryProvider().simulateCapture(paymentId, grandTotalPaise, paymentIntentId);
     const body = webhookPayload({
       id: paymentId,
       order_id: paymentIntentId,
@@ -322,7 +322,7 @@ describe('POST /webhooks/payments/razorpay', () => {
     const paymentIntentId = await createPaymentIntent(server, holdId);
     const paymentId = 'pay_dual_confirm';
     const provider = memoryProvider();
-    provider.simulateCapture(paymentId, grandTotalPaise);
+    provider.simulateCapture(paymentId, grandTotalPaise, paymentIntentId);
     const body = webhookPayload({ id: paymentId, order_id: paymentIntentId, holdId });
 
     const webhookCall = server.inject({
@@ -360,7 +360,7 @@ describe('POST /webhooks/payments/razorpay', () => {
     const { holdId, grandTotalPaise } = await seedHold(server);
     const paymentIntentId = await createPaymentIntent(server, holdId);
     const paymentId = 'pay_ledger_1';
-    memoryProvider().simulateCapture(paymentId, grandTotalPaise);
+    memoryProvider().simulateCapture(paymentId, grandTotalPaise, paymentIntentId);
     const body = webhookPayload({ id: paymentId, order_id: paymentIntentId, holdId });
 
     const response = await server.inject({
@@ -414,7 +414,7 @@ describe('POST /webhooks/payments/razorpay', () => {
     const { holdId, grandTotalPaise, venueOwnerOrgId } = await seedHoldWithPartnership(server, 20);
     const paymentIntentId = await createPaymentIntent(server, holdId);
     const paymentId = 'pay_venue_share_1';
-    memoryProvider().simulateCapture(paymentId, grandTotalPaise);
+    memoryProvider().simulateCapture(paymentId, grandTotalPaise, paymentIntentId);
     const body = webhookPayload({ id: paymentId, order_id: paymentIntentId, holdId });
 
     const response = await server.inject({

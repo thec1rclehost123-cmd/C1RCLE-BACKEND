@@ -1,6 +1,6 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac } from 'node:crypto';
 
-import { InvalidOperationError } from '@c1rcle/core/domain';
+import { InvalidOperationError, computeCheckoutSignature, safeHexEqual } from '@c1rcle/core/domain';
 
 import type {
   PaymentOrderRequest,
@@ -31,6 +31,8 @@ interface RazorpayPaymentResponse {
   currency: string;
   status: string;
   captured: boolean;
+  /** The Razorpay order this payment was made against; null for orderless payments. */
+  order_id?: string | null;
 }
 
 interface RazorpayRefundResponse {
@@ -165,6 +167,12 @@ export class RazorpayPaymentProvider {
     if (!isRazorpayOrderResponse(data)) {
       throw new InvalidOperationError('Invalid Razorpay order response');
     }
+    // The amount the guest will be charged is whatever the provider order says.
+    // If it ever differs from what we asked for, fail here rather than let the
+    // guest pay a total the server never quoted.
+    if (data.amount !== request.amountPaise || data.currency !== request.currency) {
+      throw new InvalidOperationError('Razorpay order does not match the requested amount');
+    }
     return {
       id: data.id,
       amountPaise: data.amount,
@@ -174,13 +182,14 @@ export class RazorpayPaymentProvider {
   }
 
   async verifyPayment(request: PaymentVerificationRequest): Promise<PaymentVerificationResponse> {
-    // HMAC verification is NOT optional (D-022)
+    // HMAC verification is NOT optional (D-022). `safeHexEqual` never throws on
+    // a wrong-length signature, so a forged one is a clean 4xx, not a 500.
     const expectedSignature = this.generateSignature({
       paymentId: request.paymentId,
       orderId: request.orderId,
     });
 
-    if (!timingSafeEqual(Buffer.from(expectedSignature), Buffer.from(request.signature))) {
+    if (!safeHexEqual(expectedSignature, request.signature)) {
       throw new InvalidOperationError('Invalid payment signature');
     }
 
@@ -222,6 +231,8 @@ export class RazorpayPaymentProvider {
       paymentId: data.id,
       amountPaise: data.amount,
       captured: data.status === 'captured',
+      orderId: data.order_id ?? null,
+      currency: data.currency,
     };
   }
 
@@ -290,18 +301,19 @@ export class RazorpayPaymentProvider {
       paymentId: data.id,
       amountPaise: data.amount,
       captured: data.status === 'captured',
+      orderId: data.order_id ?? null,
+      currency: data.currency,
     };
   }
 
   /**
-   * Generates HMAC-SHA256 signature for webhook verification.
-   * Uses deterministic JSON.stringify (D-022).
+   * Checkout-callback signature: HMAC-SHA256 of `order_id|payment_id` keyed by
+   * the API **key secret** (what Razorpay documents). This used to sign a sorted
+   * `key=value&...` string with the *webhook* secret, so a genuine payment's
+   * callback could never verify. See `computeCheckoutSignature`.
    */
   generateSignature(payload: { paymentId: string; orderId: string }): string {
-    // Deterministic stringification: sort keys for consistency
-    const sortedKeys = Object.keys(payload).sort();
-    const canonical = sortedKeys.map((k) => `${k}=${payload[k as keyof typeof payload]}`).join('&');
-    return createHmac('sha256', this.config.webhookSecret).update(canonical).digest('hex');
+    return computeCheckoutSignature({ ...payload, keySecret: this.config.keySecret });
   }
 
   /**
@@ -312,6 +324,6 @@ export class RazorpayPaymentProvider {
     const expectedSignature = createHmac('sha256', this.config.webhookSecret)
       .update(rawBody)
       .digest('hex');
-    return timingSafeEqual(Buffer.from(expectedSignature), Buffer.from(signature));
+    return safeHexEqual(expectedSignature, signature);
   }
 }
