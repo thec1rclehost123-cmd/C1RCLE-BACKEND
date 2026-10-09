@@ -17,6 +17,7 @@ function productionEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.Proces
     BETTER_AUTH_SECRET: 'a'.repeat(64),
     EMAIL_OTP_SECRET: 'b'.repeat(64),
     MAGIC_TICKET_SECRET: 'c'.repeat(64),
+    ENCRYPTION_KEY: 'd'.repeat(64),
     PUBLIC_API_URL: 'https://api.example.test',
     BETTER_AUTH_URL: 'https://api.example.test',
     ALLOWED_ORIGINS: 'https://app.example.test',
@@ -33,6 +34,24 @@ describe('gateway configuration', () => {
     );
 
     expect(config.BUILD_SHA).toBe('a'.repeat(40));
+  });
+
+  it('requires a real bank-encryption key in production', () => {
+    // Without it the core seals bank-account numbers with a secret published in
+    // the repo, so production must refuse to boot rather than fall back.
+    expect(() => getGatewayConfig(productionEnvironment({ ENCRYPTION_KEY: undefined }))).toThrow(
+      /ENCRYPTION_KEY/,
+    );
+    expect(() => getGatewayConfig(productionEnvironment({ ENCRYPTION_KEY: 'short' }))).toThrow(
+      /ENCRYPTION_KEY/,
+    );
+    expect(getGatewayConfig(productionEnvironment()).ENCRYPTION_KEY).toHaveLength(64);
+  });
+
+  it('requires a long email OTP secret in production, not just a present one', () => {
+    expect(() => getGatewayConfig(productionEnvironment({ EMAIL_OTP_SECRET: 'short' }))).toThrow(
+      /EMAIL_OTP_SECRET/,
+    );
   });
 
   it('requires an email OTP secret in production', () => {

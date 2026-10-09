@@ -669,6 +669,59 @@ describe('createBankAccountService', () => {
     expect(await service.getFullAccountNumber(account.id, actor(ORG))).toBe('00001234567890');
   });
 
+  describe('encryption key rotation', () => {
+    const rotatedConfig = createCoreConfig({
+      redis: { url: 'redis://localhost:6379' },
+      firestore: { projectId: 'test-project' },
+      clock: { now: () => NOW },
+      bankEncryptionSecret: 'a-real-secret-that-is-not-the-published-default-0123456789',
+      bankEncryptionSalt: 'a-real-salt',
+    });
+    const newAccount = {
+      organizationId: ORG,
+      bankName: 'HDFC',
+      accountHolder: 'A',
+      accountNumber: '00001234567890',
+      ifscCode: 'HDFC0001234',
+    };
+
+    it('reads records sealed under the legacy default key after the key is configured', async () => {
+      const bankAccounts = new MemoryBankAccountRepository();
+      // Written by a deployment that never wired ENCRYPTION_KEY (legacy defaults).
+      const legacy = createBankAccountService({ bankAccounts, config });
+      const account = await legacy.addBankAccount(newAccount, actor(ORG));
+
+      const rotated = createBankAccountService({ bankAccounts, config: rotatedConfig });
+      expect(await rotated.getFullAccountNumber(account.id, actor(ORG))).toBe('00001234567890');
+    });
+
+    it('seals new records with the configured key, not the legacy default', async () => {
+      const bankAccounts = new MemoryBankAccountRepository();
+      const rotated = createBankAccountService({ bankAccounts, config: rotatedConfig });
+      const account = await rotated.addBankAccount(newAccount, actor(ORG));
+
+      // A deployment still on the legacy defaults must NOT be able to open it.
+      const legacy = createBankAccountService({ bankAccounts, config });
+      await expect(legacy.getFullAccountNumber(account.id, actor(ORG))).rejects.toThrow();
+      expect(await rotated.getFullAccountNumber(account.id, actor(ORG))).toBe('00001234567890');
+    });
+
+    it('fails when a record opens under neither the configured nor the legacy key', async () => {
+      const bankAccounts = new MemoryBankAccountRepository();
+      const otherConfig = createCoreConfig({
+        redis: { url: 'redis://localhost:6379' },
+        firestore: { projectId: 'test-project' },
+        clock: { now: () => NOW },
+        bankEncryptionSecret: 'some-other-secret-entirely-0123456789-abcdefghij',
+      });
+      const other = createBankAccountService({ bankAccounts, config: otherConfig });
+      const account = await other.addBankAccount(newAccount, actor(ORG));
+
+      const rotated = createBankAccountService({ bankAccounts, config: rotatedConfig });
+      await expect(rotated.getFullAccountNumber(account.id, actor(ORG))).rejects.toThrow();
+    });
+  });
+
   it('getFullAccountNumber throws InvalidOperationError when the field is unset', async () => {
     const { bankAccounts } = makeDeps();
     const deps = { bankAccounts, config };

@@ -145,6 +145,17 @@ export class ConflictError extends DomainError {
   }
 }
 
+/**
+ * A capability this deployment has not been configured for (e.g. payments with
+ * no Razorpay credentials). Fails closed — the caller gets HTTP 503 rather than
+ * the operation running against placeholder credentials.
+ */
+export class ServiceUnavailableError extends DomainError {
+  constructor(message: string) {
+    super(message, 'service_unavailable');
+  }
+}
+
 export class IdempotencyConflictError extends DomainError {
   constructor(idempotencyKey: string) {
     super(

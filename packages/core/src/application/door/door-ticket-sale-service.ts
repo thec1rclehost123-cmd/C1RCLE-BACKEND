@@ -7,13 +7,13 @@ import { attachPaymentIntent, createOrder, markPaid } from '../../domain/models/
 import { assertReconciles } from '../../domain/models/pricing.js';
 import { requireOrgAccess } from '../context.js';
 
+import type { ScannerService } from './scanner-service.js';
 import type { EntityId } from '../../domain/identity.js';
 import type { Entitlement } from '../../domain/models/entitlement.js';
 import type { TicketTier } from '../../domain/models/event-catalog.js';
 import type { Order } from '../../domain/models/order.js';
 import type { PricingBreakdown } from '../../domain/models/pricing.js';
 import type { ServiceDeps, ActorContext } from '../context.js';
-import type { ScannerService } from './scanner-service.js';
 
 /**
  * ─── Paid walk-up ticket sale (Phase 5) ─────────────────────────────────────

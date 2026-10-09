@@ -80,11 +80,23 @@ services:
       - key: MAGIC_TICKET_SECRET
         sync: false
 
-      # Validated but currently unused: rate limiting is an in-memory sliding
-      # window (apps/api-gateway/src/plugins/rate-limit.ts). Keep the value
-      # accurate anyway so wiring Redis is a one-line change.
+      # At-rest key for bank-account numbers (AES-256-GCM). Production refuses
+      # to boot without a real 32+ character value. Set it BEFORE the deploy
+      # that ships this requirement. Older records stay readable (they fall
+      # back to the legacy key), but new writes are sealed with this one — keep
+      # it stable and backed up, since losing it makes those records unreadable.
+      - key: ENCRYPTION_KEY
+        sync: false
+
+      # Rate limiting defaults to an in-memory sliding window (per instance,
+      # resets on restart). To share it across instances, provision a Redis,
+      # set REDIS_URL to its rediss:// address and RATE_LIMIT_STORE=redis;
+      # if Redis is unreachable the gateway falls back to memory and readiness
+      # reports `redis: down`. Production rejects a localhost REDIS_URL then.
       - key: REDIS_URL
         sync: false
+      - key: RATE_LIMIT_STORE
+        value: memory
 
       # Phase 4 payments. Optional in the schema; required once the checkout
       # and webhook routes are registered.
