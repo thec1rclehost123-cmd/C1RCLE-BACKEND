@@ -151,6 +151,7 @@ const VALID_USER = {
   displayName: 'Sky Partner',
   role: 'partner',
   avatarUrl: null,
+  mustChangePassword: false,
 };
 
 /* ── role ─────────────────────────────────────────────────────────────────── */
@@ -168,6 +169,20 @@ agree(
   { ...VALID_USER, avatarUrl: 'https://cdn.example.com/a.png' },
   true,
 );
+agree(
+  'userSchema',
+  'accepts a user still on a temporary staff password',
+  { ...VALID_USER, mustChangePassword: true },
+  true,
+);
+agree(
+  'userSchema',
+  'rejects a non-boolean mustChangePassword',
+  { ...VALID_USER, mustChangePassword: 'yes' },
+  false,
+);
+// Deliberately no "missing mustChangePassword" fixture: the backend requires it
+// while the frontend defaults it to false so it still parses older gateways.
 agree('userSchema', 'rejects a malformed email', { ...VALID_USER, email: 'not-an-email' }, false);
 agree('userSchema', 'rejects a non-url avatar', { ...VALID_USER, avatarUrl: 'nope' }, false);
 agree(
