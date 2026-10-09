@@ -57,6 +57,12 @@ export interface CoreConfig {
    * by a server secret an attacker with DB read access does not also have.
    */
   emailOtpSecret: string;
+  /**
+   * Public origin of the partner dashboard, used to build absolute staff-
+   * invitation accept links. Optional: when absent, invitation emails omit the
+   * link (the invitee asks their manager for it) rather than linking nowhere.
+   */
+  partnerDashboardUrl?: string | undefined;
 }
 
 export interface CoreConfigInput {
@@ -70,6 +76,7 @@ export interface CoreConfigInput {
   bankEncryptionSecret?: string;
   bankEncryptionSalt?: string;
   emailOtpSecret?: string;
+  partnerDashboardUrl?: string;
 }
 
 export class CoreConfigError extends Error {
@@ -116,6 +123,7 @@ export function createCoreConfig(input: CoreConfigInput): CoreConfig {
       input.bankEncryptionSecret ?? 'default-bank-encryption-secret-change-in-production',
     bankEncryptionSalt: input.bankEncryptionSalt ?? 'default-bank-encryption-salt',
     emailOtpSecret: input.emailOtpSecret ?? 'default-email-otp-secret-change-in-production',
+    ...(input.partnerDashboardUrl ? { partnerDashboardUrl: input.partnerDashboardUrl } : {}),
   };
 }
 

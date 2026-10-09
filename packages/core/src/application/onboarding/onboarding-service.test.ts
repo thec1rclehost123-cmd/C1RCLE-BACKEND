@@ -4,6 +4,10 @@ import { createCoreConfig } from '../../config/index.js';
 import { InvalidOperationError, NotFoundError } from '../../domain/errors.js';
 import { createPlatformAdmin } from '../../domain/models/admin-authority.js';
 import { EchoObjectStorage } from '../../domain/ports/object-storage.js';
+import {
+  MemoryStaffCredentialProvisioner,
+  MemoryStaffRotationStore,
+} from '../../domain/ports/staff-credentials.js';
 import { FormatCheckVerificationProvider } from '../../domain/ports/verification.js';
 import { MemoryAdminAuditRepository } from '../../infrastructure/memory/memory-audit-repository.js';
 import {
@@ -53,6 +57,10 @@ class FakeEmailSender implements EmailSender {
     // unused by these tests
   }
 
+  async sendStaffInvitationEmail(): Promise<void> {
+    // unused by these tests
+  }
+
   async sendPasswordResetEmail(): Promise<void> {
     // unused by these tests
   }
@@ -72,6 +80,13 @@ class FakeUserDirectory implements UserDirectoryPort {
 
   async getEmailById(userId: string): Promise<string | null> {
     return this.emails.get(userId) ?? null;
+  }
+
+  async findUserIdByEmail(email: string): Promise<string | null> {
+    for (const [id, e] of this.emails) {
+      if (e === email) return id;
+    }
+    return null;
   }
 }
 
@@ -97,7 +112,7 @@ function buildDeps() {
   const emailSender = new FakeEmailSender();
   const userDirectory = new FakeUserDirectory();
 
-  const deps = {
+  const deps: ServiceDeps = {
     config,
     logger: noopLogger,
     outbox: new MemoryOutboxStore(),
@@ -114,7 +129,9 @@ function buildDeps() {
       order: repositories.orders,
     }),
     repositories,
-  } as unknown as ServiceDeps;
+    credentialProvisioner: new MemoryStaffCredentialProvisioner(),
+    rotationStore: new MemoryStaffRotationStore(),
+  };
 
   const authority = new AdminAuthorityService(deps);
   const service = new OnboardingService(deps, authority);

@@ -41,6 +41,7 @@ const VALID_USER = {
   displayName: 'Sky Partner',
   role: 'partner',
   avatarUrl: null,
+  mustChangePassword: false,
 };
 
 describe('client schemas — canonical fixtures', () => {
@@ -139,7 +140,6 @@ describe('client schemas — canonical fixtures', () => {
         isFree: true,
         cancellationReason: null,
         compensation: null,
-        capacity: null,
         ...base,
       }).success,
     ).toBe(true);
@@ -158,6 +158,7 @@ describe('client schemas — canonical fixtures', () => {
       intents: ['Find events'],
     };
     expect(upsertGuestProfileSchema.parse(body)).toEqual(body);
+
     expect(
       guestProfileDtoSchema.parse({
         ...body,

@@ -71,6 +71,10 @@ export class MemoryFollowRepository implements FollowRepository {
 export class MemorySocialNotificationRepository implements SocialNotificationRepository {
   entries = new Map<EntityId, Notification>();
 
+  async create(notification: Notification): Promise<void> {
+    this.entries.set(notification.id, notification);
+  }
+
   async createIfAbsent(notification: Notification): Promise<boolean> {
     if (this.entries.has(notification.id)) return false;
     this.entries.set(notification.id, notification);

@@ -91,6 +91,10 @@ export class FirestoreSocialNotificationRepository implements SocialNotification
     return this.db.collection(NOTIFICATION_COLLECTION);
   }
 
+  async create(notification: Notification): Promise<void> {
+    await this.collection.doc(notification.id).set({ ...notification });
+  }
+
   async createIfAbsent(notification: Notification): Promise<boolean> {
     try {
       await this.collection.doc(notification.id).create({ ...notification });

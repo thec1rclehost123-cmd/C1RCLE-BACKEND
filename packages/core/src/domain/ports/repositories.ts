@@ -84,11 +84,7 @@ import type {
   ScanDenyReason,
 } from '../models/scan-ledger.js';
 import type { ScannerDevice } from '../models/scanner-device.js';
-import type {
-  Follow,
-  FollowTargetType,
-  Notification as SocialNotification,
-} from '../models/social.js';
+import type { Follow, FollowTargetType, SocialNotification } from '../models/social.js';
 import type {
   SupportTicket,
   SupportTicketCategory,
@@ -133,7 +129,8 @@ export interface OrganizationRepository {
    * reads (partnership/connection name resolution) so a 100-row page costs
    * one call, not 100. Missing ids are simply absent from the result: the
    * batched resolver's job is to resolve *names*, and a vanished row resolves
-   * to `null`-safe fields, never an error.
+   * to `null`-safe fields, never an error. Firestore caps `getAll` at 30 refs
+   * per call; the adapter chunks.
    */
   getByIds(organizationIds: EntityId[]): Promise<Organization[]>;
   /** Public host-profile lookup — global (not org-scoped): a guest reaches an
@@ -245,6 +242,12 @@ export interface InvitationRepository {
     organizationId: EntityId,
     email: string,
   ): Promise<OrganizationInvitation | null>;
+  /**
+   * Every effectively-pending invitation for an address, across orgs. Powers
+   * the invitee's own "my invitations" read — the session email is the only
+   * authority, so no org scope applies.
+   */
+  listPendingByEmail(email: string): Promise<OrganizationInvitation[]>;
   save(invitation: OrganizationInvitation, tx?: TxContext | null): Promise<void>;
 }
 
@@ -255,7 +258,7 @@ export interface VenueRepository {
   /**
    * Batched id lookup for list-style reads (partnership/connection name
    * resolution) — same one-call-per-page contract as
-   * `OrganizationRepository.getByIds`.
+   * `OrganizationRepository.getByIds`. Missing ids simply don't come back.
    */
   getByIds(venueIds: EntityId[]): Promise<Venue[]>;
   getBySlug(slug: string, organizationId: EntityId): Promise<Venue | null>;
@@ -667,7 +670,7 @@ export interface OrderRepository {
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Order>>;
   /** Lists orders for an event. */
   listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<Order>>;
-  /** Lists all orders platform-wide (admin read-only dashboard). */
+  /** Lists all orders platform-wide (admin read-only dashboards). */
   listAll(query: PaginationQuery): Promise<Page<Order>>;
   /** Hard-deletes an order (support operation). */
   delete(orderId: EntityId, tx?: TxContext | null): Promise<void>;
@@ -1199,7 +1202,6 @@ export interface EmailOtpRepository {
   save(otp: EmailOtp): Promise<void>;
   delete(recipient: EntityId): Promise<void>;
 }
-
 // ─── Notifications (V2 partner inbox) ─────────────────────────────────────
 
 /**
@@ -1255,6 +1257,7 @@ export interface FollowRepository {
 }
 
 /**
+/**
  * Inbox per user for follow-graph notifications ("X you follow published an
  * event"). Distinct from the V2 partner-dashboard `NotificationRepository`
  * above — this one is per-USER (guest, session-scoped), that one is
@@ -1262,6 +1265,7 @@ export interface FollowRepository {
  * a redelivered event never overwrites (and so never un-reads) a row.
  */
 export interface SocialNotificationRepository {
+  create(notification: SocialNotification): Promise<void>;
   createIfAbsent(notification: SocialNotification): Promise<boolean>;
   listForUser(
     userId: EntityId,
@@ -1282,6 +1286,16 @@ export interface SocialNotificationRepository {
 export interface PlatformSettingsRepository {
   get(): Promise<PlatformSettings>;
   save(settings: PlatformSettings): Promise<void>;
+}
+
+/**
+ * One doc per session user id, fully replaced on each save — no
+ * optimistic-lock version (matches `EmailOtpRepository`'s `docRef.set`
+ * semantics; a `PUT` with the same body converges, so retries are safe).
+ */
+export interface GuestProfileRepository {
+  getByUserId(userId: EntityId): Promise<GuestProfile | null>;
+  save(profile: GuestProfile): Promise<void>;
 }
 
 export type {

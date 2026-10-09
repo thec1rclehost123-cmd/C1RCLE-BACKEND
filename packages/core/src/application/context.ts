@@ -63,6 +63,11 @@ import type {
   SafetyReportRepository,
   NotificationRepository,
 } from '../domain/ports/repositories.js';
+import type {
+  StaffCredentialProvisioner,
+  StaffRotationStore,
+  StaffUserDirectory,
+} from '../domain/ports/staff-credentials.js';
 import type { UserDirectoryPort } from '../domain/ports/user-directory.js';
 import type { VerificationProvider } from '../domain/ports/verification.js';
 import type { Logger } from '../telemetry/logger.js';
@@ -105,13 +110,19 @@ export interface ServiceDeps {
    */
   emailSender: EmailSender;
   /**
-   * Phase 2 gap-closure: resolves a `userId` to an email for the services
-   * that need to reach a user outside their own session. `NullUserDirectory`
-   * on the memory driver; reads Better Auth's own store on firestore.
+   * Resolves a `userId` to an email, or finds a user by email.
+   * `NullUserDirectory` / `MemoryStaffUserDirectory` on memory; `FirestoreUserDirectory` on firestore.
    */
-  userDirectory: UserDirectoryPort;
+  userDirectory: UserDirectoryPort & StaffUserDirectory;
   /** Phase 4: Payment provider (pluggable) */
   paymentProvider: PaymentProvider;
+  /**
+   * Staff login provisioning + first-login rotation flags (pluggable).
+   * Better Auth-backed in production, in-memory on the memory driver.
+   */
+  credentialProvisioner: StaffCredentialProvisioner;
+  /** First-login rotation flags by login user id (same driver split). */
+  rotationStore: StaffRotationStore;
   /** Phase 4: Pricing engine */
   pricing: PricingService;
   /** Phase 4: Inventory service */
@@ -158,6 +169,7 @@ export interface ServiceDeps {
     /** Phase 8: guest → venue/host follow edges. */
     follows: FollowRepository;
     /** Phase 8: per-user in-app inbox, written by bus consumers. */
+
     socialNotifications: SocialNotificationRepository;
     refundRequests: AdminRefundRequestRepository;
     /** Platform support tickets (guest intake + admin desk). */

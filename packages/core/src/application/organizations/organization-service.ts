@@ -13,9 +13,11 @@ import {
   suspendOrganization,
   acceptInvitation,
   createInvitation,
+  effectiveInvitationStatus,
   normalizeEmail,
   revokeInvitation,
 } from '../../domain/models/organization.js';
+import { displayNameForInviteEmail } from '../../domain/ports/staff-credentials.js';
 import { requireOrgAccess, emit } from '../context.js';
 
 import type { EntityId } from '../../domain/identity.js';
@@ -178,6 +180,21 @@ export class OrganizationService {
     return this.deps.repositories.invitations.listByOrganization(organizationId, query);
   }
 
+  /**
+   * The caller's own effectively-pending invitations, across orgs. The
+   * session email is the only authority — no org scope applies, which is
+   * what lets a freshly-provisioned invitee (zero memberships) discover the
+   * invite instead of landing on onboarding with nowhere to go.
+   */
+  async listMyInvitations(email: string): Promise<OrganizationInvitation[]> {
+    const normalized = normalizeEmail(email);
+    if (!normalized.includes('@')) {
+      throw new InvalidOperationError('A valid email address is required');
+    }
+    const items = await this.deps.repositories.invitations.listPendingByEmail(normalized);
+    return items.filter((invitation) => effectiveInvitationStatus(invitation) === 'pending');
+  }
+
   async createInvitation(
     actor: ActorContext,
     command: CreateInvitationCommand,
@@ -196,6 +213,22 @@ export class OrganizationService {
     if (existing) {
       throw new InvalidOperationError('An invitation for this email is already pending');
     }
+    // Inviting a current member produces a pending invitation that serves no
+    // purpose — fail fast so the manager hears about it now instead of the
+    // invitee hitting a dead end on the accept screen. Fail-open on lookup
+    // errors: the idempotent accept is the backstop.
+    const existingUserId = await this.deps.userDirectory
+      .findUserIdByEmail(email)
+      .catch((error: unknown) => {
+        this.deps.logger.warn('organization.invitation_member_check_failed', {
+          organizationId: org.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      });
+    if (existingUserId && org.members.some((m) => m.userId === existingUserId)) {
+      throw new InvalidOperationError('User is already a member of this organization');
+    }
 
     const invitation = createInvitation({
       id: this.deps.config.ids(),
@@ -211,6 +244,55 @@ export class OrganizationService {
       organizationId: org.id,
       invitationId: invitation.id,
     });
+    // Provision a login for brand-new addresses: the invite email carries
+    // sign-in credentials for the invited role, and the account must rotate
+    // them on first login. Addresses that already have an account are never
+    // touched — they sign in as usual and just accept the invite.
+    // Provisioning failure must not roll back the invitation (fail-open):
+    // the manager still sees it as pending and the invitee can accept from
+    // the dashboard.
+    let temporaryPassword: string | null = null;
+    try {
+      const provision = await this.deps.credentialProvisioner.provisionLogin(
+        email,
+        displayNameForInviteEmail(email),
+      );
+      if (provision.created && provision.temporaryPassword && provision.userId) {
+        await this.deps.rotationStore.setRequired(provision.userId, true);
+        temporaryPassword = provision.temporaryPassword;
+      }
+    } catch (error) {
+      this.deps.logger.warn('organization.invitation_credential_failed', {
+        organizationId: org.id,
+        invitationId: invitation.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    // The invitation is real whether or not the email leaves the building: a
+    // mail outage must not roll back (or block) the invite — the manager still
+    // sees it as pending and the invitee can accept from the dashboard.
+    try {
+      const dashboardUrl = this.deps.config.partnerDashboardUrl?.replace(/\/$/, '');
+      // The accept page is the flow's front door: it signs the invitee in
+      // (email prefilled from `?email=`, a login-form hint only) and finishes
+      // the accept itself once the first-login rotation is done.
+      const acceptPath = `/invitations/${invitation.id}/accept?email=${encodeURIComponent(email)}`;
+      await this.deps.emailSender.sendStaffInvitationEmail({
+        to: email,
+        orgName: org.name,
+        role: invitation.role,
+        capabilities: [...invitation.capabilities],
+        expiresAt: invitation.expiresAt,
+        ...(dashboardUrl ? { acceptUrl: `${dashboardUrl}${acceptPath}` } : {}),
+        ...(temporaryPassword ? { temporaryPassword } : {}),
+      });
+    } catch (error) {
+      this.deps.logger.warn('organization.invitation_email_failed', {
+        organizationId: org.id,
+        invitationId: invitation.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     return invitation;
   }
 
@@ -228,6 +310,9 @@ export class OrganizationService {
    * Accepts an invitation, adding the member and closing the invitation
    * together. The two writes are ordered so a failure leaves the invitation
    * still pending (retryable) rather than a member with no record of joining.
+   * When the accepter is already a member the domain returns the org by
+   * reference (no state changed) — repositories enforce compare-and-set, so
+   * a no-op save would 409 and must be skipped.
    */
   async acceptInvitation(
     actor: ActorContext,
@@ -241,7 +326,9 @@ export class OrganizationService {
     if (!org) throw new OrganizationNotFoundError(invitation.organizationId);
 
     const result = acceptInvitation(org, invitation, command.userId, this.deps.config.clock.now());
-    await this.repo.save(result.organization);
+    if (result.organization !== org) {
+      await this.repo.save(result.organization);
+    }
     await this.deps.repositories.invitations.save(result.invitation);
     this.deps.logger.info('organization.invitation_accepted', {
       organizationId: org.id,

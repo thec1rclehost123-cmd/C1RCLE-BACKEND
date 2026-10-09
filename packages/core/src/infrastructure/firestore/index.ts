@@ -37,4 +37,6 @@ export * from './firestore-guest-profile-repository.js';
 export * from './firestore-social-repositories.js';
 export * from './firestore-platform-settings-repository.js';
 export * from './firebase-object-storage.js';
+export * from './firestore-staff-user-directory.js';
+export * from './firestore-staff-rotation-store.js';
 export * from './firestore-user-directory.js';

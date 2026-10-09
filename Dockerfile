@@ -17,11 +17,13 @@
 FROM node:24-slim AS base
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
-# Upgrade OS packages to fix known HIGH CVEs before any downstream stage.
-#   tar   — CVE-2026-73566 (tar < 7.5.21, HIGH)
-#   pcre2 — CVE-2026-86145 / CVE-2026-89161 (libpcre2-8-0 < 10.42-1+deb12u1, HIGH)
+# Upgrade OS packages to fix known HIGH/CRITICAL CVEs before any downstream stage.
+#   tar       — CVE-2026-73566 (tar < 7.5.21, HIGH)
+#   pcre2     — CVE-2026-86145 / CVE-2026-89161 (libpcre2-8-0 < 10.42-1+deb12u1, HIGH)
+#   perl-base — CVE-2026-13221 / CVE-2026-42496 / CVE-2026-8376 / CVE-2026-42497 /
+#               CVE-2026-48962 / CVE-2026-57432 / CVE-2026-57433 (CRITICAL / HIGH)
 RUN apt-get update -qq \
- && apt-get install -y --no-install-recommends tar libpcre2-8-0 \
+ && apt-get install -y --no-install-recommends tar libpcre2-8-0 perl-base \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 RUN corepack enable && pnpm config set store-dir /pnpm/store
