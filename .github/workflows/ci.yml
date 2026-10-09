@@ -476,10 +476,17 @@ jobs:
           path: frontend
           persist-credentials: false
 
-      - uses: ./backend/.github/actions/setup
+      # Not the shared ./backend/.github/actions/setup: it assumes the repo root is
+      # the pnpm workspace root, but here the backend is checked out into backend/,
+      # so pnpm/action-setup finds no package.json ("No pnpm version is specified").
+      # The two repos also pin different pnpm majors (backend 11, frontend 10), so
+      # corepack picks each repo's own `packageManager`. The parity script needs
+      # Node >= 22.15 (module.registerHooks); Node 24 satisfies it.
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          install: 'false'
-          turbo-cache: 'false'
+          node-version: 24
+      - name: Enable corepack
+        run: corepack enable
 
       - name: Build backend contracts
         working-directory: backend
