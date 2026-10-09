@@ -23,6 +23,7 @@ import {
   MemoryEventCatalogRepository,
   MemoryOrderRepository,
   MemoryOrganizationRepository,
+  MemoryVenueRepository,
 } from '../../infrastructure/memory/memory-repositories.js';
 import { noopLogger } from '../../telemetry/logger.js';
 import { AdminAuthorityService } from '../admin/admin-authority-service.js';
@@ -107,6 +108,7 @@ function buildDeps() {
     cartReservations: new MemoryCartReservationRepository(),
     orders: new MemoryOrderRepository(),
     entitlements: new MemoryEntitlementRepository(),
+    venues: new MemoryVenueRepository(),
   } as unknown as ServiceDeps['repositories'];
 
   const emailSender = new FakeEmailSender();
