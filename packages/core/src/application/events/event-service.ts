@@ -266,6 +266,7 @@ export class EventService {
       startAt: source.startAt,
       endAt: source.endAt,
       tags: source.tags,
+      compensation: source.compensation,
       now: this.deps.config.clock.now(),
     });
     await this.repo.save(copy);
@@ -276,10 +277,18 @@ export class EventService {
     return copy;
   }
 
-  /** Preview: the event plus its public visibility flag (cached surface). */
-  async getPreview(eventId: EntityId): Promise<{ event: Event; isPublic: boolean }> {
-    const event = await this.repo.getById(eventId);
-    if (!event) throw new EventNotFoundError(eventId);
+  /**
+   * Preview: the event plus its public visibility flag (cached surface).
+   *
+   * Tenant-scoped like every other read — a preview of a *draft* exposes the
+   * full uncompiled event (compensation, description, tags), so an unscoped
+   * `getById` would be a cross-tenant IDOR on unpublished events.
+   */
+  async getPreview(
+    actor: ActorContext,
+    eventId: EntityId,
+  ): Promise<{ event: Event; isPublic: boolean }> {
+    const event = await this.fetchOwned(actor, eventId);
     return { event, isPublic: isPublicStatus(event.status) };
   }
 
