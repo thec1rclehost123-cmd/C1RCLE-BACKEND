@@ -22,6 +22,7 @@ import {
   verifyOnboardingDocument,
 } from '../../domain/models/onboarding.js';
 import { createOrganization } from '../../domain/models/organization.js';
+import { createVenue } from '../../domain/models/venue.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type { PlatformAdmin } from '../../domain/models/admin-authority.js';
@@ -449,6 +450,21 @@ export class OnboardingService {
       now,
     });
     await this.deps.repositories.organizations.save(organization);
+
+    if (request.requestedType === 'venue' && this.deps.repositories.venues) {
+      const venue = createVenue({
+        id: this.deps.config.ids(),
+        organizationId: organization.id,
+        ownerId: request.userId,
+        name: request.profile.legalName,
+        slug: slugFor(request.profile.legalName, organization.id),
+        description: request.profile.bio ?? '',
+        capacity: request.profile.capacity ?? null,
+        city: request.profile.city ?? null,
+        now,
+      });
+      await this.deps.repositories.venues.save(venue);
+    }
 
     const approved = approveOnboardingRequest(request, {
       reviewedBy: admin.id,
