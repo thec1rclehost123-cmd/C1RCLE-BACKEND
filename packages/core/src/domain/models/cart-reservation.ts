@@ -39,6 +39,13 @@ export interface CartReservation extends VersionedEntity {
   expiresAt: string;
   /** Set when converted to an order. */
   convertedOrderId: EntityId | null;
+  /**
+   * The provider (Razorpay) order bound to this hold when the payment attempt
+   * was created. Fulfilment only accepts a payment made against exactly this
+   * order, so a genuine payment for one hold can never be replayed to
+   * fulfil another. First writer wins (see `bindProviderOrder`).
+   */
+  providerOrderId?: string | null;
   /** Idempotency key used to create this hold. */
   idempotencyKey: string;
 }
@@ -79,6 +86,7 @@ export function createCartReservation(input: CreateCartReservationInput): CartRe
     status: 'active',
     expiresAt: new Date(now.getTime() + ttl).toISOString(),
     convertedOrderId: null,
+    providerOrderId: null,
     idempotencyKey: input.idempotencyKey,
     ...newVersionedEntity(now),
   };

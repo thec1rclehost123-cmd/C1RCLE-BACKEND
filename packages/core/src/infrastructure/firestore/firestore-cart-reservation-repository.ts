@@ -74,6 +74,26 @@ export class FirestoreCartReservationRepository implements CartReservationReposi
     });
   }
 
+  async bindProviderOrder(
+    reservationId: EntityId,
+    providerOrderId: string,
+    _tx?: TxContext | null,
+  ): Promise<string | null> {
+    const ref = this.collection.doc(reservationId);
+    // Transactional read-check-write: two concurrent attempts for one hold both
+    // read "unbound", but only the first commit wins; Firestore retries the
+    // loser, which then reads the winner's binding and returns it.
+    return this.db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      const data = snap.data();
+      if (!data) return null;
+      const existing = data.providerOrderId as string | null | undefined;
+      if (existing) return existing;
+      tx.set(ref, toDoc({ ...toCartReservation(data), providerOrderId }));
+      return providerOrderId;
+    });
+  }
+
   async cleanupExpired(now: Date, _tx?: TxContext | null): Promise<number> {
     const snap = await this.collection
       .where('status', '==', 'active')
@@ -142,6 +162,7 @@ function toDoc(reservation: CartReservation): DocumentData {
     status: reservation.status,
     expiresAt: reservation.expiresAt,
     convertedOrderId: reservation.convertedOrderId,
+    providerOrderId: reservation.providerOrderId ?? null,
     idempotencyKey: reservation.idempotencyKey,
     version: reservation.version,
     createdAt: reservation.createdAt,
@@ -162,6 +183,7 @@ function toCartReservation(data: DocumentData): CartReservation {
     status: data.status as CartReservationStatus,
     expiresAt: data.expiresAt as string,
     convertedOrderId: data.convertedOrderId as string | null,
+    providerOrderId: (data.providerOrderId as string | null | undefined) ?? null,
     idempotencyKey: data.idempotencyKey as string,
     version: data.version as number,
     createdAt: data.createdAt as string,

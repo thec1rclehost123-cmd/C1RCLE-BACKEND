@@ -672,7 +672,7 @@ async function seedPaidOrder(server: Server): Promise<{ org: string; orderId: st
   });
   const paymentId = `pay_finance_${++keySeq}`;
   const provider = memoryProvider();
-  provider.simulateCapture(paymentId, grandTotalPaise);
+  provider.simulateCapture(paymentId, grandTotalPaise, attempt.json().paymentIntentId);
   const verify = await server.inject({
     method: 'POST',
     url: `/payments/${paymentId}/verify`,
