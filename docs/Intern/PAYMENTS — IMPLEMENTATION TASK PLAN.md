@@ -1,9 +1,9 @@
 # THEC1RCLE Payments — Implementation Task Plan
 
-> **Source of requirements:** [Technical Guide](<THEC1RCLE PAYMENTS — TECHNICAL GUIDE.md>) (guide section numbers below are written as plain `N`, for example "per 3.1"), plus the companion _Payments: Business Rules_.
+> **Source of requirements:** [Technical Guide](<PAYMENTS — TECHNICAL GUIDE.md>) (guide section numbers below are written as plain `N`, for example "per 3.1"), plus the companion _Payments: Business Rules_.
 > **Repos:**
-> - `BE` = `thecircle_backend/C1RCLE-BACKEND` (Fastify 5 gateway + `packages/core` + `packages/contracts`)
-> - `FE` = `thecircle_frontend/C1RCLE-FRONTEND` (Next.js 16 guest-portal / partner-dashboard / admin-console)
+> - `BE` = `C1RCLE-BACKEND` (Fastify 5 gateway + `packages/core` + `packages/contracts`)
+> - `FE` = `C1RCLE-FRONTEND` (Next.js 16 guest-portal / partner-dashboard / admin-console)
 >
 > **Ordering rules this plan follows:**
 > 1. Backend first. Phases 0–15 are backend/platform. Frontend work starts at Phase 16.
@@ -17,9 +17,9 @@
 - Work **phase by phase**. Each phase lists **Depends on**, then tasks grouped by **Create / Modify / Integrate / Test**, then an **Exit gate**. Don't start a phase until every phase it depends on has passed its exit gate.
 - Task IDs (`4.12`) are stable. Reference them in commit messages and PR titles, for example `feat(payments): 4.12 resumable fulfilment steps`.
 - Owner tags: `[BE]` backend, `[FE]` frontend, `[PLAT]` platform/devops, `[FIN]` finance, `[RISK]` risk, `[BIZ]` business/legal decision.
-- **Every BE task's definition of done:** it follows the architecture laws in `AGENTS.md`. Routes stay thin, services use ports, `process.env` is read only in `apps/api-gateway/src/config/index.ts`, and there are no `.collection()` calls outside `infrastructure/`. It has memory **and** Firestore adapters, unit plus route tests, and `pnpm check` is green from the `BE` root.
+- **Every BE task's definition of done:** it follows the architecture laws in `CLAUDE.md`. Routes stay thin, services use ports, `process.env` is read only in `apps/api-gateway/src/config/index.ts`, and there are no `.collection()` calls outside `infrastructure/`. It has memory **and** Firestore adapters, unit plus route tests, and `pnpm check` is green from the `BE` root.
 - **Every FE task's definition of done:** network calls go only through `@c1rcle/api-client`, env vars only through `@c1rcle/config`, there are no inline styles, and `pnpm check` is green from the `FE` root.
-- Status tracking: per `AGENTS.md`, live status belongs in `BE/docs/roadmap/ROADMAP.md`. Task **0.6** adds a "Payments v2" row there that points to this file. Track task progress there, referencing task IDs from this file.
+- Status tracking: per `CLAUDE.md`, live status belongs in `BE/docs/roadmap/ROADMAP.md`. Task **0.6** adds a "Payments v2" row there that points to this file. Track task progress there, referencing task IDs from this file.
 - Money is always **integer paise** and rates are always **basis points (bps)**. No floats on any money path. This is a code-review blocker.
 
 ---
@@ -153,8 +153,8 @@ Record each decision in `BE/docs/architecture/decisions.md` as `D-031…`. "Defa
 **Goal:** route tests run, tooling works, flags exist, and the docs stop lying. **Depends on:** nothing.
 
 ### Modify
-- **0.1 `[BE]`** Add the missing `createFollowerFanOutConsumer` import in `apps/api-gateway/src/lib/v2-services.ts:288` (from `@c1rcle/core`; confirm the export in `application/social/notification-consumers.ts` or `application/index.ts`). Re-run `checkout-routes.test.ts`, `payment-routes.test.ts` and `webhook-routes.test.ts`; all 23 must load and pass.
-- **0.2 `[BE]`** Fix the `scripts/contract-parity.mjs` default path. Resolve `../../thecircle_frontend/C1RCLE-FRONTEND` when `../C1RCLE-FRONTEND` is absent (keep the `C1RCLE_FRONTEND_PATH` override) and document it in `BE/CLAUDE.md`/`AGENTS.md`. Make the script build FE `packages/contracts` if `dist` is missing, or fail with a clear message.
+- **0.1 `[BE]`** ~~Add the missing `createFollowerFanOutConsumer` import in `apps/api-gateway/src/lib/v2-services.ts:288` (from `@c1rcle/core`; confirm the export in `application/social/notification-consumers.ts` or `application/index.ts`). Re-run `checkout-routes.test.ts`, `payment-routes.test.ts` and `webhook-routes.test.ts`; all 23 must load and pass.~~ **Done on staging (import already present).**
+- **0.2 `[BE]`** Fix the `scripts/contract-parity.mjs` default path. Resolve `../../C1RCLE-FRONTEND` when `../C1RCLE-FRONTEND` is absent (keep the `C1RCLE_FRONTEND_PATH` override) and document it in `BE/CLAUDE.md`/`CLAUDE.md`. Make the script build FE `packages/contracts` if `dist` is missing, or fail with a clear message.
 - **0.3 `[BE]`** Fix documentation drift (audit #19–21):
   - Update `docs/integration-flows/checkout.md` and `docs/api-contracts/openapi.yaml` to the runtime routes (`/checkout/quote`, `/checkout/holds`, `/payments/attempts`, `/payments/:id/verify`).
   - Correct `docs/operations/staging-environment-contract.md`.
@@ -163,7 +163,7 @@ Record each decision in `BE/docs/architecture/decisions.md` as `D-031…`. "Defa
 - **0.5 `[BE]`** Gate `POST /checkout/holds` and `POST /payments/attempts` on `PAID_CHECKOUT_ENABLED` for paid tiers (403 `feature_disabled`). Free RSVP is unaffected.
 
 ### Create
-- **0.6 `[BE]`** Add a ROADMAP row "Payments v2 — see `../Intern/THEC1RCLE PAYMENTS — IMPLEMENTATION TASK PLAN.md`" and a new `docs/roadmap/phase-09-payments-v2.md` with a Session Log (same convention as the other phase files).
+- **0.6 `[BE]`** Add a ROADMAP row "Payments v2 — see `PAYMENTS — IMPLEMENTATION TASK PLAN.md`" and a new `docs/roadmap/phase-09-payments-v2.md` with a Session Log (same convention as the other phase files).
 - **0.7 `[BE]`** Record decisions DP-01…DP-14 as `D-031…` stubs in `docs/architecture/decisions.md` (status `proposed`/`chosen`).
 - **0.8 `[BE]`** Add a `packages/core/src/config/payments.ts` schema for every payment config key in 13 with defaults. Core receives it via DI; the gateway `config/index.ts` parses env into it. Keys:
   - **Rates:** `CUSTOMER_FEE_PLATFORM_BPS=500`, `CUSTOMER_FEE_PAYMENT_BPS=250`, `GST_BPS=1800`, `PLAN_COMMISSION_BPS={"basic":0,"pro":0,"premium":0}`.
@@ -797,7 +797,7 @@ Record each decision in `BE/docs/architecture/decisions.md` as `D-031…`. "Defa
 
 **Goal:** the first paid test purchase completes in the real guest UI. **Depends on:** 4, 5 (contract freeze); backend staging live with the Razorpay test keys.
 
-> Read `FE/apps/guest-portal/node_modules/next/dist/docs/` before writing Next.js 16 code (AGENTS.md gotcha).
+> Read `FE/apps/guest-portal/node_modules/next/dist/docs/` before writing Next.js 16 code (CLAUDE.md gotcha).
 
 ### Contracts and client
 - **16.1 `[FE]`** Sync `FE/packages/contracts` from the BE export (4.1, 5.9); `pnpm contract-parity` passes from `BE`.
@@ -1016,3 +1016,13 @@ Every endpoint needs:
 ---
 
 _Verify Razorpay limits, payloads and product availability (RazorpayX payouts, Route, Subscriptions, dispute APIs, settlement recon API) against live Razorpay docs and the account manager before starting 1, 9, 11 and 19._
+
+---
+
+## Reviewer notes (verified against `staging`)
+
+- Confirmed real defects: callback signature scheme (task 1.1), no payment-to-hold binding, non-resumable fulfilment, settlement on grand total (DP-01). Fixed on branch `fix/payments-correctness`: signature, binding, ownership, currency, resumable fulfilment.
+- Already done elsewhere: task 0.1 (import), 0.2 (parity path), 1.7 and 1.9 (placeholder fallbacks removed, readiness enabled) in PR #113, which uses fail-closed 503 instead of 1.8's boot failure because staging runs without Razorpay keys. Record that as a decision (D-031 is free).
+- Missing from the repo: the companion "Payments: Business Rules" doc and the audit the task IDs cite.
+- Not covered: Indian payout tax (TDS/TCS) and GST on the ticket price — confirm with the CA. Firestore ~1 write/sec/doc limits on balance and invoice counters.
+- Suggested first slice: Phases 0-1, transactional fulfilment, minimal ledger, manual payouts, behind `PAID_CHECKOUT_ENABLED`.

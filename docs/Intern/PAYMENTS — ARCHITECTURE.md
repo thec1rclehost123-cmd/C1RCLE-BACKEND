@@ -1,8 +1,8 @@
 # THEC1RCLE Payments — Architecture
 
 > **Audience:** the THEC1RCLE dev team.
-> **What this is:** how the payments system is structured and why. For *what to build in which order*, see [Implementation Task Plan](<THEC1RCLE PAYMENTS — IMPLEMENTATION TASK PLAN.md>). For requirements, see [Technical Guide](<THEC1RCLE PAYMENTS — TECHNICAL GUIDE.md>) (guide section numbers are written as plain numbers, e.g. "guide 3.1").
-> **Repos:** `BE` = `thecircle_backend/C1RCLE-BACKEND`, `FE` = `thecircle_frontend/C1RCLE-FRONTEND`.
+> **What this is:** how the payments system is structured and why. For *what to build in which order*, see [Implementation Task Plan](<PAYMENTS — IMPLEMENTATION TASK PLAN.md>). For requirements, see [Technical Guide](<PAYMENTS — TECHNICAL GUIDE.md>) (guide section numbers are written as plain numbers, e.g. "guide 3.1").
+> **Repos:** `BE` = `C1RCLE-BACKEND`, `FE` = `C1RCLE-FRONTEND`.
 > **Status:** target design. Where today's code differs, the gap is noted and the task ID that closes it is given.
 
 ---
