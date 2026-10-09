@@ -202,6 +202,11 @@ handles all of that and is on by default (set the `CONTRACT_PARITY_ENABLED` repo
 `continue-on-error` — when it runs, it is a real gate. Its exit codes are
 `0` agree, `1` drift, `2` cannot check; only `0` passes.
 
+The fixtures it checks live in `packages/contracts/parity/cases.mjs`, next to the
+schemas they pin, so the `packages/contracts/**` path filter that triggers this job
+covers a fixture edit as well as a schema edit. `scripts/contract-parity.mjs` only
+loads the two built schema sets and reports.
+
 It also requires Node ≥ 22.15 for `module.registerHooks`. CI pins Node 24 via
 `.nvmrc`, so this is satisfied — but note the root `engines` range still permits
 `^22.13.0`, where that API does not exist.
