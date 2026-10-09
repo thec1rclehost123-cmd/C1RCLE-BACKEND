@@ -85,7 +85,7 @@ export default async function promoterConnectionRoutes(fastify: FastifyInstance)
       preHandler: [
         fastify.rateLimit('STANDARD_COMMAND'),
         fastify.validateV2({ headers: commandHeaders, body: requestConnectionSchema }),
-        fastify.requirePermission('organization.read'),
+        fastify.requirePermission('venue.manage'),
       ],
     },
     async (request, reply) => {
@@ -128,13 +128,29 @@ export default async function promoterConnectionRoutes(fastify: FastifyInstance)
     },
   );
 
-  // approve/reject are the recipient's; revoke is the promoter's alone. The
-  // domain enforces which is which — the route only reports who is asking.
-  registerAction(fastify, 'approve', (actor, id) =>
-    services.promoterConnections.approve(actor, id),
+  // approve/reject are the recipient's answer; revoke is the promoter's alone —
+  // the domain enforces which is which, the route only reports who is asking.
+  // Answers need only `organization.read`: any member of the invited org may
+  // answer (the domain enforces *which* org that is), exactly like the
+  // partnership answers — requiring a manage permission locked out every
+  // `member`-role counterparty with a 403 that read as "accept is broken" (see
+  // partnerships.ts). block/revoke change or terminate the relationship itself
+  // and sit on `venue.manage`, matching the partnership request/block gate:
+  // committing or ending an org-wide relationship is manager-and-above, not
+  // read-only membership.
+  registerAction(
+    fastify,
+    'approve',
+    (actor, id) => services.promoterConnections.approve(actor, id),
+    {
+      permission: 'organization.read',
+    },
   );
-  registerAction(fastify, 'reject', (actor, id, reason) =>
-    services.promoterConnections.reject(actor, id, reason),
+  registerAction(
+    fastify,
+    'reject',
+    (actor, id, reason) => services.promoterConnections.reject(actor, id, reason),
+    { permission: 'organization.read' },
   );
   registerAction(fastify, 'block', (actor, id, reason) =>
     services.promoterConnections.block(actor, id, reason),
@@ -148,6 +164,7 @@ function registerAction(
   fastify: FastifyInstance,
   action: string,
   run: (actor: ActorOf, connectionId: string, reason?: string) => Promise<PromoterConnection>,
+  options: { permission?: 'organization.read' | 'venue.manage' } = {},
 ): void {
   fastify.post(
     `/promoter-connections/:connectionId/${action}`,
@@ -159,7 +176,7 @@ function registerAction(
           headers: commandHeaders,
           body: resolvePartnershipSchema.optional(),
         }),
-        fastify.requirePermission('organization.read'),
+        fastify.requirePermission(options.permission ?? 'venue.manage'),
       ],
     },
     async (request, reply) => {

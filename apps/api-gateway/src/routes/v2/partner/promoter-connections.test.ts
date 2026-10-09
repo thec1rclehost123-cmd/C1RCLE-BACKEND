@@ -1,5 +1,7 @@
+import { suspendOrganization } from '@c1rcle/core/domain';
 import { describe, expect, it } from 'vitest';
 
+import { createV2Services } from '../../../lib/v2-services.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 
 import partnerOrganizationRoutes from './organizations.js';
@@ -155,5 +157,113 @@ describe('answering', () => {
       expect(listed.json().items).toHaveLength(1);
     }
     await server.close();
+  });
+});
+
+describe('counterparty validation', () => {
+  it('404s a request addressed to an organization that does not exist', async () => {
+    const server = await buildServer();
+    const promoter = await createOrganization(server);
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/promoter-connections',
+      headers: write(promoter),
+      payload: { counterpartyId: 'org_missing', targetType: 'venue', initiatedBy: 'promoter' },
+    });
+
+    expect(response.statusCode).toBe(404);
+    await server.close();
+  });
+
+  it('404s a request addressed to a suspended organization', async () => {
+    const server = await buildServer();
+    const promoter = await createOrganization(server);
+    const target = await createOrganization(server);
+
+    const organizations = createV2Services().repos().organizations;
+    const org = await organizations.getById(target);
+    expect(org).not.toBeNull();
+    if (!org) throw new Error('seed organization missing');
+    await organizations.save(suspendOrganization(org));
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/promoter-connections',
+      headers: write(promoter),
+      payload: { counterpartyId: target, targetType: 'venue', initiatedBy: 'promoter' },
+    });
+
+    // Non-active reads as not-found — same bar the discovery browse applies,
+    // and a 404 cannot be used to probe for suspended tenants.
+    expect(response.statusCode).toBe(404);
+    await server.close();
+  });
+});
+
+describe('role gates', () => {
+  const buildMemberServer = () =>
+    buildPartnerTestServer({
+      routes: [partnerOrganizationRoutes, promoterConnectionRoutes],
+      actorRole: 'member',
+    });
+
+  it('refuses a read-only member from sending a request', async () => {
+    const ownerServer = await buildServer();
+    const promoter = await createOrganization(ownerServer);
+    const target = await createOrganization(ownerServer);
+    await ownerServer.close();
+
+    const memberServer = await buildMemberServer();
+    const response = await memberServer.inject({
+      method: 'POST',
+      url: '/promoter-connections',
+      headers: write(promoter),
+      payload: { counterpartyId: target, targetType: 'venue', initiatedBy: 'promoter' },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ code: 'forbidden' });
+    await memberServer.close();
+  });
+
+  it('refuses a read-only member from blocking or revoking', async () => {
+    const ownerServer = await buildServer();
+    const { promoter, target, connectionId } = await pending(ownerServer);
+    await ownerServer.close();
+
+    const memberServer = await buildMemberServer();
+    for (const [action, org] of [
+      ['block', target],
+      ['revoke', promoter],
+    ] as const) {
+      const response = await memberServer.inject({
+        method: 'POST',
+        url: `/promoter-connections/${connectionId}/${action}`,
+        headers: write(org),
+      });
+      expect(response.statusCode).toBe(403);
+    }
+    await memberServer.close();
+  });
+
+  it('still lets a read-only member of the recipient org answer', async () => {
+    // The partnership routes documented this exact risk: gating answers on a
+    // manage permission locks out every member-role counterparty with a 403
+    // that reads as "accept is broken".
+    const ownerServer = await buildServer();
+    const { target, connectionId } = await pending(ownerServer);
+    await ownerServer.close();
+
+    const memberServer = await buildMemberServer();
+    const response = await memberServer.inject({
+      method: 'POST',
+      url: `/promoter-connections/${connectionId}/approve`,
+      headers: write(target),
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ status: 'active' });
+    await memberServer.close();
   });
 });
