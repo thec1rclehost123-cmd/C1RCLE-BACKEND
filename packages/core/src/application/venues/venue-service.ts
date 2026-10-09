@@ -108,7 +108,44 @@ export class VenueService {
   }
 
   async list(actor: ActorContext, query: PaginationQuery) {
-    return this.repo.listByOrganization(actor.organizationId, query);
+    const page = await this.repo.listByOrganization(actor.organizationId, query);
+    if (page.items.length === 0 && (!query.cursor || query.cursor === null)) {
+      const org = await this.deps.repositories.organizations.getById(actor.organizationId);
+      const actorHasVenueCapability = actor.capabilities?.includes('venue') ?? false;
+      const orgHasVenueCapability =
+        (org?.members?.some((m) => m.capabilities?.includes('venue')) ?? false) ||
+        ((org as unknown as { capabilities?: string[] })?.capabilities?.includes('venue') ?? false);
+      if (org && (actorHasVenueCapability || orgHasVenueCapability)) {
+        const now = this.deps.config.clock.now();
+        const rawBase =
+          (org.slug || org.name.toLowerCase().replace(/[^a-z0-9]+/g, '-'))
+            .replace(/^-|-$/g, '')
+            .slice(0, 32) || 'venue';
+        const suffix = org.id
+          .replace(/[^a-z0-9]/gi, '')
+          .slice(-6)
+          .toLowerCase();
+        const slug = `${rawBase}-${suffix}`;
+        const venue = createVenue({
+          id: this.deps.config.ids(),
+          organizationId: org.id,
+          ownerId: actor.userId,
+          name: org.name,
+          slug,
+          description: '',
+          capacity: null,
+          city: null,
+          now,
+        });
+        await this.repo.save(venue);
+        await emit(this.deps, actor, venue.id, 'venue.created', {
+          name: venue.public.name,
+          slug: venue.public.slug,
+        });
+        return { items: [venue], total: 1, nextCursor: null };
+      }
+    }
+    return page;
   }
 
   async update(actor: ActorContext, command: UpdateVenueCommand): Promise<Venue> {

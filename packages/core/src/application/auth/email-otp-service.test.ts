@@ -23,6 +23,9 @@ class CapturingEmailSender implements EmailSender {
   async sendOtpEmail(recipient: string, code: string): Promise<void> {
     this.sent.push({ recipient, code });
   }
+  async sendStaffInvitationEmail(): Promise<void> {
+    // unused by these tests
+  }
   async sendOnboardingChangesRequestedEmail(): Promise<void> {
     // unused by these tests
   }

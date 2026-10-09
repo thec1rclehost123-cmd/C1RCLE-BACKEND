@@ -60,3 +60,7 @@ overrides:
   # patched release. Floor, not an exact pin, so a newer patched release needs
   # no manifest edit.
   '@fastify/busboy': '>=3.2.1'
+  # source-map-js < 1.2.2 (CVE-2026-93749): Denial of Service via malformed
+  # indexed source maps. Pulled in transitively by magicast and postcss. 1.2.2 is
+  # the patched release.
+  source-map-js: '>=1.2.2'

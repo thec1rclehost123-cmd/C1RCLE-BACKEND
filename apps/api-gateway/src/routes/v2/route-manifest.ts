@@ -1,8 +1,6 @@
-import { getFirestoreClient } from '@c1rcle/core/infrastructure';
-
-import { getGatewayConfig, GatewayConfigError, type GatewayConfig } from '../../config/index.js';
+import { getGatewayConfig, type GatewayConfig } from '../../config/index.js';
 import { createV2Services } from '../../lib/v2-services.js';
-import authContextPlugin, { buildBetterAuth } from '../../plugins/auth.js';
+import authContextPlugin from '../../plugins/auth.js';
 
 import adminAnalyticsRoutes from './admin/analytics.js';
 import adminDirectoryRoutes from './admin/directory.js';
@@ -55,7 +53,6 @@ import ticketRoutes from './tickets/ticket-routes.js';
 import walletRoutes from './wallet/wallet-routes.js';
 
 import type { GatewayRuntimeState } from '../../lib/runtime-state.js';
-import type { BetterAuthInstance } from '../../plugins/auth.js';
 import type { FastifyInstance } from 'fastify';
 
 export type ReadinessCheck = () => boolean | Promise<boolean>;
@@ -83,30 +80,15 @@ export async function registerV2Routes(
 ): Promise<void> {
   const gw = options.config ?? getGatewayConfig();
   const services = createV2Services();
-
-  // B10: auth is only real on the firestore driver — see plugins/auth.ts and
-  // docs/roadmap/phase-00-foundation.md for why the memory driver skips it.
-  let auth: BetterAuthInstance | null = null;
-  if (gw.STORAGE_DRIVER === 'firestore') {
-    if (!gw.FIREBASE_CLIENT_EMAIL || !gw.FIREBASE_PRIVATE_KEY) {
-      throw new GatewayConfigError(
-        'STORAGE_DRIVER=firestore requires FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY',
-      );
-    }
-    auth = buildBetterAuth(
-      gw,
-      getFirestoreClient({
-        projectId: gw.FIRESTORE_PROJECT_ID,
-        clientEmail: gw.FIREBASE_CLIENT_EMAIL,
-        privateKey: gw.FIREBASE_PRIVATE_KEY,
-      }),
-      services.emailSender,
-    );
-  }
+  // B10: auth is only real on the firestore driver — built inside
+  // `createV2Services` (which throws `GatewayConfigError` when the firestore
+  // driver lacks credentials), so the staff credential provisioner shares it.
+  const auth = services.auth;
 
   await app.register(authContextPlugin, {
     auth,
     organizations: services.repos().organizations,
+    rotationStore: services.rotationStore,
   });
 
   // Path shape: nested org-scoped routes directly under `/api/v2` — no
@@ -123,7 +105,15 @@ export async function registerV2Routes(
         runtimeState: options.runtimeState,
         readinessChecks: options.readinessChecks,
       });
-      await v2.register(async (a) => authRoutes(a, { auth }), { prefix: '/auth' });
+      await v2.register(
+        async (a) =>
+          authRoutes(a, {
+            auth,
+            rotationStore: services.rotationStore,
+            organizations: services.organizations,
+          }),
+        { prefix: '/auth' },
+      );
       await v2.register(otpRoutes, { prefix: '/auth' });
       // Phase 4 PR1: unauthenticated guest-facing discovery reads — never
       // nested under the org-scoped/authenticated route group above.

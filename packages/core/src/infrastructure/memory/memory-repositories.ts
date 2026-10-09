@@ -151,8 +151,8 @@ export class MemoryOrganizationRepository implements OrganizationRepository {
   }
 
   async getByIds(organizationIds: EntityId[]): Promise<Organization[]> {
-    return organizationIds
-      .filter((id, index, all) => all.indexOf(id) === index) // dedupe
+    const unique = [...new Set(organizationIds)];
+    return unique
       .map((id) => this.organizations.get(id))
       .filter((org): org is Organization => org !== undefined);
   }
@@ -221,8 +221,8 @@ export class MemoryVenueRepository implements VenueRepository {
   }
 
   async getByIds(venueIds: EntityId[]): Promise<Venue[]> {
-    return venueIds
-      .filter((id, index, all) => all.indexOf(id) === index) // dedupe
+    const unique = [...new Set(venueIds)];
+    return unique
       .map((id) => this.venues.get(id))
       .filter((venue): venue is Venue => venue !== undefined);
   }

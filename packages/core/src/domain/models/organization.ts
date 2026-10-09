@@ -381,6 +381,12 @@ export function revokeInvitation(
  * Accepts an invitation for a user, returning the updated invitation and the
  * organization that now includes them. Both change together — an accepted
  * invitation without the membership would be a lie.
+ *
+ * Idempotent for a user who is already a member (self-accept while testing,
+ * a direct add racing the invite, re-inviting a current member): the
+ * invitation still closes as accepted, but no second membership is created
+ * and the existing role is left untouched — an invite link must never
+ * silently change (or duplicate) membership on its own.
  */
 export function acceptInvitation(
   org: Organization,
@@ -405,6 +411,10 @@ export function acceptInvitation(
   }
 
   const accepted = transitionInvitation(invitation, 'accepted', at);
+  const closed = { ...accepted, acceptedAt: at.toISOString(), acceptedBy: userId };
+  if (org.members.some((m) => m.userId === userId)) {
+    return { organization: org, invitation: closed };
+  }
   const organization = addMember(org, {
     userId,
     role: invitation.role,
@@ -412,8 +422,5 @@ export function acceptInvitation(
     invitedBy: invitation.invitedBy,
     now: at,
   });
-  return {
-    organization,
-    invitation: { ...accepted, acceptedAt: at.toISOString(), acceptedBy: userId },
-  };
+  return { organization, invitation: closed };
 }

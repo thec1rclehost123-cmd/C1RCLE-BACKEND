@@ -56,7 +56,7 @@ export function createFollow(input: {
 export const NOTIFICATION_TYPES = ['event.new_from_followed'] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 
-export interface Notification {
+export interface SocialNotification {
   id: EntityId;
   userId: EntityId;
   type: NotificationType;
@@ -70,6 +70,8 @@ export interface Notification {
   readAt: string | null;
 }
 
+export type Notification = SocialNotification;
+
 export function notificationId(userId: EntityId, type: NotificationType, subjectId: EntityId) {
   return `${userId}__${type}__${subjectId}`;
 }
@@ -82,7 +84,7 @@ export function createNotification(input: {
   link: string | null;
   subjectId: EntityId;
   now: Date;
-}): Notification {
+}): SocialNotification {
   return {
     id: notificationId(input.userId, input.type, input.subjectId),
     userId: input.userId,
