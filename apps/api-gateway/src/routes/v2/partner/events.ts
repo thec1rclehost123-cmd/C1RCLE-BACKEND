@@ -12,6 +12,7 @@ import {
   posterUploadUrlDtoSchema,
   eventPreviewDtoSchema,
   paginatedSchema,
+  createEventSchema,
 } from '@c1rcle/contracts/client';
 import { z } from 'zod';
 
@@ -57,29 +58,11 @@ function requirePathOrg(
   return undefined;
 }
 
-const createEventBody = z
-  .object({
-    title: z.string().min(1).max(200),
-    summary: z.string().max(1000).optional(),
-    description: z.string().max(20000).optional(),
-    imageUrl: z.url().nullable().optional(),
-    venueId: opaqueIdSchema,
-    startAt: z.iso.datetime(),
-    endAt: z.iso.datetime().nullable().optional(),
-    tags: z.array(z.string().min(1).max(40)).max(50).optional(),
-    compensation: z
-      .object({
-        model: z.enum(['standard', 'custom', 'salary']),
-        globalRatePercent: z.number().int().min(0).max(100).nullable(),
-        tierRates: z.record(z.string(), z.number().int().min(0).max(100)),
-        salaryAmountPaise: z.number().int().positive().nullable(),
-        salaryPeriod: z.enum(['per_event', 'per_day', 'per_month']).nullable(),
-        salaryNotes: z.string().max(2000).nullable(),
-      })
-      .nullable()
-      .optional(),
-  })
-  .strict();
+// Single source of truth for the create wire shape: the shared
+// `createEventSchema` contract (what the client validates against). The
+// gateway adds `.strict()` so unknown keys are rejected at the edge rather
+// than silently dropped — the two schemas must never drift again.
+const createEventBody = createEventSchema.strict();
 
 const createEventHeaders = z.looseObject({
   'x-organization-id': opaqueIdSchema,
@@ -347,14 +330,26 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
   );
 
   // ── PREVIEWS ──────────────────────────────────────────────────────────────
+  // Tenant-scoped read, mirroring GET /events/:eventId: a preview of an
+  // unpublished event leaks the full DTO, so it needs `event.read` and the
+  // service's ownership check (cross-tenant → 404, never a cross-org 200).
   fastify.get(
     '/events/:eventId/previews',
-    { preHandler: fastify.validateV2({ params: eventIdParam }) },
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({ params: eventIdParam, headers: readHeaders }),
+        fastify.requirePermission('event.read'),
+      ],
+    },
     async (request, reply) => {
       const { eventId } = request.params as z.infer<typeof eventIdParam>;
+      const actor = services.actor(request);
       const preview = await services.events
-        .getPreview(eventId)
-        .catch((error: unknown) => mapDomainError(reply, request, eventId, error));
+        .getPreview(actor, eventId)
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, eventId, error, { hideForbidden: true }),
+        );
       if (preview === undefined) return reply;
       const validated = validateV2Response(reply, request, eventPreviewDtoSchema, {
         event: eventToDto(preview.event),
@@ -365,9 +360,11 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
     },
   );
 
-  // ── LIFECYCLE ACTIONS (idempotent + If-Match; each maps 1:1 to an
-  // `EventService` method — the FSM validation lives in the domain model,
-  // never here) ──────────────────────────────────────────────────────────────
+  // ── LIFECYCLE ACTIONS (idempotent; each maps 1:1 to an `EventService`
+  // method — the FSM validation lives in the domain model, never here) ───────
+  // These accept an optional `If-Match` header but do NOT enforce it: the
+  // transition is guarded by the FSM and the repository's compare-and-set,
+  // which return a 409 `version_conflict` on a stale/racy write.
   /**
    * Each lifecycle action carries its own authority: publishing is a
    * different decision from pausing sales, and duplicating creates a new

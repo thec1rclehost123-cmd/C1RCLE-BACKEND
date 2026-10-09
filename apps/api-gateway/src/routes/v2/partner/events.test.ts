@@ -350,12 +350,25 @@ describe('V2 partners events slice — previews and lifecycle', () => {
     const response = await server.inject({
       method: 'GET',
       url: `/events/${id}/previews`,
+      headers: VALID_HEADERS,
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
       event: { id, status: 'draft' },
       isPublic: false,
     });
+    await server.close();
+  });
+
+  it('hides a draft preview from another organization (no cross-tenant IDOR)', async () => {
+    const server = await buildServer();
+    const { id } = await createEvent(server);
+    const response = await server.inject({
+      method: 'GET',
+      url: `/events/${id}/previews`,
+      headers: { 'x-organization-id': 'org_2' },
+    });
+    expect(response.statusCode).toBe(404);
     await server.close();
   });
 
@@ -434,6 +447,39 @@ describe('V2 partners events slice — previews and lifecycle', () => {
       status: 'draft',
     });
     expect(response.json().id).not.toBe(id);
+    await server.close();
+  });
+
+  it('carries the commission terms through duplicate', async () => {
+    const server = await buildServer();
+    const created = await server.inject({
+      method: 'POST',
+      url: '/organizations/org_1/events',
+      headers: { 'x-organization-id': 'org_1', 'idempotency-key': nextEventKey() },
+      payload: {
+        ...CREATE_BODY,
+        compensation: {
+          model: 'standard',
+          globalRatePercent: 12,
+          tierRates: {},
+          salaryAmountPaise: null,
+          salaryPeriod: null,
+          salaryNotes: null,
+        },
+      },
+    });
+    expect(created.statusCode).toBe(201);
+
+    const response = await server.inject({
+      method: 'POST',
+      url: `/events/${created.json().id}/duplicate`,
+      headers: { ...VALID_HEADERS, 'idempotency-key': nextEventKey() },
+    });
+    expect(response.statusCode).toBe(201);
+    expect(response.json().compensation).toMatchObject({
+      model: 'standard',
+      globalRatePercent: 12,
+    });
     await server.close();
   });
 });
