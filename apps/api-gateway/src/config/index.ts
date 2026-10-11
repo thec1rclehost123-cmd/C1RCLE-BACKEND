@@ -113,6 +113,12 @@ const envSchema = z.object({
   APP_VERSION: z.string().min(1).default('0.1.0'),
   BUILD_SHA: z.string().min(1).default('unknown'),
   REDIS_URL: z.string().min(1).default('redis://localhost:6379'),
+  /**
+   * Where rate-limit counters live. `memory` (default) is per instance and
+   * resets on restart; `redis` shares the window across instances using
+   * REDIS_URL, and falls back to memory if Redis is unreachable.
+   */
+  RATE_LIMIT_STORE: z.enum(['memory', 'redis']).default('memory'),
   FIRESTORE_PROJECT_ID: z.string().min(1).default('c1rcle-staging'),
   /** B12: which repository adapter set `lib/v2-services.ts` wires up. */
   STORAGE_DRIVER: z.enum(['memory', 'firestore']).default('memory'),
@@ -137,6 +143,16 @@ const envSchema = z.object({
    * falling back to the well-known development default.
    */
   MAGIC_TICKET_SECRET: z.string().min(1).optional(),
+  /**
+   * At-rest encryption of bank-account numbers (AES-256-GCM, scrypt-derived).
+   * Without it the core falls back to a secret published in this repository,
+   * which protects nothing — production refuses to boot without a real one.
+   * Rotating it does not strand older records: those written under the legacy
+   * default stay readable (see `getFullAccountNumber`).
+   */
+  ENCRYPTION_KEY: z.string().min(1).optional(),
+  /** Optional scrypt salt for ENCRYPTION_KEY; changing it re-keys new writes. */
+  ENCRYPTION_SALT: z.string().min(1).optional(),
   /** Email OTP delivery and at-rest OTP HMAC key. */
   RESEND_API_KEY: z.string().min(1).optional(),
   EMAIL_OTP_SECRET: z.string().min(1).optional(),
@@ -309,11 +325,38 @@ const validatedEnvSchema = envSchema.superRefine((value, ctx) => {
       message: 'Production requires a non-development secret of at least 32 characters',
     });
   }
-  if (!value.EMAIL_OTP_SECRET) {
+  if (!value.EMAIL_OTP_SECRET || value.EMAIL_OTP_SECRET.length < 32) {
     ctx.addIssue({
       code: 'custom',
       path: ['EMAIL_OTP_SECRET'],
-      message: 'Production requires EMAIL_OTP_SECRET',
+      message: 'Production requires EMAIL_OTP_SECRET of at least 32 characters',
+    });
+  }
+  if (value.RATE_LIMIT_STORE === 'redis') {
+    let redisUrl: URL | undefined;
+    try {
+      redisUrl = new URL(value.REDIS_URL);
+    } catch {
+      /* reported below */
+    }
+    if (
+      !redisUrl ||
+      !['redis:', 'rediss:'].includes(redisUrl.protocol) ||
+      ['localhost', '127.0.0.1', '::1'].includes(redisUrl.hostname)
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['REDIS_URL'],
+        message:
+          'RATE_LIMIT_STORE=redis in production needs a redis:// or rediss:// REDIS_URL that is not a local development endpoint',
+      });
+    }
+  }
+  if (!value.ENCRYPTION_KEY || value.ENCRYPTION_KEY.length < 32) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['ENCRYPTION_KEY'],
+      message: 'Production requires ENCRYPTION_KEY of at least 32 characters',
     });
   }
   if (!value.MAGIC_TICKET_SECRET || value.MAGIC_TICKET_SECRET.length < 32) {
