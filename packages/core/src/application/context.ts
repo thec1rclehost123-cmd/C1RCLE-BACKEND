@@ -56,6 +56,7 @@ import type {
   FollowRepository,
   SocialNotificationRepository,
   AdminRefundRequestRepository,
+  ProviderPaymentRepository,
   UserAccountRepository,
   UserBanRepository,
   PlatformSettingsRepository,
@@ -172,6 +173,8 @@ export interface ServiceDeps {
 
     socialNotifications: SocialNotificationRepository;
     refundRequests: AdminRefundRequestRepository;
+    /** The payment provider's record of each payment, for reconciliation. */
+    providerPayments: ProviderPaymentRepository;
     /** Platform support tickets (guest intake + admin desk). */
     supportTickets: SupportTicketRepository;
     /** Platform safety reports (guest intake + admin desk). */

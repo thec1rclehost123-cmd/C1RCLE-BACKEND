@@ -449,3 +449,178 @@ describe('POST /webhooks/payments/razorpay', () => {
     await server.close();
   });
 });
+
+describe('POST /webhooks/payments/razorpay — provider reconciliation', () => {
+  const post = (server: Server, body: string) =>
+    server.inject({
+      method: 'POST',
+      url: '/webhooks/payments/razorpay',
+      headers: { 'content-type': 'application/json', 'x-razorpay-signature': sign(body) },
+      payload: body,
+    });
+
+  const captureBody = (args: {
+    id: string;
+    order_id: string;
+    holdId: string;
+    amount: number;
+    fee?: number;
+    tax?: number;
+  }) =>
+    JSON.stringify({
+      event: 'payment.captured',
+      payload: {
+        payment: {
+          entity: {
+            id: args.id,
+            order_id: args.order_id,
+            amount: args.amount,
+            currency: 'INR',
+            fee: args.fee ?? 0,
+            tax: args.tax ?? 0,
+            notes: { holdId: args.holdId },
+          },
+        },
+      },
+    });
+
+  async function fulfilledPayment(server: Server, paymentId: string, fee = 2_360, tax = 425) {
+    const { holdId, grandTotalPaise } = await seedHold(server);
+    const paymentIntentId = await createPaymentIntent(server, holdId);
+    memoryProvider().simulateCapture(paymentId, grandTotalPaise, paymentIntentId);
+    const response = await post(
+      server,
+      captureBody({
+        id: paymentId,
+        order_id: paymentIntentId,
+        holdId,
+        amount: grandTotalPaise,
+        fee,
+        tax,
+      }),
+    );
+    expect(response.statusCode).toBe(200);
+    return { orderId: `ORD-${paymentId}`, grandTotalPaise };
+  }
+
+  it('records the provider’s fee and tax on a fulfilled capture and ties it to our order', async () => {
+    const server = await buildServer();
+    const { orderId, grandTotalPaise } = await fulfilledPayment(server, 'pay_recon_1');
+
+    const stored = await createV2Services().repos().providerPayments.findByPaymentId('pay_recon_1');
+    expect(stored).toMatchObject({
+      orderId,
+      capturedPaise: grandTotalPaise,
+      feePaise: 2_360,
+      taxOnFeePaise: 425,
+    });
+    await server.close();
+  });
+
+  it('reconciles a fulfilled order against the provider’s record', async () => {
+    const server = await buildServer();
+    const { orderId, grandTotalPaise } = await fulfilledPayment(server, 'pay_recon_2');
+
+    const result = await createV2Services().providerPayments.reconcileOrder(orderId);
+
+    expect(result).toMatchObject({
+      reconciled: true,
+      providerNetPaise: grandTotalPaise - 2_360 - 425,
+    });
+    await server.close();
+  });
+
+  it('records a refund the provider processed, and reconciliation then flags the difference', async () => {
+    const server = await buildServer();
+    const { orderId } = await fulfilledPayment(server, 'pay_recon_3');
+    const refund = JSON.stringify({
+      event: 'refund.processed',
+      payload: { refund: { entity: { id: 'rfnd_1', payment_id: 'pay_recon_3', amount: 5_000 } } },
+    });
+
+    expect((await post(server, refund)).statusCode).toBe(200);
+    expect((await post(server, refund)).statusCode).toBe(200); // Razorpay retries
+
+    const result = await createV2Services().providerPayments.reconcileOrder(orderId);
+    expect(result.reconciled).toBe(false);
+    expect(result.findings).toContainEqual({
+      kind: 'refund_mismatch',
+      ourPaise: 0,
+      providerPaise: 5_000,
+    });
+    const stored = await createV2Services().repos().providerPayments.findByPaymentId('pay_recon_3');
+    expect(stored?.refunds).toEqual({ rfnd_1: 5_000 });
+    await server.close();
+  });
+
+  it('follows a dispute from opened to lost, and subtracts only the lost amount from the net', async () => {
+    const server = await buildServer();
+    const { orderId, grandTotalPaise } = await fulfilledPayment(server, 'pay_recon_4');
+    const dispute = (event: string) =>
+      JSON.stringify({
+        event,
+        payload: {
+          dispute: { entity: { id: 'disp_1', payment_id: 'pay_recon_4', amount: 9_000 } },
+        },
+      });
+
+    await post(server, dispute('payment.dispute.created'));
+    const open = await createV2Services().providerPayments.reconcileOrder(orderId);
+    expect(open.findings).toContainEqual({ kind: 'open_dispute' });
+    expect(open.providerNetPaise).toBe(grandTotalPaise - 2_360 - 425);
+
+    await post(server, dispute('payment.dispute.lost'));
+    await post(server, dispute('payment.dispute.created')); // a late, out-of-order delivery
+    const lost = await createV2Services().providerPayments.reconcileOrder(orderId);
+    expect(lost.findings).not.toContainEqual({ kind: 'open_dispute' });
+    expect(lost.providerNetPaise).toBe(grandTotalPaise - 2_360 - 425 - 9_000);
+    await server.close();
+  });
+
+  it('still records a capture it cannot tie to a hold, with no order', async () => {
+    const server = await buildServer();
+    const body = JSON.stringify({
+      event: 'payment.captured',
+      payload: {
+        payment: {
+          entity: {
+            id: 'pay_orphan',
+            order_id: 'order_x',
+            amount: 10_000,
+            currency: 'INR',
+            fee: 320,
+            tax: 58,
+            notes: [],
+          },
+        },
+      },
+    });
+
+    expect((await post(server, body)).statusCode).toBe(200);
+
+    const stored = await createV2Services().repos().providerPayments.findByPaymentId('pay_orphan');
+    expect(stored).toMatchObject({ orderId: null, capturedPaise: 10_000, feePaise: 320 });
+    await server.close();
+  });
+
+  it('does not record anything for an unsigned or tampered call', async () => {
+    const server = await buildServer();
+    const body = JSON.stringify({
+      event: 'refund.processed',
+      payload: { refund: { entity: { id: 'rfnd_x', payment_id: 'pay_forged', amount: 1 } } },
+    });
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/webhooks/payments/razorpay',
+      headers: { 'content-type': 'application/json', 'x-razorpay-signature': 'not-a-signature' },
+      payload: body,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(
+      await createV2Services().repos().providerPayments.findByPaymentId('pay_forged'),
+    ).toBeNull();
+    await server.close();
+  });
+});
