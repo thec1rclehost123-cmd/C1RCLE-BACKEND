@@ -20,6 +20,10 @@ export class MemoryBankAccountRepository implements BankAccountRepository {
     return [...this.accounts.values()].filter((a) => a.organizationId === organizationId);
   }
 
+  async listAll(): Promise<BankAccount[]> {
+    return [...this.accounts.values()];
+  }
+
   async findDefaultByOrganization(organizationId: EntityId): Promise<BankAccount | null> {
     return (
       [...this.accounts.values()].find((a) => a.organizationId === organizationId && a.isDefault) ??

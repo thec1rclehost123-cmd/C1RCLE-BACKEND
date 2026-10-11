@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { decryptField, encryptField } from './encryption.js';
+import { decryptField, encryptField, reencryptField } from './encryption.js';
 
 /**
  * ─── AES-256-GCM field encryption (Phase 6) ────────────────────────────────
@@ -73,5 +73,48 @@ describe('encryptField / decryptField (AES-256-GCM)', () => {
     const long = '0123456789'.repeat(20);
     const envelope = encryptField(long, SECRET, SALT, CONTEXT);
     expect(decryptField(envelope, SECRET, SALT, CONTEXT)).toBe(long);
+  });
+});
+
+describe('reencryptField (legacy -> current key migration)', () => {
+  const legacy = { secret: 'legacy-secret', salt: 'legacy-salt' };
+  const current = { secret: 'current-secret-that-is-long-enough-0123456789', salt: 'current-salt' };
+  const keys = { current, legacy };
+  const ctx = 'org_1';
+
+  it('leaves a value that already opens under the current key alone', () => {
+    const sealed = encryptField('00001234567890', current.secret, current.salt, ctx);
+    expect(reencryptField(sealed, ctx, keys)).toEqual({ status: 'current' });
+  });
+
+  it('re-seals a legacy value under the current key, preserving the plaintext and context', () => {
+    const sealed = encryptField('00001234567890', legacy.secret, legacy.salt, ctx);
+    const result = reencryptField(sealed, ctx, keys);
+    expect(result.status).toBe('migrated');
+    if (result.status !== 'migrated') return;
+    expect(result.envelope).not.toBe(sealed);
+    expect(decryptField(result.envelope, current.secret, current.salt, ctx)).toBe('00001234567890');
+    // No longer opens under the legacy key, so the published default stops protecting it.
+    expect(() => decryptField(result.envelope, legacy.secret, legacy.salt, ctx)).toThrow();
+    // And a second pass is a no-op.
+    expect(reencryptField(result.envelope, ctx, keys)).toEqual({ status: 'current' });
+  });
+
+  it('reports a value sealed with some other key as unreadable, without throwing', () => {
+    const sealed = encryptField('00001234567890', 'someone-elses-secret', 'salt', ctx);
+    expect(reencryptField(sealed, ctx, keys)).toEqual({ status: 'unreadable' });
+  });
+
+  it('reports a tampered or malformed envelope as unreadable', () => {
+    const sealed = encryptField('00001234567890', legacy.secret, legacy.salt, ctx);
+    const tampered = `${sealed.slice(0, -2)}${sealed.endsWith('00') ? '11' : '00'}`;
+    expect(reencryptField(tampered, ctx, keys)).toEqual({ status: 'unreadable' });
+    expect(reencryptField('not-an-envelope', ctx, keys)).toEqual({ status: 'unreadable' });
+    expect(reencryptField('', ctx, keys)).toEqual({ status: 'unreadable' });
+  });
+
+  it('does not migrate a value presented under the wrong record context', () => {
+    const sealed = encryptField('00001234567890', legacy.secret, legacy.salt, 'org_1');
+    expect(reencryptField(sealed, 'org_2', keys)).toEqual({ status: 'unreadable' });
   });
 });
