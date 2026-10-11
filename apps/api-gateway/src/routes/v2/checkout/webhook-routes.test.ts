@@ -382,11 +382,11 @@ describe('POST /webhooks/payments/razorpay', () => {
     // No venue partnership (venue created directly under the host org via
     // seedHold, so the host<->venue Partnership lookup finds nothing and
     // settlement falls back to host-only), no promoter attribution -> the 4
-    // unconditional legs finance-service always writes: ticket_revenue
+    // unconditional legs finance-service always writes (plus the GST line): ticket_revenue
     // (settled), platform_fee, venue_share (0 — no configured rate yet),
     // host_payout.
     expect(entries.map((e) => e.entryType).sort()).toEqual(
-      ['host_payout', 'platform_fee', 'ticket_revenue', 'venue_share'].sort(),
+      ['gst', 'host_payout', 'platform_fee', 'ticket_revenue', 'venue_share'].sort(),
     );
     const revenue = entries.find((e) => e.entryType === 'ticket_revenue');
     expect(revenue?.amount).toBe(grandTotalPaise);
@@ -395,9 +395,13 @@ describe('POST /webhooks/payments/razorpay', () => {
     // platform's leg is exactly what the guest paid on top of it (customer fee +
     // GST) while plan commission is 0, and the host keeps all ticket revenue.
     // It used to be 15% of the grand total, which taxed the guest's own fees.
-    const { discountedSubtotalPaise } = await holdPricing(holdId);
+    const { discountedSubtotalPaise, gstPaise } = await holdPricing(holdId);
+    // GST is its own ledger line; the platform fee is the convenience fee alone.
+    const gst = entries.find((e) => e.entryType === 'gst');
+    expect(gst?.amount).toBe(gstPaise);
+    expect(gst?.status).toBe('settled');
     const platformFee = entries.find((e) => e.entryType === 'platform_fee');
-    expect(platformFee?.amount).toBe(grandTotalPaise - discountedSubtotalPaise);
+    expect(platformFee?.amount).toBe(grandTotalPaise - discountedSubtotalPaise - gstPaise);
     const venueShare = entries.find((e) => e.entryType === 'venue_share');
     expect(venueShare?.amount).toBe(0);
     const hostPayout = entries.find((e) => e.entryType === 'host_payout');
@@ -443,18 +447,19 @@ describe('POST /webhooks/payments/razorpay', () => {
     // and credited to the venue-owner org, not the host org.
     // The venue's 20% is of TICKET revenue, not of the grand total that includes
     // the guest's fees and GST.
-    const { discountedSubtotalPaise } = await holdPricing(holdId);
+    const { discountedSubtotalPaise, gstPaise } = await holdPricing(holdId);
     const venueShare = entries.find((e) => e.entryType === 'venue_share');
     expect(venueShare?.amount).toBe(Math.round(discountedSubtotalPaise * 0.2));
     expect(venueShare?.organizationId).toBe(venueOwnerOrgId);
     expect(venueShare?.status).toBe('pending');
 
     const platformFee = entries.find((e) => e.entryType === 'platform_fee');
-    expect(platformFee?.amount).toBe(grandTotalPaise - discountedSubtotalPaise);
+    expect(platformFee?.amount).toBe(grandTotalPaise - discountedSubtotalPaise - gstPaise);
+    expect(entries.find((e) => e.entryType === 'gst')?.amount).toBe(gstPaise);
     const hostPayout = entries.find((e) => e.entryType === 'host_payout');
     expect(hostPayout?.amount).toBe(discountedSubtotalPaise - (venueShare?.amount ?? 0));
 
-    // Split legs sum to gross — venue_share + platform_fee + host_payout = grandTotalPaise.
+    // Split legs sum to gross — venue_share + platform_fee + gst + host_payout = grandTotalPaise.
     const splitEntries = entries.filter((e) => e.entryType !== 'ticket_revenue');
     const splitSum = splitEntries.reduce((sum, e) => sum + e.amount, 0);
     expect(splitSum).toBe(grandTotalPaise);

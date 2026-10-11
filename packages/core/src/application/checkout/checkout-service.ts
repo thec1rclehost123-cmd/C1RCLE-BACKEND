@@ -761,6 +761,8 @@ export class CheckoutService {
         legs: computeSettlementLegs({
           subtotalPaise: order.discountedSubtotalPaise,
           customerFeesPaise,
+          // The GST the guest was charged, never more than their fees in total.
+          gstPaise: Math.min(order.gstPaise, customerFeesPaise),
           commissionBps,
           venueBps,
           promoterAmountPaise,

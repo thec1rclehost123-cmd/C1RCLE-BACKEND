@@ -44,9 +44,10 @@ export interface RecordTicketSaleInput {
    * Precomputed legs (from `computeSettlementLegs`). When present they are used
    * as given, after being checked to be non-negative integers that sum to
    * `grossAmount`; the rate fields above are then ignored. Absent, the legacy
-   * rate-on-gross calculation runs.
+   * rate-on-gross calculation runs. `gst` is the tax collected on the customer
+   * fee, recorded as its own ledger line rather than folded into `platformFee`.
    */
-  legs?: LedgerSettlementSplit;
+  legs?: LedgerSettlementSplit & { gst?: number };
 }
 
 export interface BalanceSummary {
@@ -107,9 +108,16 @@ export function createFinanceService(deps: FinanceServiceDeps): FinanceService {
     }
 
     let split: LedgerSettlementSplit;
+    let gst = 0;
     if (input.legs) {
       const legs = input.legs;
-      const parts = [legs.platformFee, legs.venueShare, legs.promoterCommission, legs.hostPayout];
+      const parts = [
+        legs.platformFee,
+        legs.gst ?? 0,
+        legs.venueShare,
+        legs.promoterCommission,
+        legs.hostPayout,
+      ];
       const total = parts.reduce((sum, part) => sum + part, 0);
       if (
         parts.some((part) => !Number.isInteger(part) || part < 0) ||
@@ -120,6 +128,7 @@ export function createFinanceService(deps: FinanceServiceDeps): FinanceService {
         );
       }
       split = legs;
+      gst = legs.gst ?? 0;
     } else {
       const calculated = computeSettlementSplit(
         input.grossAmount,
@@ -168,6 +177,24 @@ export function createFinanceService(deps: FinanceServiceDeps): FinanceService {
         idempotencyKey: idempotencyKey(input.orderId, 'platform_fee', input.hostOrganizationId),
         now,
       }),
+      // GST on the customer fee, as its own line. Held under the host org like
+      // `platform_fee` and settled with it, but not counted in any partner balance
+      // (balances sum host_payout / venue_share / promoter_commission only).
+      ...(gst > 0
+        ? [
+            createLedgerEntry({
+              id: entryId(input.orderId, 'gst', input.hostOrganizationId),
+              organizationId: input.hostOrganizationId,
+              orderId: input.orderId,
+              eventId: input.eventId,
+              entryType: 'gst',
+              amount: gst,
+              status: 'settled',
+              idempotencyKey: idempotencyKey(input.orderId, 'gst', input.hostOrganizationId),
+              now,
+            }),
+          ]
+        : []),
       createLedgerEntry({
         id: entryId(input.orderId, 'venue_share', input.venueOrganizationId),
         organizationId: input.venueOrganizationId,

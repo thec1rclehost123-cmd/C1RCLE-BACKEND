@@ -744,6 +744,9 @@ describe('GET /organizations/:organizationId/finance/orders', () => {
     expect(row).not.toHaveProperty('pricing');
     expect(row).not.toHaveProperty('lines');
     expect(row).not.toHaveProperty('paymentIntentId');
+    // ...but the GST in the total is shown, as its own figure.
+    expect(row.gstPaise).toBeGreaterThan(0);
+    expect(row.gstPaise).toBeLessThan(row.grandTotalPaise);
     await server.close();
   });
 

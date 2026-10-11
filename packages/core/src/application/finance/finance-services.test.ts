@@ -143,6 +143,36 @@ describe('createFinanceService', () => {
       expect(amountOf('ticket_revenue')).toBe(108_850);
     });
 
+    it('records GST as its own settled line and counts it toward no partner balance', async () => {
+      const repo = new MemoryLedgerRepository();
+      const service = createFinanceService({ ledger: repo, config });
+      // ₹1,088.50 = ₹1,000 tickets + ₹75 fee + ₹13.50 GST; GST split out of platformFee.
+      const withGst = { ...legs, platformFee: 7_500, gst: 1_350 };
+      const entries = await service.recordTicketSale({ ...base, legs: withGst }, actor(ORG));
+
+      const gst = entries.find((e) => e.entryType === 'gst');
+      expect(gst).toMatchObject({ amount: 1_350, status: 'settled', organizationId: HOST });
+      expect(entries.find((e) => e.entryType === 'platform_fee')?.amount).toBe(7_500);
+
+      // Nothing in the host's available/pending money comes from GST or the platform fee.
+      const hostBalance = await service.getBalances(HOST, actor(HOST));
+      expect(hostBalance.availablePaise).toBe(0);
+      expect(hostBalance.pendingPaise).toBe(72_000);
+    });
+
+    it('counts GST in the sum check: legs that only add up without it are rejected', async () => {
+      const service = createFinanceService({ ledger: new MemoryLedgerRepository(), config });
+      await expect(
+        service.recordTicketSale({ ...base, legs: { ...legs, gst: 1_350 } }, actor(ORG)),
+      ).rejects.toBeInstanceOf(InvalidOperationError);
+    });
+
+    it('omits the GST line when there is no GST', async () => {
+      const service = createFinanceService({ ledger: new MemoryLedgerRepository(), config });
+      const entries = await service.recordTicketSale({ ...base, legs }, actor(ORG));
+      expect(entries.some((e) => e.entryType === 'gst')).toBe(false);
+    });
+
     it('rejects legs that do not sum to the gross amount', async () => {
       const service = createFinanceService({ ledger: new MemoryLedgerRepository(), config });
       await expect(

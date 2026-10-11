@@ -4,7 +4,7 @@ import { InvalidOperationError } from './errors.js';
 import { computeSettlementLegs } from './models/settlement.js';
 
 const sum = (l: ReturnType<typeof computeSettlementLegs>) =>
-  l.platformFee + l.venueShare + l.promoterCommission + l.hostPayout;
+  l.platformFee + l.gst + l.venueShare + l.promoterCommission + l.hostPayout;
 
 describe('computeSettlementLegs', () => {
   it('reproduces the worked example from the payments design (host-owned 80/20, promoter ₹100, no commission)', () => {
@@ -12,12 +12,14 @@ describe('computeSettlementLegs', () => {
     const legs = computeSettlementLegs({
       subtotalPaise: 100_000,
       customerFeesPaise: 7_500 + 1_350,
+      gstPaise: 1_350,
       commissionBps: 0,
       venueBps: 2_000,
       promoterAmountPaise: 10_000,
     });
     expect(legs).toEqual({
-      platformFee: 8_850, // ₹88.50 = customer fees + GST
+      platformFee: 7_500, // ₹75 convenience fee (₹50 platform + ₹25 payment)
+      gst: 1_350, // ₹13.50 GST on that fee, shown on its own line
       promoterCommission: 10_000, // ₹100
       venueShare: 18_000, // 20% of ₹900
       hostPayout: 72_000, // ₹720
@@ -29,6 +31,7 @@ describe('computeSettlementLegs', () => {
     const legs = computeSettlementLegs({
       subtotalPaise: 100_000,
       customerFeesPaise: 8_850,
+      gstPaise: 0,
       commissionBps: 1_000, // 10% of ₹1,000 = ₹100
       venueBps: 0,
       promoterAmountPaise: null,
@@ -42,6 +45,7 @@ describe('computeSettlementLegs', () => {
     const without = computeSettlementLegs({
       subtotalPaise: 100_000,
       customerFeesPaise: 0,
+      gstPaise: 0,
       commissionBps: 0,
       venueBps: 5_000,
       promoterAmountPaise: null,
@@ -49,6 +53,7 @@ describe('computeSettlementLegs', () => {
     const withPromoter = computeSettlementLegs({
       subtotalPaise: 100_000,
       customerFeesPaise: 0,
+      gstPaise: 0,
       commissionBps: 0,
       venueBps: 5_000,
       promoterAmountPaise: 20_000,
@@ -62,6 +67,7 @@ describe('computeSettlementLegs', () => {
     const legs = computeSettlementLegs({
       subtotalPaise: 10_000,
       customerFeesPaise: 885,
+      gstPaise: 0,
       commissionBps: 1_000,
       venueBps: 3_000,
       promoterAmountPaise: 50_000,
@@ -76,6 +82,7 @@ describe('computeSettlementLegs', () => {
     const legs = computeSettlementLegs({
       subtotalPaise: 10_001,
       customerFeesPaise: 0,
+      gstPaise: 0,
       commissionBps: 0,
       venueBps: 3_333,
       promoterAmountPaise: null,
@@ -88,12 +95,14 @@ describe('computeSettlementLegs', () => {
     const legs = computeSettlementLegs({
       subtotalPaise: 12_345,
       customerFeesPaise: 100,
+      gstPaise: 0,
       commissionBps: 0,
       venueBps: 0,
       promoterAmountPaise: null,
     });
     expect(legs).toEqual({
       platformFee: 100,
+      gst: 0,
       venueShare: 0,
       promoterCommission: 0,
       hostPayout: 12_345,
@@ -104,11 +113,61 @@ describe('computeSettlementLegs', () => {
     const legs = computeSettlementLegs({
       subtotalPaise: 0,
       customerFeesPaise: 0,
+      gstPaise: 0,
       commissionBps: 1_000,
       venueBps: 2_000,
       promoterAmountPaise: 500,
     });
-    expect(legs).toEqual({ platformFee: 0, venueShare: 0, promoterCommission: 0, hostPayout: 0 });
+    expect(legs).toEqual({
+      platformFee: 0,
+      gst: 0,
+      venueShare: 0,
+      promoterCommission: 0,
+      hostPayout: 0,
+    });
+  });
+
+  it('reports GST on its own line, and keeps it out of the platform fee and every partner share', () => {
+    const legs = computeSettlementLegs({
+      subtotalPaise: 100_000,
+      customerFeesPaise: 8_850,
+      gstPaise: 1_350,
+      commissionBps: 0,
+      venueBps: 2_000,
+      promoterAmountPaise: null,
+    });
+    expect(legs.gst).toBe(1_350);
+    expect(legs.platformFee).toBe(7_500); // fee only; GST is not platform revenue
+    // GST does not change what the host and venue earn from ticket revenue.
+    expect(legs.venueShare).toBe(20_000);
+    expect(legs.hostPayout).toBe(80_000);
+    expect(sum(legs)).toBe(108_850);
+  });
+
+  it('taxes only the fee: GST is zero when the order carries none', () => {
+    const legs = computeSettlementLegs({
+      subtotalPaise: 50_000,
+      customerFeesPaise: 3_750,
+      gstPaise: 0,
+      commissionBps: 0,
+      venueBps: 0,
+      promoterAmountPaise: null,
+    });
+    expect(legs.gst).toBe(0);
+    expect(legs.platformFee).toBe(3_750);
+  });
+
+  it('rejects GST larger than the fees it is charged on', () => {
+    expect(() =>
+      computeSettlementLegs({
+        subtotalPaise: 1_000,
+        customerFeesPaise: 100,
+        gstPaise: 101,
+        commissionBps: 0,
+        venueBps: 0,
+        promoterAmountPaise: null,
+      }),
+    ).toThrow(InvalidOperationError);
   });
 
   it('keeps every leg non-negative and the sum exact across many random splits', () => {
@@ -121,9 +180,11 @@ describe('computeSettlementLegs', () => {
     for (let i = 0; i < 5_000; i++) {
       const subtotalPaise = rnd(5_000_000);
       const customerFeesPaise = rnd(500_000);
+      const gstPaise = rnd(customerFeesPaise);
       const input = {
         subtotalPaise,
         customerFeesPaise,
+        gstPaise,
         commissionBps: rnd(10_000),
         venueBps: rnd(10_000),
         promoterAmountPaise: rnd(1) === 0 ? null : rnd(6_000_000),
@@ -145,6 +206,7 @@ describe('computeSettlementLegs', () => {
       computeSettlementLegs({
         subtotalPaise: 1_000,
         customerFeesPaise: 0,
+        gstPaise: 0,
         commissionBps: 0,
         venueBps: 0,
         promoterAmountPaise: null,

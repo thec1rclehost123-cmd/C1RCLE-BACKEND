@@ -543,6 +543,7 @@ function financeOrderToDto(row: FinanceOrderRow) {
     ticketCount,
     currency: order.currency,
     grandTotalPaise: order.grandTotalPaise,
+    gstPaise: order.gstPaise,
     refundedPaise: order.refundedPaise,
     status: order.status,
     paidAt: order.paidAt,

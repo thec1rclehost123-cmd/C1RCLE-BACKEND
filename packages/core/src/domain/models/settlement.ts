@@ -2,6 +2,12 @@ import { InvalidOperationError } from '../errors.js';
 
 import type { LedgerSettlementSplit } from './ledger.js';
 
+/** The four partner/platform legs plus the GST collected, reported on its own line. */
+export interface SettlementLegs extends LedgerSettlementSplit {
+  /** GST charged on the customer fee, held as a tax liability (not platform revenue). */
+  gst: number;
+}
+
 /**
  * ─── Settlement engine (payments plan, DP-01) ────────────────────────────────
  *
@@ -13,7 +19,8 @@ import type { LedgerSettlementSplit } from './ledger.js';
  *   distributable = subtotal − commission − promoter
  *   venue         = round(distributable × venueBps / 10000)
  *   host          = distributable − venue                      absorbs the rounding paisa
- *   platform      = customer fees + GST + commission
+ *   gst           = the GST on the customer fee, shown as its own leg
+ *   platform      = customer fees (excluding GST) + commission
  *
  * where `subtotal` is the DISCOUNTED ticket subtotal (a promo discount reduces
  * revenue before fees). The legs always sum to the grand total
@@ -30,6 +37,8 @@ export interface SettlementInput {
   subtotalPaise: number;
   /** Customer convenience fees plus GST on them, paise. */
   customerFeesPaise: number;
+  /** Of `customerFeesPaise`, the part that is GST (never more than the total). */
+  gstPaise: number;
   /** Platform commission on ticket revenue, basis points (0 until plans set one). */
   commissionBps: number;
   /** The venue's share of what remains after commission and promoter, basis points. */
@@ -50,9 +59,13 @@ function assertBps(value: number, name: string): void {
   }
 }
 
-export function computeSettlementLegs(input: SettlementInput): LedgerSettlementSplit {
+export function computeSettlementLegs(input: SettlementInput): SettlementLegs {
   assertNonNegativeInt(input.subtotalPaise, 'subtotalPaise');
   assertNonNegativeInt(input.customerFeesPaise, 'customerFeesPaise');
+  assertNonNegativeInt(input.gstPaise, 'gstPaise');
+  if (input.gstPaise > input.customerFeesPaise) {
+    throw new InvalidOperationError('gstPaise cannot exceed customerFeesPaise');
+  }
   assertBps(input.commissionBps, 'commissionBps');
   assertBps(input.venueBps, 'venueBps');
   if (input.promoterAmountPaise !== null) {
@@ -69,7 +82,8 @@ export function computeSettlementLegs(input: SettlementInput): LedgerSettlementS
   const venueShare = Math.round((distributable * input.venueBps) / 10_000);
 
   return {
-    platformFee: input.customerFeesPaise + commission,
+    platformFee: input.customerFeesPaise - input.gstPaise + commission,
+    gst: input.gstPaise,
     venueShare,
     promoterCommission: promoter,
     hostPayout: distributable - venueShare,
