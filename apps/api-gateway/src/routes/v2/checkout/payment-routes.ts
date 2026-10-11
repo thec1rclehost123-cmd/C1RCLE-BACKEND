@@ -6,7 +6,7 @@ import {
   idempotencyKeySchema,
 } from '@c1rcle/contracts/client';
 import { isSystemActor } from '@c1rcle/core/application';
-import { InvalidOperationError, UnauthorizedError } from '@c1rcle/core/domain';
+import { UnauthorizedError } from '@c1rcle/core/domain';
 import { z } from 'zod';
 
 import { getGatewayConfig } from '../../../config/index.js';
@@ -158,23 +158,16 @@ export default async function paymentRoutes(fastify: FastifyInstance) {
         idempotencyKey,
         context: { path: { id: paymentId }, body },
         run: async () => {
-          // Signature verification happens BEFORE confirmPayment is ever
-          // called — an invalid/forged signature never reaches fulfillment.
-          const verification = await services.paymentProvider.verifyPayment({
-            paymentId,
-            orderId: body.paymentIntentId,
-            signature: body.signature,
-          });
-          if (!verification.captured) {
-            throw new InvalidOperationError(`Payment ${paymentId} has not been captured`);
-          }
-
-          const { order, entitlements } = await services.checkout.confirmPayment({
+          // The service verifies the callback signature against the provider
+          // order ID stored on the hold (never the browser's), and only then
+          // confirms the payment — a forged signature never reaches fulfilment.
+          const { order, entitlements } = await services.checkout.verifyCheckoutCallback({
             actor,
-            paymentId,
-            paymentIntentId: body.paymentIntentId,
             holdId: body.holdId,
-            _idempotencyKey: idempotencyKey ?? paymentId,
+            paymentId,
+            signature: body.signature,
+            clientOrderId: body.paymentIntentId,
+            idempotencyKey,
           });
 
           const payload = { order: orderToDto(order), entitlements };
