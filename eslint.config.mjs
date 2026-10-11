@@ -184,7 +184,14 @@ export default tseslint.config(
   },
   /* Config/script files: no type-aware rules, plain JS. */
   {
-    files: ['**/*.config.mjs', '**/*.config.js', '**/scripts/**/*.mjs', '**/scripts/**/*.js'],
+    files: [
+      '**/*.config.mjs',
+      '**/*.config.js',
+      '**/scripts/**/*.mjs',
+      '**/scripts/**/*.js',
+      // Parity fixtures: plain ESM that the contract-parity script imports directly.
+      '**/contracts/parity/**/*.mjs',
+    ],
     ...tseslint.configs.disableTypeChecked,
   },
   /* Gateway config is the sole owner of process.env — the global ban exempts it. */
