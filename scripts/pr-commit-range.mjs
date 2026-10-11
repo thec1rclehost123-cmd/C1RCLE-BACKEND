@@ -38,7 +38,18 @@
  * permissive. It cannot be made exact without changing the linter, because a
  * filtered commit list is not a range.
  *
- * Run: node scripts/pr-commit-range.mjs --base <ref> --head <ref>
+ * `--list` mode (used by CI): prints the SHAs of exactly the non-merge commits
+ * the PR introduces (oldest first, one per line, nothing when there are none),
+ * so the caller can lint each message on its own. This removes the coarseness
+ * above entirely: a range walks everything between its endpoints, and a branch
+ * whose own commits PREDATE the merge of its base (the usual shape after
+ * "Merge branch 'staging'") has the base's squash commits sitting inside the
+ * range. #114 hit this: the squash commit of an unrelated, already-merged PR
+ * (title 102 chars) failed the header-length rule on a PR that never touched it.
+ * On failure to narrow it falls back to every non-merge commit in `base..head`,
+ * which is stricter, never weaker.
+ *
+ * Run: node scripts/pr-commit-range.mjs --base <ref> --head <ref> [--list]
  */
 
 import { execFileSync } from 'node:child_process';
@@ -57,6 +68,7 @@ function arg(name) {
 
 const base = arg('base');
 const head = arg('head');
+const listMode = process.argv.includes('--list');
 
 if (!base || !head) {
   console.error('usage: node scripts/pr-commit-range.mjs --base <ref> --head <ref>');
@@ -64,6 +76,9 @@ if (!base || !head) {
 }
 
 const git = (args) => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8' }).trim();
+
+/** Splits git output on `\r?\n` (this repo is developed on Windows) and drops blanks. */
+const lines = (out) => out.split(/\r?\n/).filter(Boolean);
 
 /** Refs whose commits are already reviewed, so they need not be linted again. */
 const EXEMPT_REFS = ['origin/staging', 'origin/main'].filter((ref) => {
@@ -76,6 +91,29 @@ const EXEMPT_REFS = ['origin/staging', 'origin/main'].filter((ref) => {
     return false;
   }
 });
+
+if (listMode) {
+  // The commits this PR introduces: reachable from head, not from the base or any
+  // already-reviewed integration ref. Merge commits are skipped (a merge of the
+  // base is not authored content, and commitlint ignores them anyway).
+  // If no integration ref resolved or the walk fails, fall back to everything in
+  // `base..head` — wider, never narrower — and say so on stderr.
+  try {
+    const notRefs = EXEMPT_REFS.length > 0 ? EXEMPT_REFS : [];
+    const args = ['rev-list', '--reverse', '--no-merges', `${base}..${head}`];
+    if (notRefs.length > 0) args.push('--not', ...notRefs);
+    console.log(lines(git(args)).join('\n'));
+  } catch (err) {
+    console.error(
+      'pr-commit-range: could not compute the unreviewed set, listing all of base..head:',
+      err instanceof Error ? err.message : String(err),
+    );
+    console.log(
+      lines(git(['rev-list', '--reverse', '--no-merges', `${base}..${head}`])).join('\n'),
+    );
+  }
+  process.exit(0);
+}
 
 // No integration refs resolved (shallow clone, unusual remote layout): keep the
 // original range rather than silently linting nothing.
