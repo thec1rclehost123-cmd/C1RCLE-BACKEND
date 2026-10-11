@@ -26,6 +26,7 @@ export * from './models/settlement.js';
 export * from './models/payout.js';
 export * from './models/bank-account.js';
 export * from './models/dispute.js';
+export * from './models/provider-payment.js';
 export * from './models/refund-request.js';
 export * from './models/support-ticket.js';
 export * from './models/safety-report.js';

@@ -36,6 +36,7 @@ import {
   createBankAccountService,
   createDisputeService,
   AdminDisputeService,
+  ProviderPaymentService,
   RefundService,
   SupportService,
   AdminSupportService,
@@ -195,6 +196,8 @@ export interface PartnerV2Services {
   adminDispute: AdminDisputeService;
   /** Phase 6 admin: amount-tiered refund approval over an order's payment. */
   refund: RefundService;
+  /** The payment provider's record of each payment, for reconciliation. */
+  providerPayments: ProviderPaymentService;
   /** Phase 7 support: guest/requester intake + follow-ups on your own tickets. */
   support: SupportService;
   /** Phase 7 support: admin desk over the same ticket aggregate. */
@@ -555,6 +558,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   });
 
   const refund = new RefundService(deps, adminAuthority);
+  const providerPayments = new ProviderPaymentService(deps);
   const adminPayout = new AdminPayoutService(deps, adminAuthority);
   const adminDispute = new AdminDisputeService(deps, adminAuthority);
   const adminOps = new AdminOperationsService(deps, adminAuthority);
@@ -621,6 +625,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     bankAccount,
     dispute,
     refund,
+    providerPayments,
     adminPayout,
     adminDispute,
     support,

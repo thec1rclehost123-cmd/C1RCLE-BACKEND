@@ -7,6 +7,7 @@ import type { ActorContext } from '@c1rcle/core/application';
 import { getGatewayConfig } from '../../../config/index.js';
 import {
   holdIdFromNotes,
+  providerEventFromWebhook,
   summariseWebhookForLog,
   webhookPayloadSchema,
 } from '../../../lib/razorpay-webhook.js';
@@ -150,9 +151,18 @@ export default async function webhookRoutes(fastify: FastifyInstance) {
 
       const entity = parsed.data.payload?.payment?.entity;
       if (parsed.data.event !== 'payment.captured' || !entity) {
-        // Ack, no-op: only payment.captured triggers fulfillment.
+        // Not a capture: nothing to fulfil. Refunds and disputes are still facts
+        // about a payment, so record them for reconciliation and acknowledge.
+        const fact = providerEventFromWebhook(parsed.data, null, new Date());
+        if (fact) await services.providerPayments.recordEvent(fact);
         return reply.status(200).send({ received: true });
       }
+
+      // The provider's capture (amount, fee, tax) is a fact whether or not we can
+      // tie it to a hold, so record it first. A failure here returns 5xx and
+      // Razorpay retries, which is safe: recording is idempotent.
+      const captured = providerEventFromWebhook(parsed.data, null, new Date());
+      if (captured) await services.providerPayments.recordEvent(captured);
 
       const holdId = holdIdFromNotes(entity.notes);
       const paymentIntentId = entity.order_id ?? undefined;
@@ -184,6 +194,10 @@ export default async function webhookRoutes(fastify: FastifyInstance) {
         })
         .catch((error: unknown) => mapDomainError(reply, request, holdId, error));
       if (result === undefined) return reply;
+
+      // Now the capture can be tied to our order, for reconciliation.
+      const fulfilled = providerEventFromWebhook(parsed.data, result.order.id, new Date());
+      if (fulfilled) await services.providerPayments.recordEvent(fulfilled);
 
       return reply.status(200).send({ received: true });
     });

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   holdIdFromNotes,
+  providerEventFromWebhook,
   summariseWebhookForLog,
   webhookPayloadSchema,
 } from './razorpay-webhook.js';
@@ -118,5 +119,96 @@ describe('summariseWebhookForLog', () => {
     expect(summariseWebhookForLog({ event: 'settlement.processed' })).toEqual({
       event: 'settlement.processed',
     });
+  });
+});
+
+const NOW = new Date('2026-10-11T10:00:00.000Z');
+const parse = (body: unknown) => webhookPayloadSchema.parse(body);
+
+describe('providerEventFromWebhook', () => {
+  it('turns a real payment.captured into a capture fact with the provider’s fee and tax', () => {
+    const webhook = parse(event({ fee: 320, tax: 58 }));
+
+    expect(providerEventFromWebhook(webhook, 'ord_9', NOW)).toEqual({
+      type: 'captured',
+      paymentId: 'pay_TmgaJ3JMsO12ql',
+      providerOrderId: 'order_TmgXYJ1eoQ5SpI',
+      orderId: 'ord_9',
+      amountPaise: 10000,
+      currency: 'INR',
+      feePaise: 320,
+      taxOnFeePaise: 58,
+      occurredAt: NOW.toISOString(),
+    });
+  });
+
+  it('treats a missing fee or tax as zero, and refuses a capture with no amount', () => {
+    const noFee = providerEventFromWebhook(parse(event({ fee: null, tax: undefined })), null, NOW);
+    expect(noFee).toMatchObject({ feePaise: 0, taxOnFeePaise: 0, orderId: null });
+
+    expect(providerEventFromWebhook(parse(event({ amount: undefined })), null, NOW)).toBeNull();
+  });
+
+  it('maps refund.processed to a refund fact', () => {
+    const webhook = parse({
+      event: 'refund.processed',
+      payload: { refund: { entity: { id: 'rfnd_1', payment_id: 'pay_1', amount: 5000 } } },
+    });
+
+    expect(providerEventFromWebhook(webhook, null, NOW)).toEqual({
+      type: 'refund_processed',
+      paymentId: 'pay_1',
+      refundId: 'rfnd_1',
+      amountPaise: 5000,
+      currency: 'INR',
+    });
+  });
+
+  it.each([
+    ['payment.dispute.created', 'open'],
+    ['payment.dispute.action_required', 'open'],
+    ['payment.dispute.under_review', 'under_review'],
+    ['payment.dispute.won', 'won'],
+    ['payment.dispute.lost', 'lost'],
+    ['payment.dispute.closed', 'closed'],
+  ])('maps %s to a dispute fact with status %s', (name, status) => {
+    const webhook = parse({
+      event: name,
+      payload: { dispute: { entity: { id: 'disp_1', payment_id: 'pay_1', amount: 7000 } } },
+    });
+
+    expect(providerEventFromWebhook(webhook, null, NOW)).toEqual({
+      type: 'dispute',
+      paymentId: 'pay_1',
+      disputeId: 'disp_1',
+      amountPaise: 7000,
+      currency: 'INR',
+      status,
+    });
+  });
+
+  it('records nothing for events that are not facts about a payment', () => {
+    for (const name of [
+      'payment.authorized',
+      'order.paid',
+      'payment_link.paid',
+      'settlement.processed',
+    ]) {
+      expect(providerEventFromWebhook(parse(event({}, name)), null, NOW)).toBeNull();
+    }
+    // A dispute event with no dispute body, and an unknown event, are ignored too.
+    expect(
+      providerEventFromWebhook(parse({ event: 'payment.dispute.lost' }), null, NOW),
+    ).toBeNull();
+    expect(providerEventFromWebhook(parse({ event: 'something.else' }), null, NOW)).toBeNull();
+  });
+
+  it('never carries the payer’s personal data into the fact', () => {
+    const fact = providerEventFromWebhook(parse(event({ fee: 320, tax: 58 })), 'ord_9', NOW);
+    const text = JSON.stringify(fact);
+
+    for (const secret of ['payer@example.com', '+919999999999', 'A Payer', '1111', 'Visa']) {
+      expect(text).not.toContain(secret);
+    }
   });
 });

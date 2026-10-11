@@ -68,6 +68,7 @@ import type { Payout, PayoutStatus } from '../models/payout.js';
 import type { PlatformSettings } from '../models/platform-settings.js';
 import type { PlatformUser } from '../models/platform-user.js';
 import type { PromoterConnection } from '../models/promoter-connection.js';
+import type { ProviderPayment } from '../models/provider-payment.js';
 import type { ReferralLink } from '../models/referral-link.js';
 import type { AdminRefundRequest, AdminRefundRequestStatus } from '../models/refund-request.js';
 import type {
@@ -1102,6 +1103,18 @@ export interface DisputeRepository {
 }
 
 /** Admin refund requests (Phase 6 admin). Version-checked saves for the N-approver accumulator. */
+/**
+ * The provider's record of each payment (see `provider-payment.ts`). Keyed by
+ * the provider's payment id. `save` is optimistic: it throws
+ * `VersionConflictError` when the stored version is not `record.version - 1`
+ * (a new record has version 1 and must not already exist), so two webhooks for
+ * the same payment cannot overwrite each other.
+ */
+export interface ProviderPaymentRepository {
+  findByPaymentId(paymentId: string): Promise<ProviderPayment | null>;
+  save(record: ProviderPayment): Promise<void>;
+}
+
 export interface AdminRefundRequestRepository {
   getById(id: EntityId): Promise<AdminRefundRequest | null>;
   /** Every request against one order — used to compute the refundable remainder. */
