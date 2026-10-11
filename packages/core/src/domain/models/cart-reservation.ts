@@ -2,7 +2,7 @@ import { InvalidOperationError } from '../errors.js';
 import { bumpVersion, newVersionedEntity } from '../identity.js';
 
 import type { EntityId, VersionedEntity } from '../identity.js';
-import type { OrderAttribution } from './order.js';
+import type { OrderAttribution, OrderContact } from './order.js';
 import type { PricingBreakdown } from './pricing.js';
 
 /**
@@ -46,6 +46,8 @@ export interface CartReservation extends VersionedEntity {
    * fulfil another. First writer wins (see `bindProviderOrder`).
    */
   providerOrderId?: string | null;
+  /** Who the tickets are for, captured at hold time; becomes the order contact. */
+  attendee?: OrderContact | null;
   /** Idempotency key used to create this hold. */
   idempotencyKey: string;
 }
