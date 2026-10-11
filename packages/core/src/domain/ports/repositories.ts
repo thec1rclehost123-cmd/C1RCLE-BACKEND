@@ -1071,6 +1071,12 @@ export interface BankAccountRepository {
   create(account: BankAccount): Promise<BankAccount>;
   findById(id: EntityId): Promise<BankAccount | null>;
   listByOrganization(organizationId: EntityId): Promise<BankAccount[]>;
+  /**
+   * Every account across all organisations. Unpaginated: bank accounts are few
+   * (one or two per partner) and this is only for one-off maintenance such as the
+   * encryption-key migration — never a request path.
+   */
+  listAll(): Promise<BankAccount[]>;
   findDefaultByOrganization(organizationId: EntityId): Promise<BankAccount | null>;
   save(account: BankAccount): Promise<BankAccount>;
   delete(id: EntityId): Promise<void>;

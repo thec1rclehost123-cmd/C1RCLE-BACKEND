@@ -12,6 +12,7 @@
     "test": "vitest run",
     "test:scenarios": "vitest run --config vitest.scenarios.config.mjs",
     "seed:admin": "tsx --env-file-if-exists=.env.local src/scripts/seed-platform-admin.ts",
+    "reencrypt:bank-accounts": "tsx --env-file-if-exists=.env.local src/scripts/reencrypt-bank-accounts.ts",
     "configure:storage-cors": "tsx --env-file-if-exists=.env.local src/scripts/configure-storage-cors.ts"
   },
   "dependencies": {
