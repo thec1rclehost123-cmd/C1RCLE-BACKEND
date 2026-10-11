@@ -145,6 +145,7 @@ export default async function checkoutRoutes(fastify: FastifyInstance) {
             pricing,
             appliedPromoCode: pricing.appliedPromoCode,
             attribution,
+            attendee: body.attendee ?? null,
             idempotencyKey,
           });
 

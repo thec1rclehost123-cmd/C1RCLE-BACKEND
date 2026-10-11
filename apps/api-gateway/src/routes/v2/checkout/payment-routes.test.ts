@@ -584,3 +584,85 @@ describe('payment captured after the hold expired', () => {
     await server.close();
   });
 });
+
+// ─── Attendee capture ────────────────────────────────────────────────────────
+// Every paid order used to carry the placeholder contact "Guest /
+// guest@example.com", so tickets and receipts named nobody.
+
+describe('attendee capture', () => {
+  async function holdWith(server: Server, attendee: unknown) {
+    const seeded = await seedHold(server);
+    const repos = createV2Services().repos();
+    const base = await repos.cartReservations.getById(seeded.holdId);
+    if (!base) throw new Error('hold missing');
+    // Re-create the same purchase with an attendee, through the real endpoint.
+    const response = await server.inject({
+      method: 'POST',
+      url: '/checkout/holds',
+      headers: { 'idempotency-key': `attendee-hold-${++keySeq}` },
+      payload: {
+        eventId: base.eventId,
+        lines: base.lines.map((l) => ({ tierId: l.tierId, quantity: l.quantity })),
+        attendee,
+      },
+    });
+    return response;
+  }
+
+  it('carries the attendee from the hold onto the order and its tickets', async () => {
+    const server = await buildServer();
+    const response = await holdWith(server, {
+      name: '  Asha Rao ',
+      email: 'asha@example.com',
+      phone: '+919876543210',
+    });
+    expect(response.statusCode).toBe(201);
+    const holdId: string = response.json().holdId;
+    const total: number = response.json().pricing.grandTotalPaise;
+    const { paymentIntentId } = await attemptFor(server, holdId, `attendee-${keySeq}`);
+    const paymentId = `pay_attendee_${keySeq}`;
+    memoryProvider().simulateCapture(paymentId, total, paymentIntentId);
+
+    const verified = await verifyPayment(server, { paymentId, holdId, paymentIntentId });
+
+    expect(verified.statusCode).toBe(200);
+    const repos = createV2Services().repos();
+    const order = await repos.orders.getByPaymentId(paymentId);
+    expect(order?.contact).toEqual({
+      name: 'Asha Rao',
+      email: 'asha@example.com',
+      phone: '+919876543210',
+    });
+    const tickets = await repos.entitlements.getByOrderId(`ORD-${paymentId}`);
+    expect(tickets.length).toBeGreaterThan(0);
+    expect(tickets.every((t) => t.holderName === 'Asha Rao')).toBe(true);
+    await server.close();
+  });
+
+  it('still works without an attendee, using the old placeholder', async () => {
+    const server = await buildServer();
+    const { holdId, grandTotalPaise } = await seedHold(server);
+    const { paymentIntentId } = await attemptFor(server, holdId, `no-attendee-${keySeq}`);
+    const paymentId = `pay_no_attendee_${keySeq}`;
+    memoryProvider().simulateCapture(paymentId, grandTotalPaise, paymentIntentId);
+
+    expect((await verifyPayment(server, { paymentId, holdId, paymentIntentId })).statusCode).toBe(
+      200,
+    );
+    const order = await createV2Services().repos().orders.getByPaymentId(paymentId);
+    expect(order?.contact.email).toBe('guest@example.com');
+    await server.close();
+  });
+
+  it.each([
+    ['a missing name', { name: '', email: 'a@example.com' }],
+    ['a malformed email', { name: 'Asha', email: 'not-an-email' }],
+    ['an unknown field', { name: 'Asha', email: 'a@example.com', role: 'admin' }],
+    ['an over-long phone', { name: 'Asha', email: 'a@example.com', phone: '9'.repeat(40) }],
+  ])('rejects %s with a 422 and creates no hold', async (_label, attendee) => {
+    const server = await buildServer();
+    const response = await holdWith(server, attendee);
+    expect(response.statusCode).toBe(422);
+    await server.close();
+  });
+});

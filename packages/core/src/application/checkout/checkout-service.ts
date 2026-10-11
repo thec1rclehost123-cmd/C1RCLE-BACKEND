@@ -24,7 +24,7 @@ import type { EntityId } from '../../domain/identity.js';
 import type { CartReservation } from '../../domain/models/cart-reservation.js';
 import type { Entitlement } from '../../domain/models/entitlement.js';
 import type { CommissionTerms } from '../../domain/models/event-catalog.js';
-import type { Order } from '../../domain/models/order.js';
+import type { Order, OrderContact } from '../../domain/models/order.js';
 import type { PricingBreakdown } from '../../domain/models/pricing.js';
 import type { ActorContext, ServiceDeps } from '../context.js';
 import type { FinanceService } from '../finance/finance-service.js';
@@ -136,6 +136,8 @@ export class CheckoutService {
     appliedPromoCode: string | null;
     attribution: CheckoutAttribution | null;
     userId?: EntityId | null;
+    /** Who the tickets are for; becomes the order contact. */
+    attendee?: OrderContact | null;
     idempotencyKey: string;
     reservationTtlMs?: number;
   }): Promise<CartReservation> {
@@ -147,6 +149,7 @@ export class CheckoutService {
       appliedPromoCode,
       attribution,
       userId,
+      attendee,
       idempotencyKey,
       reservationTtlMs,
     } = input;
@@ -210,6 +213,7 @@ export class CheckoutService {
       status: 'active',
       expiresAt: new Date(now.getTime() + ttl).toISOString(),
       convertedOrderId: null,
+      attendee: attendee ?? null,
       idempotencyKey,
       version: 1,
       createdAt: now.toISOString(),
@@ -531,7 +535,9 @@ export class CheckoutService {
       eventId: hold.eventId,
       organizationId: hold.organizationId,
       userId: hold.userId,
-      contact: { name: 'Guest', email: 'guest@example.com', phone: '' },
+      // The attendee captured at hold time. Holds made before attendee capture
+      // existed (or by a client that does not send one) keep the old placeholder.
+      contact: hold.attendee ?? { name: 'Guest', email: 'guest@example.com', phone: '' },
       status: 'paid',
       lines: hold.lines.map((l) => ({
         tierId: l.tierId,
