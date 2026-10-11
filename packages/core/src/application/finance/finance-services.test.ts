@@ -111,6 +111,72 @@ describe('createFinanceService', () => {
     ).rejects.toBeInstanceOf(ForbiddenError);
   });
 
+  describe('precomputed settlement legs', () => {
+    const base = {
+      organizationId: ORG,
+      orderId: 'order_legs',
+      eventId: 'evt_legs',
+      grossAmount: 108_850,
+      hostOrganizationId: HOST,
+      venueOrganizationId: VENUE,
+      promoterOrganizationId: PROMOTER,
+      platformFeeRate: 0,
+      venueShareRate: 0,
+      promoterCommissionRate: null,
+    };
+    const legs = {
+      platformFee: 8_850,
+      venueShare: 18_000,
+      promoterCommission: 10_000,
+      hostPayout: 72_000,
+    };
+
+    it('writes exactly the given legs, ignoring the rate fields', async () => {
+      const repo = new MemoryLedgerRepository();
+      const service = createFinanceService({ ledger: repo, config });
+      const entries = await service.recordTicketSale({ ...base, legs }, actor(ORG));
+      const amountOf = (type: string) => entries.find((e) => e.entryType === type)?.amount;
+      expect(amountOf('platform_fee')).toBe(8_850);
+      expect(amountOf('venue_share')).toBe(18_000);
+      expect(amountOf('promoter_commission')).toBe(10_000);
+      expect(amountOf('host_payout')).toBe(72_000);
+      expect(amountOf('ticket_revenue')).toBe(108_850);
+    });
+
+    it('rejects legs that do not sum to the gross amount', async () => {
+      const service = createFinanceService({ ledger: new MemoryLedgerRepository(), config });
+      await expect(
+        service.recordTicketSale({ ...base, legs: { ...legs, hostPayout: 71_999 } }, actor(ORG)),
+      ).rejects.toBeInstanceOf(InvalidOperationError);
+    });
+
+    it('rejects a negative or fractional leg even if the total still adds up', async () => {
+      const service = createFinanceService({ ledger: new MemoryLedgerRepository(), config });
+      await expect(
+        service.recordTicketSale(
+          { ...base, legs: { ...legs, venueShare: -1, hostPayout: 72_001 } },
+          actor(ORG),
+        ),
+      ).rejects.toBeInstanceOf(InvalidOperationError);
+      await expect(
+        service.recordTicketSale(
+          { ...base, legs: { ...legs, venueShare: 18_000.5, hostPayout: 71_999.5 } },
+          actor(ORG),
+        ),
+      ).rejects.toBeInstanceOf(InvalidOperationError);
+    });
+  });
+
+  it('defaults plan commission to 0 for every plan until plans carry a rate', () => {
+    expect(config.planCommissionBps).toEqual({ basic: 0, silver: 0, diamond: 0 });
+    const custom = createCoreConfig({
+      redis: { url: 'redis://localhost:6379' },
+      firestore: { projectId: 'test-project' },
+      planCommissionBps: { diamond: 500 },
+    });
+    expect(custom.planCommissionBps).toEqual({ basic: 0, silver: 0, diamond: 500 });
+  });
+
   it('records a full split (host/venue/promoter) and sums to gross', async () => {
     const repo = new MemoryLedgerRepository();
     const service = createFinanceService({ ledger: repo, config });

@@ -5,7 +5,11 @@ import { computeSettlementSplit, createLedgerEntry } from '../../domain/models/l
 import { requireOrgAccess } from '../context.js';
 
 import type { EntityId } from '../../domain/identity.js';
-import type { LedgerEntry, LedgerEntryType } from '../../domain/models/ledger.js';
+import type {
+  LedgerEntry,
+  LedgerEntryType,
+  LedgerSettlementSplit,
+} from '../../domain/models/ledger.js';
 import type { LedgerRepository } from '../../domain/ports/repositories.js';
 import type { ServiceDeps, ActorContext } from '../context.js';
 
@@ -36,6 +40,13 @@ export interface RecordTicketSaleInput {
   promoterCommissionRate: number | null;
   /** Frozen assignment calculation, when attribution carries V2 terms. */
   promoterCommissionPaise?: number | null;
+  /**
+   * Precomputed legs (from `computeSettlementLegs`). When present they are used
+   * as given, after being checked to be non-negative integers that sum to
+   * `grossAmount`; the rate fields above are then ignored. Absent, the legacy
+   * rate-on-gross calculation runs.
+   */
+  legs?: LedgerSettlementSplit;
 }
 
 export interface BalanceSummary {
@@ -95,27 +106,43 @@ export function createFinanceService(deps: FinanceServiceDeps): FinanceService {
       return existing;
     }
 
-    const calculated = computeSettlementSplit(
-      input.grossAmount,
-      input.platformFeeRate,
-      input.venueShareRate,
-      input.promoterCommissionRate,
-    );
-    const promoterCommission = input.promoterCommissionPaise ?? calculated.promoterCommission;
-    if (
-      promoterCommission < 0 ||
-      promoterCommission > input.grossAmount - calculated.platformFee - calculated.venueShare
-    ) {
-      throw new InvalidOperationError(
-        'Promoter commission exceeds the distributable ticket revenue',
+    let split: LedgerSettlementSplit;
+    if (input.legs) {
+      const legs = input.legs;
+      const parts = [legs.platformFee, legs.venueShare, legs.promoterCommission, legs.hostPayout];
+      const total = parts.reduce((sum, part) => sum + part, 0);
+      if (
+        parts.some((part) => !Number.isInteger(part) || part < 0) ||
+        total !== input.grossAmount
+      ) {
+        throw new InvalidOperationError(
+          'Settlement legs must be non-negative integers that sum to the gross amount',
+        );
+      }
+      split = legs;
+    } else {
+      const calculated = computeSettlementSplit(
+        input.grossAmount,
+        input.platformFeeRate,
+        input.venueShareRate,
+        input.promoterCommissionRate,
       );
+      const promoterCommission = input.promoterCommissionPaise ?? calculated.promoterCommission;
+      if (
+        promoterCommission < 0 ||
+        promoterCommission > input.grossAmount - calculated.platformFee - calculated.venueShare
+      ) {
+        throw new InvalidOperationError(
+          'Promoter commission exceeds the distributable ticket revenue',
+        );
+      }
+      split = {
+        ...calculated,
+        promoterCommission,
+        hostPayout:
+          input.grossAmount - calculated.platformFee - calculated.venueShare - promoterCommission,
+      };
     }
-    const split = {
-      ...calculated,
-      promoterCommission,
-      hostPayout:
-        input.grossAmount - calculated.platformFee - calculated.venueShare - promoterCommission,
-    };
     const now = config.clock.now();
 
     const entries: LedgerEntry[] = [
