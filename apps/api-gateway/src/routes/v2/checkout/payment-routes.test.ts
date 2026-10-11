@@ -666,3 +666,106 @@ describe('attendee capture', () => {
     await server.close();
   });
 });
+
+// ─── Signature checked against the SERVER-stored order, never the browser's ──
+
+describe('callback signature uses the order stored on the hold', () => {
+  async function paid(server: Server, label: string) {
+    const { holdId, grandTotalPaise } = await seedHold(server);
+    const { paymentIntentId } = await attemptFor(server, holdId, `${label}-attempt`);
+    const paymentId = `pay_${label}`;
+    memoryProvider().simulateCapture(paymentId, grandTotalPaise, paymentIntentId);
+    return { holdId, paymentId, paymentIntentId };
+  }
+
+  it("verifies against the hold's order id even when the browser sends a different one", async () => {
+    const server = await buildServer();
+    const p = await paid(server, 'srv_order');
+    const verify = vi.spyOn(memoryProvider(), 'verifyPayment');
+
+    try {
+      // The browser claims another order and signs for it — a self-consistent pair.
+      const response = await verifyPayment(server, {
+        paymentId: p.paymentId,
+        holdId: p.holdId,
+        paymentIntentId: 'order_attacker_chosen',
+      });
+
+      expect(response.statusCode).toBe(400);
+      // The signature was never even checked against the browser's value.
+      for (const [request] of verify.mock.calls) {
+        expect(request.orderId).toBe(p.paymentIntentId);
+        expect(request.orderId).not.toBe('order_attacker_chosen');
+      }
+      expect(await createV2Services().repos().orders.getByPaymentId(p.paymentId)).toBeNull();
+    } finally {
+      vi.restoreAllMocks();
+    }
+    await server.close();
+  });
+
+  it("rejects a signature minted for another order, even with the hold's real order id sent", async () => {
+    const server = await buildServer();
+    const p = await paid(server, 'wrong_sig_order');
+
+    const response = await verifyPayment(server, {
+      paymentId: p.paymentId,
+      holdId: p.holdId,
+      paymentIntentId: p.paymentIntentId,
+      signatureOrderId: 'order_someone_elses',
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(await createV2Services().repos().orders.getByPaymentId(p.paymentId)).toBeNull();
+    await server.close();
+  });
+
+  it('a hold with no payment attempt cannot be confirmed, whatever the browser sends', async () => {
+    const server = await buildServer();
+    const { holdId, grandTotalPaise } = await seedHold(server);
+    memoryProvider().simulateCapture('pay_no_attempt_2', grandTotalPaise, 'order_x');
+
+    const response = await verifyPayment(server, {
+      paymentId: 'pay_no_attempt_2',
+      holdId,
+      paymentIntentId: 'order_x',
+    });
+
+    expect(response.statusCode).toBe(400);
+    await server.close();
+  });
+
+  it('concurrent confirmations of one payment converge on a single order and one set of tickets', async () => {
+    const server = await buildServer();
+    const p = await paid(server, 'concurrent');
+
+    const responses = await Promise.all(Array.from({ length: 6 }, () => verifyPayment(server, p)));
+
+    // Every caller is told the same, successful, thing...
+    expect(responses.map((r) => r.statusCode)).toEqual(Array(6).fill(200));
+    const orderIds = new Set(responses.map((r) => r.json().order.id));
+    expect(orderIds).toEqual(new Set([`ORD-${p.paymentId}`]));
+    // ...and the books hold exactly one order's worth of tickets and ledger rows.
+    const repos = createV2Services().repos();
+    const tickets = await repos.entitlements.getByOrderId(`ORD-${p.paymentId}`);
+    expect(tickets).toHaveLength(responses[0]?.json().entitlements.length);
+    expect(new Set(tickets.map((t) => t.id)).size).toBe(tickets.length);
+    const ledger = await repos.ledger.findByOrder(`ORD-${p.paymentId}`);
+    expect(new Set(ledger.map((e) => e.entryType)).size).toBe(ledger.length);
+    await server.close();
+  });
+
+  it('a duplicate callback after success is a harmless repeat', async () => {
+    const server = await buildServer();
+    const p = await paid(server, 'dup_cb');
+
+    const first = await verifyPayment(server, p);
+    const second = await verifyPayment(server, p);
+
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    expect(second.json().order.id).toBe(first.json().order.id);
+    expect(second.json().entitlements).toHaveLength(first.json().entitlements.length);
+    await server.close();
+  });
+});

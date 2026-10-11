@@ -423,6 +423,56 @@ export class CheckoutService {
   }
 
   /**
+   * The client-redirect confirmation: checks Razorpay's checkout-callback
+   * signature, then confirms the payment.
+   *
+   * The signature is verified against the provider order ID **stored on the
+   * hold when the attempt was created** — never against an order ID supplied by
+   * the browser. Razorpay's own guidance is explicit that the order ID must come
+   * from your server: the three callback values arrive in a browser you do not
+   * control, so a client-chosen order ID would let a caller pick the very value
+   * the signature is checked against. A `clientOrderId` the browser sends anyway
+   * is only compared with the stored one, and a difference is rejected.
+   */
+  async verifyCheckoutCallback(input: {
+    actor: ActorContext;
+    holdId: EntityId;
+    paymentId: string;
+    signature: string;
+    clientOrderId?: string | undefined;
+    idempotencyKey?: string | undefined;
+  }): Promise<{ order: Order; entitlements: Entitlement[] }> {
+    const { actor, holdId, paymentId, signature, clientOrderId } = input;
+
+    const hold = await this.deps.repositories.cartReservations.getById(holdId);
+    if (!hold || !this.actsForHold(actor, hold)) throw new InvalidOperationError('Hold not found');
+    const serverOrderId = hold.providerOrderId;
+    if (!serverOrderId) {
+      throw new InvalidOperationError('No payment attempt has been started for this hold');
+    }
+    if (clientOrderId !== undefined && clientOrderId !== serverOrderId) {
+      throw new InvalidOperationError('Payment does not belong to this hold');
+    }
+
+    const verification = await this.deps.paymentProvider.verifyPayment({
+      paymentId,
+      orderId: serverOrderId,
+      signature,
+    });
+    if (!verification.captured) {
+      throw new InvalidOperationError(`Payment ${paymentId} has not been captured`);
+    }
+
+    return this.confirmPayment({
+      actor,
+      paymentId,
+      paymentIntentId: serverOrderId,
+      holdId,
+      _idempotencyKey: input.idempotencyKey ?? paymentId,
+    });
+  }
+
+  /**
    * Step 4: Confirm Payment — dual-path idempotent, resumable fulfillment.
    * Called by both webhook and redirect; the second call converges on the same
    * order, and finishes any fulfilment step the first call did not reach.
