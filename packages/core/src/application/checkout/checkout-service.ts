@@ -10,8 +10,8 @@ import {
 } from '../../domain/errors.js';
 import { issueEntitlements } from '../../domain/models/entitlement.js';
 import { effectiveTierPricePaise } from '../../domain/models/event-catalog.js';
-import { platformFeePercentFor } from '../../domain/models/onboarding.js';
 import { commissionTierFor } from '../../domain/models/partnership.js';
+import { computeSettlementLegs } from '../../domain/models/settlement.js';
 import { isSystemActor, SYSTEM_ACTOR } from '../context.js';
 import { createFinanceService } from '../finance/finance-service.js';
 import { createLeaderboardService } from '../finance/leaderboard-service.js';
@@ -688,7 +688,7 @@ export class CheckoutService {
     // event's venue. A host-run event with no venue partnership settles
     // entirely to the host — there is no separate venue party to pay.
     let venueOrganizationId = hostOrganizationId;
-    let venueShareRate = 0;
+    let venueBps = 0;
     const event = await this.deps.repositories.events.getById(order.eventId);
     if (event?.venueId) {
       const partnership = await this.deps.repositories.partnerships.findByPair(
@@ -703,17 +703,19 @@ export class CheckoutService {
         // see phase-06-*.md. A live partnership wins; otherwise the most recent
         // resolved one is returned by findByPair, so a blocked pair still pays
         // its last-agreed rate (the venue did host the event).
-        venueShareRate = (partnership.venueShareRate ?? 0) / 100;
+        venueBps = (partnership.venueShareRate ?? 0) * 100;
       }
     }
 
-    // Platform fee rate: the host's onboarding plan tier (Phase 2), the only
-    // place a plan is recorded. Falls back to the `basic` (highest) rate if
-    // no approved onboarding request is on file — a missing record must
-    // never under-charge the platform fee.
+    // Platform commission on ticket revenue: the host's onboarding plan tier
+    // (Phase 2) maps to a commission in basis points, which defaults to 0 for
+    // every plan. (This used to be a 15/12/10% rate applied to the grand total
+    // including the guest's fees and GST — see `computeSettlementLegs`.) A missing
+    // onboarding record falls back to `basic`, the plan with the highest rate,
+    // so a gap can never under-charge once plans carry a commission.
     const onboarding =
       await this.deps.repositories.onboarding.findByProvisionedOrganizationId(hostOrganizationId);
-    const platformFeeRate = platformFeePercentFor(onboarding?.plan ?? 'basic') / 100;
+    const commissionBps = this.deps.config.planCommissionBps[onboarding?.plan ?? 'basic'];
 
     // Promoter commission rate: the v1-proven performance tier, keyed by the
     // promoter's total attributed conversions across all their links.
@@ -728,6 +730,21 @@ export class CheckoutService {
       promoterCommissionRate = commissionTierFor(ticketsSold).rate / 100;
     }
 
+    // Money the guest paid on top of the (discounted) ticket subtotal is the
+    // platform's customer fee + GST. Derived as the difference, not summed from
+    // the fee fields, so the legs add up to exactly what was charged.
+    const customerFeesPaise = order.grandTotalPaise - order.discountedSubtotalPaise;
+    if (customerFeesPaise < 0) {
+      throw new InvalidOperationError('Order total is below its ticket subtotal');
+    }
+    // A frozen promoter amount (V2 assignment terms) wins; otherwise the
+    // performance-tier rate applies to the ticket revenue, not the grand total.
+    const promoterAmountPaise =
+      order.attribution?.promoterCommissionPaise ??
+      (promoterCommissionRate !== null
+        ? Math.round(order.discountedSubtotalPaise * promoterCommissionRate)
+        : null);
+
     const entries = await this.financeService.recordTicketSale(
       {
         organizationId: hostOrganizationId,
@@ -737,10 +754,19 @@ export class CheckoutService {
         hostOrganizationId,
         venueOrganizationId,
         promoterOrganizationId,
-        platformFeeRate,
-        venueShareRate,
+        platformFeeRate: 0,
+        venueShareRate: venueBps / 10_000,
         promoterCommissionRate,
         promoterCommissionPaise: order.attribution?.promoterCommissionPaise ?? null,
+        legs: computeSettlementLegs({
+          subtotalPaise: order.discountedSubtotalPaise,
+          customerFeesPaise,
+          // The GST the guest was charged, never more than their fees in total.
+          gstPaise: Math.min(order.gstPaise, customerFeesPaise),
+          commissionBps,
+          venueBps,
+          promoterAmountPaise,
+        }),
       },
       SYSTEM_ACTOR,
     );

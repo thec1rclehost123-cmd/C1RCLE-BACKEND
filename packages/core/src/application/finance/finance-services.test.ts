@@ -111,6 +111,102 @@ describe('createFinanceService', () => {
     ).rejects.toBeInstanceOf(ForbiddenError);
   });
 
+  describe('precomputed settlement legs', () => {
+    const base = {
+      organizationId: ORG,
+      orderId: 'order_legs',
+      eventId: 'evt_legs',
+      grossAmount: 108_850,
+      hostOrganizationId: HOST,
+      venueOrganizationId: VENUE,
+      promoterOrganizationId: PROMOTER,
+      platformFeeRate: 0,
+      venueShareRate: 0,
+      promoterCommissionRate: null,
+    };
+    const legs = {
+      platformFee: 8_850,
+      venueShare: 18_000,
+      promoterCommission: 10_000,
+      hostPayout: 72_000,
+    };
+
+    it('writes exactly the given legs, ignoring the rate fields', async () => {
+      const repo = new MemoryLedgerRepository();
+      const service = createFinanceService({ ledger: repo, config });
+      const entries = await service.recordTicketSale({ ...base, legs }, actor(ORG));
+      const amountOf = (type: string) => entries.find((e) => e.entryType === type)?.amount;
+      expect(amountOf('platform_fee')).toBe(8_850);
+      expect(amountOf('venue_share')).toBe(18_000);
+      expect(amountOf('promoter_commission')).toBe(10_000);
+      expect(amountOf('host_payout')).toBe(72_000);
+      expect(amountOf('ticket_revenue')).toBe(108_850);
+    });
+
+    it('records GST as its own settled line and counts it toward no partner balance', async () => {
+      const repo = new MemoryLedgerRepository();
+      const service = createFinanceService({ ledger: repo, config });
+      // ₹1,088.50 = ₹1,000 tickets + ₹75 fee + ₹13.50 GST; GST split out of platformFee.
+      const withGst = { ...legs, platformFee: 7_500, gst: 1_350 };
+      const entries = await service.recordTicketSale({ ...base, legs: withGst }, actor(ORG));
+
+      const gst = entries.find((e) => e.entryType === 'gst');
+      expect(gst).toMatchObject({ amount: 1_350, status: 'settled', organizationId: HOST });
+      expect(entries.find((e) => e.entryType === 'platform_fee')?.amount).toBe(7_500);
+
+      // Nothing in the host's available/pending money comes from GST or the platform fee.
+      const hostBalance = await service.getBalances(HOST, actor(HOST));
+      expect(hostBalance.availablePaise).toBe(0);
+      expect(hostBalance.pendingPaise).toBe(72_000);
+    });
+
+    it('counts GST in the sum check: legs that only add up without it are rejected', async () => {
+      const service = createFinanceService({ ledger: new MemoryLedgerRepository(), config });
+      await expect(
+        service.recordTicketSale({ ...base, legs: { ...legs, gst: 1_350 } }, actor(ORG)),
+      ).rejects.toBeInstanceOf(InvalidOperationError);
+    });
+
+    it('omits the GST line when there is no GST', async () => {
+      const service = createFinanceService({ ledger: new MemoryLedgerRepository(), config });
+      const entries = await service.recordTicketSale({ ...base, legs }, actor(ORG));
+      expect(entries.some((e) => e.entryType === 'gst')).toBe(false);
+    });
+
+    it('rejects legs that do not sum to the gross amount', async () => {
+      const service = createFinanceService({ ledger: new MemoryLedgerRepository(), config });
+      await expect(
+        service.recordTicketSale({ ...base, legs: { ...legs, hostPayout: 71_999 } }, actor(ORG)),
+      ).rejects.toBeInstanceOf(InvalidOperationError);
+    });
+
+    it('rejects a negative or fractional leg even if the total still adds up', async () => {
+      const service = createFinanceService({ ledger: new MemoryLedgerRepository(), config });
+      await expect(
+        service.recordTicketSale(
+          { ...base, legs: { ...legs, venueShare: -1, hostPayout: 72_001 } },
+          actor(ORG),
+        ),
+      ).rejects.toBeInstanceOf(InvalidOperationError);
+      await expect(
+        service.recordTicketSale(
+          { ...base, legs: { ...legs, venueShare: 18_000.5, hostPayout: 71_999.5 } },
+          actor(ORG),
+        ),
+      ).rejects.toBeInstanceOf(InvalidOperationError);
+    });
+  });
+
+  it('defaults plan commission to 0 for every plan until plans carry a rate', () => {
+    expect(config.planCommissionBps).toEqual({ basic: 0, silver: 0, diamond: 0 });
+    const custom = createCoreConfig({
+      redis: { url: 'redis://localhost:6379' },
+      firestore: { projectId: 'test-project' },
+      planCommissionBps: { diamond: 500 },
+    });
+    expect(custom.planCommissionBps).toEqual({ basic: 0, silver: 0, diamond: 500 });
+  });
+
   it('records a full split (host/venue/promoter) and sums to gross', async () => {
     const repo = new MemoryLedgerRepository();
     const service = createFinanceService({ ledger: repo, config });
