@@ -94,6 +94,16 @@ export class FirestoreCartReservationRepository implements CartReservationReposi
     });
   }
 
+  // One equality filter on a single field: served by the automatic index.
+  async getByProviderOrderId(providerOrderId: string): Promise<CartReservation | null> {
+    const snap = await this.collection
+      .where('providerOrderId', '==', providerOrderId)
+      .limit(1)
+      .get();
+    const doc = snap.docs[0];
+    return doc ? toCartReservation(doc.data()) : null;
+  }
+
   async cleanupExpired(now: Date, _tx?: TxContext | null): Promise<number> {
     const snap = await this.collection
       .where('status', '==', 'active')

@@ -645,6 +645,11 @@ export interface CartReservationRepository {
     providerOrderId: string,
     tx?: TxContext | null,
   ): Promise<string | null>;
+  /**
+   * The hold a provider order was bound to, if any. Used to find the hold behind
+   * a paid order (an order records the provider order id, not the hold id).
+   */
+  getByProviderOrderId(providerOrderId: string): Promise<CartReservation | null>;
   /** Cleans up expired holds (called by a worker). */
   cleanupExpired(now: Date, tx?: TxContext | null): Promise<number>;
   /**

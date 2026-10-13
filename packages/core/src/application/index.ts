@@ -71,6 +71,13 @@ export { createAuditConsumer, createProjectionConsumer } from './events/audit-co
 
 // Phase 4: Checkout, Inventory, Payments
 export { CheckoutService, rsvpOrderId } from './checkout/checkout-service.js';
+export type { FulfilmentGap, FulfilmentGaps } from './checkout/checkout-service.js';
+export { FulfilmentRepairService } from './checkout/fulfilment-repair-service.js';
+export type {
+  FulfilmentRepairFinding,
+  FulfilmentRepairOptions,
+  FulfilmentRepairReport,
+} from './checkout/fulfilment-repair-service.js';
 export { InventoryService } from './inventory/inventory-service.js';
 export { PricingService } from './pricing/pricing-service.js';
 export { OrderService } from './orders/order-service.js';
