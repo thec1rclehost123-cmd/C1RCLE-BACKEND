@@ -10,6 +10,7 @@ import {
   ConflictError,
   ForbiddenError,
   UnauthorizedError,
+  ServiceUnavailableError,
   VersionConflictError,
   StateTransitionError,
   InvalidOperationError,
@@ -44,6 +45,7 @@ export function mapDomainError(error: DomainError): {
   if (error instanceof StateTransitionError) return { status: 409, code: 'conflict' };
   if (error instanceof ConflictError) return { status: 409, code: 'conflict' };
   if (error instanceof InvalidOperationError) return { status: 400, code: 'validation' };
+  if (error instanceof ServiceUnavailableError) return { status: 503, code: 'server' };
   return { status: 500, code: 'server' };
 }
 
