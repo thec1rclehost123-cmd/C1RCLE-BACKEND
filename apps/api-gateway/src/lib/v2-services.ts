@@ -20,6 +20,7 @@ import {
   createAuditConsumer,
   createProjectionConsumer,
   CheckoutService,
+  FulfilmentRepairService,
   InventoryService,
   PricingService,
   OrderService,
@@ -142,6 +143,8 @@ export interface PartnerV2Services {
   /** Phase 7 admin: platform directory views + venue suspension resolution. */
   adminOps: AdminOperationsService;
   checkout: CheckoutService;
+  /** Finds paid orders whose fulfilment stalled part-way and finishes them. */
+  fulfilmentRepair: FulfilmentRepairService;
   /** Phase 4 PR1: unauthenticated guest-facing discovery reads. */
   public: PublicService;
   /**
@@ -516,6 +519,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   });
 
   const checkout = new CheckoutService(deps);
+  const fulfilmentRepair = new FulfilmentRepairService(deps, checkout);
 
   // The paid walk-up sale. `settleOrder` is injected from the checkout
   // service so door revenue lands in the finance ledger through the SAME
@@ -599,6 +603,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     adminAuthority,
     adminOps,
     checkout,
+    fulfilmentRepair,
     public: new PublicService(deps),
     paymentProvider,
     orders: new OrderService(deps),
