@@ -92,6 +92,7 @@ import type {
   SupportTicketPriority,
   SupportTicketStatus,
 } from '../models/support-ticket.js';
+import type { TaxRule, TaxRuleKind } from '../models/tax-rule.js';
 import type { UserBan } from '../models/user-ban.js';
 import type { Venue, VenueSlot, SlotRequest } from '../models/venue.js';
 
@@ -1113,6 +1114,17 @@ export interface DisputeRepository {
 export interface ProviderPaymentRepository {
   findByPaymentId(paymentId: string): Promise<ProviderPayment | null>;
   save(record: ProviderPayment): Promise<void>;
+}
+
+/**
+ * Tax rules (see `tax-rule.ts`). `save` is optimistic like the other versioned
+ * aggregates: a new rule is version 1 and must not already exist.
+ */
+export interface TaxRuleRepository {
+  getById(id: EntityId): Promise<TaxRule | null>;
+  listAll(): Promise<TaxRule[]>;
+  listByKind(kind: TaxRuleKind): Promise<TaxRule[]>;
+  save(rule: TaxRule): Promise<void>;
 }
 
 export interface AdminRefundRequestRepository {

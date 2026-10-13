@@ -38,6 +38,7 @@ import {
   AdminDisputeService,
   ProviderPaymentService,
   RefundService,
+  TaxRuleService,
   SupportService,
   AdminSupportService,
   createLeaderboardService,
@@ -198,6 +199,8 @@ export interface PartnerV2Services {
   refund: RefundService;
   /** The payment provider's record of each payment, for reconciliation. */
   providerPayments: ProviderPaymentService;
+  /** Effective-dated, approval-gated tax rules. No rule is enabled by default. */
+  taxRules: TaxRuleService;
   /** Phase 7 support: guest/requester intake + follow-ups on your own tickets. */
   support: SupportService;
   /** Phase 7 support: admin desk over the same ticket aggregate. */
@@ -559,6 +562,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
 
   const refund = new RefundService(deps, adminAuthority);
   const providerPayments = new ProviderPaymentService(deps);
+  const taxRules = new TaxRuleService(deps, adminAuthority);
   const adminPayout = new AdminPayoutService(deps, adminAuthority);
   const adminDispute = new AdminDisputeService(deps, adminAuthority);
   const adminOps = new AdminOperationsService(deps, adminAuthority);
@@ -626,6 +630,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     dispute,
     refund,
     providerPayments,
+    taxRules,
     adminPayout,
     adminDispute,
     support,

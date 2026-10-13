@@ -57,6 +57,7 @@ import type {
   SocialNotificationRepository,
   AdminRefundRequestRepository,
   ProviderPaymentRepository,
+  TaxRuleRepository,
   UserAccountRepository,
   UserBanRepository,
   PlatformSettingsRepository,
@@ -175,6 +176,8 @@ export interface ServiceDeps {
     refundRequests: AdminRefundRequestRepository;
     /** The payment provider's record of each payment, for reconciliation. */
     providerPayments: ProviderPaymentRepository;
+    /** Effective-dated, approval-gated tax rates. Empty by default. */
+    taxRules: TaxRuleRepository;
     /** Platform support tickets (guest intake + admin desk). */
     supportTickets: SupportTicketRepository;
     /** Platform safety reports (guest intake + admin desk). */
