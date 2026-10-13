@@ -11,6 +11,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:scenarios": "vitest run --config vitest.scenarios.config.mjs",
+    "repair:fulfilment": "tsx --env-file-if-exists=.env.local src/scripts/repair-fulfilment.ts",
     "seed:admin": "tsx --env-file-if-exists=.env.local src/scripts/seed-platform-admin.ts",
     "configure:storage-cors": "tsx --env-file-if-exists=.env.local src/scripts/configure-storage-cors.ts"
   },

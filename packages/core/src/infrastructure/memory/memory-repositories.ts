@@ -496,6 +496,13 @@ export class MemoryCartReservationRepository implements CartReservationRepositor
     return providerOrderId;
   }
 
+  async getByProviderOrderId(providerOrderId: string): Promise<CartReservation | null> {
+    for (const r of this.reservations.values()) {
+      if (r.providerOrderId === providerOrderId) return r;
+    }
+    return null;
+  }
+
   async cleanupExpired(now: Date, _tx?: TxContext | null): Promise<number> {
     let count = 0;
     for (const [id, r] of this.reservations) {
