@@ -10,6 +10,7 @@ import type {
   ProviderPaymentEvent,
 } from '../../domain/models/provider-payment.js';
 import type { ProviderPaymentRepository } from '../../domain/ports/repositories.js';
+import type { AdminAuthorityService } from '../admin/admin-authority-service.js';
 import type { ServiceDeps } from '../context.js';
 
 const NOW = new Date('2026-10-11T10:00:00.000Z');
@@ -33,7 +34,13 @@ function build(
     },
     config: { clock: { now: () => NOW } },
   } as unknown as ServiceDeps;
-  return { service: new ProviderPaymentService(deps), providerPayments };
+  const authority = {
+    requireAdmin: async (id: string) => {
+      if (id !== 'admin_1') throw new Error('not an admin');
+      return { id, role: 'finance' };
+    },
+  } as unknown as AdminAuthorityService;
+  return { service: new ProviderPaymentService(deps, authority), providerPayments };
 }
 
 const captured: ProviderPaymentEvent = {
@@ -197,5 +204,17 @@ describe('ProviderPaymentService.reconcileOrder', () => {
     const { service } = build();
 
     await expect(service.reconcileOrder('ord_missing')).rejects.toBeInstanceOf(NotFoundError);
+  });
+});
+
+describe('ProviderPaymentService.reconcileOrderForAdmin', () => {
+  it('lets an admin read the reconciliation, and refuses anyone else', async () => {
+    const { service } = build();
+    await service.recordEvent(captured);
+
+    expect((await service.reconcileOrderForAdmin('admin_1', 'ord_9')).reconciled).toBe(true);
+    await expect(service.reconcileOrderForAdmin('someone_else', 'ord_9')).rejects.toThrow(
+      'not an admin',
+    );
   });
 });

@@ -561,7 +561,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   });
 
   const refund = new RefundService(deps, adminAuthority);
-  const providerPayments = new ProviderPaymentService(deps);
+  const providerPayments = new ProviderPaymentService(deps, adminAuthority);
   const taxRules = new TaxRuleService(deps, adminAuthority);
   const adminPayout = new AdminPayoutService(deps, adminAuthority);
   const adminDispute = new AdminDisputeService(deps, adminAuthority);

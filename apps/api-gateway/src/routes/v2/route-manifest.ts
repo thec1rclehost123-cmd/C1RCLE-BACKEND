@@ -6,6 +6,7 @@ import adminAnalyticsRoutes from './admin/analytics.js';
 import adminDirectoryRoutes from './admin/directory.js';
 import adminDisputeRoutes from './admin/disputes.js';
 import adminEventActionRoutes from './admin/event-actions.js';
+import adminFinanceControlRoutes from './admin/finance-controls.js';
 import adminRoutes from './admin/onboarding-review.js';
 import adminOrderRoutes from './admin/orders.js';
 import adminOrganizationActionRoutes from './admin/organization-actions.js';
@@ -135,6 +136,7 @@ export async function registerV2Routes(
       await adminRoutes(v2);
       await adminRefundRoutes(v2);
       await adminPayoutRoutes(v2);
+      await adminFinanceControlRoutes(v2);
       await adminDisputeRoutes(v2);
       await adminDirectoryRoutes(v2);
       // Phase 7: support desk over the ticket aggregate.
