@@ -4,6 +4,7 @@ import {
   ConflictError,
   EventNotFoundError,
   InvalidOperationError,
+  NotFoundError,
   TicketTierNotFoundError,
   UnauthorizedError,
   VersionConflictError,
@@ -58,6 +59,15 @@ export function rsvpOrderId(eventId: EntityId, userId: EntityId): EntityId {
  *   quote → holds → intent → confirm (dual path: webhook + redirect)
  * All mutations are idempotent and use the transactional outbox for fulfillment events.
  */
+/** A fulfilment step a paid order may be missing. */
+export type FulfilmentGap = 'hold' | 'hold_conversion' | 'tickets' | 'ledger';
+
+export interface FulfilmentGaps {
+  /** False when no hold is bound to the order's provider order (nothing can be repaired). */
+  holdFound: boolean;
+  missing: FulfilmentGap[];
+}
+
 export class CheckoutService {
   private readonly financeService: FinanceService;
   private readonly leaderboardService: LeaderboardService;
@@ -660,6 +670,60 @@ export class CheckoutService {
         'Your payment arrived after the reservation expired and the tickets are no longer available. It has been refunded in full.',
       );
     }
+  }
+
+  /**
+   * What a paid order is still missing. Fulfilment is several writes with no
+   * enclosing transaction, so a crash can leave an order that was charged but
+   * never got its hold converted, its tickets or its ledger entry. A redelivered
+   * webhook usually repairs that; this reports it for the case where none comes.
+   */
+  async assessFulfilment(order: Order): Promise<FulfilmentGaps> {
+    const repos = this.deps.repositories;
+    const hold = order.paymentIntentId
+      ? await repos.cartReservations.getByProviderOrderId(order.paymentIntentId)
+      : null;
+    const missing: FulfilmentGap[] = [];
+    if (!hold) return { holdFound: false, missing: ['hold'] };
+
+    if (hold.status !== 'converted' || hold.convertedOrderId !== order.id) {
+      missing.push('hold_conversion');
+    }
+    const have = new Set((await repos.entitlements.getByOrderId(order.id)).map((e) => e.id));
+    const wanted = issueEntitlements({
+      order,
+      admitsPerUnit: this.buildAdmitsPerUnit(hold.lines),
+      now: new Date(),
+    });
+    if (wanted.some((entitlement) => !have.has(entitlement.id))) missing.push('tickets');
+    // A zero-value order has no money to split, so no ledger entry is expected.
+    if (order.grandTotalPaise > 0 && (await repos.ledger.findByOrder(order.id)).length === 0) {
+      missing.push('ledger');
+    }
+    return { holdFound: true, missing };
+  }
+
+  /**
+   * Finishes a paid order that stalled part-way, using the same idempotent steps
+   * as fulfilment itself, then reports what (if anything) is still missing.
+   * Refuses orders that were never paid: this repairs fulfilment, it does not
+   * decide whether a payment happened.
+   */
+  async repairFulfilment(orderId: EntityId): Promise<FulfilmentGaps> {
+    const order = await this.deps.repositories.orders.getById(orderId);
+    if (!order) throw new NotFoundError('order', orderId);
+    if (order.status !== 'paid' || !order.paymentId) {
+      throw new InvalidOperationError(`Order ${orderId} is not a paid order`);
+    }
+    const before = await this.assessFulfilment(order);
+    if (!before.holdFound || before.missing.length === 0) return before;
+
+    const hold = await this.deps.repositories.cartReservations.getByProviderOrderId(
+      order.paymentIntentId ?? '',
+    );
+    if (!hold) return before;
+    await this.completeFulfilment(order, hold);
+    return this.assessFulfilment(order);
   }
 
   /**

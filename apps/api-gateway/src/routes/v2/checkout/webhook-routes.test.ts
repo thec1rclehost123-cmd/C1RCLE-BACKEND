@@ -624,3 +624,158 @@ describe('POST /webhooks/payments/razorpay — provider reconciliation', () => {
     await server.close();
   });
 });
+
+describe('fulfilment repair (a paid order whose fulfilment stalled part-way)', () => {
+  const post = (server: Server, body: string) =>
+    server.inject({
+      method: 'POST',
+      url: '/webhooks/payments/razorpay',
+      headers: { 'content-type': 'application/json', 'x-razorpay-signature': sign(body) },
+      payload: body,
+    });
+
+  /** A fully fulfilled order, plus handles to damage it the way a crash would. */
+  async function fulfilledOrder(paymentId: string) {
+    const server = await buildServer();
+    const { holdId, grandTotalPaise } = await seedHold(server);
+    const paymentIntentId = await createPaymentIntent(server, holdId);
+    memoryProvider().simulateCapture(paymentId, grandTotalPaise, paymentIntentId);
+    const response = await post(
+      server,
+      webhookPayload({ id: paymentId, order_id: paymentIntentId, holdId }),
+    );
+    expect(response.statusCode).toBe(200);
+    const orderId = `ORD-${paymentId}`;
+    const repos = createV2Services().repos();
+
+    return {
+      server,
+      orderId,
+      holdId,
+      /** The crash: tickets, the ledger entries and the hold conversion never landed. */
+      stallFulfilment: async (steps: ('tickets' | 'ledger' | 'hold')[]) => {
+        if (steps.includes('tickets')) {
+          for (const [id, e] of (
+            repos.entitlements as unknown as { entitlements: Map<string, { orderId: string }> }
+          ).entitlements) {
+            if (e.orderId === orderId) {
+              (
+                repos.entitlements as unknown as { entitlements: Map<string, unknown> }
+              ).entitlements.delete(id);
+            }
+          }
+        }
+        if (steps.includes('ledger')) {
+          const ledger = repos.ledger as unknown as {
+            entries: Map<string, { orderId: string; idempotencyKey: string }>;
+            byIdempotencyKey: Map<string, string>;
+          };
+          for (const [id, entry] of ledger.entries) {
+            if (entry.orderId === orderId) {
+              ledger.entries.delete(id);
+              ledger.byIdempotencyKey.delete(entry.idempotencyKey);
+            }
+          }
+        }
+        if (steps.includes('hold')) {
+          const holds = (
+            repos.cartReservations as unknown as {
+              reservations: Map<string, Record<string, unknown>>;
+            }
+          ).reservations;
+          const hold = holds.get(holdId);
+          if (hold) holds.set(holdId, { ...hold, status: 'active', convertedOrderId: null });
+        }
+      },
+    };
+  }
+
+  const sweepAll = (dryRun: boolean) =>
+    createV2Services().fulfilmentRepair.sweep({
+      settleMs: 0,
+      lookbackMs: 365 * 24 * 3600 * 1000,
+      dryRun,
+    });
+
+  it('finds nothing wrong with a normally fulfilled order', async () => {
+    const { server, orderId } = await fulfilledOrder('pay_repair_ok');
+
+    const report = await sweepAll(true);
+
+    expect(report.findings.find((f) => f.orderId === orderId)).toBeUndefined();
+    expect(report.complete).toBeGreaterThanOrEqual(1);
+    await server.close();
+  });
+
+  it('reports what a stalled order is missing without changing anything (dry run)', async () => {
+    const { server, orderId, stallFulfilment } = await fulfilledOrder('pay_repair_dry');
+    await stallFulfilment(['tickets', 'ledger', 'hold']);
+
+    const report = await sweepAll(true);
+
+    const finding = report.findings.find((f) => f.orderId === orderId);
+    expect(finding).toMatchObject({ outcome: 'found' });
+    expect([...(finding?.missing ?? [])].sort()).toEqual(['hold_conversion', 'ledger', 'tickets']);
+    expect(await createV2Services().repos().entitlements.getByOrderId(orderId)).toHaveLength(0);
+    await server.close();
+  });
+
+  it('finishes a stalled order: tickets, ledger and hold conversion are restored', async () => {
+    const { server, orderId, holdId, stallFulfilment } = await fulfilledOrder('pay_repair_fix');
+    await stallFulfilment(['tickets', 'ledger', 'hold']);
+
+    const report = await sweepAll(false);
+
+    expect(report.findings.find((f) => f.orderId === orderId)).toMatchObject({
+      outcome: 'repaired',
+    });
+    const repos = createV2Services().repos();
+    expect((await repos.entitlements.getByOrderId(orderId)).length).toBeGreaterThan(0);
+    expect((await repos.ledger.findByOrder(orderId)).length).toBeGreaterThan(0);
+    expect((await repos.cartReservations.getById(holdId))?.status).toBe('converted');
+    expect((await sweepAll(false)).findings.find((f) => f.orderId === orderId)).toBeUndefined();
+    await server.close();
+  });
+
+  it('repairs each missing step on its own, and never duplicates what is already there', async () => {
+    const { server, orderId, stallFulfilment } = await fulfilledOrder('pay_repair_partial');
+    const repos = createV2Services().repos();
+    const ticketsBefore = (await repos.entitlements.getByOrderId(orderId)).length;
+    const ledgerBefore = (await repos.ledger.findByOrder(orderId)).length;
+    await stallFulfilment(['ledger']);
+
+    const report = await sweepAll(false);
+
+    expect(report.findings.find((f) => f.orderId === orderId)).toMatchObject({
+      outcome: 'repaired',
+      missing: ['ledger'],
+    });
+    expect(await repos.entitlements.getByOrderId(orderId)).toHaveLength(ticketsBefore);
+    expect(await repos.ledger.findByOrder(orderId)).toHaveLength(ledgerBefore);
+    await server.close();
+  });
+
+  it('leaves recent orders alone: they may still be mid-fulfilment', async () => {
+    const { server, orderId, stallFulfilment } = await fulfilledOrder('pay_repair_recent');
+    await stallFulfilment(['tickets']);
+
+    const report = await createV2Services().fulfilmentRepair.sweep({
+      settleMs: 60 * 60 * 1000,
+      lookbackMs: 365 * 24 * 3600 * 1000,
+      dryRun: false,
+    });
+
+    expect(report.findings.find((f) => f.orderId === orderId)).toBeUndefined();
+    expect(await createV2Services().repos().entitlements.getByOrderId(orderId)).toHaveLength(0);
+    await server.close();
+  });
+
+  it('refuses to repair an order that was never paid', async () => {
+    const server = await buildServer();
+
+    await expect(
+      createV2Services().checkout.repairFulfilment('ORD-does-not-exist'),
+    ).rejects.toThrow(/not found/i);
+    await server.close();
+  });
+});
