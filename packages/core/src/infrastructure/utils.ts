@@ -256,7 +256,7 @@ export function buildIdempotencyStore() {
  */
 export function buildActorContext(request: { actor?: ActorContext }): ActorContext {
   if (!request.actor) {
-    throw new UnauthorizedError('No authenticated actor on request.');
+    throw new UnauthorizedError();
   }
   return request.actor;
 }
