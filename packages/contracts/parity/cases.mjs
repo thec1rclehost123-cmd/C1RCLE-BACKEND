@@ -562,6 +562,7 @@ export async function runParityCases({
     'ORGANIZATION_SUSPEND',
     'ORGANIZATION_REINSTATE',
     'FINANCIAL_REFUND',
+    'TAX_RULE_UPDATE',
     'PAYOUT_BATCH_RUN',
     'DISPUTE_RESOLVE',
     'USER_BAN',
@@ -579,6 +580,129 @@ export async function runParityCases({
   }
   agree('adminActionSchema', 'rejects an unknown action', 'FORCE_EVENT_COMPLETE', false);
   agree('adminActionSchema', 'rejects a non-string', null, false);
+
+  /* ── admin finance controls: tax rules + reconciliation ─────────────────── */
+  const TAX_DRAFT = {
+    kind: 'tds_194o',
+    rateBps: 10,
+    basis: 'net_payable_to_seller',
+    effectiveFrom: '2026-04-01',
+  };
+  agree('createTaxRuleSchema', 'accepts a valid draft', TAX_DRAFT, true);
+  agree(
+    'createTaxRuleSchema',
+    'accepts an end date and notes',
+    { ...TAX_DRAFT, effectiveTo: '2027-03-31', notes: 'x' },
+    true,
+  );
+  agree(
+    'createTaxRuleSchema',
+    'accepts a null end date',
+    { ...TAX_DRAFT, effectiveTo: null },
+    true,
+  );
+  agree(
+    'createTaxRuleSchema',
+    'rejects a rate above 100%',
+    { ...TAX_DRAFT, rateBps: 10_001 },
+    false,
+  );
+  agree('createTaxRuleSchema', 'rejects a fractional rate', { ...TAX_DRAFT, rateBps: 1.5 }, false);
+  agree('createTaxRuleSchema', 'rejects a negative rate', { ...TAX_DRAFT, rateBps: -1 }, false);
+  agree(
+    'createTaxRuleSchema',
+    'rejects a non-ISO date',
+    { ...TAX_DRAFT, effectiveFrom: '1 April 2026' },
+    false,
+  );
+  agree('createTaxRuleSchema', 'rejects an unknown kind', { ...TAX_DRAFT, kind: 'cess' }, false);
+  agree('createTaxRuleSchema', 'rejects an unknown basis', { ...TAX_DRAFT, basis: 'vibes' }, false);
+  agree('createTaxRuleSchema', 'rejects extra keys (strict)', { ...TAX_DRAFT, extra: true }, false);
+  for (const kind of ['ticket_gst', 'convenience_fee_gst', 'tds_194o', 'gst_tcs_s52']) {
+    agree('taxRuleKindSchema', `accepts kind "${kind}"`, kind, true);
+  }
+  agree('taxRuleKindSchema', 'rejects an unknown kind', 'gst', false);
+  agree(
+    'enableTaxRuleSchema',
+    'accepts an advice reference',
+    { approvalRef: 'CA letter 5 Oct 2026' },
+    true,
+  );
+  agree('enableTaxRuleSchema', 'rejects a too-short reference', { approvalRef: 'ok' }, false);
+  agree('enableTaxRuleSchema', 'rejects a missing reference', {}, false);
+  agree('retireTaxRuleSchema', 'accepts a reason', { reason: 'Superseded' }, true);
+  agree('retireTaxRuleSchema', 'rejects an empty reason', { reason: '' }, false);
+  const TAX_RULE_DTO = {
+    id: 'rule_1',
+    kind: 'ticket_gst',
+    rateBps: 0,
+    basis: 'ticket_price',
+    effectiveFrom: '2026-04-01',
+    effectiveTo: null,
+    status: 'draft',
+    approvalRef: null,
+    notes: '',
+    createdBy: 'admin_1',
+    enabledBy: null,
+    enabledAt: null,
+    retiredBy: null,
+    retiredAt: null,
+    createdAt: '2026-10-11T10:00:00.000Z',
+    updatedAt: '2026-10-11T10:00:00.000Z',
+  };
+  agree('taxRuleDtoSchema', 'accepts a draft rule', TAX_RULE_DTO, true);
+  agree(
+    'taxRuleDtoSchema',
+    'accepts an enabled rule',
+    {
+      ...TAX_RULE_DTO,
+      status: 'enabled',
+      approvalRef: 'CA letter',
+      enabledBy: 'admin_2',
+      enabledAt: '2026-10-12T10:00:00.000Z',
+    },
+    true,
+  );
+  agree(
+    'taxRuleDtoSchema',
+    'rejects an unknown status',
+    { ...TAX_RULE_DTO, status: 'live' },
+    false,
+  );
+  agree('taxRuleListResponseSchema', 'accepts a list', { items: [TAX_RULE_DTO] }, true);
+  const RECON = { orderId: 'ord_1', paymentId: 'pay_1', reconciled: false, providerNetPaise: 100 };
+  for (const finding of [
+    { kind: 'provider_record_missing' },
+    { kind: 'amount_mismatch', ourPaise: 1, providerPaise: 2 },
+    { kind: 'currency_mismatch', ours: 'INR', provider: 'USD' },
+    { kind: 'refund_mismatch', ourPaise: 0, providerPaise: 5 },
+    { kind: 'open_dispute' },
+  ]) {
+    agree(
+      'reconciliationResultSchema',
+      `accepts finding "${finding.kind}"`,
+      { ...RECON, findings: [finding] },
+      true,
+    );
+  }
+  agree(
+    'reconciliationResultSchema',
+    'accepts no provider net',
+    { ...RECON, providerNetPaise: null, paymentId: null, findings: [] },
+    true,
+  );
+  agree(
+    'reconciliationResultSchema',
+    'rejects an unknown finding',
+    { ...RECON, findings: [{ kind: 'made_up' }] },
+    false,
+  );
+  agree(
+    'reconciliationResultSchema',
+    'rejects a fractional paise amount',
+    { ...RECON, providerNetPaise: 1.5, findings: [] },
+    false,
+  );
 
   /* ── admin promoter assignment status schema ────────────────────────────── */
   for (const status of ['active', 'ended', 'suspended']) {
