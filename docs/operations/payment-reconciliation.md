@@ -26,7 +26,7 @@ facts does not decide it. Partner-facing responses are unchanged.
 reports, per order: missing provider record, amount mismatch, currency mismatch, a refund the
 provider made that the order does not show, and any open dispute. It also returns the provider's
 net for the payment: captured, less its fee and tax, refunds and disputes it took back.
-There is no HTTP endpoint for it yet.
+Over HTTP (any platform admin, read-only): `GET /admin/finance/reconciliation/:orderId`.
 
 ## Razorpay setup
 In the Razorpay dashboard's webhook, tick these events (in addition to `payment.captured`):
@@ -34,6 +34,6 @@ In the Razorpay dashboard's webhook, tick these events (in addition to `payment.
 events are acknowledged and ignored.
 
 ## Not built yet
-A refund *executor* (the admin refund flow stops at "approved" on purpose), an HTTP/admin
-report over reconciliation, and any ledger entries for refunds, chargebacks or provider fees.
+A refund *executor* (the admin refund flow stops at "approved" on purpose), a bulk/list
+reconciliation report, and any ledger entries for refunds, chargebacks or provider fees.
 The last needs the finance decision above first.

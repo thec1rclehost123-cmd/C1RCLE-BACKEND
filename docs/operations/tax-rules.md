@@ -28,5 +28,15 @@ be moved onto.
 audit log with who, when and the advice relied on. Dates are India dates (IST).
 
 ## Not built yet
-An admin HTTP surface (the service is exercised through code and tests only), wiring pricing and
-settlement to read rules, and the frontend mirror of the new `TAX_RULE_UPDATE` audit action.
+Wiring pricing and settlement to read rules, an admin screen, and the frontend mirror of the
+`TAX_RULE_UPDATE` audit action.
+
+## API (platform admins; tax changes: super / admin / finance only)
+| | |
+|---|---|
+| `GET /admin/tax-rules[?kind=]` | list rules |
+| `POST /admin/tax-rules` | draft a rule (`201`) |
+| `POST /admin/tax-rules/:ruleId/enable` | body `{ approvalRef }`; a different admin than the author |
+| `POST /admin/tax-rules/:ruleId/retire` | body `{ reason }` |
+
+Writes need an `Idempotency-Key`; a replay returns the original result.
