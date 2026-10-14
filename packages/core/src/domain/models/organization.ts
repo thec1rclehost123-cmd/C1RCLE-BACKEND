@@ -29,6 +29,8 @@ export interface OrganizationMember {
   capabilities: Capability[];
   joinedAt: string;
   invitedBy?: EntityId;
+  name?: string | null;
+  email?: string | null;
 }
 
 /**

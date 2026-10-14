@@ -4,6 +4,7 @@ import {
   paginationQuerySchema,
   organizationDtoSchema,
   organizationMemberDtoSchema,
+  updateMemberRoleSchema,
   inviteMemberSchema,
   invitationDtoSchema,
   createInvitationSchema,
@@ -38,6 +39,7 @@ import type { FastifyInstance } from 'fastify';
 const services = createV2Services();
 
 const organizationIdParam = z.object({ organizationId: opaqueIdSchema });
+const memberIdParam = z.object({ organizationId: opaqueIdSchema, userId: opaqueIdSchema });
 
 const createOrganizationBody = z
   .object({
@@ -347,6 +349,71 @@ export default async function partnerOrganizationRoutes(fastify: FastifyInstance
           const validated = validateV2Response(reply, request, organizationMemberDtoSchema, member);
           if (validated === undefined) throw new Error('v2 response validation failed');
           return { statusCode: 201, body: validated };
+        },
+      }).catch((error: unknown) => {
+        if (isIdempotencyConflict(error)) {
+          return mapDomainError(reply, request, organizationId, error, {
+            conflictId: v2Headers['idempotency-key'],
+          });
+        }
+        return mapDomainError(reply, request, organizationId, error);
+      });
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
+
+  fastify.patch(
+    '/organizations/:organizationId/members/:userId',
+    {
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({
+          params: memberIdParam,
+          body: updateMemberRoleSchema,
+          headers: orgHeaders.extend({ 'idempotency-key': idempotencyKeySchema }),
+        }),
+        fastify.requirePermission('staff.manage'),
+      ],
+    },
+    async (request, reply) => {
+      const { organizationId, userId } = request.params as z.infer<typeof memberIdParam>;
+      const body = request.body as z.infer<typeof updateMemberRoleSchema>;
+      const actor = services.actor(request);
+      const v2Headers = request.v2Headers ?? {};
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: actor.userId,
+        commandName: 'organizations.changeRole',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { organizationId, userId }, body },
+        run: async () => {
+          const org = await services.organizations.changeRole(
+            actor,
+            organizationId,
+            userId,
+            body.role,
+          );
+          const member = org.members.find((m) => m.userId === userId);
+          if (!member) throw new Error('Member not found after role update');
+          const user = await services
+            .repos()
+            .users.getById(userId)
+            .catch(() => null);
+          const enrichedMember = {
+            ...member,
+            name: user?.name?.trim() ? user.name.trim() : null,
+            email: user?.email ?? null,
+          };
+          const validated = validateV2Response(
+            reply,
+            request,
+            organizationMemberDtoSchema,
+            enrichedMember,
+          );
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
         },
       }).catch((error: unknown) => {
         if (isIdempotencyConflict(error)) {
