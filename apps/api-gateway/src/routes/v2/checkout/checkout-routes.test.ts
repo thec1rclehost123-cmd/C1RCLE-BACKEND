@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
+import { publishEventForTest } from '../../../test-utils/publish-event.js';
 import partnerEventCatalogRoutes from '../partner/event-catalog.js';
 import partnerEventRoutes from '../partner/events.js';
 import partnerOrganizationRoutes from '../partner/organizations.js';
@@ -63,6 +64,7 @@ async function seed(
     payload: { title: 'Sky Night', venueId, startAt: '2026-09-01T18:00:00Z' },
   });
   const eventId: string = event.json().id;
+  await publishEventForTest(eventId);
 
   const priceInPaise = options.priceInPaise ?? 150_000;
   const quantity = options.quantity ?? 100;
@@ -126,12 +128,9 @@ describe('POST /checkout/quote', () => {
     await server.close();
   });
 
-  it('unknown event id -> 400 (no tiers found for it), never a 500', async () => {
-    // `quote()` prices lines against the event's catalog — it has no
-    // dedicated event-existence check, so an unknown event surfaces as "tier
-    // not found" (400) rather than a distinct 404. `createHold`, below, does
-    // check event existence explicitly (it needs `organizationId` off the
-    // event) and returns a proper 404 for the same bad id.
+  it('unknown event id -> 404, never a 500', async () => {
+    // `quote()` first checks the event exists and is on sale, so an unknown event
+    // is a plain 404 (as it is for `createHold`, below).
     const server = await buildServer();
 
     const response = await server.inject({
@@ -140,8 +139,8 @@ describe('POST /checkout/quote', () => {
       payload: { eventId: 'event_does_not_exist', lines: [{ tierId: 'tier_1', quantity: 1 }] },
     });
 
-    expect(response.statusCode).toBe(400);
-    expect(response.json()).toMatchObject({ code: 'validation' });
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toMatchObject({ code: 'not_found' });
     await server.close();
   });
 

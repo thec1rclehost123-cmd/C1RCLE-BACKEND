@@ -5,6 +5,7 @@ import {
   EventNotFoundError,
   InvalidOperationError,
   NotFoundError,
+  PaymentRefundedError,
   TicketTierNotFoundError,
   UnauthorizedError,
   VersionConflictError,
@@ -96,6 +97,8 @@ export class CheckoutService {
   }): Promise<{ pricing: PricingBreakdown; attribution: CheckoutAttribution | null }> {
     const { eventId, lines, promoCode, referralCode } = input;
 
+    await this.assertOnSale(eventId);
+
     const pricingLines = lines.map((l) => ({ tierId: l.tierId, quantity: l.quantity }));
 
     const pricing = await this.deps.pricing.calculate({
@@ -103,6 +106,8 @@ export class CheckoutService {
       lines: pricingLines,
       promoCode,
     });
+
+    if (promoCode) await this.assertPromoWithinLimits(eventId, promoCode, input.actor.userId);
 
     let attribution: CheckoutAttribution | null = null;
     if (referralCode) {
@@ -131,6 +136,51 @@ export class CheckoutService {
     }
 
     return { pricing, attribution };
+  }
+
+  /**
+   * Online sales take money only for a published event. A draft, paused,
+   * cancelled or finished event is not on sale, whatever its tiers say.
+   */
+  private async assertOnSale(eventId: EntityId): Promise<void> {
+    const event = await this.deps.repositories.events.getById(eventId);
+    if (!event) throw new EventNotFoundError(eventId);
+    if (event.status !== 'published') {
+      throw new InvalidOperationError('This event is not on sale');
+    }
+  }
+
+  /**
+   * The redemption limits of a promo (`maxRedemptions`, `maxPerUser`). Whether
+   * the code is switched on and inside its dates is checked with the pricing.
+   * Redemptions are recorded under the promo's id; older ones were recorded
+   * under its code, so both are counted.
+   */
+  private async assertPromoWithinLimits(
+    eventId: EntityId,
+    promoCode: string,
+    userId: EntityId | null,
+  ): Promise<void> {
+    const promo = await this.deps.repositories.catalog.getPromoByCode(promoCode, eventId);
+    if (!promo) return;
+    const redemptions = this.deps.repositories.promoRedemptions;
+    if (promo.maxRedemptions !== null) {
+      const counted =
+        (await redemptions.countByPromo(promo.id)) + (await redemptions.countByPromo(promo.code));
+      if (Math.max(counted, promo.redemptionCount) >= promo.maxRedemptions) {
+        throw new InvalidOperationError(
+          `Promo code ${promo.code} has reached its redemption limit`,
+        );
+      }
+    }
+    if (promo.maxPerUser !== null && userId) {
+      const byUser =
+        (await redemptions.countByPromoAndUser(promo.id, userId)) +
+        (await redemptions.countByPromoAndUser(promo.code, userId));
+      if (byUser >= promo.maxPerUser) {
+        throw new InvalidOperationError(`You have already used promo code ${promo.code}`);
+      }
+    }
   }
 
   /**
@@ -164,13 +214,17 @@ export class CheckoutService {
       reservationTtlMs,
     } = input;
 
-    // Check for existing hold with same idempotency key
-    const existing =
-      await this.deps.repositories.cartReservations.getByIdempotencyKey(idempotencyKey);
-    if (existing) return existing;
-
     const now = new Date();
     const buyerId = userId ?? input.actor.userId;
+
+    // An idempotency key identifies a request by ONE buyer. Looking it up on its
+    // own would hand a buyer someone else's hold (and its holdId and pricing)
+    // whenever two people sent the same key, so the buyer is part of the key.
+    const scopedKey = buyerId
+      ? createHash('sha256').update(`${buyerId}\n${idempotencyKey}`).digest('hex').slice(0, 40)
+      : idempotencyKey;
+    const existing = await this.deps.repositories.cartReservations.getByIdempotencyKey(scopedKey);
+    if (existing) return existing;
 
     // Check inventory availability
     for (const line of lines) {
@@ -208,7 +262,7 @@ export class CheckoutService {
       }
     }
 
-    const holdId = `HOLD-${idempotencyKey}`;
+    const holdId = `HOLD-${scopedKey}`;
     const ttl = reservationTtlMs ?? 10 * 60 * 1000;
 
     const hold: CartReservation = {
@@ -224,7 +278,7 @@ export class CheckoutService {
       expiresAt: new Date(now.getTime() + ttl).toISOString(),
       convertedOrderId: null,
       attendee: attendee ?? null,
-      idempotencyKey,
+      idempotencyKey: scopedKey,
       version: 1,
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
@@ -398,6 +452,11 @@ export class CheckoutService {
       await this.deps.repositories.cartReservations.release(holdId);
       throw new InvalidOperationError('Hold has expired');
     }
+
+    // A hold made while the event was on sale does not oblige us to take money
+    // after the host has cancelled or paused it. (A payment already in flight is
+    // a different case: confirmPayment still honours or refunds it.)
+    await this.assertOnSale(hold.eventId);
 
     if (hold.providerOrderId) {
       return {
@@ -666,7 +725,7 @@ export class CheckoutService {
         amountPaise: hold.pricing.grandTotalPaise,
         idempotencyKey: `autorefund:${paymentId}`,
       });
-      throw new InvalidOperationError(
+      throw new PaymentRefundedError(
         'Your payment arrived after the reservation expired and the tickets are no longer available. It has been refunded in full.',
       );
     }
@@ -748,9 +807,12 @@ export class CheckoutService {
     // Only a promo that was actually applied is a redemption. (This used to
     // write a redemption row with an empty promo id for every order.)
     if (hold.appliedPromoCode && !(await repos.promoRedemptions.getByOrderId(order.id))) {
+      // Recorded under the promo's id so its limits can count it; the code is only
+      // a fallback for a promo that has since been deleted.
+      const promo = await repos.catalog.getPromoByCode(hold.appliedPromoCode, hold.eventId);
       await repos.promoRedemptions.create({
         id: `RED-${order.id}-${hold.appliedPromoCode}`,
-        promoId: hold.appliedPromoCode,
+        promoId: promo?.id ?? hold.appliedPromoCode,
         orderId: order.id,
         userId: order.userId,
         redeemedAt: new Date().toISOString(),
