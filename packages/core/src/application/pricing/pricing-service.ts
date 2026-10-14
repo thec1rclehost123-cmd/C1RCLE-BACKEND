@@ -1,4 +1,5 @@
 import { InvalidOperationError } from '../../domain/errors.js';
+import { assertPromoUsable } from '../../domain/models/event-catalog.js';
 import { calculatePricing } from '../../domain/models/pricing.js';
 
 import type { EntityId } from '../../domain/identity.js';
@@ -69,6 +70,7 @@ export class PricingService {
     if (promoCode) {
       promo = await this.deps.eventCatalog.getPromoByCode(promoCode, eventId);
       if (!promo) throw new InvalidOperationError(`Promo code ${promoCode} not found`);
+      assertPromoUsable(promo, new Date());
     }
 
     const pricing = calculatePricing({
