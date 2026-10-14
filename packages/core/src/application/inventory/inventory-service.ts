@@ -54,7 +54,9 @@ export class InventoryService {
     for (;;) {
       const page = await this.deps.order.listByEvent(eventId, { cursor, limit: 100 });
       for (const order of page.items) {
-        if (order.status !== 'paid') continue;
+        // `refund_requested` still holds a valid ticket until the refund actually
+        // settles, so its seat stays taken; only `refunded` gives the seat back.
+        if (order.status !== 'paid' && order.status !== 'refund_requested') continue;
         for (const line of order.lines) {
           if (line.tierId === tierId) sold += line.quantity;
         }

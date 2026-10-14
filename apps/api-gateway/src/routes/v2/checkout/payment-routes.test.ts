@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createV2Services } from '../../../lib/v2-services.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
+import { publishEventForTest } from '../../../test-utils/publish-event.js';
 import partnerEventCatalogRoutes from '../partner/event-catalog.js';
 import partnerEventRoutes from '../partner/events.js';
 import partnerOrganizationRoutes from '../partner/organizations.js';
@@ -61,6 +62,7 @@ async function seedHold(server: Server): Promise<{ holdId: string; grandTotalPai
     payload: { title: 'Sky Night', venueId, startAt: '2026-09-01T18:00:00Z' },
   });
   const eventId: string = event.json().id;
+  await publishEventForTest(eventId);
   const tier = await server.inject({
     method: 'POST',
     url: `/events/${eventId}/ticket-tiers`,
@@ -549,9 +551,11 @@ describe('payment captured after the hold expired', () => {
       const first = await verifyPayment(server, paid);
       const second = await verifyPayment(server, paid); // a redelivered webhook / retry
 
-      expect(first.statusCode).toBe(400);
+      // 409, not 400: the buyer is told they were refunded, not asked to retry.
+      expect(first.statusCode).toBe(409);
       expect(first.json().message).toMatch(/refunded in full/i);
-      expect(second.statusCode).toBe(400);
+      expect(first.json().details).toEqual({ outcome: 'refunded' });
+      expect(second.statusCode).toBe(409);
       // Money is returned, no order or tickets exist, and both calls used the same
       // idempotency key so the provider can only refund once.
       expect(refund).toHaveBeenCalledWith({

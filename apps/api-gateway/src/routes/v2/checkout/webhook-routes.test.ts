@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import { createV2Services } from '../../../lib/v2-services.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
+import { publishEventForTest } from '../../../test-utils/publish-event.js';
 import partnerEventCatalogRoutes from '../partner/event-catalog.js';
 import partnerEventRoutes from '../partner/events.js';
 import partnerOrganizationRoutes from '../partner/organizations.js';
@@ -25,6 +26,11 @@ import webhookRoutes from './webhook-routes.js';
  * doc comment): two independent signature checks, one per confirmation path.
  */
 const WEBHOOK_SECRET = 'test_webhook_secret';
+
+/** A signature that differs from `valid` in its first character, whatever that is. */
+function corrupt(valid: string): string {
+  return (valid.startsWith('0') ? '1' : '0') + valid.slice(1);
+}
 
 function sign(rawBody: string): string {
   return createHmac('sha256', WEBHOOK_SECRET).update(rawBody).digest('hex');
@@ -74,6 +80,7 @@ async function seedHold(server: Server): Promise<{ holdId: string; grandTotalPai
     payload: { title: 'Sky Night', venueId, startAt: '2026-09-01T18:00:00Z' },
   });
   const eventId: string = event.json().id;
+  await publishEventForTest(eventId);
   const tier = await server.inject({
     method: 'POST',
     url: `/events/${eventId}/ticket-tiers`,
@@ -162,6 +169,7 @@ async function seedHoldWithPartnership(
     payload: { title: 'Sky Night', venueId, startAt: '2026-09-01T18:00:00Z' },
   });
   const eventId: string = event.json().id;
+  await publishEventForTest(eventId);
 
   const tier = await server.inject({
     method: 'POST',
@@ -239,7 +247,9 @@ describe('POST /webhooks/payments/razorpay', () => {
       url: '/webhooks/payments/razorpay',
       headers: {
         'content-type': 'application/json',
-        'x-razorpay-signature': sign(body).replace(/^./, 'f'), // corrupt one hex char
+        // Always change the first hex character. (Replacing it with a fixed letter
+        // leaves the signature intact one time in sixteen.)
+        'x-razorpay-signature': corrupt(sign(body)),
       },
       payload: body,
     });

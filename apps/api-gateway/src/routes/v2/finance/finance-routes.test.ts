@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { createV2Services } from '../../../lib/v2-services.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
+import { publishEventForTest } from '../../../test-utils/publish-event.js';
 import checkoutRoutes from '../checkout/checkout-routes.js';
 import paymentRoutes from '../checkout/payment-routes.js';
 import partnerEventCatalogRoutes from '../partner/event-catalog.js';
@@ -651,6 +652,7 @@ async function seedPaidOrder(server: Server): Promise<{ org: string; orderId: st
     payload: { title: 'Sky Night', venueId: venue.json().id, startAt: '2026-09-01T18:00:00Z' },
   });
   const eventId: string = event.json().id;
+  await publishEventForTest(eventId);
   const tier = await server.inject({
     method: 'POST',
     url: `/events/${eventId}/ticket-tiers`,

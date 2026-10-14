@@ -409,6 +409,23 @@ export function createPromoCode(input: CreatePromoCodeInput): PromoCode {
   };
 }
 
+/**
+ * Whether a promo may be applied right now: switched on, inside its date window.
+ * Counting redemptions needs the redemption store, so that part lives in the
+ * checkout service; this is the part that needs only the promo and the clock.
+ */
+export function assertPromoUsable(promo: PromoCode, now: Date): void {
+  if (!promo.isActive) {
+    throw new InvalidOperationError(`Promo code ${promo.code} is not active`);
+  }
+  if (promo.startsAt && Date.parse(promo.startsAt) > now.getTime()) {
+    throw new InvalidOperationError(`Promo code ${promo.code} is not valid yet`);
+  }
+  if (promo.endsAt && Date.parse(promo.endsAt) <= now.getTime()) {
+    throw new InvalidOperationError(`Promo code ${promo.code} has expired`);
+  }
+}
+
 /** Records one redemption (saturated at never above maxRedemptions). */
 export function markPromoUsed(promo: PromoCode, now?: Date): PromoCode {
   if (promo.maxRedemptions !== null && promo.redemptionCount >= promo.maxRedemptions) {
