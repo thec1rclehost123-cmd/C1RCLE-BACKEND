@@ -76,6 +76,25 @@ export class FirestoreOrderRepository implements OrderRepository {
     return paginateQuery(base, query, toOrder);
   }
 
+  // One equality filter (served by the automatic single-field index) and a
+  // projection of just the two fields seat counting needs, streamed in one read.
+  // The status is filtered by the caller rather than with `in`, which could ask
+  // for a composite index this deployment does not have.
+  async listSeatClaims(eventId: EntityId) {
+    const snap = await this.collection
+      .where('eventId', '==', eventId)
+      .select('status', 'lines')
+      .get();
+    return snap.docs.map((doc) => {
+      const data = doc.data();
+      const lines = (data.lines ?? []) as { tierId: string; quantity: number }[];
+      return {
+        status: data.status as OrderStatus,
+        lines: lines.map((l) => ({ tierId: l.tierId, quantity: l.quantity })),
+      };
+    });
+  }
+
   async countPaidQuantityByUserAndEvent(
     userId: EntityId,
     eventId: EntityId,
