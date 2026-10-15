@@ -630,7 +630,12 @@ describe('POST /webhooks/payments/razorpay — provider reconciliation', () => {
     expect((await post(server, body)).statusCode).toBe(200);
 
     const stored = await createV2Services().repos().providerPayments.findByPaymentId('pay_orphan');
-    expect(stored).toMatchObject({ orderId: null, capturedPaise: 10_000, feePaise: 320 });
+    expect(stored).toMatchObject({
+      orderId: null,
+      capturedPaise: 10_000,
+      feePaise: 320,
+      processingState: 'requires_support',
+    });
     await server.close();
   });
 

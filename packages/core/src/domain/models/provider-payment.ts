@@ -36,6 +36,8 @@ export interface ProviderPayment extends VersionedEntity {
   providerOrderId: string | null;
   /** Our order, once the capture has been tied to one. */
   orderId: EntityId | null;
+  /** Durable reconciliation state; safe for operators and recovery reads. */
+  processingState: 'requires_support' | 'processing' | 'fulfilled' | 'refunded';
   currency: string;
   /** Zero until the provider reports the capture. */
   capturedPaise: number;
@@ -57,6 +59,8 @@ export type ProviderPaymentEvent =
       providerOrderId: string | null;
       /** Our order id when the capture has been fulfilled; null otherwise. */
       orderId: EntityId | null;
+      /** The provider order and hold binding were verified by our backend. */
+      correlated: boolean;
       amountPaise: number;
       currency: string;
       feePaise: number;
@@ -94,6 +98,7 @@ function blank(paymentId: string, currency: string, now: Date): ProviderPayment 
     provider: 'razorpay',
     providerOrderId: null,
     orderId: null,
+    processingState: 'requires_support',
     currency,
     capturedPaise: 0,
     feePaise: 0,
@@ -127,6 +132,11 @@ export function applyProviderPaymentEvent(
         currency: event.currency,
         providerOrderId: event.providerOrderId ?? base.providerOrderId,
         orderId: event.orderId ?? base.orderId,
+        processingState: event.orderId
+          ? 'fulfilled'
+          : event.correlated
+            ? 'processing'
+            : base.processingState,
         capturedPaise: event.amountPaise,
         feePaise: event.feePaise,
         taxOnFeePaise: event.taxOnFeePaise,
@@ -135,7 +145,16 @@ export function applyProviderPaymentEvent(
       break;
     case 'refund_processed':
       if (base.refunds[event.refundId] !== event.amountPaise) {
-        next = { ...base, refunds: { ...base.refunds, [event.refundId]: event.amountPaise } };
+        const refunds = { ...base.refunds, [event.refundId]: event.amountPaise };
+        const refunded = Object.values(refunds).reduce((sum, amount) => sum + amount, 0);
+        next = {
+          ...base,
+          refunds,
+          processingState:
+            base.capturedPaise > 0 && refunded >= base.capturedPaise
+              ? 'refunded'
+              : base.processingState,
+        };
       }
       break;
     case 'dispute': {

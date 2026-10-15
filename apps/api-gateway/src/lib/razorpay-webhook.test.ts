@@ -134,6 +134,7 @@ describe('providerEventFromWebhook', () => {
       paymentId: 'pay_TmgaJ3JMsO12ql',
       providerOrderId: 'order_TmgXYJ1eoQ5SpI',
       orderId: 'ord_9',
+      correlated: true,
       amountPaise: 10000,
       currency: 'INR',
       feePaise: 320,

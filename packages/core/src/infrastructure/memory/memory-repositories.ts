@@ -713,6 +713,41 @@ interface PromoRedemptionRecord {
 export class MemoryPromoRedemptionRepository implements PromoRedemptionRepository {
   redemptions = new Map<EntityId, PromoRedemptionRecord>();
 
+  async claim(input: {
+    redemption: PromoRedemptionRecord;
+    promoIds: EntityId[];
+    historicalRedemptionCount: number;
+    maxRedemptions: number | null;
+    maxPerUser: number | null;
+  }): Promise<'claimed' | 'already_claimed' | 'global_limit' | 'user_limit'> {
+    const existing = [...this.redemptions.values()].find(
+      (redemption) => redemption.orderId === input.redemption.orderId,
+    );
+    if (existing) return 'already_claimed';
+
+    const aliases = new Set(input.promoIds);
+    const promoCount = [...this.redemptions.values()].filter((redemption) =>
+      aliases.has(redemption.promoId),
+    ).length;
+    if (
+      input.maxRedemptions !== null &&
+      Math.max(promoCount, input.historicalRedemptionCount) >= input.maxRedemptions
+    ) {
+      return 'global_limit';
+    }
+
+    if (input.maxPerUser !== null && input.redemption.userId) {
+      const userCount = [...this.redemptions.values()].filter(
+        (redemption) =>
+          aliases.has(redemption.promoId) && redemption.userId === input.redemption.userId,
+      ).length;
+      if (userCount >= input.maxPerUser) return 'user_limit';
+    }
+
+    this.redemptions.set(input.redemption.id, input.redemption);
+    return 'claimed';
+  }
+
   async create(redemption: PromoRedemptionRecord, _tx?: TxContext | null): Promise<void> {
     this.redemptions.set(redemption.id, redemption);
   }

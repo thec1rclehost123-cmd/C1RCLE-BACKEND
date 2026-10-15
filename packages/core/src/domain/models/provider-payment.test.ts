@@ -20,6 +20,7 @@ const captured = (overrides: Partial<Extract<ProviderPaymentEvent, { type: 'capt
     paymentId: 'pay_1',
     providerOrderId: 'order_p1',
     orderId: null,
+    correlated: true,
     amountPaise: 118_000,
     currency: 'INR',
     feePaise: 2_360,
@@ -64,6 +65,7 @@ describe('applyProviderPaymentEvent', () => {
       id: 'pay_1',
       provider: 'razorpay',
       providerOrderId: 'order_p1',
+      processingState: 'processing',
       capturedPaise: 118_000,
       feePaise: 2_360,
       taxOnFeePaise: 425,
@@ -118,6 +120,12 @@ describe('applyProviderPaymentEvent', () => {
 
     expect(refundedPaise(record)).toBe(12_000);
     expect(Object.keys(record.refunds)).toEqual(['rfnd_1', 'rfnd_2']);
+  });
+
+  it('records a full refund as a durable terminal processing state', () => {
+    const record = build(captured(), refund('rfnd_full', 118_000));
+
+    expect(record.processingState).toBe('refunded');
   });
 
   it('moves a dispute forward only: a late "open" cannot undo a final outcome', () => {
