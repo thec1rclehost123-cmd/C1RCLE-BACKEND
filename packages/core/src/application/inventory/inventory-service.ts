@@ -1,6 +1,7 @@
 import { InvalidOperationError } from '../../domain/errors.js';
 
 import type { EntityId } from '../../domain/identity.js';
+import type { CartReservation } from '../../domain/models/cart-reservation.js';
 import type {
   EventCatalogRepository,
   CartReservationRepository,
@@ -87,6 +88,38 @@ export class InventoryService {
    * Checks if a tier has sufficient inventory for a request.
    * Throws if insufficient.
    */
+  /**
+   * Whether a hold that has just been stored still fits, judged against what is
+   * sold plus the live holds ordered at or before it. Holds ordered after it are
+   * ignored: they are judged against this one instead. Because hold positions are
+   * assigned in a transaction (see `CartReservationRepository.create`), every
+   * hold ordered before this one is already visible here, so of two buyers racing
+   * for the last seat exactly one passes.
+   *
+   * Returns the name of the first tier that no longer fits, or null if all do.
+   */
+  async firstOverbookedTier(hold: CartReservation): Promise<EntityId | null> {
+    const myPosition = hold.sequence ?? Number.MAX_SAFE_INTEGER;
+    const live = await this.deps.cartReservation.listActiveByEvent(hold.eventId, new Date());
+    for (const line of hold.lines) {
+      const tier = await this.deps.eventCatalog.getTierById(line.tierId);
+      if (!tier) throw new InvalidOperationError(`Tier ${line.tierId} not found`);
+      const capacity = tier.quantity ?? 0;
+      const sold = await this.getSoldCount(hold.eventId, line.tierId);
+      let reserved = 0;
+      for (const other of live) {
+        // A hold from before positions existed counts as ahead of everything.
+        const ahead = other.id === hold.id || (other.sequence ?? 0) <= myPosition;
+        if (!ahead) continue;
+        for (const otherLine of other.lines) {
+          if (otherLine.tierId === line.tierId) reserved += otherLine.quantity;
+        }
+      }
+      if (sold + reserved > capacity) return line.tierId;
+    }
+    return null;
+  }
+
   async assertAvailable(eventId: string, tierId: EntityId, quantity: number): Promise<void> {
     const available = await this.getAvailableQuantity(eventId, tierId);
     if (available < quantity) {

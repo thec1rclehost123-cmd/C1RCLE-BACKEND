@@ -624,8 +624,13 @@ export interface TxContext {
 
 /** Cart reservation (hold) — short-lived inventory lock before payment. */
 export interface CartReservationRepository {
-  /** Creates a new hold. Fails if inventory is not available. */
-  create(reservation: CartReservation, tx?: TxContext | null): Promise<void>;
+  /**
+   * Stores a new hold and returns it with its `sequence` assigned: the next
+   * number in the event's strict order of hold creation, taken inside a
+   * transaction. It does NOT check inventory: the caller judges capacity after
+   * this returns, against the holds ordered at or before the returned one.
+   */
+  create(reservation: CartReservation, tx?: TxContext | null): Promise<CartReservation>;
   /** Fetches by id. */
   getById(reservationId: EntityId): Promise<CartReservation | null>;
   /** Fetches by idempotency key (for idempotent hold creation). */

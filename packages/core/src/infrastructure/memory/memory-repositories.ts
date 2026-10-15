@@ -449,11 +449,18 @@ export class MemoryCartReservationRepository implements CartReservationRepositor
   reservations = new Map<EntityId, CartReservation>();
   byIdempotencyKey = new Map<string, CartReservation>();
 
-  async create(reservation: CartReservation, _tx?: TxContext | null): Promise<void> {
-    this.reservations.set(reservation.id, reservation);
+  private eventSequence = new Map<EntityId, number>();
+
+  async create(reservation: CartReservation, _tx?: TxContext | null): Promise<CartReservation> {
+    // Synchronous, so no two holds for an event can take the same number.
+    const sequence = (this.eventSequence.get(reservation.eventId) ?? 0) + 1;
+    this.eventSequence.set(reservation.eventId, sequence);
+    const stored = { ...reservation, sequence };
+    this.reservations.set(stored.id, stored);
     if (reservation.idempotencyKey) {
-      this.byIdempotencyKey.set(reservation.idempotencyKey, reservation);
+      this.byIdempotencyKey.set(reservation.idempotencyKey, stored);
     }
+    return stored;
   }
 
   async getById(reservationId: EntityId): Promise<CartReservation | null> {

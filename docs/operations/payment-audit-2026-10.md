@@ -13,6 +13,8 @@ fulfilment, settlement. Every finding below was reproduced with a test before an
 | 3 | High | **A seat awaiting a refund was resold.** Inventory counted only `paid` orders, but an order under refund is `refund_requested` while its buyer still holds a valid ticket. Admin refunds stop at "approved", so that state can last indefinitely. | `refund_requested` counts as sold; only `refunded` returns the seat. |
 | 4 | Medium | **An idempotency key could return another buyer's hold** (id, expiry, pricing) because the lookup ignored who sent it, and the hold id was derived from the bare key. | The buyer is part of the key (hashed); a buyer replays only their own hold. |
 | 5 | Medium | **A buyer refunded for a late payment was told "payment received".** The auto-refund (reservation expired, seats gone) was an ordinary 400, indistinguishable from a transient failure. | A distinct `payment_refunded` error answered as 409 with `details.outcome = "refunded"`; the checkout UI shows the refund message. |
+| 7 | High | **Overselling the last seats.** The availability check and the hold write were separate steps, so simultaneous buyers could all reserve the same last seat. Reproduced on a real Firestore (emulator): 12 simultaneous buyers all kept the one remaining seat; 20 buyers kept holds on a 5-seat tier. | Every hold takes the next position in a strict per-event order inside a Firestore transaction (`v2_hold_sequences/{eventId}`); after it commits, a hold keeps its seats only if what is sold plus the live holds ordered at or before it fits. Proven on the emulator with 12-, 20- and 60-buyer races (exactly capacity, never above, no seat wasted). |
+| 8 | Low | Razorpay refuses orders under ₹1 (100 paise); a tiny paid total failed with an opaque provider error after a seat was already held. | Rejected at quote with a clear message. A free (₹0) total is unaffected. |
 | 6 | Test | An existing test "corrupted" a webhook signature by setting its first character to `f`, which leaves it valid one time in sixteen. | Always changes the character. |
 
 Existing route fixtures sold tickets for **draft** events, i.e. they depended on bug 1; they now publish
@@ -20,26 +22,23 @@ their event first (`test-utils/publish-event.ts`).
 
 ## Open (not fixed here)
 
-1. **Overselling the last seats (High).** The availability check and the hold write are separate steps
-   with no transaction between them, so two simultaneous buyers can both reserve the last ticket, and the
-   normal (not late) confirmation never re-checks capacity. Proven by an expected-fail test
-   (`payment-audit.test.ts`, which will start failing when this is fixed, as the cue to remove the marker).
-   The right fix is a transactional per-tier reservation counter. It has to be built and proven against a
-   **real Firestore**: the in-memory store cannot reproduce the real interleaving, and a cheaper
-   "reserve then re-check" scheme still leaves a small window. Until then, the platform can sell a seat
-   twice and would have to refund the second buyer by hand. The late-capture path has the same race for
-   the last seat (noted in the code).
-2. **GST on the guest's fees is a hardcoded 18% (`pricing.ts`).** It contradicts the rule that tax
+1. **GST on the guest's fees is a hardcoded 18% (`pricing.ts`).** It contradicts the rule that tax
    assumptions must come from approved, dated rules. The tax-rule store exists (PR #127) but pricing does not
    read it. Changing it alters every price, so it needs the CA's decision first.
+2. **Late-capture and per-user-cap races.** A payment landing after its hold expired is re-checked against
+   capacity with the old non-atomic check, so two late payments for the very last seat can both pass; the
+   per-user ticket cap (`maxPerUser`) has the same check-then-write shape. Both are narrow, and the fix is the
+   same ordering idea applied to those paths.
 3. **Inventory is counted by scanning every order for the event on every hold** (`getSoldCount`), so hold
-   latency grows with sales. Fine for small events, slow for a popular one. A running sold-count per tier
-   (also the answer to item 1) fixes both.
-4. **No minimum on a paid amount.** Razorpay rejects orders under ₹1 (100 paise). A paid tier priced
-   very low produces an opaque provider error. Needs a rule on tier prices (0 or at least ₹1).
-5. **The hold lasts 10 minutes and the Razorpay window can outlast it.** A payment that lands after expiry
-   is honoured if seats remain, otherwise refunded (now clearly reported). Consider a longer hold for paid checkout.
-6. **Refunds never settle** (admin refunds stop at "approved"); see `refund-and-chargeback-decisions.md`.
+   latency grows with sales. Fine for small events, slow for a popular one. A running sold-count per tier fixes it.
+4. **The hold lasts 10 minutes and the Razorpay window can outlast it.** A payment that lands after expiry is
+   honoured if seats remain, otherwise refunded (now clearly reported). Consider a longer hold for paid checkout.
+5. **Refunds never settle** (admin refunds stop at "approved"); see `refund-and-chargeback-decisions.md`.
+
+## How the seat guarantee is tested
+`firestore-inventory.integration.test.ts` runs the real Firestore adapters against the emulator. It is skipped
+unless `FIRESTORE_EMULATOR_HOST` is set, and CI runs it in the `Firestore emulator tests` job:
+`npx firebase-tools emulators:exec --only firestore --project demo-c1rcle "<test command>"`.
 
 ## Frontend (guest checkout, PR #72)
 - Fixed: a buyer refunded for a late payment is shown the refund message instead of "payment received".
