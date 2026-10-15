@@ -634,7 +634,14 @@ export function mapDomainError(
     );
     return undefined;
   }
-  if (known?.code === 'idempotency_conflict' || known?.code === 'idempotency_in_flight') {
+  if (
+    known?.code === 'idempotency_conflict' ||
+    known?.code === 'idempotency_in_flight' ||
+    // B1: a prior attempt failed at an unknown point (possibly after the
+    // durable write). The claim is kept so a retry can NOT re-run; the client
+    // gets the distinct message and inspects instead of retrying.
+    known?.code === 'idempotency_failed'
+  ) {
     reply.status(409).send(
       buildV2ErrorResponse({
         status: 409,

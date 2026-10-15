@@ -17,7 +17,7 @@ import {
 import { InventoryService } from '../inventory/inventory-service.js';
 import { PricingService } from '../pricing/pricing-service.js';
 
-import { CheckoutService, rsvpOrderId } from './checkout-service.js';
+import { admitsForTier, CheckoutService, rsvpOrderId } from './checkout-service.js';
 
 import type { TicketTier } from '../../domain/models/event-catalog.js';
 import type { ActorContext, ServiceDeps } from '../context.js';
@@ -236,5 +236,25 @@ describe('CheckoutService.createRsvp', () => {
     await expect(
       service.createRsvp({ actor: actor('user_1'), eventId: 'evt_draft', tierId: 'tier_draft' }),
     ).rejects.toBeInstanceOf(InvalidOperationError);
+  });
+});
+
+describe('admitsForTier (D4 — headcount comes from tier metadata, not a default of 1)', () => {
+  it('admits 2 for a couple tier via guestCount', () => {
+    expect(admitsForTier({ guestCount: 2, entryType: 'general' })).toBe(2);
+  });
+
+  it('admits 2 for a couple entryType when guestCount is absent', () => {
+    expect(admitsForTier({ entryType: 'couple' })).toBe(2);
+  });
+
+  it('guestCount wins over entryType', () => {
+    expect(admitsForTier({ guestCount: 4, entryType: 'couple' })).toBe(4);
+  });
+
+  it('admits 1 for a general tier and for an unknown/missing tier', () => {
+    expect(admitsForTier({ entryType: 'general' })).toBe(1);
+    expect(admitsForTier(undefined)).toBe(1);
+    expect(admitsForTier(null)).toBe(1);
   });
 });

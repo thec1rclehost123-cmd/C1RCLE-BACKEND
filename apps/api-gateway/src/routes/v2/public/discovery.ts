@@ -8,7 +8,6 @@ import {
   discoveryFeedDtoSchema,
   publicTicketTierListResponseSchema,
   paginatedSchema,
-  ticketTierDtoSchema,
 } from '@c1rcle/contracts/client';
 import { effectiveTierPricePaise } from '@c1rcle/core/domain';
 import { z } from 'zod';
@@ -73,7 +72,6 @@ const searchQuerySchema = paginationQuerySchema.extend({
 });
 
 const eventListSchema = paginatedSchema(eventDtoSchema);
-const publicTierListSchema = z.array(ticketTierDtoSchema);
 const promoterClickBodySchema = z
   .object({ eventSlug: z.string().min(1).max(80), code: z.string().min(4).max(16) })
   .strict();
@@ -84,28 +82,6 @@ const vanityParamsSchema = z.object({
 const vanityResolutionSchema = z.object({ eventSlug: z.string(), code: z.string() });
 
 export default async function publicDiscoveryRoutes(fastify: FastifyInstance) {
-  fastify.get(
-    '/events/:idOrSlug/ticket-tiers',
-    {
-      preHandler: [fastify.rateLimit('PUBLIC_READ'), fastify.validateV2({ params: idOrSlugParam })],
-    },
-    async (request, reply) => {
-      const { idOrSlug } = request.params as z.infer<typeof idOrSlugParam>;
-      const tiers = await services.public
-        .getEventTicketTiers(idOrSlug)
-        .catch((error: unknown) => mapDomainError(reply, request, idOrSlug, error));
-      if (!tiers) return reply;
-      const validated = validateV2Response(
-        reply,
-        request,
-        publicTierListSchema,
-        tiers.map(publicTierToDto),
-      );
-      if (!validated) return reply;
-      return reply.send(validated);
-    },
-  );
-
   fastify.get(
     '/promoter-links/:handle/:slug',
     {

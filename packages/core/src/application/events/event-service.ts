@@ -168,6 +168,7 @@ export class EventService {
   async review(actor: ActorContext, eventId: EntityId): Promise<Event> {
     const event = await this.fetchOwned(actor, eventId);
     const updated = transitionEvent(event, 'review', this.deps.config.clock.now());
+    if (updated === event) return event;
     await this.repo.save(updated);
     return updated;
   }
@@ -225,6 +226,7 @@ export class EventService {
   async pauseSales(actor: ActorContext, eventId: EntityId): Promise<Event> {
     const event = await this.fetchOwned(actor, eventId);
     const updated = transitionEvent(event, 'sales_paused', this.deps.config.clock.now());
+    if (updated === event) return event;
     await this.repo.save(updated);
     await emit(this.deps, actor, updated.id, 'event.updated', {
       title: updated.title,
@@ -235,6 +237,7 @@ export class EventService {
   async resumeSales(actor: ActorContext, eventId: EntityId): Promise<Event> {
     const event = await this.fetchOwned(actor, eventId);
     const updated = transitionEvent(event, 'published', this.deps.config.clock.now());
+    if (updated === event) return event;
     await this.repo.save(updated);
     await emit(this.deps, actor, updated.id, 'event.published', {
       title: updated.title,
@@ -245,6 +248,7 @@ export class EventService {
   async cancel(actor: ActorContext, eventId: EntityId, reason: string): Promise<Event> {
     const event = await this.fetchOwned(actor, eventId);
     const updated = cancelEvent(event, reason, this.deps.config.clock.now());
+    if (updated === event) return event;
     await this.repo.save(updated);
     await emit(this.deps, actor, updated.id, 'event.cancelled', {
       title: updated.title,
@@ -296,6 +300,7 @@ export class EventService {
   async transitionTo(actor: ActorContext, eventId: EntityId, to: EventStatus): Promise<Event> {
     const event = await this.fetchOwned(actor, eventId);
     const updated = transitionEvent(event, to, this.deps.config.clock.now());
+    if (updated === event) return event;
     await this.repo.save(updated);
     return updated;
   }

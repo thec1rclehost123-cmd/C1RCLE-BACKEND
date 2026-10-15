@@ -1,5 +1,5 @@
 import { buildV2ErrorResponse } from '@c1rcle/contracts';
-import { createLogger, type Logger } from '@c1rcle/core';
+import { createLogger, refreshAnalyticsReadModel, type Logger } from '@c1rcle/core';
 import cors from '@fastify/cors';
 import Fastify, { LogController, type FastifyInstance } from 'fastify';
 
@@ -244,6 +244,31 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     sweepTimer.unref();
     app.addHook('onClose', (_instance, done) => {
       clearInterval(sweepTimer);
+      done();
+    });
+
+    // B11: the analytics projection consumer (see `analytics-projection.ts`)
+    // reconciles a row the moment an event's lifecycle changes. It cannot cover
+    // revenue/tickets/check-ins, though: those move on order and scan writes
+    // that emit no domain event, so the read model would otherwise freeze at
+    // whatever the last `event.*` projected. This sweep is that missing
+    // freshness — it bounds staleness to its interval, at one bounded pass over
+    // every event and org. The same function is the backfill script, so a fresh
+    // database and a running one converge to the same rows.
+    const analyticsRefreshIntervalMs = 5 * 60 * 1000;
+    const analyticsTimer = setInterval(() => {
+      void refreshAnalyticsReadModel({
+        analytics: v2Services.analytics,
+        events: repos.events,
+        organizations: repos.organizations,
+        logger,
+      }).catch((error: unknown) => {
+        logger.error('analytics read-model refresh failed', { error });
+      });
+    }, analyticsRefreshIntervalMs);
+    analyticsTimer.unref();
+    app.addHook('onClose', (_instance, done) => {
+      clearInterval(analyticsTimer);
       done();
     });
   }
