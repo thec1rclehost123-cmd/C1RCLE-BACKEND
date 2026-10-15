@@ -50,7 +50,7 @@ export function mapDomainError(error: DomainError): {
   // B1: a prior attempt with this key FAILED at an unknown point (possibly
   // after the write). Client must inspect, not blindly re-run — 409 so the
   // distinct message survives the 5xx redaction.
-  if (error instanceof IdempotencyFailedError) return { status: 409, code: 'conflict' };)
+  if (error instanceof IdempotencyFailedError) return { status: 409, code: 'conflict' };
   return { status: 500, code: 'server' };
 }
 
