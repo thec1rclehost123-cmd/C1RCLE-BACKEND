@@ -59,6 +59,9 @@ export function rsvpOrderId(eventId: EntityId, userId: EntityId): EntityId {
  *   quote → holds → intent → confirm (dual path: webhook + redirect)
  * All mutations are idempotent and use the transactional outbox for fulfillment events.
  */
+/** The smallest amount the payment provider will take (₹1). */
+export const MIN_ONLINE_PAYMENT_PAISE = 100;
+
 export class CheckoutService {
   private readonly financeService: FinanceService;
   private readonly leaderboardService: LeaderboardService;
@@ -98,6 +101,13 @@ export class CheckoutService {
     });
 
     if (promoCode) await this.assertPromoWithinLimits(eventId, promoCode, input.actor.userId);
+
+    // Razorpay refuses an order below 100 paise with an opaque error, after a seat
+    // has already been held. Say so up front. (A total of exactly zero is a free
+    // order and does not go through a payment provider.)
+    if (pricing.grandTotalPaise > 0 && pricing.grandTotalPaise < MIN_ONLINE_PAYMENT_PAISE) {
+      throw new InvalidOperationError('Online payments must be at least ₹1');
+    }
 
     let attribution: CheckoutAttribution | null = null;
     if (referralCode) {
@@ -274,8 +284,20 @@ export class CheckoutService {
       updatedAt: now.toISOString(),
     };
 
-    await this.deps.repositories.cartReservations.create(hold);
-    return hold;
+    const stored = await this.deps.repositories.cartReservations.create(hold);
+
+    // The availability check above and this write are separate steps, so two
+    // buyers can both have passed it for the last seat. The stored hold carries
+    // its position in the event's strict order of holds; judging capacity against
+    // the holds ordered at or before it means exactly one of them keeps the seat.
+    // The loser gives its hold back at once rather than leaving it to expire.
+    const overbooked = await this.deps.inventory.firstOverbookedTier(stored);
+    if (overbooked !== null) {
+      await this.deps.repositories.cartReservations.release(stored.id);
+      const tierName = stored.lines.find((line) => line.tierId === overbooked)?.tierName ?? 'tier';
+      throw new InvalidOperationError(`Insufficient inventory for tier ${tierName}`);
+    }
+    return stored;
   }
 
   /**

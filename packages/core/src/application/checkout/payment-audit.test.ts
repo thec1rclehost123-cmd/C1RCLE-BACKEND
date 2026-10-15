@@ -209,14 +209,10 @@ describe('a promo code must be redeemable', () => {
 });
 
 describe('inventory is never oversold', () => {
-  // KNOWN OPEN GAP (payment audit): the availability check and the hold write are
-  // separate steps with no transaction between them, so two simultaneous buyers
-  // can both reserve the last seat. Closing it needs a transactional per-tier
-  // reservation counter, which must be built and proven against a real Firestore
-  // (the memory store cannot show the real interleaving). `it.fails` keeps this
-  // honest: it passes while the gap exists and FAILS once someone fixes it, which
-  // is the cue to delete the marker.
-  it.fails('lets only one of two simultaneous buyers reserve the last ticket', async () => {
+  // Fixed: hold positions are assigned in a transaction and capacity is judged
+  // against the holds ordered at or before a hold. Proven against a real Firestore
+  // in firestore-inventory.integration.test.ts; this is the in-memory check.
+  it('lets only one of two simultaneous buyers reserve the last ticket', async () => {
     const { catalog, service } = await build();
     await seedTier(catalog, 1);
 
@@ -345,5 +341,61 @@ describe('a held seat can be re-requested by its own buyer', () => {
     const again = await holdFor(service, 'user_a', 'same-key');
 
     expect(again.id).toBe(first.id);
+  });
+});
+
+describe('an amount the payment provider would refuse is refused up front', () => {
+  it('rejects a paid total under ₹1 at quote, before any seat is held', async () => {
+    const { catalog, carts, service } = await build();
+    await catalog.saveTier(
+      createTicketTier({
+        id: 'tier_1',
+        eventId: 'evt_1',
+        organizationId: 'org_1',
+        name: 'Tiny',
+        priceInPaise: 50,
+        quantity: 5,
+        now: NOW,
+      }),
+    );
+
+    await expect(holdFor(service, 'user_1', 'k1')).rejects.toThrow(/at least ₹1/);
+    expect(carts.reservations.size).toBe(0);
+  });
+
+  it('still allows a free ticket', async () => {
+    const { catalog, service } = await build();
+    await catalog.saveTier(
+      createTicketTier({
+        id: 'tier_1',
+        eventId: 'evt_1',
+        organizationId: 'org_1',
+        name: 'Free',
+        accessType: 'RSVP',
+        quantity: 5,
+        now: NOW,
+      }),
+    );
+
+    await expect(holdFor(service, 'user_1', 'k1')).resolves.toBeDefined();
+  });
+
+  it('still allows the smallest chargeable total (exactly 100 paise)', async () => {
+    const { catalog, service } = await build();
+    await catalog.saveTier(
+      createTicketTier({
+        id: 'tier_1',
+        eventId: 'evt_1',
+        organizationId: 'org_1',
+        name: 'Cheap',
+        priceInPaise: 92,
+        quantity: 5,
+        now: NOW,
+      }),
+    );
+
+    // 92 + fees (5 + 2) + GST (1) is exactly 100 paise.
+    const hold = await holdFor(service, 'user_1', 'k1');
+    expect(hold.pricing.grandTotalPaise).toBe(100);
   });
 });

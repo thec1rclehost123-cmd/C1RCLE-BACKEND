@@ -291,6 +291,32 @@ jobs:
       - name: Run the scenario suite
         run: pnpm test:scenarios
 
+  # ── Firestore behaviour that memory cannot show ────────────────────────────
+  # The in-memory store runs one thing at a time, so it cannot prove that two
+  # buyers racing for the last seat cannot both keep it. This runs the adapters
+  # against a real Firestore (the emulator) and asserts exactly that.
+  firestore-emulator:
+    name: Firestore emulator tests
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      # The emulator needs Java 21+; the runner image has it installed but not
+      # selected by default.
+      - name: Run the Firestore emulator tests
+        run: |
+          export JAVA_HOME="$JAVA_HOME_21_X64"
+          export PATH="$JAVA_HOME/bin:$PATH"
+          java -version
+          npx --yes firebase-tools@15.34.0 emulators:exec \
+            --only firestore --project demo-c1rcle \
+            "pnpm --filter @c1rcle/core exec vitest run src/infrastructure/firestore/firestore-inventory.integration.test.ts"
+
   # ── The image that actually ships ──────────────────────────────────────────
   docker:
     name: Docker build & scan
@@ -565,7 +591,8 @@ jobs:
   ci-ok:
     name: CI OK
     if: always()
-    needs: [static, test, scenario, docker, contract-parity, actionlint, commit-lint]
+    needs:
+      [static, test, scenario, firestore-emulator, docker, contract-parity, actionlint, commit-lint]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

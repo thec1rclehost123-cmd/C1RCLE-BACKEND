@@ -48,6 +48,14 @@ export interface CartReservation extends VersionedEntity {
   providerOrderId?: string | null;
   /** Who the tickets are for, captured at hold time; becomes the order contact. */
   attendee?: OrderContact | null;
+  /**
+   * Position in the event's strict order of hold creation, assigned by the
+   * repository inside a transaction (so no two holds for an event share one).
+   * Capacity is judged against the holds ordered at or before this one, which
+   * is what stops two simultaneous buyers both keeping the last seat. Absent on
+   * holds made before this existed; those count as ahead of everything.
+   */
+  sequence?: number | null;
   /** Idempotency key used to create this hold. */
   idempotencyKey: string;
 }
