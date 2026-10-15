@@ -1,5 +1,5 @@
-import { MemoryPaymentProvider } from '@c1rcle/core/domain';
-import { describe, expect, it } from 'vitest';
+import { InvalidOperationError, MemoryPaymentProvider } from '@c1rcle/core/domain';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createV2Services } from '../../../lib/v2-services.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
@@ -485,6 +485,102 @@ describe('resumable fulfilment', () => {
     // No promo was applied, so there is no redemption (it used to write a
     // row with an empty promo id for every order).
     expect(await repos.promoRedemptions.getByOrderId(`ORD-${paid.paymentId}`)).toBeNull();
+    await server.close();
+  });
+});
+
+// ─── A payment that lands after the hold lapsed ─────────────────────────────
+// The guest was inside Razorpay's checkout when the TTL ran out. Captured money
+// must end in an order or a refund — never in neither.
+
+describe('payment captured after the hold expired', () => {
+  async function lapsedPaidHold(server: Server, label: string, status: 'expired' | 'released') {
+    const { holdId, grandTotalPaise } = await seedHold(server);
+    const { paymentIntentId } = await attemptFor(server, holdId, `${label}-attempt`);
+    const repos = createV2Services().repos();
+    const hold = await repos.cartReservations.getById(holdId);
+    if (!hold) throw new Error('hold missing');
+    // Lapse the hold the two ways it happens: TTL passes, or the sweep released it.
+    await repos.cartReservations.create(
+      status === 'expired'
+        ? { ...hold, expiresAt: new Date(Date.now() - 60_000).toISOString() }
+        : { ...hold, status: 'released' },
+    );
+    const paymentId = `pay_${label}`;
+    memoryProvider().simulateCapture(paymentId, grandTotalPaise, paymentIntentId);
+    return { holdId, paymentId, paymentIntentId, grandTotalPaise, repos };
+  }
+
+  const inventoryOf = () =>
+    (
+      createV2Services().checkout as unknown as {
+        deps: { inventory: { assertAvailable: (...a: unknown[]) => Promise<void> } };
+      }
+    ).deps.inventory;
+
+  it.each(['expired', 'released'] as const)(
+    'still fulfils the order when seats remain (%s hold)',
+    async (status) => {
+      const server = await buildServer();
+      const paid = await lapsedPaidHold(server, `late_ok_${status}`, status);
+
+      const response = await verifyPayment(server, paid);
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().order).toMatchObject({
+        status: 'paid',
+        grandTotalPaise: paid.grandTotalPaise,
+      });
+      expect(response.json().entitlements.length).toBeGreaterThan(0);
+      expect((await paid.repos.cartReservations.getById(paid.holdId))?.status).toBe('converted');
+      await server.close();
+    },
+  );
+
+  it('refunds in full, once, when the seats are gone', async () => {
+    const server = await buildServer();
+    const paid = await lapsedPaidHold(server, 'late_soldout', 'expired');
+    vi.spyOn(inventoryOf(), 'assertAvailable').mockRejectedValue(
+      new InvalidOperationError('Insufficient inventory: 1 requested, 0 available'),
+    );
+    const refund = vi.spyOn(memoryProvider(), 'refundPayment');
+
+    try {
+      const first = await verifyPayment(server, paid);
+      const second = await verifyPayment(server, paid); // a redelivered webhook / retry
+
+      expect(first.statusCode).toBe(400);
+      expect(first.json().message).toMatch(/refunded in full/i);
+      expect(second.statusCode).toBe(400);
+      // Money is returned, no order or tickets exist, and both calls used the same
+      // idempotency key so the provider can only refund once.
+      expect(refund).toHaveBeenCalledWith({
+        paymentId: paid.paymentId,
+        amountPaise: paid.grandTotalPaise,
+        idempotencyKey: `autorefund:${paid.paymentId}`,
+      });
+      expect(new Set(refund.mock.calls.map(([r]) => r.idempotencyKey)).size).toBe(1);
+      expect(await paid.repos.orders.getByPaymentId(paid.paymentId)).toBeNull();
+    } finally {
+      vi.restoreAllMocks();
+    }
+    await server.close();
+  });
+
+  it('does not swallow an unexpected inventory failure by refunding', async () => {
+    const server = await buildServer();
+    const paid = await lapsedPaidHold(server, 'late_boom', 'expired');
+    vi.spyOn(inventoryOf(), 'assertAvailable').mockRejectedValue(new Error('database unavailable'));
+    const refund = vi.spyOn(memoryProvider(), 'refundPayment');
+
+    try {
+      const response = await verifyPayment(server, paid);
+      expect(response.statusCode).not.toBe(200);
+      // A transient error is not "sold out": no refund, so a retry can still succeed.
+      expect(refund).not.toHaveBeenCalled();
+    } finally {
+      vi.restoreAllMocks();
+    }
     await server.close();
   });
 });

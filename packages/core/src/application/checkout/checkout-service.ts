@@ -462,12 +462,15 @@ export class CheckoutService {
       const convertedOrder = await this.deps.repositories.orders.getById(hold.convertedOrderId);
       if (convertedOrder) return this.completeFulfilment(convertedOrder, hold);
     }
-    if (hold.status !== 'active')
+    // A hold can be past its TTL (or already released by the sweep) by the time
+    // a payment lands — the guest was inside the provider's checkout when it
+    // lapsed. That is not a reason to refuse the money: whether the payment was
+    // real is decided below, and then whether the seats are still free.
+    const lateCapture =
+      hold.status === 'released' ||
+      (hold.status === 'active' && new Date().getTime() > Date.parse(hold.expiresAt));
+    if (hold.status !== 'active' && !lateCapture)
       throw new InvalidOperationError(`Hold is ${hold.status}, cannot confirm`);
-    if (new Date().getTime() > Date.parse(hold.expiresAt)) {
-      await this.deps.repositories.cartReservations.release(holdId);
-      throw new InvalidOperationError('Hold has expired');
-    }
 
     // The payment must have been made against the provider order bound to THIS
     // hold. Without this, one genuine payment (signature, capture and amount
@@ -513,6 +516,12 @@ export class CheckoutService {
         `Payment currency ${verified.currency} does not match hold currency ${hold.pricing.currency}`,
       );
     }
+
+    // Captured after the hold lapsed: honour the payment if the seats are still
+    // free (the order is built from the frozen hold, so the guest gets exactly
+    // what they were quoted), otherwise give the money back rather than keep it
+    // for nothing. Captured money always ends in an order or a refund.
+    if (lateCapture) await this.honourOrRefundLateCapture(hold, paymentId);
 
     // Create order
     const orderId = `ORD-${paymentId}`;
@@ -570,6 +579,34 @@ export class CheckoutService {
   }
 
   /**
+   * For a payment that arrived after its hold lapsed: confirm every line's
+   * seats are still available, or refund the payment in full and say so.
+   * The refund uses a key derived from the payment id, so a redelivered
+   * webhook (which will see the same error) cannot refund twice.
+   *
+   * The availability check and the order write are not atomic, so two late
+   * captures racing for the very last seat can both pass; the unit-of-work
+   * work in the payments plan (phase 2) is what closes that.
+   */
+  private async honourOrRefundLateCapture(hold: CartReservation, paymentId: string): Promise<void> {
+    try {
+      for (const line of hold.lines) {
+        await this.deps.inventory.assertAvailable(hold.eventId, line.tierId, line.quantity);
+      }
+    } catch (error) {
+      if (!(error instanceof InvalidOperationError)) throw error;
+      await this.deps.paymentProvider.refundPayment({
+        paymentId,
+        amountPaise: hold.pricing.grandTotalPaise,
+        idempotencyKey: `autorefund:${paymentId}`,
+      });
+      throw new InvalidOperationError(
+        'Your payment arrived after the reservation expired and the tickets are no longer available. It has been refunded in full.',
+      );
+    }
+  }
+
+  /**
    * Runs every post-order fulfilment step, each of which is safe to repeat:
    * hold conversion, promo redemption, ticket issuance and the ledger entry.
    *
@@ -584,7 +621,7 @@ export class CheckoutService {
   ): Promise<{ order: Order; entitlements: Entitlement[] }> {
     const repos = this.deps.repositories;
 
-    if (hold.status === 'active') {
+    if (hold.status !== 'converted') {
       await repos.cartReservations.convertToOrder(hold.id, order.id);
     }
 
