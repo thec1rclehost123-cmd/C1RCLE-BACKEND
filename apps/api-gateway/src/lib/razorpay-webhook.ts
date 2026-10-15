@@ -115,6 +115,7 @@ export function providerEventFromWebhook(
   webhook: WebhookPayload,
   orderId: string | null,
   now: Date,
+  correlated = orderId !== null,
 ): ProviderPaymentEvent | null {
   const payload = webhook.payload;
   if (webhook.event === 'payment.captured') {
@@ -125,6 +126,7 @@ export function providerEventFromWebhook(
       paymentId: payment.id,
       providerOrderId: payment.order_id ?? null,
       orderId,
+      correlated,
       amountPaise: payment.amount,
       currency: payment.currency ?? 'INR',
       feePaise: payment.fee ?? 0,

@@ -41,6 +41,7 @@ const captured: ProviderPaymentEvent = {
   paymentId: 'pay_1',
   providerOrderId: 'order_p1',
   orderId: 'ord_9',
+  correlated: true,
   amountPaise: 118_000,
   currency: 'INR',
   feePaise: 2_360,
@@ -54,6 +55,7 @@ describe('MemoryProviderPaymentRepository', () => {
     provider: 'razorpay',
     providerOrderId: null,
     orderId: null,
+    processingState: 'requires_support',
     currency: 'INR',
     capturedPaise: 1,
     feePaise: 0,
@@ -131,6 +133,7 @@ describe('ProviderPaymentService.recordEvent', () => {
   it('gives up with the conflict if the store keeps losing the race', async () => {
     const stuck: ProviderPaymentRepository = {
       findByPaymentId: async () => null,
+      findByProviderOrderId: async () => null,
       save: async () => {
         throw new VersionConflictError(0, 1);
       },
@@ -143,6 +146,7 @@ describe('ProviderPaymentService.recordEvent', () => {
   it('does not swallow other storage errors', async () => {
     const broken: ProviderPaymentRepository = {
       findByPaymentId: async () => null,
+      findByProviderOrderId: async () => null,
       save: async () => {
         throw new Error('disk on fire');
       },

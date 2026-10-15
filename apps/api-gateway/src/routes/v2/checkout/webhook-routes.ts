@@ -158,14 +158,17 @@ export default async function webhookRoutes(fastify: FastifyInstance) {
         return reply.status(200).send({ received: true });
       }
 
-      // The provider's capture (amount, fee, tax) is a fact whether or not we can
-      // tie it to a hold, so record it first. A failure here returns 5xx and
-      // Razorpay retries, which is safe: recording is idempotent.
-      const captured = providerEventFromWebhook(parsed.data, null, new Date());
-      if (captured) await services.providerPayments.recordEvent(captured);
-
       const holdId = holdIdFromNotes(entity.notes);
       const paymentIntentId = entity.order_id ?? undefined;
+      const correlatedHold =
+        holdId && paymentIntentId ? await services.repos().cartReservations.getById(holdId) : null;
+      const isCorrelated = correlatedHold?.providerOrderId === paymentIntentId;
+
+      // The provider's capture (amount, fee, tax) is a fact whether or not we can
+      // tie it to a hold, so record it first. Its durable processing state says
+      // whether automatic fulfilment can proceed or operator support is needed.
+      const captured = providerEventFromWebhook(parsed.data, null, new Date(), isCorrelated);
+      if (captured) await services.providerPayments.recordEvent(captured);
 
       if (!holdId || !paymentIntentId) {
         // A signed capture we cannot tie to a hold: a payment link, or another

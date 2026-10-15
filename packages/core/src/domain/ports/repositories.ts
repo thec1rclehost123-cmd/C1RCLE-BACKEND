@@ -800,6 +800,24 @@ export interface ClaimAdmissionOptions {
 
 /** Promo redemption tracking (shared with Phase 3 event-catalog). */
 export interface PromoRedemptionRepository {
+  /**
+   * Atomically records the financially-effective redemption while enforcing
+   * both promo-wide and per-user limits. `promoIds` includes the canonical id
+   * plus any legacy alias that older redemption rows may contain.
+   */
+  claim(input: {
+    redemption: {
+      id: EntityId;
+      promoId: EntityId;
+      orderId: EntityId;
+      userId: EntityId | null;
+      redeemedAt: string;
+    };
+    promoIds: EntityId[];
+    historicalRedemptionCount: number;
+    maxRedemptions: number | null;
+    maxPerUser: number | null;
+  }): Promise<'claimed' | 'already_claimed' | 'global_limit' | 'user_limit'>;
   /** Records a redemption. Fails if duplicate for same order. */
   create(
     redemption: {
@@ -1143,6 +1161,7 @@ export interface DisputeRepository {
  */
 export interface ProviderPaymentRepository {
   findByPaymentId(paymentId: string): Promise<ProviderPayment | null>;
+  findByProviderOrderId(providerOrderId: string): Promise<ProviderPayment | null>;
   save(record: ProviderPayment): Promise<void>;
 }
 

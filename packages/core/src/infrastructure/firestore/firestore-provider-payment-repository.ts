@@ -19,6 +19,15 @@ export class FirestoreProviderPaymentRepository implements ProviderPaymentReposi
     return data ? toProviderPayment(data) : null;
   }
 
+  async findByProviderOrderId(providerOrderId: string): Promise<ProviderPayment | null> {
+    const snap = await this.collection
+      .where('providerOrderId', '==', providerOrderId)
+      .limit(1)
+      .get();
+    const data = snap.docs[0]?.data();
+    return data ? toProviderPayment(data) : null;
+  }
+
   async save(record: ProviderPayment): Promise<void> {
     const ref = this.collection.doc(record.id);
     await this.db.runTransaction(async (tx) => {
@@ -38,6 +47,7 @@ function toDoc(record: ProviderPayment): DocumentData {
     provider: record.provider,
     providerOrderId: record.providerOrderId,
     orderId: record.orderId,
+    processingState: record.processingState,
     currency: record.currency,
     capturedPaise: record.capturedPaise,
     feePaise: record.feePaise,
@@ -57,6 +67,9 @@ function toProviderPayment(data: DocumentData): ProviderPayment {
     provider: 'razorpay',
     providerOrderId: (data.providerOrderId as string | null | undefined) ?? null,
     orderId: (data.orderId as string | null | undefined) ?? null,
+    processingState:
+      (data.processingState as ProviderPayment['processingState'] | undefined) ??
+      (data.orderId ? 'fulfilled' : data.providerOrderId ? 'processing' : 'requires_support'),
     currency: data.currency as string,
     capturedPaise: data.capturedPaise as number,
     feePaise: data.feePaise as number,

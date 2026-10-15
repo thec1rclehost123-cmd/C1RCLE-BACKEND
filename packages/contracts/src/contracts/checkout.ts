@@ -130,6 +130,26 @@ export const paymentAttemptResponseSchema = z.object({
 });
 export type PaymentAttemptResponse = z.infer<typeof paymentAttemptResponseSchema>;
 
+/** Authoritative state used to recover an in-flight checkout after reload. */
+export const paymentRecoveryResponseSchema = z.object({
+  holdId: opaqueIdSchema,
+  eventId: opaqueIdSchema,
+  status: z.enum([
+    'pending',
+    'processing',
+    'fulfilled',
+    'failed',
+    'cancelled',
+    'expired',
+    'refunded',
+    'requires_support',
+  ]),
+  orderId: opaqueIdSchema.nullable(),
+  expiresAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+});
+export type PaymentRecoveryResponse = z.infer<typeof paymentRecoveryResponseSchema>;
+
 /**
  * `POST /payments/:id/verify` — client-redirect confirmation. `:id` is the
  * provider payment id; the body carries the rest of what the provider's

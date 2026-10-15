@@ -69,6 +69,23 @@ export interface FulfilmentGaps {
   missing: FulfilmentGap[];
 }
 
+export interface PaymentRecoveryStatus {
+  holdId: EntityId;
+  eventId: EntityId;
+  status:
+    | 'pending'
+    | 'processing'
+    | 'fulfilled'
+    | 'failed'
+    | 'cancelled'
+    | 'expired'
+    | 'refunded'
+    | 'requires_support';
+  orderId: EntityId | null;
+  expiresAt: string;
+  updatedAt: string;
+}
+
 /** How long a hold keeps its seats (10 minutes). */
 export const DEFAULT_HOLD_TTL_MS = 10 * 60 * 1000;
 
@@ -756,6 +773,23 @@ export class CheckoutService {
       updatedAt: now.toISOString(),
     };
 
+    // A promo discount becomes financially effective at capture, not quote.
+    // Claim it under a datastore transaction before the paid order is exposed;
+    // quote-time counts are only an early UX check and cannot protect against
+    // two buyers paying concurrently for the last redemption.
+    const promoClaim = await this.claimPromoRedemption(order, hold, true);
+    if (promoClaim === 'global_limit' || promoClaim === 'user_limit') {
+      await this.deps.repositories.cartReservations.release(hold.id);
+      await this.deps.paymentProvider.refundPayment({
+        paymentId,
+        amountPaise: hold.pricing.grandTotalPaise,
+        idempotencyKey: `promo-limit-refund:${paymentId}`,
+      });
+      throw new PaymentRefundedError(
+        'The promotional offer reached its limit while your payment was completing. Your payment has been refunded in full.',
+      );
+    }
+
     try {
       await this.deps.repositories.orders.save(order);
     } catch (error) {
@@ -771,6 +805,56 @@ export class CheckoutService {
     }
 
     return this.completeFulfilment(order, hold);
+  }
+
+  /** Read-only, owner-scoped source of truth for reload/lost-callback recovery. */
+  async getPaymentRecoveryStatus(
+    actor: ActorContext,
+    holdId: EntityId,
+  ): Promise<PaymentRecoveryStatus> {
+    const hold = await this.deps.repositories.cartReservations.getById(holdId);
+    if (!hold || !this.actsForHold(actor, hold)) throw new NotFoundError('hold', holdId);
+
+    const base = {
+      holdId: hold.id,
+      eventId: hold.eventId,
+      expiresAt: hold.expiresAt,
+      updatedAt: hold.updatedAt,
+    };
+    const order = hold.convertedOrderId
+      ? await this.deps.repositories.orders.getById(hold.convertedOrderId)
+      : null;
+    if (order) {
+      if (order.status === 'refunded') return { ...base, status: 'refunded', orderId: order.id };
+      if (order.status === 'failed') return { ...base, status: 'failed', orderId: order.id };
+      if (order.status === 'cancelled') return { ...base, status: 'cancelled', orderId: order.id };
+      if (order.status === 'paid') {
+        const gaps = await this.assessFulfilment(order);
+        return {
+          ...base,
+          status: gaps.missing.length === 0 ? 'fulfilled' : 'processing',
+          orderId: order.id,
+        };
+      }
+      return { ...base, status: 'processing', orderId: order.id };
+    }
+
+    const providerPayment = hold.providerOrderId
+      ? await this.deps.repositories.providerPayments.findByProviderOrderId(hold.providerOrderId)
+      : null;
+    if (providerPayment?.processingState === 'refunded') {
+      return { ...base, status: 'refunded', orderId: null };
+    }
+    if (providerPayment?.processingState === 'requires_support') {
+      return { ...base, status: 'requires_support', orderId: null };
+    }
+    if (providerPayment?.capturedPaise) {
+      return { ...base, status: 'processing', orderId: null };
+    }
+    if (hold.status === 'released' || Date.parse(hold.expiresAt) <= Date.now()) {
+      return { ...base, status: 'expired', orderId: null };
+    }
+    return { ...base, status: 'pending', orderId: null };
   }
 
   /**
@@ -892,18 +976,10 @@ export class CheckoutService {
 
     // Only a promo that was actually applied is a redemption. (This used to
     // write a redemption row with an empty promo id for every order.)
-    if (hold.appliedPromoCode && !(await repos.promoRedemptions.getByOrderId(order.id))) {
-      // Recorded under the promo's id so its limits can count it; the code is only
-      // a fallback for a promo that has since been deleted.
-      const promo = await repos.catalog.getPromoByCode(hold.appliedPromoCode, hold.eventId);
-      await repos.promoRedemptions.create({
-        id: `RED-${order.id}-${hold.appliedPromoCode}`,
-        promoId: promo?.id ?? hold.appliedPromoCode,
-        orderId: order.id,
-        userId: order.userId,
-        redeemedAt: new Date().toISOString(),
-      });
-    }
+    // Existing paid orders may pre-date the atomic claimant or may have crashed
+    // after their order write. Their discount is already financially effective,
+    // so repair records the missing audit row without retroactively rejecting it.
+    await this.claimPromoRedemption(order, hold, false);
 
     // Entitlement ids are deterministic per (order, tier, unit) and saves are
     // compare-and-set, so re-saving an existing one would conflict. Issue only
@@ -924,6 +1000,32 @@ export class CheckoutService {
     await this.recordSettlement(order);
 
     return { order, entitlements: await repos.entitlements.getByOrderId(order.id) };
+  }
+
+  private async claimPromoRedemption(
+    order: Order,
+    hold: CartReservation,
+    enforceLimits: boolean,
+  ): Promise<'claimed' | 'already_claimed' | 'global_limit' | 'user_limit'> {
+    if (!hold.appliedPromoCode) return 'already_claimed';
+    const promo = await this.deps.repositories.catalog.getPromoByCode(
+      hold.appliedPromoCode,
+      hold.eventId,
+    );
+    const promoId = promo?.id ?? hold.appliedPromoCode;
+    return this.deps.repositories.promoRedemptions.claim({
+      redemption: {
+        id: `RED-${order.id}-${hold.appliedPromoCode}`,
+        promoId,
+        orderId: order.id,
+        userId: order.userId,
+        redeemedAt: new Date().toISOString(),
+      },
+      promoIds: promo ? [promo.id, promo.code] : [hold.appliedPromoCode],
+      historicalRedemptionCount: enforceLimits ? (promo?.redemptionCount ?? 0) : 0,
+      maxRedemptions: enforceLimits ? (promo?.maxRedemptions ?? null) : null,
+      maxPerUser: enforceLimits ? (promo?.maxPerUser ?? null) : null,
+    });
   }
 
   /**

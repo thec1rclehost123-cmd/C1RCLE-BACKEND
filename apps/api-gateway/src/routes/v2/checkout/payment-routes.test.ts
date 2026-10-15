@@ -137,6 +137,47 @@ describe('POST /payments/attempts', () => {
   });
 });
 
+describe('GET /payments/attempts/:holdId/status', () => {
+  it('reports pending from the owner-scoped hold without mutating checkout', async () => {
+    const server = await buildServer();
+    const { holdId } = await seedHold(server);
+    await attemptFor(server, holdId, 'recover-pending');
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/payments/attempts/${holdId}/status`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ holdId, status: 'pending', orderId: null });
+    await server.close();
+  });
+
+  it('reports fulfilled only after the paid order has all fulfillment effects', async () => {
+    const server = await buildServer();
+    const { holdId, grandTotalPaise } = await seedHold(server);
+    const { paymentIntentId } = await attemptFor(server, holdId, 'recover-fulfilled');
+    const paymentId = 'pay_recovery_fulfilled';
+    const provider = memoryProvider();
+    provider.simulateCapture(paymentId, grandTotalPaise, paymentIntentId);
+    const verified = await verifyPayment(server, { paymentId, holdId, paymentIntentId });
+    expect(verified.statusCode).toBe(200);
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/payments/attempts/${holdId}/status`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      holdId,
+      status: 'fulfilled',
+      orderId: verified.json().order.id,
+    });
+    await server.close();
+  });
+});
+
 describe('POST /payments/:id/verify', () => {
   it('fulfils the order once the provider confirms a captured payment with a valid signature', async () => {
     const server = await buildServer();

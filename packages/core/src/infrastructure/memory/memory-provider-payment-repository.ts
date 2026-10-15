@@ -11,6 +11,13 @@ export class MemoryProviderPaymentRepository implements ProviderPaymentRepositor
     return found ? structuredClone(found) : null;
   }
 
+  async findByProviderOrderId(providerOrderId: string): Promise<ProviderPayment | null> {
+    const found = [...this.payments.values()].find(
+      (payment) => payment.providerOrderId === providerOrderId,
+    );
+    return found ? structuredClone(found) : null;
+  }
+
   async save(record: ProviderPayment): Promise<void> {
     const existing = this.payments.get(record.id);
     // A new record (version 1) must not already exist; an update must follow
