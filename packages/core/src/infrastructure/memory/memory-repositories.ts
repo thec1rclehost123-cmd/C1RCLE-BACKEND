@@ -463,6 +463,17 @@ export class MemoryCartReservationRepository implements CartReservationRepositor
     return stored;
   }
 
+  async reactivate(reservationId: EntityId, expiresAt: string): Promise<CartReservation | null> {
+    const existing = this.reservations.get(reservationId);
+    if (!existing) return null;
+    if (existing.status === 'converted') return existing;
+    const sequence = (this.eventSequence.get(existing.eventId) ?? 0) + 1;
+    this.eventSequence.set(existing.eventId, sequence);
+    const revived: CartReservation = { ...existing, status: 'active', expiresAt, sequence };
+    this.reservations.set(reservationId, revived);
+    return revived;
+  }
+
   async getById(reservationId: EntityId): Promise<CartReservation | null> {
     return this.reservations.get(reservationId) ?? null;
   }
@@ -574,6 +585,15 @@ export class MemoryOrderRepository implements OrderRepository {
   async listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<Order>> {
     const all = [...this.orders.values()].filter((o) => o.eventId === eventId);
     return serializeSlice(all, query);
+  }
+
+  async listSeatClaims(eventId: EntityId) {
+    return [...this.orders.values()]
+      .filter((o) => o.eventId === eventId)
+      .map((o) => ({
+        status: o.status,
+        lines: o.lines.map((l) => ({ tierId: l.tierId, quantity: l.quantity })),
+      }));
   }
 
   async countPaidQuantityByUserAndEvent(

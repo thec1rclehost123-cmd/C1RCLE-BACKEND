@@ -16,6 +16,7 @@ import { FirestoreEventCatalogRepository } from './firestore-event-catalog-repos
 import { FirestoreOrderRepository } from './firestore-order-repository.js';
 
 import type { ActorContext, ServiceDeps } from '../../application/context.js';
+import type { Order } from '../../domain/models/order.js';
 
 /**
  * ─── Seat reservation against a REAL Firestore (emulator) ────────────────────
@@ -51,7 +52,7 @@ describe.runIf(EMULATOR)('seat reservation (Firestore emulator)', () => {
   });
 
   /** A published event with one tier of `capacity` seats, on a unique id so runs never collide. */
-  async function setup(capacity: number) {
+  async function setup(capacity: number, maxPerUser: number | null = null) {
     const run = randomUUID().slice(0, 8);
     const eventId = `evt_${run}`;
     const tierId = `tier_${run}`;
@@ -79,6 +80,7 @@ describe.runIf(EMULATOR)('seat reservation (Firestore emulator)', () => {
         name: 'General',
         priceInPaise: 100_000,
         quantity: capacity,
+        ...(maxPerUser === null ? {} : { maxPerUser }),
         now: NOW,
       }),
     );
@@ -95,7 +97,7 @@ describe.runIf(EMULATOR)('seat reservation (Firestore emulator)', () => {
     } as unknown as ServiceDeps;
     const service = new CheckoutService(deps);
 
-    const hold = async (userId: string) => {
+    const hold = async (userId: string, key = `key-${userId}`) => {
       const { pricing } = await service.quote({
         actor: actor(userId),
         eventId,
@@ -114,7 +116,9 @@ describe.runIf(EMULATOR)('seat reservation (Firestore emulator)', () => {
         pricing,
         appliedPromoCode: null,
         attribution: null,
-        idempotencyKey: `key-${userId}-${run}`,
+        // Unique per run: the emulator keeps its data between runs, and a repeated key
+        // would replay the previous run's hold instead of creating a new one.
+        idempotencyKey: `${key}-${run}`,
       });
     };
     return { hold, carts, eventId };
@@ -173,4 +177,119 @@ describe.runIf(EMULATOR)('seat reservation (Firestore emulator)', () => {
       .sort((a, b) => (a ?? 0) - (b ?? 0));
     expect(positions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
   }, 120_000);
+
+  it('holds one buyer to their per-user cap however many requests they fire at once', async () => {
+    const cap = 2;
+    const { hold, carts, eventId } = await setup(100, cap);
+
+    const results = await Promise.allSettled(
+      Array.from({ length: 8 }, (_, i) => hold('same_buyer', `parallel-${String(i)}`)),
+    );
+
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(cap);
+    const live = await carts.listActiveByEvent(eventId, new Date());
+    expect(live.filter((h) => h.userId === 'same_buyer')).toHaveLength(cap);
+  }, 120_000);
+
+  it('does not let one buyer’s cap use up another buyer’s allowance', async () => {
+    const { hold } = await setup(100, 1);
+
+    const results = await Promise.allSettled(
+      ['buyer_x', 'buyer_y', 'buyer_z'].flatMap((id) => [hold(id, `${id}-1`), hold(id, `${id}-2`)]),
+    );
+
+    // Three buyers, a cap of one each: three holds in total, one per buyer.
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(3);
+  }, 120_000);
+
+  describe('listSeatClaims', () => {
+    const order = (
+      eventId: string,
+      id: string,
+      status: Order['status'],
+      tierId: string,
+      quantity: number,
+    ) =>
+      ({
+        id,
+        eventId,
+        organizationId: 'org_1',
+        userId: `user_${id}`,
+        contact: { name: 'A', email: 'a@b.c', phone: '' },
+        status,
+        lines: [
+          { tierId, tierName: 'G', quantity, unitPricePaise: 1000, subtotalPaise: 1000 * quantity },
+        ],
+        currency: 'INR',
+        subtotalPaise: 1000 * quantity,
+        discountPaise: 0,
+        discountedSubtotalPaise: 1000 * quantity,
+        platformFeePaise: 0,
+        paymentFeePaise: 0,
+        gstPaise: 0,
+        grandTotalPaise: 1000 * quantity,
+        appliedPromoCode: null,
+        attribution: null,
+        paymentIntentId: 'o',
+        paymentId: `p_${id}`,
+        paidAt: new Date().toISOString(),
+        reservationExpiresAt: new Date().toISOString(),
+        failureReason: null,
+        refundedPaise: 0,
+        version: 1,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }) as Order;
+
+    it('returns only the status and tier lines of this event’s orders', async () => {
+      const run = randomUUID().slice(0, 8);
+      const orders = new FirestoreOrderRepository(db);
+      await orders.save(order(`evt_a_${run}`, `a1_${run}`, 'paid', 'tier_x', 2));
+      await orders.save(order(`evt_a_${run}`, `a2_${run}`, 'refund_requested', 'tier_x', 3));
+      await orders.save(order(`evt_a_${run}`, `a3_${run}`, 'refunded', 'tier_y', 1));
+      await orders.save(order(`evt_b_${run}`, `b1_${run}`, 'paid', 'tier_x', 9));
+
+      const claims = await orders.listSeatClaims(`evt_a_${run}`);
+
+      expect(claims).toHaveLength(3);
+      expect(claims.map((c) => c.status).sort()).toEqual(['paid', 'refund_requested', 'refunded']);
+      expect(claims.flatMap((c) => c.lines).sort((x, y) => x.quantity - y.quantity)).toEqual([
+        { tierId: 'tier_y', quantity: 1 },
+        { tierId: 'tier_x', quantity: 2 },
+        { tierId: 'tier_x', quantity: 3 },
+      ]);
+      // A projection: nothing else about the order comes back.
+      expect(Object.keys(claims[0] ?? {}).sort()).toEqual(['lines', 'status']);
+    }, 60_000);
+
+    it('lets inventory count paid and refund-held seats, but not refunded ones', async () => {
+      const run = randomUUID().slice(0, 8);
+      const eventId = `evt_c_${run}`;
+      const tierId = `tier_c_${run}`;
+      const catalog = new FirestoreEventCatalogRepository(db);
+      const orders = new FirestoreOrderRepository(db);
+      const carts = new FirestoreCartReservationRepository(db);
+      await catalog.saveTier(
+        createTicketTier({
+          id: tierId,
+          eventId,
+          organizationId: 'org_1',
+          name: 'G',
+          priceInPaise: 1000,
+          quantity: 20,
+          now: NOW,
+        }),
+      );
+      await orders.save(order(eventId, `c1_${run}`, 'paid', tierId, 4));
+      await orders.save(order(eventId, `c2_${run}`, 'refund_requested', tierId, 3));
+      await orders.save(order(eventId, `c3_${run}`, 'refunded', tierId, 5));
+      const inventory = new InventoryService({
+        eventCatalog: catalog,
+        cartReservation: carts,
+        order: orders,
+      });
+
+      expect(await inventory.getAvailableQuantity(eventId, tierId)).toBe(20 - 4 - 3);
+    }, 60_000);
+  });
 });

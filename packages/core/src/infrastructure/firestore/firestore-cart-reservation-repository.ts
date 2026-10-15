@@ -42,6 +42,26 @@ export class FirestoreCartReservationRepository implements CartReservationReposi
     });
   }
 
+  async reactivate(reservationId: EntityId, expiresAt: string): Promise<CartReservation | null> {
+    const holdRef = this.collection.doc(reservationId);
+    return this.db.runTransaction(async (tx) => {
+      const holdSnap = await tx.get(holdRef);
+      const data = holdSnap.data();
+      if (!data) return null;
+      const existing = toCartReservation(data);
+      if (existing.status === 'converted') return existing;
+      // Same single per-event document creation uses, so a revived hold is
+      // ordered against everyone else exactly like a brand-new one.
+      const sequenceRef = this.db.collection(SEQUENCE_COLLECTION).doc(existing.eventId);
+      const sequenceSnap = await tx.get(sequenceRef);
+      const sequence = Number(sequenceSnap.data()?.last ?? 0) + 1;
+      const revived: CartReservation = { ...existing, status: 'active', expiresAt, sequence };
+      tx.set(sequenceRef, { last: sequence, eventId: existing.eventId });
+      tx.set(holdRef, toDoc(revived));
+      return revived;
+    });
+  }
+
   async getById(reservationId: EntityId): Promise<CartReservation | null> {
     const snap = await this.collection.doc(reservationId).get();
     const data = snap.data();

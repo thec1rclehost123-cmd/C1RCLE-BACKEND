@@ -69,6 +69,9 @@ export interface FulfilmentGaps {
   missing: FulfilmentGap[];
 }
 
+/** How long a hold keeps its seats (10 minutes). */
+export const DEFAULT_HOLD_TTL_MS = 10 * 60 * 1000;
+
 /** The smallest amount the payment provider will take (₹1). */
 export const MIN_ONLINE_PAYMENT_PAISE = 100;
 
@@ -273,7 +276,7 @@ export class CheckoutService {
     }
 
     const holdId = `HOLD-${scopedKey}`;
-    const ttl = reservationTtlMs ?? 10 * 60 * 1000;
+    const ttl = reservationTtlMs ?? DEFAULT_HOLD_TTL_MS;
 
     const hold: CartReservation = {
       id: holdId,
@@ -306,6 +309,15 @@ export class CheckoutService {
       await this.deps.repositories.cartReservations.release(stored.id);
       const tierName = stored.lines.find((line) => line.tierId === overbooked)?.tierName ?? 'tier';
       throw new InvalidOperationError(`Insufficient inventory for tier ${tierName}`);
+    }
+
+    // The per-user cap has the same check-then-write shape: one buyer firing
+    // several requests at once passes the early check on every one of them. Judge
+    // it the same way, against this buyer's other holds ordered at or before this.
+    const overCap = await this.firstTierOverUserCap(stored);
+    if (overCap !== null) {
+      await this.deps.repositories.cartReservations.release(stored.id);
+      throw new InvalidOperationError(`${overCap.name} has a maximum of ${overCap.max} per user`);
     }
     return stored;
   }
@@ -434,6 +446,42 @@ export class CheckoutService {
 
     const entitlements = await this.deps.repositories.entitlements.getByOrderId(orderId);
     return { order, entitlements };
+  }
+
+  /**
+   * The first capped tier on which a just-stored hold takes its buyer over
+   * `tier.maxPerUser`, counting what they have bought plus their live holds
+   * ordered at or before this one (so of several simultaneous requests exactly
+   * the allowed number survive).
+   */
+  private async firstTierOverUserCap(
+    hold: CartReservation,
+  ): Promise<{ name: string; max: number } | null> {
+    if (!hold.userId) return null;
+    const repos = this.deps.repositories;
+    const myPosition = hold.sequence ?? Number.MAX_SAFE_INTEGER;
+    const mine = (await repos.cartReservations.listActiveByEvent(hold.eventId, new Date())).filter(
+      (other) =>
+        other.userId === hold.userId &&
+        (other.id === hold.id || (other.sequence ?? 0) <= myPosition),
+    );
+    for (const line of hold.lines) {
+      const tier = await repos.catalog.getTierById(line.tierId);
+      if (!tier?.maxPerUser) continue;
+      const bought = await repos.orders.countPaidQuantityByUserAndEvent(
+        hold.userId,
+        hold.eventId,
+        line.tierId,
+      );
+      const held = mine.reduce(
+        (sum, other) =>
+          sum +
+          other.lines.filter((l) => l.tierId === line.tierId).reduce((n, l) => n + l.quantity, 0),
+        0,
+      );
+      if (bought + held > tier.maxPerUser) return { name: tier.name, max: tier.maxPerUser };
+    }
+    return null;
   }
 
   /**
@@ -577,7 +625,7 @@ export class CheckoutService {
   }): Promise<{ order: Order; entitlements: Entitlement[] }> {
     const { actor, paymentId, paymentIntentId, holdId } = input;
 
-    const hold = await this.deps.repositories.cartReservations.getById(holdId);
+    let hold = await this.deps.repositories.cartReservations.getById(holdId);
     if (!hold || !this.actsForHold(actor, hold)) throw new InvalidOperationError('Hold not found');
 
     // Check for existing order with this payment id (idempotency) — both the
@@ -666,7 +714,7 @@ export class CheckoutService {
     // free (the order is built from the frozen hold, so the guest gets exactly
     // what they were quoted), otherwise give the money back rather than keep it
     // for nothing. Captured money always ends in an order or a refund.
-    if (lateCapture) await this.honourOrRefundLateCapture(hold, paymentId);
+    if (lateCapture) hold = await this.reviveHoldForLatePayment(hold, paymentId);
 
     // Create order
     const orderId = `ORD-${paymentId}`;
@@ -726,31 +774,47 @@ export class CheckoutService {
   }
 
   /**
-   * For a payment that arrived after its hold lapsed: confirm every line's
-   * seats are still available, or refund the payment in full and say so.
-   * The refund uses a key derived from the payment id, so a redelivered
-   * webhook (which will see the same error) cannot refund twice.
+   * For a payment that arrived after its hold lapsed: bring the hold back to life
+   * and confirm its seats still fit, or refund the payment in full and say so.
+   * Captured money always ends in an order or a refund.
    *
-   * The availability check and the order write are not atomic, so two late
-   * captures racing for the very last seat can both pass; the unit-of-work
-   * work in the payments plan (phase 2) is what closes that.
+   * Re-activating the hold gives it a NEW position in the event's strict order of
+   * holds, taken in a transaction, and capacity is then judged exactly as it is
+   * for a fresh hold. That is what stops a late payer and a brand-new buyer, each
+   * told "there is room" a moment apart, from both getting the last seat: the
+   * revived hold is visible to every later buyer, and every earlier one is visible
+   * to it. The refund uses a key derived from the payment id, so a redelivered
+   * webhook (which sees the same outcome) cannot refund twice.
    */
-  private async honourOrRefundLateCapture(hold: CartReservation, paymentId: string): Promise<void> {
+  private async reviveHoldForLatePayment(
+    hold: CartReservation,
+    paymentId: string,
+  ): Promise<CartReservation> {
+    const repo = this.deps.repositories.cartReservations;
+    const lapsesAt = new Date(Date.now() + DEFAULT_HOLD_TTL_MS).toISOString();
+    const revived = await repo.reactivate(hold.id, lapsesAt);
+    if (!revived) throw new InvalidOperationError('Hold not found');
+
+    let overbooked: EntityId | null;
     try {
-      for (const line of hold.lines) {
-        await this.deps.inventory.assertAvailable(hold.eventId, line.tierId, line.quantity);
-      }
+      overbooked = await this.deps.inventory.firstOverbookedTier(revived);
     } catch (error) {
+      // A tier that no longer exists means the seats cannot be honoured; anything
+      // else is an unexpected failure and must not be turned into a refund.
       if (!(error instanceof InvalidOperationError)) throw error;
-      await this.deps.paymentProvider.refundPayment({
-        paymentId,
-        amountPaise: hold.pricing.grandTotalPaise,
-        idempotencyKey: `autorefund:${paymentId}`,
-      });
-      throw new PaymentRefundedError(
-        'Your payment arrived after the reservation expired and the tickets are no longer available. It has been refunded in full.',
-      );
+      overbooked = revived.lines[0]?.tierId ?? '';
     }
+    if (overbooked === null) return revived;
+
+    await repo.release(revived.id);
+    await this.deps.paymentProvider.refundPayment({
+      paymentId,
+      amountPaise: hold.pricing.grandTotalPaise,
+      idempotencyKey: `autorefund:${paymentId}`,
+    });
+    throw new PaymentRefundedError(
+      'Your payment arrived after the reservation expired and the tickets are no longer available. It has been refunded in full.',
+    );
   }
 
   /**
