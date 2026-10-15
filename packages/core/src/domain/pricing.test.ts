@@ -56,6 +56,7 @@ function promo(overrides: Partial<PromoCode> = {}): PromoCode {
     createdAt: '2026-08-14T00:00:00.000Z',
     updatedAt: '2026-08-14T00:00:00.000Z',
     ...overrides,
+    discountFundingOwner: overrides.discountFundingOwner ?? 'host',
   };
 }
 

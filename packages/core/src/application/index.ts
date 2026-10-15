@@ -168,6 +168,7 @@ export type {
   BalanceSummary,
 } from './finance/finance-service.js';
 export { createFinanceService } from './finance/finance-service.js';
+export * from './finance/financial-posting-service.js';
 export type {
   PayoutService,
   PayoutServiceDeps,

@@ -76,6 +76,7 @@ import {
 } from '@c1rcle/core/domain';
 import {
   MemoryOutboxStore,
+  FirestoreOutboxStore,
   MemoryAuditRepository,
   MemoryAdminAuditRepository,
   FirestoreAdminAuditRepository,
@@ -305,8 +306,13 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
 
   const repositories: ServiceDeps['repositories'] = buildRepositories(gw);
 
-  // T13 event infrastructure: memory outbox store + in-process bus + audit.
-  const outboxStore = new MemoryOutboxStore();
+  // Financial and domain-event intents must survive a production process
+  // restart. Tests keep the deterministic memory adapter; Firestore uses the
+  // leased durable outbox.
+  const outboxStore =
+    gw.STORAGE_DRIVER === 'memory'
+      ? new MemoryOutboxStore()
+      : new FirestoreOutboxStore(firestoreClient(gw));
   const audits = new MemoryAuditRepository();
   const eventBus = new InProcessEventBus(outboxStore);
   eventBus.subscribe('event.published', createAuditConsumer(audits));
@@ -584,6 +590,20 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     guestProfiles: repositories.guestProfiles,
     config: coreConfig,
   });
+
+  if (gw.STORAGE_DRIVER === 'firestore') {
+    const drainPersistedOutbox = () => {
+      void eventBus.drain().catch((error: unknown) => {
+        resolvedLogger.error('outbox.drain_failed', {
+          error: error instanceof Error ? error.message : 'unknown error',
+        });
+      });
+    };
+    // Recover rows left by a previous process immediately, then poll for
+    // scheduled retries. `unref` lets graceful shutdown proceed naturally.
+    queueMicrotask(drainPersistedOutbox);
+    setInterval(drainPersistedOutbox, 1_000).unref();
+  }
 
   return {
     organizations: new OrganizationService(deps),

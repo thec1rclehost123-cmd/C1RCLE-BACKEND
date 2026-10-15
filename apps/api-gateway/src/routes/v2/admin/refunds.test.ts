@@ -22,8 +22,8 @@ import type { FastifyInstance } from 'fastify';
  * Seeds a fully paid order through the real checkout/payment routes (not a
  * repository backdoor, matching `orders-routes.test.ts`'s convention), then
  * exercises the amount-tiered approval ladder end to end: zero-approver
- * auto-approval under ₹500 (approved, never settled — settlement is
- * deliberately unbuilt), single-approver under ₹5,000, and the two guards
+ * auto-approval under ₹500 (approved, not automatically settled),
+ * single-approver under ₹5,000, and the two guards
  * that matter most — the requester cannot approve their own request, and a
  * rejected request restores the order to `paid` rather than any hardcoded
  * status.
@@ -299,6 +299,158 @@ describe('approving and rejecting a pending refund', () => {
     expect(body.request.status).toBe('rejected');
     expect(body.order.status).toBe('paid');
     expect(body.order.refundedPaise).toBe(0);
+  });
+});
+
+describe('executing an approved refund', () => {
+  it('settles a partial provider refund exactly once and posts balanced reversal journals', async () => {
+    await seedAdmin('admin_a', 'finance');
+    const { orderId } = await seedPaidOrder(server);
+    const requested = await server.inject({
+      method: 'POST',
+      url: '/admin/refunds',
+      headers: asUser('admin_a'),
+      payload: { orderId, amountPaise: 40_000, reason: 'Partial guest refund' },
+    });
+    const requestId = requested.json().request.id as string;
+
+    const executed = await server.inject({
+      method: 'POST',
+      url: `/admin/refunds/${requestId}/execute`,
+      headers: asUser('admin_a'),
+    });
+    expect(executed.statusCode).toBe(200);
+    expect(executed.json()).toMatchObject({
+      request: {
+        status: 'settled',
+        providerStatus: 'processed',
+        executionAttempts: 1,
+      },
+      order: { status: 'paid', refundedPaise: 40_000 },
+    });
+
+    const journals = await services.repos().financialJournals.findBySource('refund', requestId);
+    expect(journals).toHaveLength(3);
+    for (const journal of journals) {
+      const debit = journal.lines
+        .filter((line) => line.side === 'debit')
+        .reduce((sum, line) => sum + line.amountPaise, 0);
+      const credit = journal.lines
+        .filter((line) => line.side === 'credit')
+        .reduce((sum, line) => sum + line.amountPaise, 0);
+      expect(debit).toBe(credit);
+    }
+
+    const retry = await server.inject({
+      method: 'POST',
+      url: `/admin/refunds/${requestId}/execute`,
+      headers: asUser('admin_a'),
+    });
+    expect(retry.statusCode).toBe(200);
+    expect(retry.json().request.providerRefundId).toBe(executed.json().request.providerRefundId);
+    expect(await services.repos().financialJournals.findBySource('refund', requestId)).toHaveLength(
+      3,
+    );
+  });
+
+  it('voids the ticket only when a full refund is authoritatively processed', async () => {
+    await seedAdmin('admin_a', 'finance');
+    const { orderId, grandTotalPaise } = await seedPaidOrder(server, 10_000);
+    const requested = await server.inject({
+      method: 'POST',
+      url: '/admin/refunds',
+      headers: asUser('admin_a'),
+      payload: { orderId, amountPaise: grandTotalPaise, reason: 'Full cancellation' },
+    });
+    const requestId = requested.json().request.id as string;
+
+    const before = await services.repos().entitlements.getByOrderId(orderId);
+    expect(before.every((entitlement) => entitlement.status === 'valid')).toBe(true);
+    const executed = await server.inject({
+      method: 'POST',
+      url: `/admin/refunds/${requestId}/execute`,
+      headers: asUser('admin_a'),
+    });
+
+    expect(executed.statusCode).toBe(200);
+    expect(executed.json().order).toMatchObject({
+      status: 'refunded',
+      refundedPaise: grandTotalPaise,
+    });
+    const after = await services.repos().entitlements.getByOrderId(orderId);
+    expect(after.every((entitlement) => entitlement.status === 'void')).toBe(true);
+  });
+
+  it('keeps the order locked when the provider result is ambiguous', async () => {
+    await seedAdmin('admin_a', 'finance');
+    const { orderId } = await seedPaidOrder(server);
+    const requested = await server.inject({
+      method: 'POST',
+      url: '/admin/refunds',
+      headers: asUser('admin_a'),
+      payload: { orderId, amountPaise: 40_000, reason: 'Ambiguous provider test' },
+    });
+    const requestId = requested.json().request.id as string;
+    const provider = memoryProvider();
+    const originalRefund = provider.refundPayment.bind(provider);
+    provider.refundPayment = async () => {
+      throw new Error('timeout after request write');
+    };
+
+    try {
+      const response = await server.inject({
+        method: 'POST',
+        url: `/admin/refunds/${requestId}/execute`,
+        headers: asUser('admin_a'),
+      });
+      expect(response.statusCode).toBe(409);
+      expect((await services.repos().orders.getById(orderId))?.status).toBe('refund_requested');
+      expect((await services.repos().refundRequests.getById(requestId))?.status).toBe('executing');
+    } finally {
+      provider.refundPayment = originalRefund;
+    }
+  });
+
+  it('does not reapply an order refund after a crash before request settlement', async () => {
+    await seedAdmin('admin_a', 'finance');
+    const { orderId } = await seedPaidOrder(server);
+    const requested = await server.inject({
+      method: 'POST',
+      url: '/admin/refunds',
+      headers: asUser('admin_a'),
+      payload: { orderId, amountPaise: 40_000, reason: 'Retry fence test' },
+    });
+    const requestId = requested.json().request.id as string;
+    const repository = services.repos().refundRequests;
+    const originalSave = repository.save.bind(repository);
+    let failSettlementOnce = true;
+    repository.save = async (request) => {
+      if (request.status === 'settled' && failSettlementOnce) {
+        failSettlementOnce = false;
+        throw new Error('simulated crash before request settlement');
+      }
+      return originalSave(request);
+    };
+
+    const first = await server.inject({
+      method: 'POST',
+      url: `/admin/refunds/${requestId}/execute`,
+      headers: asUser('admin_a'),
+    });
+    expect(first.statusCode).toBe(500);
+    repository.save = originalSave;
+
+    const retry = await server.inject({
+      method: 'POST',
+      url: `/admin/refunds/${requestId}/execute`,
+      headers: asUser('admin_a'),
+    });
+    expect(retry.statusCode).toBe(200);
+    expect(retry.json().order.refundedPaise).toBe(40_000);
+    expect(retry.json().order.status).toBe('paid');
+    expect((await services.repos().orders.getById(orderId))?.appliedRefundRequestIds).toEqual([
+      requestId,
+    ]);
   });
 });
 

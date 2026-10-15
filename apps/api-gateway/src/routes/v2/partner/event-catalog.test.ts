@@ -352,7 +352,12 @@ describe('promo codes', () => {
       method: 'POST',
       url: `/events/${eventId}/promo-codes`,
       headers: write(org),
-      payload: { code: 'early25', discountType: 'percent', discountValue: 25 },
+      payload: {
+        code: 'early25',
+        discountType: 'percent',
+        discountValue: 25,
+        discountFundingOwner: 'host',
+      },
     });
 
     expect(created.statusCode).toBe(201);
@@ -361,6 +366,7 @@ describe('promo codes', () => {
       code: 'EARLY25',
       discountType: 'percent',
       discountValue: 25,
+      discountFundingOwner: 'host',
       redemptionCount: 0,
     });
 

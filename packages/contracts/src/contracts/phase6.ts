@@ -239,6 +239,7 @@ export const adminRefundApprovalDtoSchema = z.object({
 export const adminRefundRequestStatusSchema = z.enum([
   'pending',
   'approved',
+  'executing',
   'rejected',
   'settled',
   'failed',
@@ -258,6 +259,9 @@ export const adminRefundRequestDtoSchema = z.object({
   rejectedBy: opaqueIdSchema.nullable(),
   rejectionReason: z.string().nullable(),
   providerRefundId: z.string().nullable(),
+  providerStatus: z.string().nullable(),
+  executionIdempotencyKey: z.string().min(1),
+  executionAttempts: z.number().int().nonnegative(),
   failureReason: z.string().nullable(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),

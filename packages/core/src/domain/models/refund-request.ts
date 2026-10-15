@@ -22,12 +22,10 @@ import type { EntityId, VersionedEntity } from '../identity.js';
  * rather than looked up here; this model stays pure and has no repository
  * access.
  *
- * `approved` is NOT `settled`: nothing in this codebase currently moves a
- * request from `approved` to `settled` — `RefundService` deliberately does
- * not call the payment provider. Settlement is unbuilt, pending a future
- * product decision on that flow; `settled`/`failed` and their transition
- * functions (`markRefundSettled`/`markRefundFailed`) exist here as the
- * target shape for that future step, not as something reachable today.
+ * `approved` is NOT `settled`: approval only satisfies the human-control
+ * threshold. `RefundService.executeRefund` is the separate money-moving
+ * action that claims execution, records the provider result, and then applies
+ * the internal journal, order, and entitlement effects.
  *
  * This is deliberately its own entity, not routed through
  * `admin-authority`'s propose→resolve — that mechanism is a fixed
@@ -35,7 +33,8 @@ import type { EntityId, VersionedEntity } from '../identity.js';
  * accumulator (0, 1, or 2 depending on amount), not a binary approve/reject.
  */
 
-export type AdminRefundRequestStatus = 'pending' | 'approved' | 'rejected' | 'settled' | 'failed';
+export type AdminRefundRequestStatus =
+  'pending' | 'approved' | 'executing' | 'rejected' | 'settled' | 'failed';
 
 export interface AdminRefundApproval {
   adminId: EntityId;
@@ -58,6 +57,9 @@ export interface AdminRefundRequest extends VersionedEntity {
   rejectionReason: string | null;
   /** The payment provider's refund id, set once settlement succeeds. */
   providerRefundId: string | null;
+  providerStatus: string | null;
+  executionIdempotencyKey: string;
+  executionAttempts: number;
   /** Why settlement failed, if it did — surfaced for a human to retry or escalate. */
   failureReason: string | null;
 }
@@ -124,11 +126,14 @@ export function createRefundRequest(input: CreateAdminRefundRequestInput): Admin
     approvals: [],
     // Zero approvers required means no human sign-off is waited on —
     // `pending` would be misleading (nothing is actually pending). This is
-    // NOT a settlement signal; see the module doc comment.
+    // NOT a settlement signal; execution remains an explicit later action.
     status: approversRequired === 0 ? 'approved' : 'pending',
     rejectedBy: null,
     rejectionReason: null,
     providerRefundId: null,
+    providerStatus: null,
+    executionIdempotencyKey: `refund:${input.id}`,
+    executionAttempts: 0,
     failureReason: null,
     ...newVersionedEntity(input.now ?? new Date()),
   };
@@ -193,13 +198,15 @@ export function markRefundSettled(
   providerRefundId: string,
   now?: Date,
 ): AdminRefundRequest {
-  if (!isFullyApproved(request)) {
-    throw new InvalidOperationError('This refund request has not been approved yet');
+  if (request.status !== 'executing') {
+    throw new InvalidOperationError('This refund request is not executing');
   }
   return {
     ...bumpVersion(request, now ?? new Date()),
     status: 'settled',
     providerRefundId,
+    providerStatus: 'processed',
+    failureReason: null,
   };
 }
 
@@ -209,12 +216,60 @@ export function markRefundFailed(
   reason: string,
   now?: Date,
 ): AdminRefundRequest {
-  if (!isFullyApproved(request)) {
-    throw new InvalidOperationError('This refund request has not been approved yet');
+  if (request.status !== 'executing') {
+    throw new InvalidOperationError('This refund request is not executing');
   }
   return {
     ...bumpVersion(request, now ?? new Date()),
     status: 'failed',
     failureReason: reason,
+  };
+}
+
+/** Keeps an ambiguous provider outcome locked for webhook/reconciliation. */
+export function markRefundExecutionUncertain(
+  request: AdminRefundRequest,
+  reason: string,
+  now?: Date,
+): AdminRefundRequest {
+  if (request.status !== 'executing') {
+    throw new InvalidOperationError('This refund request is not executing');
+  }
+  return {
+    ...bumpVersion(request, now ?? new Date()),
+    failureReason: reason.trim().slice(0, 500),
+  };
+}
+
+/** Claims provider execution. Optimistic repository save makes this single-winner. */
+export function beginRefundExecution(request: AdminRefundRequest, now?: Date): AdminRefundRequest {
+  if (request.status !== 'approved' && request.status !== 'failed') {
+    throw new InvalidOperationError(`This refund request is ${request.status}, not executable`);
+  }
+  return {
+    ...bumpVersion(request, now ?? new Date()),
+    status: 'executing',
+    executionAttempts: request.executionAttempts + 1,
+    failureReason: null,
+  };
+}
+
+/** Persists the authoritative provider response before internal side effects. */
+export function recordRefundProviderFact(
+  request: AdminRefundRequest,
+  providerRefundId: string,
+  providerStatus: string,
+  now?: Date,
+): AdminRefundRequest {
+  if (request.status !== 'executing') {
+    throw new InvalidOperationError('This refund request is not executing');
+  }
+  if (!providerRefundId.trim() || !providerStatus.trim()) {
+    throw new InvalidOperationError('Provider refund id and status are required');
+  }
+  return {
+    ...bumpVersion(request, now ?? new Date()),
+    providerRefundId,
+    providerStatus,
   };
 }

@@ -1,10 +1,15 @@
 import { VersionConflictError, NotFoundError } from '../../domain/errors.js';
 import {
+  createProviderFinancialEvent,
+  hashProviderEventPayload,
+} from '../../domain/models/provider-financial-event.js';
+import {
   applyProviderPaymentEvent,
   reconcileOrderWithProvider,
 } from '../../domain/models/provider-payment.js';
 
 import type { EntityId } from '../../domain/identity.js';
+import type { ProviderEventTrust } from '../../domain/models/provider-financial-event.js';
 import type {
   ProviderPaymentEvent,
   ReconciliationResult,
@@ -13,6 +18,13 @@ import type { ServiceDeps } from '../context.js';
 
 /** Webhooks for one payment can land together; a handful of retries is plenty. */
 const MAX_ATTEMPTS = 5;
+
+export interface ProviderEventIngestionContext {
+  providerEventId?: string | null;
+  payloadHash?: string;
+  trustedIngestion?: ProviderEventTrust;
+  receivedAt?: Date;
+}
 
 /**
  * ─── Provider payment reconciliation ─────────────────────────────────────────
@@ -38,18 +50,54 @@ export class ProviderPaymentService {
    * against two webhooks for the same payment racing: the loser re-reads and
    * re-applies on top of the winner.
    */
-  async recordEvent(event: ProviderPaymentEvent): Promise<void> {
+  async recordEvent(
+    event: ProviderPaymentEvent,
+    context: ProviderEventIngestionContext = {},
+  ): Promise<void> {
+    const receivedAt = context.receivedAt ?? this.deps.config.clock.now();
+    const financialEvent = createProviderFinancialEvent({
+      providerEventId: context.providerEventId,
+      eventType: event.type,
+      paymentId: event.paymentId,
+      providerOrderId: event.type === 'captured' ? event.providerOrderId : null,
+      refundId: event.type === 'refund_processed' ? event.refundId : null,
+      disputeId: event.type === 'dispute' ? event.disputeId : null,
+      receivedAt,
+      providerOccurredAt: event.type === 'captured' ? event.occurredAt : null,
+      payloadHash: context.payloadHash ?? hashProviderEventPayload(JSON.stringify(event)),
+      trustedIngestion: context.trustedIngestion ?? 'internal_provider_response',
+    });
+    const ingested = await this.deps.repositories.providerFinancialEvents.ingest(financialEvent);
+    try {
+      const result = await this.applyEvent(event);
+      await this.deps.repositories.providerFinancialEvents.markProcessed(
+        ingested.id,
+        result,
+        this.deps.config.clock.now(),
+      );
+    } catch (error) {
+      await this.deps.repositories.providerFinancialEvents.markSupportRequired(
+        ingested.id,
+        error instanceof Error ? error.message.slice(0, 500) : 'provider event processing failed',
+        this.deps.config.clock.now(),
+      );
+      throw error;
+    }
+  }
+
+  private async applyEvent(event: ProviderPaymentEvent): Promise<string> {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
       const existing = await this.providerPayments.findByPaymentId(event.paymentId);
       const next = applyProviderPaymentEvent(existing, event, this.deps.config.clock.now());
-      if (next === existing) return;
+      if (next === existing) return 'idempotent_replay';
       try {
         await this.providerPayments.save(next);
-        return;
+        return 'provider_aggregate_updated';
       } catch (error) {
         if (!(error instanceof VersionConflictError) || attempt === MAX_ATTEMPTS) throw error;
       }
     }
+    return 'support_required';
   }
 
   async reconcileOrder(orderId: EntityId): Promise<ReconciliationResult> {

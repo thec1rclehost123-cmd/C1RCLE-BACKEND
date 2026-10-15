@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { NotFoundError, VersionConflictError } from '../../domain/errors.js';
+import { MemoryProviderFinancialEventRepository } from '../../infrastructure/memory/memory-provider-financial-event-repository.js';
 import { MemoryProviderPaymentRepository } from '../../infrastructure/memory/memory-provider-payment-repository.js';
 
 import { ProviderPaymentService } from './provider-payment-service.js';
@@ -25,15 +26,21 @@ const order = {
 function build(
   providerPayments: ProviderPaymentRepository = new MemoryProviderPaymentRepository(),
 ) {
+  const providerFinancialEvents = new MemoryProviderFinancialEventRepository();
   // The service needs only these three collaborators; the rest of ServiceDeps is irrelevant here.
   const deps = {
     repositories: {
       providerPayments,
+      providerFinancialEvents,
       orders: { getById: async (id: string) => (id === order.id ? order : null) },
     },
     config: { clock: { now: () => NOW } },
   } as unknown as ServiceDeps;
-  return { service: new ProviderPaymentService(deps), providerPayments };
+  return {
+    service: new ProviderPaymentService(deps),
+    providerPayments,
+    providerFinancialEvents,
+  };
 }
 
 const captured: ProviderPaymentEvent = {
@@ -91,12 +98,19 @@ describe('MemoryProviderPaymentRepository', () => {
 
 describe('ProviderPaymentService.recordEvent', () => {
   it('stores a capture and writes nothing for an exact replay', async () => {
-    const { service, providerPayments } = build();
+    const { service, providerPayments, providerFinancialEvents } = build();
 
     await service.recordEvent(captured);
     await service.recordEvent(captured);
 
     expect((await providerPayments.findByPaymentId('pay_1'))?.version).toBe(1);
+    const ingested = await providerFinancialEvents.listByPaymentId('pay_1');
+    expect(ingested).toHaveLength(1);
+    expect(ingested[0]).toMatchObject({
+      processingState: 'processed',
+      processingAttempts: 2,
+      finalResult: 'idempotent_replay',
+    });
   });
 
   it('converges when several webhooks for one payment land at the same time', async () => {
@@ -151,9 +165,13 @@ describe('ProviderPaymentService.recordEvent', () => {
         throw new Error('disk on fire');
       },
     };
-    const { service } = build(broken);
+    const { service, providerFinancialEvents } = build(broken);
 
     await expect(service.recordEvent(captured)).rejects.toThrow('disk on fire');
+    expect((await providerFinancialEvents.listByPaymentId('pay_1'))[0]).toMatchObject({
+      processingState: 'support_required',
+      finalResult: 'disk on fire',
+    });
   });
 });
 

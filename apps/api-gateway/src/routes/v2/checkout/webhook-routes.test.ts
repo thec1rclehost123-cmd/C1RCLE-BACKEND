@@ -385,7 +385,10 @@ describe('POST /webhooks/payments/razorpay', () => {
     expect(response.statusCode).toBe(200);
 
     const orderId = `ORD-${paymentId}`;
-    const entries = await createV2Services().repos().ledger.findByOrder(orderId);
+    const repositories = createV2Services().repos();
+    const order = await repositories.orders.getById(orderId);
+    const netTicketRevenuePaise = order?.discountedSubtotalPaise ?? 0;
+    const entries = await repositories.ledger.findByOrder(orderId);
     // No venue partnership (venue created directly under the host org via
     // seedHold, so the host<->venue Partnership lookup finds nothing and
     // settlement falls back to host-only), no promoter attribution -> the 4
@@ -396,12 +399,12 @@ describe('POST /webhooks/payments/razorpay', () => {
       ['host_payout', 'platform_fee', 'ticket_revenue', 'venue_share'].sort(),
     );
     const revenue = entries.find((e) => e.entryType === 'ticket_revenue');
-    expect(revenue?.amount).toBe(grandTotalPaise);
+    expect(revenue?.amount).toBe(netTicketRevenuePaise);
     expect(revenue?.status).toBe('settled');
     // basic-tier platform fee (15%) is the documented fallback when no
     // approved onboarding request is on file for the host org.
     const platformFee = entries.find((e) => e.entryType === 'platform_fee');
-    expect(platformFee?.amount).toBe(Math.round(grandTotalPaise * 0.15));
+    expect(platformFee?.amount).toBe(Math.round(netTicketRevenuePaise * 0.15));
     const venueShare = entries.find((e) => e.entryType === 'venue_share');
     expect(venueShare?.amount).toBe(0);
 
@@ -439,22 +442,26 @@ describe('POST /webhooks/payments/razorpay', () => {
     expect(response.statusCode).toBe(200);
 
     const orderId = `ORD-${paymentId}`;
-    const entries = await createV2Services().repos().ledger.findByOrder(orderId);
+    const repositories = createV2Services().repos();
+    const order = await repositories.orders.getById(orderId);
+    const netTicketRevenuePaise = order?.discountedSubtotalPaise ?? 0;
+    const entries = await repositories.ledger.findByOrder(orderId);
 
     // A partnership with venueShareRate=20 exists → venue_share is non-zero
     // and credited to the venue-owner org, not the host org.
     const venueShare = entries.find((e) => e.entryType === 'venue_share');
-    expect(venueShare?.amount).toBe(Math.round(grandTotalPaise * 0.2));
+    expect(venueShare?.amount).toBe(Math.round(netTicketRevenuePaise * 0.2));
     expect(venueShare?.organizationId).toBe(venueOwnerOrgId);
     expect(venueShare?.status).toBe('pending');
 
     const platformFee = entries.find((e) => e.entryType === 'platform_fee');
-    expect(platformFee?.amount).toBe(Math.round(grandTotalPaise * 0.15));
+    expect(platformFee?.amount).toBe(Math.round(netTicketRevenuePaise * 0.15));
 
-    // Split legs sum to gross — venue_share + platform_fee + host_payout = grandTotalPaise.
+    // Split legs sum to discounted ticket face value. Guest fees and GST are
+    // explicit journal components, never partner-distributable revenue.
     const splitEntries = entries.filter((e) => e.entryType !== 'ticket_revenue');
     const splitSum = splitEntries.reduce((sum, e) => sum + e.amount, 0);
-    expect(splitSum).toBe(grandTotalPaise);
+    expect(splitSum).toBe(netTicketRevenuePaise);
 
     await server.close();
   });

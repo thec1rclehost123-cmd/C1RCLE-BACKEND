@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
 import { buildV2ErrorResponse } from '@c1rcle/contracts';
+import { hashProviderEventPayload } from '@c1rcle/core/domain';
 
 import type { ActorContext } from '@c1rcle/core/application';
 
@@ -136,6 +137,13 @@ export default async function webhookRoutes(fastify: FastifyInstance) {
         return sendFlatError(reply, request, 400, 'validation', 'Invalid webhook signature');
       }
 
+      const receivedAt = new Date();
+      const ingestion = {
+        payloadHash: hashProviderEventPayload(rawBody),
+        trustedIngestion: 'signature_verified' as const,
+        receivedAt,
+      };
+
       const parsed = webhookPayloadSchema.safeParse(request.body);
       if (!parsed.success) {
         // Signature was valid but the shape wasn't what we expect — ack with
@@ -153,8 +161,8 @@ export default async function webhookRoutes(fastify: FastifyInstance) {
       if (parsed.data.event !== 'payment.captured' || !entity) {
         // Not a capture: nothing to fulfil. Refunds and disputes are still facts
         // about a payment, so record them for reconciliation and acknowledge.
-        const fact = providerEventFromWebhook(parsed.data, null, new Date());
-        if (fact) await services.providerPayments.recordEvent(fact);
+        const fact = providerEventFromWebhook(parsed.data, null, receivedAt);
+        if (fact) await services.providerPayments.recordEvent(fact, ingestion);
         return reply.status(200).send({ received: true });
       }
 
@@ -167,8 +175,8 @@ export default async function webhookRoutes(fastify: FastifyInstance) {
       // The provider's capture (amount, fee, tax) is a fact whether or not we can
       // tie it to a hold, so record it first. Its durable processing state says
       // whether automatic fulfilment can proceed or operator support is needed.
-      const captured = providerEventFromWebhook(parsed.data, null, new Date(), isCorrelated);
-      if (captured) await services.providerPayments.recordEvent(captured);
+      const captured = providerEventFromWebhook(parsed.data, null, receivedAt, isCorrelated);
+      if (captured) await services.providerPayments.recordEvent(captured, ingestion);
 
       if (!holdId || !paymentIntentId) {
         // A signed capture we cannot tie to a hold: a payment link, or another
@@ -199,8 +207,8 @@ export default async function webhookRoutes(fastify: FastifyInstance) {
       if (result === undefined) return reply;
 
       // Now the capture can be tied to our order, for reconciliation.
-      const fulfilled = providerEventFromWebhook(parsed.data, result.order.id, new Date());
-      if (fulfilled) await services.providerPayments.recordEvent(fulfilled);
+      const fulfilled = providerEventFromWebhook(parsed.data, result.order.id, receivedAt);
+      if (fulfilled) await services.providerPayments.recordEvent(fulfilled, ingestion);
 
       return reply.status(200).send({ received: true });
     });

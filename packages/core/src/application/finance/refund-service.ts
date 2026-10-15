@@ -1,14 +1,29 @@
-import { InvalidOperationError, NotFoundError } from '../../domain/errors.js';
 import {
+  ConflictError,
+  InvalidOperationError,
+  NotFoundError,
+  VersionConflictError,
+} from '../../domain/errors.js';
+import { voidEntitlement } from '../../domain/models/entitlement.js';
+import {
+  applyOrderRefund,
   lockOrderForRefund,
   refundableBalance,
   restoreOrderAfterRefundFailure,
 } from '../../domain/models/order.js';
 import {
   approveRefundRequest,
+  beginRefundExecution,
   createRefundRequest,
+  markRefundExecutionUncertain,
+  markRefundSettled,
+  recordRefundProviderFact,
   rejectRefundRequest,
 } from '../../domain/models/refund-request.js';
+import { emit } from '../context.js';
+
+import { FinancialPostingService } from './financial-posting-service.js';
+import { ProviderPaymentService } from './provider-payment-service.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type { Order } from '../../domain/models/order.js';
@@ -31,13 +46,11 @@ import type { ServiceDeps } from '../context.js';
  * approve a refund at all) — it is never proposed/resolved as a TIER3
  * dual-control action.
  *
- * Nothing here settles automatically. A request reaching `approved` (whether
- * via the zero-approver tier or the last required sign-off) is as far as
- * this service goes — no payment-provider call, no order mutation beyond
- * the lock taken at request time. Actual settlement is a deliberately
- * separate, not-yet-built step (product decision pending); wiring it back
- * in means adding an explicit settle action, not restoring the old
- * auto-settle branches below.
+ * Approval and execution remain separate actions. Reaching `approved` never
+ * moves money by itself; an authorized operator must explicitly execute the
+ * request. Execution persists the provider fact before applying journal,
+ * order, and entitlement effects so retries can converge without duplicating
+ * the provider refund.
  */
 
 export interface RequestRefundCommand {
@@ -47,10 +60,16 @@ export interface RequestRefundCommand {
 }
 
 export class RefundService {
+  private readonly posting: FinancialPostingService;
+  private readonly providerPayments: ProviderPaymentService;
+
   constructor(
     private deps: ServiceDeps,
     private authority: AdminAuthorityService,
-  ) {}
+  ) {
+    this.posting = new FinancialPostingService(deps.repositories.financialJournals);
+    this.providerPayments = new ProviderPaymentService(deps);
+  }
 
   private get orders() {
     return this.deps.repositories.orders;
@@ -181,6 +200,155 @@ export class RefundService {
     });
     this.deps.logger.info('refund.rejected', { requestId: request.id, orderId: order.id });
     return { request: rejected, order: restored };
+  }
+
+  /**
+   * Executes an approved refund and converges every internal effect from the
+   * persisted provider fact. A deterministic provider key and the `executing`
+   * claim prevent duplicate money movement; a retry after a crash resumes the
+   * journal/order/ticket steps without calling the provider again once its id
+   * is stored.
+   */
+  async executeRefund(
+    adminUserId: EntityId,
+    refundRequestId: EntityId,
+    meta?: AuditRequestMeta,
+  ): Promise<{ request: AdminRefundRequest; order: Order }> {
+    const admin = await this.authority.authorize(adminUserId, 'FINANCIAL_REFUND');
+    let request = await this.requireRefundRequest(refundRequestId);
+    let order = await this.requireOrder(request.orderId);
+    if (request.status === 'settled') return { request, order };
+
+    const now = this.deps.config.clock.now();
+    if (request.status === 'executing' && request.providerRefundId === null) {
+      throw new ConflictError(
+        request.failureReason
+          ? 'Refund provider result requires reconciliation before retry'
+          : 'Refund execution is already in progress or requires reconciliation',
+      );
+    }
+    if (request.status === 'approved' || request.status === 'failed') {
+      const claimed = beginRefundExecution(request, now);
+      try {
+        await this.refundRequests.save(claimed);
+        request = claimed;
+      } catch (error) {
+        if (!(error instanceof VersionConflictError)) throw error;
+        const winner = await this.requireRefundRequest(refundRequestId);
+        if (winner.status === 'settled') return { request: winner, order };
+        throw new ConflictError('Refund execution is already in progress');
+      }
+    } else if (request.status !== 'executing') {
+      throw new InvalidOperationError(`Refund request is ${request.status}, not executable`);
+    }
+
+    const orderAlreadyApplied = order.appliedRefundRequestIds.includes(request.id);
+    if (order.status === 'paid' && !orderAlreadyApplied) {
+      order = lockOrderForRefund(order, now);
+      await this.orders.save(order);
+    }
+    if (order.status !== 'refund_requested' && !orderAlreadyApplied) {
+      throw new InvalidOperationError(`Order ${order.id} is not locked for refund`);
+    }
+    if (!order.paymentId) throw new InvalidOperationError('Order has no provider payment id');
+
+    if (!request.providerRefundId) {
+      let response;
+      try {
+        response = await this.deps.paymentProvider.refundPayment({
+          paymentId: order.paymentId,
+          amountPaise: request.amountPaise,
+          idempotencyKey: request.executionIdempotencyKey,
+        });
+      } catch (error) {
+        // A network/timeout error can occur after the provider accepted the
+        // refund. Never unlock or retry automatically: doing so could move
+        // money twice. Reconciliation/webhook evidence must resolve it.
+        const detail = error instanceof Error ? error.message : 'unknown provider error';
+        request = markRefundExecutionUncertain(request, detail, now);
+        await this.refundRequests.save(request);
+        throw new ConflictError('Refund provider result is uncertain; order remains locked');
+      }
+      // Persist provider success outside the provider-call catch. If this save
+      // fails, retaining the execution lock is safer than falsely marking the
+      // refund failed and reopening an order after money may have moved.
+      request = recordRefundProviderFact(request, response.id, response.status, now);
+      await this.refundRequests.save(request);
+    }
+    if (request.providerStatus !== 'processed' && request.providerRefundId) {
+      const providerPayment = await this.deps.repositories.providerPayments.findByPaymentId(
+        order.paymentId,
+      );
+      if (providerPayment?.refunds[request.providerRefundId] === request.amountPaise) {
+        request = recordRefundProviderFact(request, request.providerRefundId, 'processed', now);
+        await this.refundRequests.save(request);
+      }
+    }
+    if (request.providerStatus !== 'processed' || !request.providerRefundId) {
+      throw new ConflictError(
+        `Provider refund is ${request.providerStatus ?? 'pending'}; awaiting authoritative completion`,
+      );
+    }
+
+    await this.providerPayments.recordEvent({
+      type: 'refund_processed',
+      paymentId: order.paymentId,
+      refundId: request.providerRefundId,
+      amountPaise: request.amountPaise,
+      currency: order.currency,
+    });
+    await this.posting.postRefund({
+      organizationId: order.organizationId,
+      orderId: order.id,
+      eventId: order.eventId,
+      paymentId: order.paymentId,
+      refundRequestId: request.id,
+      providerRefundId: request.providerRefundId,
+      amountPaise: request.amountPaise,
+      previouslyRefundedPaise: orderAlreadyApplied
+        ? order.refundedPaise - request.amountPaise
+        : order.refundedPaise,
+      postedAt: now,
+    });
+
+    const refundedOrder = applyOrderRefund(order, request.amountPaise, now, request.id);
+    if (refundedOrder !== order) await this.orders.save(refundedOrder);
+    if (refundedOrder.status === 'refunded') {
+      for (const entitlement of await this.entitlements.getByOrderId(order.id)) {
+        const voided = voidEntitlement(entitlement, now);
+        if (voided !== entitlement) await this.entitlements.save(voided);
+      }
+    }
+    const settled = markRefundSettled(request, request.providerRefundId, now);
+    await this.refundRequests.save(settled);
+    await emit(
+      this.deps,
+      {
+        userId: admin.id,
+        organizationId: order.organizationId,
+        role: 'owner',
+        capabilities: [],
+      },
+      request.id,
+      'finance.refund.settled',
+      {
+        refundRequestId: request.id,
+        orderId: order.id,
+        amountPaise: request.amountPaise,
+        providerRefundId: request.providerRefundId,
+      },
+    );
+    await this.authority.record(admin, {
+      action: 'FINANCIAL_REFUND.execute',
+      targetType: 'refund_request',
+      targetId: request.id,
+      before: { status: request.status, orderStatus: order.status },
+      after: { status: settled.status, orderStatus: refundedOrder.status },
+      reason: request.reason,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
+    });
+    return { request: settled, order: refundedOrder };
   }
 
   async listRefunds(

@@ -47,6 +47,7 @@ import type {
   CoverWalletTxnRepository,
   CoverWalletReconciliationRepository,
   LedgerRepository,
+  FinancialJournalRepository,
   PayoutRepository,
   BankAccountRepository,
   DisputeRepository,
@@ -57,6 +58,7 @@ import type {
   SocialNotificationRepository,
   AdminRefundRequestRepository,
   ProviderPaymentRepository,
+  ProviderFinancialEventRepository,
   UserAccountRepository,
   UserBanRepository,
   PlatformSettingsRepository,
@@ -161,6 +163,8 @@ export interface ServiceDeps {
     coverWalletReconciliations: CoverWalletReconciliationRepository;
     // Phase 6
     ledger: LedgerRepository;
+    /** Immutable balanced journals for the Milestone 2 accounting engine. */
+    financialJournals: FinancialJournalRepository;
     payouts: PayoutRepository;
     bankAccounts: BankAccountRepository;
     disputes: DisputeRepository;
@@ -175,6 +179,8 @@ export interface ServiceDeps {
     refundRequests: AdminRefundRequestRepository;
     /** The payment provider's record of each payment, for reconciliation. */
     providerPayments: ProviderPaymentRepository;
+    /** Immutable, privacy-minimized provider event journal. */
+    providerFinancialEvents: ProviderFinancialEventRepository;
     /** Platform support tickets (guest intake + admin desk). */
     supportTickets: SupportTicketRepository;
     /** Platform safety reports (guest intake + admin desk). */
