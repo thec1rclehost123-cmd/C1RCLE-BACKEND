@@ -57,7 +57,7 @@ import type {
 import type { LedgerEntry, LedgerEntryType } from '../models/ledger.js';
 import type { Notification } from '../models/notification.js';
 import type { OnboardingRequest, OnboardingStatus } from '../models/onboarding.js';
-import type { Order } from '../models/order.js';
+import type { Order, OrderStatus } from '../models/order.js';
 import type {
   Organization,
   OrganizationInvitation,
@@ -634,6 +634,14 @@ export interface CartReservationRepository {
   getById(reservationId: EntityId): Promise<CartReservation | null>;
   /** Fetches by idempotency key (for idempotent hold creation). */
   getByIdempotencyKey(key: string): Promise<CartReservation | null>;
+  /**
+   * Brings a lapsed (expired or released) hold back to life for a payment that
+   * arrived late: active again until `expiresAt`, with a NEW position in the
+   * event's strict order of holds (taken in the same transaction as creation
+   * takes its position). Returns null if the hold does not exist, and a hold
+   * that was already converted to an order unchanged.
+   */
+  reactivate(reservationId: EntityId, expiresAt: string): Promise<CartReservation | null>;
   /** Releases the hold (marks as released/expired). */
   release(reservationId: EntityId, tx?: TxContext | null): Promise<void>;
   /** Converts a hold to an order (atomic with order creation). */
@@ -674,6 +682,12 @@ export interface CartReservationRepository {
 }
 
 /** Order repository — the commerce aggregate. */
+/** One line of an order, as far as seat counting is concerned. */
+export interface SeatClaimLine {
+  tierId: EntityId;
+  quantity: number;
+}
+
 export interface OrderRepository {
   /** Fetches by id. */
   getById(orderId: EntityId): Promise<Order | null>;
@@ -687,6 +701,13 @@ export interface OrderRepository {
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Order>>;
   /** Lists orders for an event. */
   listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<Order>>;
+  /**
+   * Every order of an event reduced to what inventory needs: its status and the
+   * tiers and quantities it holds. One read of just those two fields instead of
+   * paging through whole orders, which is what makes counting sold seats scale.
+   * Includes orders of every status; the caller decides which ones hold a seat.
+   */
+  listSeatClaims(eventId: EntityId): Promise<{ status: OrderStatus; lines: SeatClaimLine[] }[]>;
   /** Lists all orders platform-wide (admin read-only dashboards). */
   listAll(query: PaginationQuery): Promise<Page<Order>>;
   /** Hard-deletes an order (support operation). */

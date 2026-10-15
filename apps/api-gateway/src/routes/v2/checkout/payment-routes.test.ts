@@ -1,4 +1,4 @@
-import { InvalidOperationError, MemoryPaymentProvider } from '@c1rcle/core/domain';
+import { MemoryPaymentProvider } from '@c1rcle/core/domain';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createV2Services } from '../../../lib/v2-services.js';
@@ -516,7 +516,7 @@ describe('payment captured after the hold expired', () => {
   const inventoryOf = () =>
     (
       createV2Services().checkout as unknown as {
-        deps: { inventory: { assertAvailable: (...a: unknown[]) => Promise<void> } };
+        deps: { inventory: { firstOverbookedTier: (...a: unknown[]) => Promise<string | null> } };
       }
     ).deps.inventory;
 
@@ -542,9 +542,8 @@ describe('payment captured after the hold expired', () => {
   it('refunds in full, once, when the seats are gone', async () => {
     const server = await buildServer();
     const paid = await lapsedPaidHold(server, 'late_soldout', 'expired');
-    vi.spyOn(inventoryOf(), 'assertAvailable').mockRejectedValue(
-      new InvalidOperationError('Insufficient inventory: 1 requested, 0 available'),
-    );
+    // The revived hold no longer fits: another buyer holds, or has bought, the seat.
+    vi.spyOn(inventoryOf(), 'firstOverbookedTier').mockResolvedValue('tier_taken');
     const refund = vi.spyOn(memoryProvider(), 'refundPayment');
 
     try {
@@ -574,7 +573,9 @@ describe('payment captured after the hold expired', () => {
   it('does not swallow an unexpected inventory failure by refunding', async () => {
     const server = await buildServer();
     const paid = await lapsedPaidHold(server, 'late_boom', 'expired');
-    vi.spyOn(inventoryOf(), 'assertAvailable').mockRejectedValue(new Error('database unavailable'));
+    vi.spyOn(inventoryOf(), 'firstOverbookedTier').mockRejectedValue(
+      new Error('database unavailable'),
+    );
     const refund = vi.spyOn(memoryProvider(), 'refundPayment');
 
     try {
