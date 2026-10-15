@@ -18,8 +18,13 @@ export const userSchema = z.object({
    * True when the account is still on its staff-invitation temporary
    * password. The client must route to the password-change screen; the
    * gateway 403s every non-auth route until the rotation completes.
+   *
+   * Optional with a `false` default for backward compatibility: gateways
+   * that predate the staff-invitation rotation omit this field, and those
+   * responses must still parse (otherwise every login fails contract
+   * validation with "frontend and backend are out of sync").
    */
-  mustChangePassword: z.boolean(),
+  mustChangePassword: z.boolean().default(false),
 });
 export type User = z.infer<typeof userSchema>;
 

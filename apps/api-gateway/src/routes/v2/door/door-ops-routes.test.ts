@@ -776,3 +776,27 @@ describe('production-shaped ids survive the round trip', () => {
     expect(response.json().items[0].deviceId).toBe(MAX_DEVICE);
   });
 });
+
+describe('V2 door-ops RBAC', () => {
+  it('denies a read-only member device binding (door.manage) with 403', async () => {
+    currentActor = { ...currentActor, role: 'member' };
+    const response = await server.inject({
+      method: 'POST',
+      url: '/door/devices',
+      headers: { 'x-organization-id': ORG_ID },
+      payload: { deviceId: DEVICE_ID, deviceName: 'Blocked iPad' },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ code: 'forbidden', status: 403 });
+  });
+
+  it("still lets a read-only member list tonight's events (venue.read)", async () => {
+    currentActor = { ...currentActor, role: 'member' };
+    const response = await server.inject({
+      method: 'GET',
+      url: '/door/events?date=2026-09-01',
+      headers: { 'x-organization-id': ORG_ID },
+    });
+    expect(response.statusCode).toBe(200);
+  });
+});

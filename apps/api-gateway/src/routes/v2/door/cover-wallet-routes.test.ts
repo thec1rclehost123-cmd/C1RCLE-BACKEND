@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { createV2Services } from '../../../lib/v2-services.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 import partnerEventRoutes from '../partner/events.js';
 
@@ -17,10 +18,43 @@ import type { FastifyInstance } from 'fastify';
  * service exactly like it would be in the real gateway.
  */
 
-const buildServer = () =>
-  buildPartnerTestServer({ routes: [partnerEventRoutes, phase5CoverWalletRoutes] });
+const buildServer = (actorRole: 'owner' | 'member' = 'owner') =>
+  buildPartnerTestServer({ routes: [partnerEventRoutes, phase5CoverWalletRoutes], actorRole });
 
 const ORG_HEADERS = { 'x-organization-id': 'org_1' };
+
+/** Seeds an event straight into the shared in-memory repos so an RBAC test
+ * doesn't need the event-create permission to get a real event row. */
+async function seedEvent(): Promise<string> {
+  const services = createV2Services();
+  const eventId = 'evt_cw_rbac_1';
+  if (await services.repos().events.findById(eventId)) return eventId;
+  const now = new Date().toISOString();
+  await services.repos().events.save({
+    id: eventId,
+    organizationId: 'org_1',
+    venueId: 'ven_1',
+    slug: `cw-rbac-${eventId}`,
+    title: 'Cover Wallet RBAC Night',
+    summary: '',
+    description: '',
+    imageUrl: null,
+    startAt: '2026-09-01T18:00:00.000Z',
+    endAt: null,
+    status: 'published',
+    isPublic: true,
+    tags: [],
+    startingPricePaise: null,
+    isFree: false,
+    cancellationReason: null,
+    capacity: null,
+    adminOverride: false,
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+  });
+  return eventId;
+}
 
 async function createEvent(server: FastifyInstance, idempotencyKey: string): Promise<string> {
   const response = await server.inject({
@@ -257,6 +291,73 @@ describe('V2 phase5 cover-wallet slice', () => {
     });
     expect(secondFreeze.statusCode).toBe(400);
     expect(secondFreeze.json()).toMatchObject({ code: 'validation', status: 400 });
+    await server.close();
+  });
+});
+
+describe('V2 cover-wallet RBAC', () => {
+  it('denies a read-only member every wallet write (403), before any lookup', async () => {
+    const server = await buildServer('member');
+    const eventId = await seedEvent();
+
+    const issue = await server.inject({
+      method: 'POST',
+      url: '/cover-wallets',
+      headers: ORG_HEADERS,
+      payload: { eventId, userId: 'user_1', openingBalancePaise: 100_000 },
+    });
+    expect(issue.statusCode).toBe(403);
+
+    // These never reach the service: preHandler denial happens before any
+    // wallet lookup, so even a wallet id that does not exist still 403s.
+    const debit = await server.inject({
+      method: 'POST',
+      url: '/cover-wallets/wallet_nope_1/debit',
+      headers: ORG_HEADERS,
+      payload: {
+        walletId: 'wallet_nope_1',
+        amountPaise: 100,
+        idempotencyKey: 'idem-rbac-debit',
+        isOnline: true,
+      },
+    });
+    expect(debit.statusCode).toBe(403);
+
+    const credit = await server.inject({
+      method: 'POST',
+      url: '/cover-wallets/wallet_nope_1/credit',
+      headers: ORG_HEADERS,
+      payload: { walletId: 'wallet_nope_1', amountPaise: 100, idempotencyKey: 'idem-rbac-credit' },
+    });
+    expect(credit.statusCode).toBe(403);
+
+    for (const action of ['freeze', 'unfreeze', 'terminate', 'reconcile']) {
+      const response = await server.inject({
+        method: 'POST',
+        url: `/cover-wallets/wallet_nope_1/${action}`,
+        headers: { ...ORG_HEADERS, 'idempotency-key': `idem-rbac-${action}` },
+        payload:
+          action === 'terminate'
+            ? { reason: 'rbac test' }
+            : action === 'reconcile'
+              ? { eventId, reconciliationDate: '2026-09-01' }
+              : {},
+      });
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toMatchObject({ code: 'forbidden', status: 403 });
+    }
+    await server.close();
+  });
+
+  it('lets a read-only member read wallet state (venue.read) but hides strangers', async () => {
+    const server = await buildServer('member');
+    const response = await server.inject({
+      method: 'GET',
+      url: '/cover-wallets/does-not-exist',
+      headers: ORG_HEADERS,
+    });
+    // Gate passes (venue.read), then the service 404s — not a 403.
+    expect(response.statusCode).toBe(404);
     await server.close();
   });
 });

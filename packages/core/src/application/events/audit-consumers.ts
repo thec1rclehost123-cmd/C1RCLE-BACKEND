@@ -1,8 +1,8 @@
 /**
  * ─── T13 slice consumers ──────────────────────────────────────────────────────
- * B09 consumers for this slice: domain events → audit records. The future
- * `event.published → projection` consumer is a no-op (wire exists — subscribe
- * a projection handler to `event.published` when projections land).
+ * B09 consumers for this slice: domain events → audit records. The
+ * `event.* → analytics projection` consumer now lives next to the read model it
+ * fills — see `application/analytics/analytics-projection.ts`.
  */
 
 import type { DomainEvent } from '../../domain/events.js';
@@ -22,9 +22,4 @@ export function createAuditConsumer(audits: AuditRepository) {
     };
     await audits.append(record);
   };
-}
-
-/** No-op projection consumer — wire exists for the real projection later. */
-export function createProjectionConsumer(_event: DomainEvent): Promise<void> {
-  return Promise.resolve();
 }

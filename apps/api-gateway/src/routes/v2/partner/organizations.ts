@@ -10,7 +10,11 @@ import {
   partnerAccessDtoSchema,
   paginatedSchema,
 } from '@c1rcle/contracts/client';
-import { effectiveInvitationStatus, partnerAccessContext } from '@c1rcle/core/domain';
+import {
+  effectiveInvitationStatus,
+  partnerAccessContext,
+  tenancyRoleToPartnerRole,
+} from '@c1rcle/core/domain';
 import { z } from 'zod';
 
 import type {
@@ -387,7 +391,7 @@ export default async function partnerOrganizationRoutes(fastify: FastifyInstance
       // Capability decides WHICH matrix applies: the same person can be a
       // venue manager and a host owner, and those are different dashboards.
       const partnerType = primaryPartnerType(membership?.capabilities ?? []);
-      const context = partnerAccessContext(partnerType, toPartnerRole(membership?.role));
+      const context = partnerAccessContext(partnerType, tenancyRoleToPartnerRole(membership?.role));
 
       const payload = {
         organizationId,
@@ -600,23 +604,11 @@ function primaryPartnerType(capabilities: readonly Capability[]): string {
 }
 
 /**
- * Bridges V2's tenancy role to v1's operational role vocabulary. `admin` maps
- * to MANAGER rather than OWNER: an org admin runs the tenant, but "owner" in
- * the partner matrix carries payout and settings authority that should be
- * granted deliberately, not inherited.
+ * ✂ Bridges V2's tenancy role to v1's operational role vocabulary. Moved into
+ * the core domain (`tenancyRoleToPartnerRole`) so the matrix mapping is one
+ * testable authority instead of a private route helper; see
+ * `packages/core/src/domain/models/partner-access.ts`.
  */
-function toPartnerRole(role: OrganizationRole | undefined): string {
-  switch (role) {
-    case 'owner':
-      return 'OWNER';
-    case 'admin':
-    case 'manager':
-      return 'MANAGER';
-    case 'member':
-    case undefined:
-      return 'STAFF';
-  }
-}
 
 /** Converts the core domain Organization to the canonical wire DTO (caller-scoped). */
 export function organizationToDto(org: Organization, userId: string) {
