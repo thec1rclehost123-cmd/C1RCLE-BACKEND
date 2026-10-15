@@ -14,6 +14,7 @@ export const ledgerEntryDtoSchema = z.object({
   entryType: z.enum([
     'ticket_revenue',
     'platform_fee',
+    'gst',
     'venue_share',
     'host_payout',
     'promoter_commission',
@@ -66,6 +67,8 @@ export const financeOrderDtoSchema = z.object({
   ticketCount: z.number().int().nonnegative(),
   currency: z.string().length(3),
   grandTotalPaise: z.number().int().nonnegative(),
+  /** GST included in the grand total; defaults for older gateways. */
+  gstPaise: z.number().int().nonnegative().optional().default(0),
   refundedPaise: z.number().int().nonnegative(),
   /** The full `OrderStatus` enum, unmapped — the client owns label wording. */
   status: z.enum([
