@@ -1,8 +1,9 @@
-import { InvalidOperationError, MemoryPaymentProvider } from '@c1rcle/core/domain';
+import { MemoryPaymentProvider } from '@c1rcle/core/domain';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createV2Services } from '../../../lib/v2-services.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
+import { publishEventForTest } from '../../../test-utils/publish-event.js';
 import partnerEventCatalogRoutes from '../partner/event-catalog.js';
 import partnerEventRoutes from '../partner/events.js';
 import partnerOrganizationRoutes from '../partner/organizations.js';
@@ -61,6 +62,7 @@ async function seedHold(server: Server): Promise<{ holdId: string; grandTotalPai
     payload: { title: 'Sky Night', venueId, startAt: '2026-09-01T18:00:00Z' },
   });
   const eventId: string = event.json().id;
+  await publishEventForTest(eventId);
   const tier = await server.inject({
     method: 'POST',
     url: `/events/${eventId}/ticket-tiers`,
@@ -514,7 +516,7 @@ describe('payment captured after the hold expired', () => {
   const inventoryOf = () =>
     (
       createV2Services().checkout as unknown as {
-        deps: { inventory: { assertAvailable: (...a: unknown[]) => Promise<void> } };
+        deps: { inventory: { firstOverbookedTier: (...a: unknown[]) => Promise<string | null> } };
       }
     ).deps.inventory;
 
@@ -540,18 +542,19 @@ describe('payment captured after the hold expired', () => {
   it('refunds in full, once, when the seats are gone', async () => {
     const server = await buildServer();
     const paid = await lapsedPaidHold(server, 'late_soldout', 'expired');
-    vi.spyOn(inventoryOf(), 'assertAvailable').mockRejectedValue(
-      new InvalidOperationError('Insufficient inventory: 1 requested, 0 available'),
-    );
+    // The revived hold no longer fits: another buyer holds, or has bought, the seat.
+    vi.spyOn(inventoryOf(), 'firstOverbookedTier').mockResolvedValue('tier_taken');
     const refund = vi.spyOn(memoryProvider(), 'refundPayment');
 
     try {
       const first = await verifyPayment(server, paid);
       const second = await verifyPayment(server, paid); // a redelivered webhook / retry
 
-      expect(first.statusCode).toBe(400);
+      // 409, not 400: the buyer is told they were refunded, not asked to retry.
+      expect(first.statusCode).toBe(409);
       expect(first.json().message).toMatch(/refunded in full/i);
-      expect(second.statusCode).toBe(400);
+      expect(first.json().details).toEqual({ outcome: 'refunded' });
+      expect(second.statusCode).toBe(409);
       // Money is returned, no order or tickets exist, and both calls used the same
       // idempotency key so the provider can only refund once.
       expect(refund).toHaveBeenCalledWith({
@@ -570,7 +573,9 @@ describe('payment captured after the hold expired', () => {
   it('does not swallow an unexpected inventory failure by refunding', async () => {
     const server = await buildServer();
     const paid = await lapsedPaidHold(server, 'late_boom', 'expired');
-    vi.spyOn(inventoryOf(), 'assertAvailable').mockRejectedValue(new Error('database unavailable'));
+    vi.spyOn(inventoryOf(), 'firstOverbookedTier').mockRejectedValue(
+      new Error('database unavailable'),
+    );
     const refund = vi.spyOn(memoryProvider(), 'refundPayment');
 
     try {

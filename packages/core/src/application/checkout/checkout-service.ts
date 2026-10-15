@@ -4,6 +4,7 @@ import {
   ConflictError,
   EventNotFoundError,
   InvalidOperationError,
+  PaymentRefundedError,
   TicketTierNotFoundError,
   UnauthorizedError,
   VersionConflictError,
@@ -58,6 +59,12 @@ export function rsvpOrderId(eventId: EntityId, userId: EntityId): EntityId {
  *   quote → holds → intent → confirm (dual path: webhook + redirect)
  * All mutations are idempotent and use the transactional outbox for fulfillment events.
  */
+/** How long a hold keeps its seats (10 minutes). */
+export const DEFAULT_HOLD_TTL_MS = 10 * 60 * 1000;
+
+/** The smallest amount the payment provider will take (₹1). */
+export const MIN_ONLINE_PAYMENT_PAISE = 100;
+
 export class CheckoutService {
   private readonly financeService: FinanceService;
   private readonly leaderboardService: LeaderboardService;
@@ -86,6 +93,8 @@ export class CheckoutService {
   }): Promise<{ pricing: PricingBreakdown; attribution: CheckoutAttribution | null }> {
     const { eventId, lines, promoCode, referralCode } = input;
 
+    await this.assertOnSale(eventId);
+
     const pricingLines = lines.map((l) => ({ tierId: l.tierId, quantity: l.quantity }));
 
     const pricing = await this.deps.pricing.calculate({
@@ -93,6 +102,15 @@ export class CheckoutService {
       lines: pricingLines,
       promoCode,
     });
+
+    if (promoCode) await this.assertPromoWithinLimits(eventId, promoCode, input.actor.userId);
+
+    // Razorpay refuses an order below 100 paise with an opaque error, after a seat
+    // has already been held. Say so up front. (A total of exactly zero is a free
+    // order and does not go through a payment provider.)
+    if (pricing.grandTotalPaise > 0 && pricing.grandTotalPaise < MIN_ONLINE_PAYMENT_PAISE) {
+      throw new InvalidOperationError('Online payments must be at least ₹1');
+    }
 
     let attribution: CheckoutAttribution | null = null;
     if (referralCode) {
@@ -121,6 +139,51 @@ export class CheckoutService {
     }
 
     return { pricing, attribution };
+  }
+
+  /**
+   * Online sales take money only for a published event. A draft, paused,
+   * cancelled or finished event is not on sale, whatever its tiers say.
+   */
+  private async assertOnSale(eventId: EntityId): Promise<void> {
+    const event = await this.deps.repositories.events.getById(eventId);
+    if (!event) throw new EventNotFoundError(eventId);
+    if (event.status !== 'published') {
+      throw new InvalidOperationError('This event is not on sale');
+    }
+  }
+
+  /**
+   * The redemption limits of a promo (`maxRedemptions`, `maxPerUser`). Whether
+   * the code is switched on and inside its dates is checked with the pricing.
+   * Redemptions are recorded under the promo's id; older ones were recorded
+   * under its code, so both are counted.
+   */
+  private async assertPromoWithinLimits(
+    eventId: EntityId,
+    promoCode: string,
+    userId: EntityId | null,
+  ): Promise<void> {
+    const promo = await this.deps.repositories.catalog.getPromoByCode(promoCode, eventId);
+    if (!promo) return;
+    const redemptions = this.deps.repositories.promoRedemptions;
+    if (promo.maxRedemptions !== null) {
+      const counted =
+        (await redemptions.countByPromo(promo.id)) + (await redemptions.countByPromo(promo.code));
+      if (Math.max(counted, promo.redemptionCount) >= promo.maxRedemptions) {
+        throw new InvalidOperationError(
+          `Promo code ${promo.code} has reached its redemption limit`,
+        );
+      }
+    }
+    if (promo.maxPerUser !== null && userId) {
+      const byUser =
+        (await redemptions.countByPromoAndUser(promo.id, userId)) +
+        (await redemptions.countByPromoAndUser(promo.code, userId));
+      if (byUser >= promo.maxPerUser) {
+        throw new InvalidOperationError(`You have already used promo code ${promo.code}`);
+      }
+    }
   }
 
   /**
@@ -154,13 +217,17 @@ export class CheckoutService {
       reservationTtlMs,
     } = input;
 
-    // Check for existing hold with same idempotency key
-    const existing =
-      await this.deps.repositories.cartReservations.getByIdempotencyKey(idempotencyKey);
-    if (existing) return existing;
-
     const now = new Date();
     const buyerId = userId ?? input.actor.userId;
+
+    // An idempotency key identifies a request by ONE buyer. Looking it up on its
+    // own would hand a buyer someone else's hold (and its holdId and pricing)
+    // whenever two people sent the same key, so the buyer is part of the key.
+    const scopedKey = buyerId
+      ? createHash('sha256').update(`${buyerId}\n${idempotencyKey}`).digest('hex').slice(0, 40)
+      : idempotencyKey;
+    const existing = await this.deps.repositories.cartReservations.getByIdempotencyKey(scopedKey);
+    if (existing) return existing;
 
     // Check inventory availability
     for (const line of lines) {
@@ -198,8 +265,8 @@ export class CheckoutService {
       }
     }
 
-    const holdId = `HOLD-${idempotencyKey}`;
-    const ttl = reservationTtlMs ?? 10 * 60 * 1000;
+    const holdId = `HOLD-${scopedKey}`;
+    const ttl = reservationTtlMs ?? DEFAULT_HOLD_TTL_MS;
 
     const hold: CartReservation = {
       id: holdId,
@@ -214,14 +281,35 @@ export class CheckoutService {
       expiresAt: new Date(now.getTime() + ttl).toISOString(),
       convertedOrderId: null,
       attendee: attendee ?? null,
-      idempotencyKey,
+      idempotencyKey: scopedKey,
       version: 1,
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
     };
 
-    await this.deps.repositories.cartReservations.create(hold);
-    return hold;
+    const stored = await this.deps.repositories.cartReservations.create(hold);
+
+    // The availability check above and this write are separate steps, so two
+    // buyers can both have passed it for the last seat. The stored hold carries
+    // its position in the event's strict order of holds; judging capacity against
+    // the holds ordered at or before it means exactly one of them keeps the seat.
+    // The loser gives its hold back at once rather than leaving it to expire.
+    const overbooked = await this.deps.inventory.firstOverbookedTier(stored);
+    if (overbooked !== null) {
+      await this.deps.repositories.cartReservations.release(stored.id);
+      const tierName = stored.lines.find((line) => line.tierId === overbooked)?.tierName ?? 'tier';
+      throw new InvalidOperationError(`Insufficient inventory for tier ${tierName}`);
+    }
+
+    // The per-user cap has the same check-then-write shape: one buyer firing
+    // several requests at once passes the early check on every one of them. Judge
+    // it the same way, against this buyer's other holds ordered at or before this.
+    const overCap = await this.firstTierOverUserCap(stored);
+    if (overCap !== null) {
+      await this.deps.repositories.cartReservations.release(stored.id);
+      throw new InvalidOperationError(`${overCap.name} has a maximum of ${overCap.max} per user`);
+    }
+    return stored;
   }
 
   /**
@@ -351,6 +439,42 @@ export class CheckoutService {
   }
 
   /**
+   * The first capped tier on which a just-stored hold takes its buyer over
+   * `tier.maxPerUser`, counting what they have bought plus their live holds
+   * ordered at or before this one (so of several simultaneous requests exactly
+   * the allowed number survive).
+   */
+  private async firstTierOverUserCap(
+    hold: CartReservation,
+  ): Promise<{ name: string; max: number } | null> {
+    if (!hold.userId) return null;
+    const repos = this.deps.repositories;
+    const myPosition = hold.sequence ?? Number.MAX_SAFE_INTEGER;
+    const mine = (await repos.cartReservations.listActiveByEvent(hold.eventId, new Date())).filter(
+      (other) =>
+        other.userId === hold.userId &&
+        (other.id === hold.id || (other.sequence ?? 0) <= myPosition),
+    );
+    for (const line of hold.lines) {
+      const tier = await repos.catalog.getTierById(line.tierId);
+      if (!tier?.maxPerUser) continue;
+      const bought = await repos.orders.countPaidQuantityByUserAndEvent(
+        hold.userId,
+        hold.eventId,
+        line.tierId,
+      );
+      const held = mine.reduce(
+        (sum, other) =>
+          sum +
+          other.lines.filter((l) => l.tierId === line.tierId).reduce((n, l) => n + l.quantity, 0),
+        0,
+      );
+      if (bought + held > tier.maxPerUser) return { name: tier.name, max: tier.maxPerUser };
+    }
+    return null;
+  }
+
+  /**
    * Whether `actor` may act on `hold`. The webhook runs as the system actor
    * (it authenticates by HMAC, not by session); everyone else must be the
    * hold's owner. A hold with no recorded owner is never claimable by a user.
@@ -388,6 +512,11 @@ export class CheckoutService {
       await this.deps.repositories.cartReservations.release(holdId);
       throw new InvalidOperationError('Hold has expired');
     }
+
+    // A hold made while the event was on sale does not oblige us to take money
+    // after the host has cancelled or paused it. (A payment already in flight is
+    // a different case: confirmPayment still honours or refunds it.)
+    await this.assertOnSale(hold.eventId);
 
     if (hold.providerOrderId) {
       return {
@@ -486,7 +615,7 @@ export class CheckoutService {
   }): Promise<{ order: Order; entitlements: Entitlement[] }> {
     const { actor, paymentId, paymentIntentId, holdId } = input;
 
-    const hold = await this.deps.repositories.cartReservations.getById(holdId);
+    let hold = await this.deps.repositories.cartReservations.getById(holdId);
     if (!hold || !this.actsForHold(actor, hold)) throw new InvalidOperationError('Hold not found');
 
     // Check for existing order with this payment id (idempotency) — both the
@@ -575,7 +704,7 @@ export class CheckoutService {
     // free (the order is built from the frozen hold, so the guest gets exactly
     // what they were quoted), otherwise give the money back rather than keep it
     // for nothing. Captured money always ends in an order or a refund.
-    if (lateCapture) await this.honourOrRefundLateCapture(hold, paymentId);
+    if (lateCapture) hold = await this.reviveHoldForLatePayment(hold, paymentId);
 
     // Create order
     const orderId = `ORD-${paymentId}`;
@@ -635,31 +764,47 @@ export class CheckoutService {
   }
 
   /**
-   * For a payment that arrived after its hold lapsed: confirm every line's
-   * seats are still available, or refund the payment in full and say so.
-   * The refund uses a key derived from the payment id, so a redelivered
-   * webhook (which will see the same error) cannot refund twice.
+   * For a payment that arrived after its hold lapsed: bring the hold back to life
+   * and confirm its seats still fit, or refund the payment in full and say so.
+   * Captured money always ends in an order or a refund.
    *
-   * The availability check and the order write are not atomic, so two late
-   * captures racing for the very last seat can both pass; the unit-of-work
-   * work in the payments plan (phase 2) is what closes that.
+   * Re-activating the hold gives it a NEW position in the event's strict order of
+   * holds, taken in a transaction, and capacity is then judged exactly as it is
+   * for a fresh hold. That is what stops a late payer and a brand-new buyer, each
+   * told "there is room" a moment apart, from both getting the last seat: the
+   * revived hold is visible to every later buyer, and every earlier one is visible
+   * to it. The refund uses a key derived from the payment id, so a redelivered
+   * webhook (which sees the same outcome) cannot refund twice.
    */
-  private async honourOrRefundLateCapture(hold: CartReservation, paymentId: string): Promise<void> {
+  private async reviveHoldForLatePayment(
+    hold: CartReservation,
+    paymentId: string,
+  ): Promise<CartReservation> {
+    const repo = this.deps.repositories.cartReservations;
+    const lapsesAt = new Date(Date.now() + DEFAULT_HOLD_TTL_MS).toISOString();
+    const revived = await repo.reactivate(hold.id, lapsesAt);
+    if (!revived) throw new InvalidOperationError('Hold not found');
+
+    let overbooked: EntityId | null;
     try {
-      for (const line of hold.lines) {
-        await this.deps.inventory.assertAvailable(hold.eventId, line.tierId, line.quantity);
-      }
+      overbooked = await this.deps.inventory.firstOverbookedTier(revived);
     } catch (error) {
+      // A tier that no longer exists means the seats cannot be honoured; anything
+      // else is an unexpected failure and must not be turned into a refund.
       if (!(error instanceof InvalidOperationError)) throw error;
-      await this.deps.paymentProvider.refundPayment({
-        paymentId,
-        amountPaise: hold.pricing.grandTotalPaise,
-        idempotencyKey: `autorefund:${paymentId}`,
-      });
-      throw new InvalidOperationError(
-        'Your payment arrived after the reservation expired and the tickets are no longer available. It has been refunded in full.',
-      );
+      overbooked = revived.lines[0]?.tierId ?? '';
     }
+    if (overbooked === null) return revived;
+
+    await repo.release(revived.id);
+    await this.deps.paymentProvider.refundPayment({
+      paymentId,
+      amountPaise: hold.pricing.grandTotalPaise,
+      idempotencyKey: `autorefund:${paymentId}`,
+    });
+    throw new PaymentRefundedError(
+      'Your payment arrived after the reservation expired and the tickets are no longer available. It has been refunded in full.',
+    );
   }
 
   /**
@@ -684,9 +829,12 @@ export class CheckoutService {
     // Only a promo that was actually applied is a redemption. (This used to
     // write a redemption row with an empty promo id for every order.)
     if (hold.appliedPromoCode && !(await repos.promoRedemptions.getByOrderId(order.id))) {
+      // Recorded under the promo's id so its limits can count it; the code is only
+      // a fallback for a promo that has since been deleted.
+      const promo = await repos.catalog.getPromoByCode(hold.appliedPromoCode, hold.eventId);
       await repos.promoRedemptions.create({
         id: `RED-${order.id}-${hold.appliedPromoCode}`,
-        promoId: hold.appliedPromoCode,
+        promoId: promo?.id ?? hold.appliedPromoCode,
         orderId: order.id,
         userId: order.userId,
         redeemedAt: new Date().toISOString(),
