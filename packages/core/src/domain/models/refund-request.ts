@@ -41,6 +41,13 @@ export interface AdminRefundApproval {
   approvedAt: string;
 }
 
+export type RefundScope = 'amount_only' | 'ticket_lines';
+
+export interface RefundTicketLine {
+  tierId: EntityId;
+  quantity: number;
+}
+
 export interface AdminRefundRequest extends VersionedEntity {
   id: EntityId;
   orderId: EntityId;
@@ -49,6 +56,15 @@ export interface AdminRefundRequest extends VersionedEntity {
   amountPaise: number;
   requestedBy: EntityId;
   reason: string;
+  /**
+   * `amount_only` adjusts money without selectively revoking admission rights.
+   * A full refund still voids every entitlement. `ticket_lines` freezes the
+   * exact entitlement ids at request time so retries cannot choose a different
+   * ticket or revoke more than once.
+   */
+  scope: RefundScope;
+  ticketLines: RefundTicketLine[];
+  targetEntitlementIds: EntityId[];
   /** 0 (auto), 1, or 2 — fixed at creation from the amount tier. */
   approversRequired: number;
   approvals: AdminRefundApproval[];
@@ -71,6 +87,9 @@ export interface CreateAdminRefundRequestInput {
   amountPaise: number;
   requestedBy: EntityId;
   reason: string;
+  scope?: RefundScope;
+  ticketLines?: RefundTicketLine[];
+  targetEntitlementIds?: EntityId[];
   /** Whether any entitlement on this order has already been scanned. */
   hasRedeemedEntitlement: boolean;
   /** Platform-wide refund thresholds (fetched from PlatformSettings). */
@@ -109,6 +128,29 @@ export function createRefundRequest(input: CreateAdminRefundRequestInput): Admin
   if (input.reason.trim().length === 0) {
     throw new InvalidOperationError('A refund request requires a reason');
   }
+  const scope = input.scope ?? 'amount_only';
+  const ticketLines = input.ticketLines ?? [];
+  const targetEntitlementIds = input.targetEntitlementIds ?? [];
+  if (scope === 'amount_only' && (ticketLines.length > 0 || targetEntitlementIds.length > 0)) {
+    throw new InvalidOperationError('Amount-only refunds cannot select tickets');
+  }
+  if (scope === 'ticket_lines') {
+    if (ticketLines.length === 0 || targetEntitlementIds.length === 0) {
+      throw new InvalidOperationError('Ticket-line refunds require selected tickets');
+    }
+    const quantity = ticketLines.reduce((sum, line) => {
+      if (!Number.isSafeInteger(line.quantity) || line.quantity <= 0) {
+        throw new InvalidOperationError('Refund ticket quantities must be positive integers');
+      }
+      return sum + line.quantity;
+    }, 0);
+    if (quantity !== targetEntitlementIds.length) {
+      throw new InvalidOperationError('Selected entitlement count does not match ticket quantity');
+    }
+    if (new Set(targetEntitlementIds).size !== targetEntitlementIds.length) {
+      throw new InvalidOperationError('A ticket cannot be selected twice');
+    }
+  }
   const approversRequired = approversRequiredFor(
     input.amountPaise,
     input.hasRedeemedEntitlement,
@@ -122,6 +164,9 @@ export function createRefundRequest(input: CreateAdminRefundRequestInput): Admin
     amountPaise: input.amountPaise,
     requestedBy: input.requestedBy,
     reason: input.reason.trim(),
+    scope,
+    ticketLines,
+    targetEntitlementIds,
     approversRequired,
     approvals: [],
     // Zero approvers required means no human sign-off is waited on —

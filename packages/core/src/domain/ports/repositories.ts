@@ -71,6 +71,11 @@ import type { PlatformUser } from '../models/platform-user.js';
 import type { PromoterConnection } from '../models/promoter-connection.js';
 import type { ProviderFinancialEvent } from '../models/provider-financial-event.js';
 import type { ProviderPayment } from '../models/provider-payment.js';
+import type {
+  ReconciliationDiscrepancy,
+  ReconciliationDiscrepancyState,
+  ReconciliationRun,
+} from '../models/reconciliation.js';
 import type { ReferralLink } from '../models/referral-link.js';
 import type { AdminRefundRequest, AdminRefundRequestStatus } from '../models/refund-request.js';
 import type {
@@ -1182,7 +1187,21 @@ export interface DisputeRepository {
 export interface ProviderPaymentRepository {
   findByPaymentId(paymentId: string): Promise<ProviderPayment | null>;
   findByProviderOrderId(providerOrderId: string): Promise<ProviderPayment | null>;
+  listAll(query: PaginationQuery): Promise<Page<ProviderPayment>>;
   save(record: ProviderPayment): Promise<void>;
+}
+
+export interface ReconciliationRepository {
+  createRun(run: ReconciliationRun): Promise<void>;
+  saveRun(run: ReconciliationRun): Promise<void>;
+  getRun(id: EntityId): Promise<ReconciliationRun | null>;
+  listRuns(query: PaginationQuery): Promise<Page<ReconciliationRun>>;
+  createDiscrepancies(items: ReconciliationDiscrepancy[]): Promise<void>;
+  getDiscrepancy(id: EntityId): Promise<ReconciliationDiscrepancy | null>;
+  saveDiscrepancy(item: ReconciliationDiscrepancy): Promise<void>;
+  listDiscrepancies(
+    query: PaginationQuery & { runId?: EntityId; state?: ReconciliationDiscrepancyState },
+  ): Promise<Page<ReconciliationDiscrepancy>>;
 }
 
 export interface ProviderFinancialEventRepository {

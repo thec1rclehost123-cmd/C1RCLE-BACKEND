@@ -1,4 +1,8 @@
-import { createPlatformAdmin, MemoryPaymentProvider } from '@c1rcle/core/domain';
+import {
+  createPlatformAdmin,
+  DefiniteProviderFailureError,
+  MemoryPaymentProvider,
+} from '@c1rcle/core/domain';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { AdminRole } from '@c1rcle/core/domain';
@@ -54,7 +58,8 @@ function memoryProvider(): MemoryPaymentProvider {
 async function seedPaidOrder(
   server: FastifyInstance,
   priceInPaise = 600_000,
-): Promise<{ orderId: string; grandTotalPaise: number }> {
+  quantity = 1,
+): Promise<{ orderId: string; grandTotalPaise: number; tierId: string }> {
   const write = (org: string) => ({
     'x-organization-id': org,
     'idempotency-key': `catalog-${++keySeq}`,
@@ -93,7 +98,7 @@ async function seedPaidOrder(
     method: 'POST',
     url: '/checkout/holds',
     headers: { 'idempotency-key': `hold-${++keySeq}` },
-    payload: { eventId, lines: [{ tierId, quantity: 1 }] },
+    payload: { eventId, lines: [{ tierId, quantity }] },
   });
   const holdId: string = hold.json().holdId;
   const grandTotalPaise: number = hold.json().pricing.grandTotalPaise;
@@ -113,7 +118,7 @@ async function seedPaidOrder(
     url: `/payments/${paymentId}/verify`,
     payload: { holdId, paymentIntentId, signature },
   });
-  return { orderId: verify.json().order.id as string, grandTotalPaise };
+  return { orderId: verify.json().order.id as string, grandTotalPaise, tierId };
 }
 
 let server: FastifyInstance;
@@ -353,6 +358,168 @@ describe('executing an approved refund', () => {
     );
   });
 
+  it('preserves every ticket for an amount-only partial adjustment', async () => {
+    await seedAdmin('admin_a', 'finance');
+    const { orderId } = await seedPaidOrder(server, 100_000, 2);
+    const before = await services.repos().entitlements.getByOrderId(orderId);
+    const requested = await server.inject({
+      method: 'POST',
+      url: '/admin/refunds',
+      headers: asUser('admin_a'),
+      payload: { orderId, amountPaise: 40_000, reason: 'Price adjustment' },
+    });
+    expect(requested.json().request).toMatchObject({
+      scope: 'amount_only',
+      ticketLines: [],
+      targetEntitlementIds: [],
+    });
+
+    const executed = await server.inject({
+      method: 'POST',
+      url: `/admin/refunds/${requested.json().request.id as string}/execute`,
+      headers: asUser('admin_a'),
+    });
+
+    expect(executed.statusCode).toBe(200);
+    expect(await services.repos().entitlements.getByOrderId(orderId)).toEqual(before);
+  });
+
+  it('deterministically revokes only the selected ticket quantity and cannot revoke twice', async () => {
+    await seedAdmin('admin_a', 'finance');
+    const { orderId, tierId } = await seedPaidOrder(server, 100_000, 3);
+    const before = (await services.repos().entitlements.getByOrderId(orderId)).sort((left, right) =>
+      left.id.localeCompare(right.id),
+    );
+    const requested = await server.inject({
+      method: 'POST',
+      url: '/admin/refunds',
+      headers: asUser('admin_a'),
+      payload: {
+        orderId,
+        amountPaise: 40_000,
+        reason: 'One attendee cancelled',
+        ticketLines: [{ tierId, quantity: 1 }],
+      },
+    });
+    const requestId = requested.json().request.id as string;
+    expect(requested.json().request).toMatchObject({
+      scope: 'ticket_lines',
+      targetEntitlementIds: [before[0]?.id],
+    });
+    const frozen = (await services.repos().entitlements.getByOrderId(orderId)).sort((left, right) =>
+      left.id.localeCompare(right.id),
+    );
+    expect(frozen[0]?.refundLock?.refundRequestId).toBe(requestId);
+    expect(frozen.slice(1).every((entitlement) => !entitlement.refundLock)).toBe(true);
+
+    expect(
+      (
+        await server.inject({
+          method: 'POST',
+          url: `/admin/refunds/${requestId}/execute`,
+          headers: asUser('admin_a'),
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(
+      (
+        await server.inject({
+          method: 'POST',
+          url: `/admin/refunds/${requestId}/execute`,
+          headers: asUser('admin_a'),
+        })
+      ).statusCode,
+    ).toBe(200);
+
+    const after = (await services.repos().entitlements.getByOrderId(orderId)).sort((left, right) =>
+      left.id.localeCompare(right.id),
+    );
+    expect(after.map((entitlement) => entitlement.status)).toEqual(['void', 'valid', 'valid']);
+    expect(after[0]?.version).toBe((before[0]?.version ?? 0) + 2);
+  });
+
+  it('releases the exact frozen ticket set after a definite provider failure', async () => {
+    await seedAdmin('admin_a', 'finance');
+    const { orderId, tierId } = await seedPaidOrder(server, 100_000, 2);
+    const requested = await server.inject({
+      method: 'POST',
+      url: '/admin/refunds',
+      headers: asUser('admin_a'),
+      payload: {
+        orderId,
+        amountPaise: 40_000,
+        reason: 'Provider rejection test',
+        ticketLines: [{ tierId, quantity: 1 }],
+      },
+    });
+    const requestId = requested.json().request.id as string;
+    const provider = memoryProvider();
+    const originalRefund = provider.refundPayment.bind(provider);
+    provider.refundPayment = async (input) => ({
+      id: `rfnd_failed_${input.idempotencyKey}`,
+      status: 'failed',
+      amountPaise: input.amountPaise ?? 0,
+    });
+
+    try {
+      const response = await server.inject({
+        method: 'POST',
+        url: `/admin/refunds/${requestId}/execute`,
+        headers: asUser('admin_a'),
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        request: { status: 'failed' },
+        order: { status: 'paid', refundedPaise: 0 },
+      });
+      const tickets = await services.repos().entitlements.getByOrderId(orderId);
+      expect(tickets.every((entitlement) => entitlement.status === 'valid')).toBe(true);
+      expect(tickets.every((entitlement) => !entitlement.refundLock)).toBe(true);
+    } finally {
+      provider.refundPayment = originalRefund;
+    }
+  });
+
+  it('releases the frozen ticket when Razorpay authoritatively rejects the request', async () => {
+    await seedAdmin('admin_a', 'finance');
+    const { orderId, tierId } = await seedPaidOrder(server, 100_000, 2);
+    const requested = await server.inject({
+      method: 'POST',
+      url: '/admin/refunds',
+      headers: asUser('admin_a'),
+      payload: {
+        orderId,
+        amountPaise: 40_000,
+        reason: 'HTTP rejection test',
+        ticketLines: [{ tierId, quantity: 1 }],
+      },
+    });
+    const requestId = requested.json().request.id as string;
+    const provider = memoryProvider();
+    const originalRefund = provider.refundPayment.bind(provider);
+    provider.refundPayment = async () => {
+      throw new DefiniteProviderFailureError();
+    };
+
+    try {
+      const response = await server.inject({
+        method: 'POST',
+        url: `/admin/refunds/${requestId}/execute`,
+        headers: asUser('admin_a'),
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        request: { status: 'failed' },
+        order: { status: 'paid', refundedPaise: 0 },
+      });
+      const tickets = await services.repos().entitlements.getByOrderId(orderId);
+      expect(tickets.every((entitlement) => !entitlement.refundLock)).toBe(true);
+      expect(tickets.every((entitlement) => entitlement.status === 'valid')).toBe(true);
+    } finally {
+      provider.refundPayment = originalRefund;
+    }
+  });
+
   it('voids the ticket only when a full refund is authoritatively processed', async () => {
     await seedAdmin('admin_a', 'finance');
     const { orderId, grandTotalPaise } = await seedPaidOrder(server, 10_000);
@@ -381,14 +548,19 @@ describe('executing an approved refund', () => {
     expect(after.every((entitlement) => entitlement.status === 'void')).toBe(true);
   });
 
-  it('keeps the order locked when the provider result is ambiguous', async () => {
+  it('keeps the order and selected ticket locked when the provider result is ambiguous', async () => {
     await seedAdmin('admin_a', 'finance');
-    const { orderId } = await seedPaidOrder(server);
+    const { orderId, tierId } = await seedPaidOrder(server);
     const requested = await server.inject({
       method: 'POST',
       url: '/admin/refunds',
       headers: asUser('admin_a'),
-      payload: { orderId, amountPaise: 40_000, reason: 'Ambiguous provider test' },
+      payload: {
+        orderId,
+        amountPaise: 40_000,
+        reason: 'Ambiguous provider test',
+        ticketLines: [{ tierId, quantity: 1 }],
+      },
     });
     const requestId = requested.json().request.id as string;
     const provider = memoryProvider();
@@ -406,6 +578,9 @@ describe('executing an approved refund', () => {
       expect(response.statusCode).toBe(409);
       expect((await services.repos().orders.getById(orderId))?.status).toBe('refund_requested');
       expect((await services.repos().refundRequests.getById(requestId))?.status).toBe('executing');
+      expect(
+        (await services.repos().entitlements.getByOrderId(orderId))[0]?.refundLock?.refundRequestId,
+      ).toBe(requestId);
     } finally {
       provider.refundPayment = originalRefund;
     }

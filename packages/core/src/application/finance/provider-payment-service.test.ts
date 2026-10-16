@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import { NotFoundError, VersionConflictError } from '../../domain/errors.js';
+import { MemoryFinancialJournalRepository } from '../../infrastructure/memory/memory-financial-journal-repository.js';
 import { MemoryProviderFinancialEventRepository } from '../../infrastructure/memory/memory-provider-financial-event-repository.js';
 import { MemoryProviderPaymentRepository } from '../../infrastructure/memory/memory-provider-payment-repository.js';
 
+import { FinancialPostingService } from './financial-posting-service.js';
 import { ProviderPaymentService } from './provider-payment-service.js';
 
 import type {
@@ -21,18 +23,22 @@ const order = {
   grandTotalPaise: 118_000,
   currency: 'INR',
   refundedPaise: 0,
+  organizationId: 'org_host',
+  eventId: 'event_1',
 };
 
 function build(
   providerPayments: ProviderPaymentRepository = new MemoryProviderPaymentRepository(),
 ) {
   const providerFinancialEvents = new MemoryProviderFinancialEventRepository();
+  const financialJournals = new MemoryFinancialJournalRepository();
   // The service needs only these three collaborators; the rest of ServiceDeps is irrelevant here.
   const deps = {
     repositories: {
       providerPayments,
       providerFinancialEvents,
       orders: { getById: async (id: string) => (id === order.id ? order : null) },
+      financialJournals,
     },
     config: { clock: { now: () => NOW } },
   } as unknown as ServiceDeps;
@@ -40,7 +46,36 @@ function build(
     service: new ProviderPaymentService(deps),
     providerPayments,
     providerFinancialEvents,
+    financialJournals,
   };
+}
+
+async function seedSale(journals: MemoryFinancialJournalRepository) {
+  await new FinancialPostingService(journals).postTicketSale({
+    organizationId: 'org_host',
+    orderId: order.id,
+    eventId: order.eventId,
+    paymentId: 'pay_1',
+    sourceType: 'online_payment_capture',
+    providerConfirmed: true,
+    currency: 'INR',
+    ticketFaceValuePaise: 100_000,
+    discountPaise: 0,
+    discountFundingOwner: null,
+    netTicketRevenuePaise: 100_000,
+    gstPaise: 18_000,
+    platformFeePaise: 0,
+    paymentFeePaise: 0,
+    allocation: {
+      platformPaise: 10_000,
+      hostOrganizationId: 'org_host',
+      hostPaise: 90_000,
+      venueOrganizationId: null,
+      venuePaise: 0,
+      promoterOrganizationId: null,
+      promoterPaise: 0,
+    },
+  });
 }
 
 const captured: ProviderPaymentEvent = {
@@ -108,16 +143,17 @@ describe('ProviderPaymentService.recordEvent', () => {
     expect(ingested).toHaveLength(1);
     expect(ingested[0]).toMatchObject({
       processingState: 'processed',
-      processingAttempts: 2,
-      finalResult: 'idempotent_replay',
+      processingAttempts: 1,
+      finalResult: 'provider_aggregate_updated',
     });
   });
 
   it('converges when several webhooks for one payment land at the same time', async () => {
-    const { service, providerPayments } = build();
+    const { service, providerPayments, financialJournals } = build();
+    await seedSale(financialJournals);
+    await service.recordEvent(captured);
 
     await Promise.all([
-      service.recordEvent(captured),
       service.recordEvent({
         type: 'refund_processed',
         paymentId: 'pay_1',
@@ -132,6 +168,13 @@ describe('ProviderPaymentService.recordEvent', () => {
         amountPaise: 3_000,
         currency: 'INR',
         status: 'lost',
+        amountDeductedPaise: 3_000,
+        reasonCode: 'test_reason',
+        reasonDescription: null,
+        respondBy: null,
+        phase: 'chargeback',
+        evidenceState: 'none',
+        providerOccurredAt: null,
       }),
     ]);
 
@@ -148,6 +191,7 @@ describe('ProviderPaymentService.recordEvent', () => {
     const stuck: ProviderPaymentRepository = {
       findByPaymentId: async () => null,
       findByProviderOrderId: async () => null,
+      listAll: async () => ({ items: [], nextCursor: null, total: 0 }),
       save: async () => {
         throw new VersionConflictError(0, 1);
       },
@@ -161,6 +205,7 @@ describe('ProviderPaymentService.recordEvent', () => {
     const broken: ProviderPaymentRepository = {
       findByPaymentId: async () => null,
       findByProviderOrderId: async () => null,
+      listAll: async () => ({ items: [], nextCursor: null, total: 0 }),
       save: async () => {
         throw new Error('disk on fire');
       },

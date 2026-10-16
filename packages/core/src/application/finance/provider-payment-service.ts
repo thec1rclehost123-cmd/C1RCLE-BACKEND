@@ -8,6 +8,8 @@ import {
   reconcileOrderWithProvider,
 } from '../../domain/models/provider-payment.js';
 
+import { FinancialPostingService } from './financial-posting-service.js';
+
 import type { EntityId } from '../../domain/identity.js';
 import type { ProviderEventTrust } from '../../domain/models/provider-financial-event.js';
 import type {
@@ -35,7 +37,11 @@ export interface ProviderEventIngestionContext {
  * the books agree with the provider.
  */
 export class ProviderPaymentService {
-  constructor(private deps: ServiceDeps) {}
+  private readonly posting: FinancialPostingService;
+
+  constructor(private deps: ServiceDeps) {
+    this.posting = new FinancialPostingService(deps.repositories.financialJournals);
+  }
 
   private get providerPayments() {
     return this.deps.repositories.providerPayments;
@@ -63,13 +69,27 @@ export class ProviderPaymentService {
       refundId: event.type === 'refund_processed' ? event.refundId : null,
       disputeId: event.type === 'dispute' ? event.disputeId : null,
       receivedAt,
-      providerOccurredAt: event.type === 'captured' ? event.occurredAt : null,
+      providerOccurredAt:
+        event.type === 'captured'
+          ? event.occurredAt
+          : event.type === 'dispute'
+            ? event.providerOccurredAt
+            : null,
       payloadHash: context.payloadHash ?? hashProviderEventPayload(JSON.stringify(event)),
       trustedIngestion: context.trustedIngestion ?? 'internal_provider_response',
     });
     const ingested = await this.deps.repositories.providerFinancialEvents.ingest(financialEvent);
+    if (ingested.processingState === 'processed') {
+      const aggregate = await this.providerPayments.findByPaymentId(event.paymentId);
+      const needsPostFulfilmentCorrelation =
+        event.type === 'captured' && event.orderId !== null && aggregate?.orderId !== event.orderId;
+      if (!needsPostFulfilmentCorrelation) return;
+    }
     try {
-      const result = await this.applyEvent(event);
+      let result = await this.applyEvent(event);
+      if (event.type === 'dispute') {
+        result = `${result}:${await this.applyDisputeFinancialPolicy(event)}`;
+      }
       await this.deps.repositories.providerFinancialEvents.markProcessed(
         ingested.id,
         result,
@@ -98,6 +118,39 @@ export class ProviderPaymentService {
       }
     }
     return 'support_required';
+  }
+
+  private async applyDisputeFinancialPolicy(
+    event: Extract<ProviderPaymentEvent, { type: 'dispute' }>,
+  ): Promise<string> {
+    const payment = await this.providerPayments.findByPaymentId(event.paymentId);
+    if (!payment?.orderId) throw new NotFoundError('order_for_provider_dispute', event.disputeId);
+    const order = await this.orders.getById(payment.orderId);
+    if (!order || order.paymentId !== event.paymentId) {
+      throw new NotFoundError('order_for_provider_dispute', event.disputeId);
+    }
+    const posting = {
+      organizationId: order.organizationId,
+      orderId: order.id,
+      eventId: order.eventId,
+      paymentId: event.paymentId,
+      disputeId: event.disputeId,
+      amountPaise: event.amountPaise,
+      postedAt: this.deps.config.clock.now(),
+    };
+    if (event.status === 'open' || event.status === 'under_review') {
+      await this.posting.postChargebackHold(posting);
+      return 'chargeback_hold_posted';
+    }
+    if (event.status === 'lost' || (event.status === 'closed' && event.amountDeductedPaise > 0)) {
+      await this.posting.settleChargebackLoss({
+        ...posting,
+        providerDeductedPaise: event.amountDeductedPaise || event.amountPaise,
+      });
+      return 'chargeback_loss_posted';
+    }
+    await this.posting.releaseChargebackHold(posting);
+    return 'chargeback_hold_released';
   }
 
   async reconcileOrder(orderId: EntityId): Promise<ReconciliationResult> {

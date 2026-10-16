@@ -468,11 +468,15 @@ describe('POST /webhooks/payments/razorpay', () => {
 });
 
 describe('POST /webhooks/payments/razorpay — provider reconciliation', () => {
-  const post = (server: Server, body: string) =>
+  const post = (server: Server, body: string, eventId?: string) =>
     server.inject({
       method: 'POST',
       url: '/webhooks/payments/razorpay',
-      headers: { 'content-type': 'application/json', 'x-razorpay-signature': sign(body) },
+      headers: {
+        'content-type': 'application/json',
+        'x-razorpay-signature': sign(body),
+        ...(eventId ? { 'x-razorpay-event-id': eventId } : {}),
+      },
       payload: body,
     });
 
@@ -567,6 +571,38 @@ describe('POST /webhooks/payments/razorpay — provider reconciliation', () => {
     });
     const stored = await createV2Services().repos().providerPayments.findByPaymentId('pay_recon_3');
     expect(stored?.refunds).toEqual({ rfnd_1: 5_000 });
+    await server.close();
+  });
+
+  it('deduplicates by Razorpay event id and persists only minimized facts plus the payload hash', async () => {
+    const server = await buildServer();
+    await fulfilledPayment(server, 'pay_event_dedupe');
+    const refund = JSON.stringify({
+      event: 'refund.processed',
+      payload: {
+        refund: {
+          entity: {
+            id: 'rfnd_event_dedupe',
+            payment_id: 'pay_event_dedupe',
+            amount: 5_000,
+            email: 'payer@example.invalid',
+            contact: '+919999999999',
+          },
+        },
+      },
+    });
+
+    expect((await post(server, refund, 'event_razorpay_1')).statusCode).toBe(200);
+    expect((await post(server, refund, 'event_razorpay_1')).statusCode).toBe(200);
+
+    const events = await createV2Services()
+      .repos()
+      .providerFinancialEvents.listByPaymentId('pay_event_dedupe');
+    const stored = events.filter((event) => event.providerEventId === 'event_razorpay_1');
+    expect(stored).toHaveLength(1);
+    expect(stored[0]?.payloadHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.stringify(stored[0])).not.toContain('payer@example.invalid');
+    expect(JSON.stringify(stored[0])).not.toContain('+919999999999');
     await server.close();
   });
 

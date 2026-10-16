@@ -507,6 +507,137 @@ export class FinancialPostingService {
     return this.journals.postBatch(journals);
   }
 
+  /** Reserve disputed funds against future payable before the provider outcome. */
+  async postChargebackHold(input: ChargebackPostingInput): Promise<FinancialJournal[]> {
+    if (!Number.isSafeInteger(input.amountPaise) || input.amountPaise <= 0) {
+      throw new InvalidOperationError('Chargeback amount must be positive integer paise');
+    }
+    const saleJournals = await this.journals.findByOrderId(input.orderId);
+    const allocation = saleJournals.find((journal) =>
+      journal.idempotencyKey.endsWith(':allocation'),
+    );
+    const collection = saleJournals.find((journal) =>
+      journal.idempotencyKey.endsWith(':collection'),
+    );
+    if (!allocation || !collection) {
+      throw new InvalidOperationError('Chargeback requires the original posted sale journals');
+    }
+    const allocationCredits = allocation.lines.filter((entry) => entry.side === 'credit');
+    const allocationTotal = allocationCredits.reduce((sum, entry) => sum + entry.amountPaise, 0);
+    const recoverable = Math.min(input.amountPaise, allocationTotal);
+    const allocated =
+      recoverable === 0
+        ? allocationCredits.map(() => 0)
+        : allocateProRata(
+            recoverable,
+            allocationCredits.map((entry) => entry.amountPaise),
+          );
+    const platformExposure = input.amountPaise - recoverable;
+    const source: PostingSource = {
+      type: 'chargeback',
+      id: input.disputeId,
+      orderId: input.orderId,
+      paymentId: input.paymentId,
+      eventId: input.eventId,
+    };
+    return this.journals.postBatch([
+      createPostedJournal({
+        organizationId: input.organizationId,
+        currency: collection.currency,
+        source,
+        idempotencyKey: `m2:chargeback:${input.disputeId}:hold`,
+        accountingPolicy: collection.accountingPolicy,
+        components: collection.components
+          ? {
+              ...collection.components,
+              chargebackPaise: input.amountPaise,
+              reservePaise: input.amountPaise,
+            }
+          : null,
+        postedAt: input.postedAt,
+        lines: [
+          ...allocationCredits.map((entry, index) =>
+            line({
+              account: entry.account,
+              side: 'debit',
+              amountPaise: allocated[index] ?? 0,
+              organizationId: entry.organizationId,
+              component: 'reservePaise',
+              memo: `Chargeback hold: ${entry.memo}`,
+            }),
+          ),
+          line({
+            account: 'chargeback_loss_receivable',
+            side: 'debit',
+            amountPaise: platformExposure,
+            organizationId: input.organizationId,
+            component: 'chargebackPaise',
+            memo: 'Chargeback exposure above partner allocation',
+          }),
+          line({
+            account: 'chargeback_reserve',
+            side: 'credit',
+            amountPaise: input.amountPaise,
+            organizationId: input.organizationId,
+            component: 'reservePaise',
+            memo: 'Provider dispute reserve',
+          }),
+        ].filter((entry) => entry.amountPaise > 0),
+      }),
+    ]);
+  }
+
+  async settleChargebackLoss(input: ChargebackPostingInput): Promise<FinancialJournal[]> {
+    const [hold] = await this.postChargebackHold(input);
+    if (!hold) throw new InvalidOperationError('Chargeback hold was not posted');
+    const deductedPaise = input.providerDeductedPaise ?? input.amountPaise;
+    if (deductedPaise !== input.amountPaise) {
+      throw new InvalidOperationError('Partial provider dispute deductions require reconciliation');
+    }
+    return this.journals.postBatch([
+      createPostedJournal({
+        organizationId: input.organizationId,
+        currency: hold.currency,
+        source: hold.source,
+        idempotencyKey: `m2:chargeback:${input.disputeId}:provider-deduction`,
+        accountingPolicy: hold.accountingPolicy,
+        components: hold.components,
+        postedAt: input.postedAt,
+        lines: [
+          line({
+            account: 'chargeback_reserve',
+            side: 'debit',
+            amountPaise: deductedPaise,
+            organizationId: input.organizationId,
+            component: 'chargebackPaise',
+            memo: 'Chargeback loss confirmed',
+          }),
+          line({
+            account: 'provider_clearing',
+            side: 'credit',
+            amountPaise: deductedPaise,
+            organizationId: input.organizationId,
+            component: 'chargebackPaise',
+            memo: 'Provider deducted chargeback',
+          }),
+        ],
+      }),
+    ]);
+  }
+
+  async releaseChargebackHold(input: ChargebackPostingInput): Promise<FinancialJournal[]> {
+    const [hold] = await this.postChargebackHold(input);
+    if (!hold) throw new InvalidOperationError('Chargeback hold was not posted');
+    return this.journals.postBatch([
+      createReversalJournal({
+        original: hold,
+        source: { ...hold.source, type: 'chargeback_reversal' },
+        idempotencyKey: `m2:chargeback:${input.disputeId}:hold-release`,
+        postedAt: input.postedAt,
+      }),
+    ]);
+  }
+
   async reverseJournal(input: {
     readonly journalId: EntityId;
     readonly source: PostingSource;
@@ -526,6 +657,17 @@ export class FinancialPostingService {
     if (!posted) throw new InvalidOperationError('Journal repository returned no reversal');
     return posted;
   }
+}
+
+interface ChargebackPostingInput {
+  organizationId: EntityId;
+  orderId: EntityId;
+  eventId: EntityId;
+  paymentId: string;
+  disputeId: string;
+  amountPaise: number;
+  providerDeductedPaise?: number;
+  postedAt?: Date;
 }
 
 /** Largest-remainder integer allocation with stable index tie-breaking. */

@@ -167,6 +167,17 @@ export class ServiceUnavailableError extends DomainError {
   }
 }
 
+/**
+ * The payment provider returned an authoritative rejection before accepting
+ * the operation. This is deliberately distinct from a transport error: only
+ * this outcome permits a caller to release money or entitlement locks.
+ */
+export class DefiniteProviderFailureError extends DomainError {
+  constructor(message = 'Payment provider definitively rejected the operation') {
+    super(message, 'provider_rejected');
+  }
+}
+
 export class IdempotencyConflictError extends DomainError {
   constructor(idempotencyKey: string) {
     super(

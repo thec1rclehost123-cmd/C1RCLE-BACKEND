@@ -1,7 +1,13 @@
 import { VersionConflictError } from '../../domain/errors.js';
 
+import { paginateQuery } from './pagination.js';
+
 import type { ProviderDispute, ProviderPayment } from '../../domain/models/provider-payment.js';
-import type { ProviderPaymentRepository } from '../../domain/ports/repositories.js';
+import type {
+  ProviderPaymentRepository,
+  Page,
+  PaginationQuery,
+} from '../../domain/ports/repositories.js';
 import type { DocumentData, Firestore } from 'firebase-admin/firestore';
 
 const PROVIDER_PAYMENT_COLLECTION = 'v2_provider_payments';
@@ -26,6 +32,10 @@ export class FirestoreProviderPaymentRepository implements ProviderPaymentReposi
       .get();
     const data = snap.docs[0]?.data();
     return data ? toProviderPayment(data) : null;
+  }
+
+  async listAll(query: PaginationQuery): Promise<Page<ProviderPayment>> {
+    return paginateQuery(this.collection.orderBy('createdAt', 'desc'), query, toProviderPayment);
   }
 
   async save(record: ProviderPayment): Promise<void> {

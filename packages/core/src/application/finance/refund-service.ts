@@ -1,10 +1,15 @@
 import {
   ConflictError,
+  DefiniteProviderFailureError,
   InvalidOperationError,
   NotFoundError,
   VersionConflictError,
 } from '../../domain/errors.js';
-import { voidEntitlement } from '../../domain/models/entitlement.js';
+import {
+  freezeEntitlementForRefund,
+  releaseEntitlementRefundLock,
+  voidEntitlement,
+} from '../../domain/models/entitlement.js';
 import {
   applyOrderRefund,
   lockOrderForRefund,
@@ -16,6 +21,7 @@ import {
   beginRefundExecution,
   createRefundRequest,
   markRefundExecutionUncertain,
+  markRefundFailed,
   markRefundSettled,
   recordRefundProviderFact,
   rejectRefundRequest,
@@ -57,6 +63,7 @@ export interface RequestRefundCommand {
   orderId: EntityId;
   amountPaise: number;
   reason: string;
+  ticketLines?: { tierId: EntityId; quantity: number }[];
 }
 
 export class RefundService {
@@ -101,6 +108,35 @@ export class RefundService {
     }
 
     const orderEntitlements = await this.entitlements.getByOrderId(order.id);
+    const ticketLines = command.ticketLines ?? [];
+    const targetEntitlementIds: EntityId[] = [];
+    if (ticketLines.length > 0) {
+      const ordered = [...orderEntitlements].sort((left, right) => left.id.localeCompare(right.id));
+      const seenTiers = new Set<EntityId>();
+      for (const line of ticketLines) {
+        if (seenTiers.has(line.tierId)) {
+          throw new InvalidOperationError(`Refund tier ${line.tierId} was selected twice`);
+        }
+        seenTiers.add(line.tierId);
+        const purchased = order.lines.find((item) => item.tierId === line.tierId)?.quantity ?? 0;
+        if (
+          !Number.isSafeInteger(line.quantity) ||
+          line.quantity <= 0 ||
+          line.quantity > purchased
+        ) {
+          throw new InvalidOperationError(`Invalid refund quantity for tier ${line.tierId}`);
+        }
+        const eligible = ordered.filter(
+          (entitlement) => entitlement.tierId === line.tierId && entitlement.status !== 'void',
+        );
+        if (eligible.length < line.quantity) {
+          throw new InvalidOperationError(`Not enough refundable tickets for tier ${line.tierId}`);
+        }
+        targetEntitlementIds.push(
+          ...eligible.slice(0, line.quantity).map((entitlement) => entitlement.id),
+        );
+      }
+    }
     const hasRedeemedEntitlement = orderEntitlements.some((e) => e.status === 'redeemed');
 
     const now = this.deps.config.clock.now();
@@ -116,6 +152,9 @@ export class RefundService {
       amountPaise: command.amountPaise,
       requestedBy: admin.id,
       reason: command.reason,
+      scope: ticketLines.length > 0 ? 'ticket_lines' : 'amount_only',
+      ticketLines,
+      targetEntitlementIds,
       hasRedeemedEntitlement,
       thresholds,
       now,
@@ -124,6 +163,7 @@ export class RefundService {
     const lockedOrder = lockOrderForRefund(order, now);
     await this.orders.save(lockedOrder);
     await this.refundRequests.save(request);
+    await this.ensureSelectedTicketsFrozen(request, now);
     await this.authority.record(admin, {
       action: 'FINANCIAL_REFUND.request',
       targetType: 'refund_request',
@@ -187,6 +227,7 @@ export class RefundService {
     const order = await this.requireOrder(request.orderId);
     const restored = restoreOrderAfterRefundFailure(order, now);
     await this.orders.save(restored);
+    await this.releaseSelectedTickets(request, now);
 
     await this.authority.record(admin, {
       action: 'FINANCIAL_REFUND.reject',
@@ -252,6 +293,11 @@ export class RefundService {
     }
     if (!order.paymentId) throw new InvalidOperationError('Order has no provider payment id');
 
+    // This convergence step runs before every provider call. If request
+    // creation crashed midway through freezing a multi-ticket selection, the
+    // retry finishes the exact persisted set before money can move.
+    await this.ensureSelectedTicketsFrozen(request, now);
+
     if (!request.providerRefundId) {
       let response;
       try {
@@ -261,6 +307,18 @@ export class RefundService {
           idempotencyKey: request.executionIdempotencyKey,
         });
       } catch (error) {
+        if (error instanceof DefiniteProviderFailureError) {
+          const failed = markRefundFailed(
+            request,
+            'Provider definitively rejected the refund',
+            now,
+          );
+          await this.refundRequests.save(failed);
+          await this.releaseSelectedTickets(failed, now);
+          const restored = restoreOrderAfterRefundFailure(order, now);
+          await this.orders.save(restored);
+          return { request: failed, order: restored };
+        }
         // A network/timeout error can occur after the provider accepted the
         // refund. Never unlock or retry automatically: doing so could move
         // money twice. Reconciliation/webhook evidence must resolve it.
@@ -274,6 +332,14 @@ export class RefundService {
       // refund failed and reopening an order after money may have moved.
       request = recordRefundProviderFact(request, response.id, response.status, now);
       await this.refundRequests.save(request);
+      if (response.status === 'failed') {
+        const failed = markRefundFailed(request, 'Provider definitively rejected the refund', now);
+        await this.refundRequests.save(failed);
+        await this.releaseSelectedTickets(failed, now);
+        const restored = restoreOrderAfterRefundFailure(order, now);
+        await this.orders.save(restored);
+        return { request: failed, order: restored };
+      }
     }
     if (request.providerStatus !== 'processed' && request.providerRefundId) {
       const providerPayment = await this.deps.repositories.providerPayments.findByPaymentId(
@@ -313,9 +379,18 @@ export class RefundService {
 
     const refundedOrder = applyOrderRefund(order, request.amountPaise, now, request.id);
     if (refundedOrder !== order) await this.orders.save(refundedOrder);
-    if (refundedOrder.status === 'refunded') {
-      for (const entitlement of await this.entitlements.getByOrderId(order.id)) {
-        const voided = voidEntitlement(entitlement, now);
+    if (refundedOrder.status === 'refunded' || request.scope === 'ticket_lines') {
+      const targets =
+        refundedOrder.status === 'refunded'
+          ? await this.entitlements.getByOrderId(order.id)
+          : await Promise.all(
+              request.targetEntitlementIds.map((id) => this.entitlements.getById(id)),
+            );
+      for (const entitlement of targets) {
+        if (!entitlement || entitlement.orderId !== order.id) {
+          throw new InvalidOperationError('Refund ticket selection no longer matches the order');
+        }
+        const voided = voidEntitlement(entitlement, now, request.id);
         if (voided !== entitlement) await this.entitlements.save(voided);
       }
     }
@@ -375,5 +450,27 @@ export class RefundService {
     const request = await this.refundRequests.getById(id);
     if (!request) throw new NotFoundError('refund_request', id);
     return request;
+  }
+
+  private async ensureSelectedTicketsFrozen(request: AdminRefundRequest, now: Date): Promise<void> {
+    if (request.scope !== 'ticket_lines') return;
+    for (const entitlementId of request.targetEntitlementIds) {
+      const entitlement = await this.entitlements.getById(entitlementId);
+      if (!entitlement || entitlement.orderId !== request.orderId) {
+        throw new InvalidOperationError('Refund ticket selection no longer matches the order');
+      }
+      const frozen = freezeEntitlementForRefund(entitlement, request.id, now);
+      if (frozen !== entitlement) await this.entitlements.save(frozen);
+    }
+  }
+
+  private async releaseSelectedTickets(request: AdminRefundRequest, now: Date): Promise<void> {
+    if (request.scope !== 'ticket_lines') return;
+    for (const entitlementId of request.targetEntitlementIds) {
+      const entitlement = await this.entitlements.getById(entitlementId);
+      if (!entitlement || entitlement.orderId !== request.orderId) continue;
+      const released = releaseEntitlementRefundLock(entitlement, request.id, now);
+      if (released !== entitlement) await this.entitlements.save(released);
+    }
   }
 }

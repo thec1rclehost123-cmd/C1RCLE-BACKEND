@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { IdempotencyConflictError } from '../../domain/errors.js';
 
 import type { EntityId } from '../../domain/identity.js';
@@ -7,6 +9,10 @@ import type { DocumentData, Firestore } from 'firebase-admin/firestore';
 
 const EVENT_COLLECTION = 'v2_provider_financial_events';
 const PROVIDER_ID_COLLECTION = 'v2_provider_financial_event_ids';
+
+function providerEventIndexId(providerEventId: string): string {
+  return createHash('sha256').update(providerEventId).digest('hex');
+}
 
 function immutableFacts(event: ProviderFinancialEvent): string {
   const {
@@ -35,7 +41,7 @@ export class FirestoreProviderFinancialEventRepository implements ProviderFinanc
       const eventReference = this.collection.doc(event.id);
       const providerIdReference = this.db
         .collection(PROVIDER_ID_COLLECTION)
-        .doc(event.providerEventId);
+        .doc(providerEventIndexId(event.providerEventId));
       const [eventSnapshot, providerIdSnapshot] = await Promise.all([
         transaction.get(eventReference),
         transaction.get(providerIdReference),
@@ -64,7 +70,10 @@ export class FirestoreProviderFinancialEventRepository implements ProviderFinanc
   }
 
   async findByProviderEventId(providerEventId: string): Promise<ProviderFinancialEvent | null> {
-    const snapshot = await this.db.collection(PROVIDER_ID_COLLECTION).doc(providerEventId).get();
+    const snapshot = await this.db
+      .collection(PROVIDER_ID_COLLECTION)
+      .doc(providerEventIndexId(providerEventId))
+      .get();
     const eventId = snapshot.data()?.eventId as string | undefined;
     return eventId ? this.findById(eventId) : null;
   }

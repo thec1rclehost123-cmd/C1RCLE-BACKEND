@@ -117,6 +117,8 @@ export default async function webhookRoutes(fastify: FastifyInstance) {
 
       const signatureHeader = request.headers['x-razorpay-signature'];
       const signature = Array.isArray(signatureHeader) ? signatureHeader[0] : signatureHeader;
+      const eventIdHeader = request.headers['x-razorpay-event-id'];
+      const providerEventId = Array.isArray(eventIdHeader) ? eventIdHeader[0] : eventIdHeader;
       const rawBody = request.rawBody ?? '';
 
       if (!signature) {
@@ -139,6 +141,7 @@ export default async function webhookRoutes(fastify: FastifyInstance) {
 
       const receivedAt = new Date();
       const ingestion = {
+        providerEventId: providerEventId ?? null,
         payloadHash: hashProviderEventPayload(rawBody),
         trustedIngestion: 'signature_verified' as const,
         receivedAt,

@@ -1,6 +1,11 @@
 import { createHmac } from 'node:crypto';
 
-import { InvalidOperationError, computeCheckoutSignature, safeHexEqual } from '@c1rcle/core/domain';
+import {
+  DefiniteProviderFailureError,
+  InvalidOperationError,
+  computeCheckoutSignature,
+  safeHexEqual,
+} from '@c1rcle/core/domain';
 
 import type {
   PaymentOrderRequest,
@@ -255,9 +260,13 @@ export class RazorpayPaymentProvider {
         .json()
         .catch(() => ({ error: { description: 'Unknown error' } }));
       if (!isRazorpayErrorResponseDataWithDescription(error)) {
-        throw new InvalidOperationError(`Razorpay refund failed: ${response.statusText}`);
+        throw new DefiniteProviderFailureError(
+          `Razorpay refund was rejected: ${response.statusText}`,
+        );
       }
-      throw new InvalidOperationError(`Razorpay refund failed: ${error.error.description}`);
+      throw new DefiniteProviderFailureError(
+        `Razorpay refund was rejected: ${error.error.description}`,
+      );
     }
 
     const data = await response.json();

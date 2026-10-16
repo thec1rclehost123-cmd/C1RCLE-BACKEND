@@ -61,6 +61,9 @@ function toRefundDto(request: AdminRefundRequest) {
     amountPaise: request.amountPaise,
     requestedBy: request.requestedBy,
     reason: request.reason,
+    scope: request.scope,
+    ticketLines: request.ticketLines,
+    targetEntitlementIds: request.targetEntitlementIds,
     approversRequired: request.approversRequired,
     approvals: request.approvals,
     status: request.status,
@@ -114,6 +117,7 @@ export default async function adminRefundRoutes(fastify: FastifyInstance) {
               orderId: body.orderId,
               amountPaise: body.amountPaise,
               reason: body.reason,
+              ticketLines: body.ticketLines,
             },
             requestMeta(request),
           );

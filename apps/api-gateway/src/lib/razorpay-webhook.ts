@@ -50,6 +50,17 @@ export const webhookPayloadSchema = z.object({
             payment_id: z.string().min(1),
             amount: z.number(),
             currency: z.string().length(3).optional(),
+            amount_deducted: z.number().int().nonnegative().optional(),
+            reason_code: z.string().nullable().optional(),
+            reason_description: z.string().nullable().optional(),
+            respond_by: z.number().int().nonnegative().nullable().optional(),
+            phase: z
+              .enum(['fraud', 'retrieval', 'chargeback', 'pre_arbitration', 'arbitration'])
+              .optional(),
+            created_at: z.number().int().nonnegative().optional(),
+            evidence: z
+              .object({ submitted_at: z.number().int().nonnegative().nullable().optional() })
+              .optional(),
           }),
         })
         .optional(),
@@ -155,6 +166,15 @@ export function providerEventFromWebhook(
       amountPaise: dispute.amount,
       currency: dispute.currency ?? 'INR',
       status,
+      amountDeductedPaise: dispute.amount_deducted ?? 0,
+      reasonCode: dispute.reason_code ?? null,
+      reasonDescription: dispute.reason_description ?? null,
+      respondBy:
+        dispute.respond_by == null ? null : new Date(dispute.respond_by * 1000).toISOString(),
+      phase: dispute.phase ?? null,
+      evidenceState: dispute.evidence?.submitted_at ? 'submitted' : 'none',
+      providerOccurredAt:
+        dispute.created_at == null ? null : new Date(dispute.created_at * 1000).toISOString(),
     };
   }
   return null;

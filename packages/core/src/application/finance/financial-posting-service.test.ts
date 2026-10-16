@@ -230,4 +230,44 @@ describe('FinancialPostingService', () => {
       venue_payable: 3,
     });
   });
+
+  it('holds, loses, and releases chargebacks with balanced idempotent journals', async () => {
+    const repository = new MemoryFinancialJournalRepository();
+    const service = new FinancialPostingService(repository);
+    await service.postTicketSale({ ...saleInput(), providerFeePaise: 0 });
+    const input = {
+      organizationId: 'org_host',
+      orderId: 'order_1',
+      eventId: 'event_1',
+      paymentId: 'pay_1',
+      disputeId: 'disp_1',
+      amountPaise: 30_000,
+      postedAt: NOW,
+    };
+
+    const [hold] = await service.postChargebackHold(input);
+    const [loss] = await service.settleChargebackLoss(input);
+    expect(await service.postChargebackHold(input)).toEqual([hold]);
+    expect(await service.settleChargebackLoss(input)).toEqual([loss]);
+    for (const journal of [hold, loss]) {
+      if (!journal) throw new Error('chargeback fixture requires journals');
+      expect(journalTotals(journal).debitPaise).toBe(journalTotals(journal).creditPaise);
+    }
+    expect(hold?.lines).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          account: 'chargeback_reserve',
+          side: 'credit',
+          amountPaise: 30_000,
+        }),
+      ]),
+    );
+
+    const releaseInput = { ...input, disputeId: 'disp_2' };
+    const [secondHold] = await service.postChargebackHold(releaseInput);
+    const [release] = await service.releaseChargebackHold(releaseInput);
+    expect(release?.reversalOfJournalId).toBe(secondHold?.id);
+    if (!release) throw new Error('chargeback release fixture requires a journal');
+    expect(journalTotals(release).debitPaise).toBe(journalTotals(release).creditPaise);
+  });
 });

@@ -595,6 +595,9 @@ export type {
   RunPayoutBatchInput,
   PayoutBatchResult,
   FinanceOrderDto,
+  ReconciliationRunDto,
+  ReconciliationDiscrepancyDto,
+  ResolveReconciliationDiscrepancyInput,
 } from './contracts/phase6.js';
 
 export {
@@ -629,6 +632,14 @@ export {
   adminRefundRequestStatusSchema,
   adminRefundRequestDtoSchema,
   adminRefundRequestListResponseSchema,
+  reconciliationRunStatusSchema,
+  reconciliationDiscrepancyKindSchema,
+  reconciliationDiscrepancyStateSchema,
+  reconciliationRunDtoSchema,
+  reconciliationDiscrepancyDtoSchema,
+  reconciliationRunListResponseSchema,
+  reconciliationDiscrepancyListResponseSchema,
+  resolveReconciliationDiscrepancySchema,
 } from './contracts/phase6.js';
 
 // Phase 7: Trust & safety + admin desks
