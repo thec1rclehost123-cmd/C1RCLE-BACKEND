@@ -45,6 +45,12 @@ export interface StaffCredentialProvisioner {
    * without touching anything.
    */
   provisionLogin(email: string, displayName: string): Promise<StaffCredentialProvision>;
+  /**
+   * Revokes and removes the provisioned credentials and login for the staff member.
+   * Invalidates password and removes the account so subsequent invitations issue
+   * fresh temporary credentials requiring first-login rotation.
+   */
+  revokeLogin?(userId: string, email?: string): Promise<void>;
 }
 
 export interface StaffUserDirectory {
@@ -96,6 +102,16 @@ export class MemoryStaffUserDirectory implements StaffUserDirectory, UserDirecto
     this.ids.set(normalizedEmail, userId);
   }
 
+  remove(normalizedEmail: string): void {
+    this.ids.delete(normalizedEmail.trim().toLowerCase());
+  }
+
+  removeById(userId: string): void {
+    for (const [email, id] of this.ids.entries()) {
+      if (id === userId) this.ids.delete(email);
+    }
+  }
+
   async getEmailById(userId: string): Promise<string | null> {
     for (const [email, id] of this.ids.entries()) {
       if (id === userId) return email;
@@ -118,15 +134,28 @@ export class MemoryStaffCredentialProvisioner implements StaffCredentialProvisio
   async provisionLogin(email: string): Promise<StaffCredentialProvision> {
     const normalized = email.trim().toLowerCase();
     const existingId = await this.directory.findUserIdByEmail(normalized);
+    const temporaryPassword = generateTemporaryPassword();
     if (existingId) {
-      return { userId: existingId, created: false, temporaryPassword: null };
+      this.passwords.set(existingId, temporaryPassword);
+      return { userId: existingId, created: true, temporaryPassword };
     }
     this.idSeq += 1;
     const userId = `memory-user-${this.idSeq}`;
-    const temporaryPassword = generateTemporaryPassword();
     this.directory.seed(normalized, userId);
     this.passwords.set(userId, temporaryPassword);
     return { userId, created: true, temporaryPassword };
+  }
+
+  async revokeLogin(userId: string, email?: string): Promise<void> {
+    this.passwords.delete(userId);
+    if (email) {
+      this.directory.remove(email);
+    }
+    this.directory.removeById(userId);
+  }
+
+  getPassword(userId: string): string | null {
+    return this.passwords.get(userId) ?? null;
   }
 }
 
