@@ -20,6 +20,7 @@ import {
   createAuditConsumer,
   createProjectionConsumer,
   CheckoutService,
+  FulfilmentRepairService,
   InventoryService,
   PricingService,
   OrderService,
@@ -36,6 +37,7 @@ import {
   createBankAccountService,
   createDisputeService,
   AdminDisputeService,
+  ProviderPaymentService,
   RefundService,
   SupportService,
   AdminSupportService,
@@ -141,6 +143,8 @@ export interface PartnerV2Services {
   /** Phase 7 admin: platform directory views + venue suspension resolution. */
   adminOps: AdminOperationsService;
   checkout: CheckoutService;
+  /** Finds paid orders whose fulfilment stalled part-way and finishes them. */
+  fulfilmentRepair: FulfilmentRepairService;
   /** Phase 4 PR1: unauthenticated guest-facing discovery reads. */
   public: PublicService;
   /**
@@ -195,6 +199,8 @@ export interface PartnerV2Services {
   adminDispute: AdminDisputeService;
   /** Phase 6 admin: amount-tiered refund approval over an order's payment. */
   refund: RefundService;
+  /** The payment provider's record of each payment, for reconciliation. */
+  providerPayments: ProviderPaymentService;
   /** Phase 7 support: guest/requester intake + follow-ups on your own tickets. */
   support: SupportService;
   /** Phase 7 support: admin desk over the same ticket aggregate. */
@@ -513,6 +519,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   });
 
   const checkout = new CheckoutService(deps);
+  const fulfilmentRepair = new FulfilmentRepairService(deps, checkout);
 
   // The paid walk-up sale. `settleOrder` is injected from the checkout
   // service so door revenue lands in the finance ledger through the SAME
@@ -555,6 +562,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   });
 
   const refund = new RefundService(deps, adminAuthority);
+  const providerPayments = new ProviderPaymentService(deps);
   const adminPayout = new AdminPayoutService(deps, adminAuthority);
   const adminDispute = new AdminDisputeService(deps, adminAuthority);
   const adminOps = new AdminOperationsService(deps, adminAuthority);
@@ -595,6 +603,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     adminAuthority,
     adminOps,
     checkout,
+    fulfilmentRepair,
     public: new PublicService(deps),
     paymentProvider,
     orders: new OrderService(deps),
@@ -621,6 +630,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     bankAccount,
     dispute,
     refund,
+    providerPayments,
     adminPayout,
     adminDispute,
     support,
