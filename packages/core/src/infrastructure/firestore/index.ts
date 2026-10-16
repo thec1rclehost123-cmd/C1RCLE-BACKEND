@@ -23,6 +23,7 @@ export * from './firestore-door-sale-repository.js';
 export * from './firestore-cover-wallet-repository.js';
 export * from './firestore-ledger-repository.js';
 export * from './firestore-financial-journal-repository.js';
+export * from './firestore-journal-transition-repository.js';
 export * from './firestore-outbox-store.js';
 export * from './firestore-payout-repository.js';
 export * from './firestore-bank-account-repository.js';

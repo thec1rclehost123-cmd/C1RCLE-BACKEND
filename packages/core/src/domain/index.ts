@@ -23,6 +23,7 @@ export * from './models/cover-wallet.js';
 export * from './models/cover-wallet-reconciliation.js';
 export * from './models/ledger.js';
 export * from './models/financial-journal.js';
+export * from './models/journal-transition.js';
 export * from './models/payout.js';
 export * from './models/bank-account.js';
 export * from './models/dispute.js';

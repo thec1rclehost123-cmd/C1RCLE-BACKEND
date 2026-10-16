@@ -206,32 +206,45 @@ export default async function adminReconciliationRoutes(fastify: FastifyInstance
       const userId = requireUserId(request, reply);
       if (userId === undefined) return reply;
       const { discrepancyId } = request.params as z.infer<typeof discrepancyParam>;
-      const item = await services.reconciliation.getDiscrepancy(discrepancyId);
-      if (!item) {
-        return mapDomainError(
-          reply,
-          request,
-          discrepancyId,
-          new NotFoundError('discrepancy', discrepancyId),
-        );
-      }
-      if (item.repair !== 'recheck_evidence') {
-        return reply
-          .code(409)
-          .send({ error: { code: 'conflict', message: 'Repair is not allow-listed' } });
-      }
-      const admin = await services.adminAuthority.authorize(userId, 'RECONCILIATION_RUN');
-      const run = await services.reconciliation.run(userId);
-      await services.adminAuthority.record(admin, {
-        action: 'RECONCILIATION_RUN',
-        targetType: 'reconciliation_discrepancy',
-        targetId: discrepancyId,
-        before: { state: item.state },
-        after: { recheckRunId: run.id },
-        reason: 'Allow-listed evidence recheck',
-        ...requestMeta(request),
-      });
-      return validateV2Response(reply, request, reconciliationRunDtoSchema, run);
+      const idempotencyKey = request.v2Headers?.['idempotency-key'];
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: userId,
+        commandName: 'admin.reconciliation.recheck',
+        idempotencyKey,
+        context: { path: { discrepancyId }, body: {} },
+        run: async () => {
+          const item = await services.reconciliation.getDiscrepancy(discrepancyId);
+          if (!item) throw new NotFoundError('discrepancy', discrepancyId);
+          if (item.repair !== 'recheck_evidence') {
+            return {
+              statusCode: 409,
+              body: { error: { code: 'conflict', message: 'Repair is not allow-listed' } },
+            };
+          }
+          const admin = await services.adminAuthority.authorize(userId, 'RECONCILIATION_RUN');
+          const run = await services.reconciliation.run(userId);
+          await services.adminAuthority.record(admin, {
+            action: 'RECONCILIATION_RUN',
+            targetType: 'reconciliation_discrepancy',
+            targetId: discrepancyId,
+            before: { state: item.state },
+            after: { recheckRunId: run.id },
+            reason: 'Allow-listed evidence recheck',
+            ...requestMeta(request),
+          });
+          const response = validateV2Response(reply, request, reconciliationRunDtoSchema, run);
+          if (!response) throw new Error('v2 response validation failed');
+          return { statusCode: 201, body: response };
+        },
+      }).catch((error: unknown) =>
+        mapDomainError(reply, request, discrepancyId, error, {
+          conflictId: isIdempotencyConflict(error) ? idempotencyKey : undefined,
+        }),
+      );
+      if (!result) return reply;
+      return reply.status(result.statusCode).send(result.body);
     },
   );
 
@@ -243,6 +256,7 @@ export default async function adminReconciliationRoutes(fastify: FastifyInstance
         fastify.validateV2({
           params: discrepancyParam,
           body: resolveReconciliationDiscrepancySchema,
+          headers: commandHeaders,
         }),
       ],
     },
@@ -251,24 +265,43 @@ export default async function adminReconciliationRoutes(fastify: FastifyInstance
       if (userId === undefined) return reply;
       const { discrepancyId } = request.params as z.infer<typeof discrepancyParam>;
       const body = request.body as z.infer<typeof resolveReconciliationDiscrepancySchema>;
-      const admin = await services.adminAuthority.authorize(userId, 'RECONCILIATION_RESOLVE');
-      const before = await services.reconciliation.getDiscrepancy(discrepancyId);
-      const item = await services.reconciliation.resolve(discrepancyId, body.reason, userId);
-      await services.adminAuthority.record(admin, {
-        action: 'RECONCILIATION_RESOLVE',
-        targetType: 'reconciliation_discrepancy',
-        targetId: discrepancyId,
-        before: { state: before?.state ?? null },
-        after: { state: item.state },
-        reason: body.reason,
-        ...requestMeta(request),
-      });
-      return validateV2Response(
-        reply,
+      const idempotencyKey = request.v2Headers?.['idempotency-key'];
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
         request,
-        reconciliationDiscrepancyDtoSchema,
-        discrepancyDto(item),
+        actorId: userId,
+        commandName: 'admin.reconciliation.resolve',
+        idempotencyKey,
+        context: { path: { discrepancyId }, body },
+        run: async () => {
+          const admin = await services.adminAuthority.authorize(userId, 'RECONCILIATION_RESOLVE');
+          const before = await services.reconciliation.getDiscrepancy(discrepancyId);
+          const item = await services.reconciliation.resolve(discrepancyId, body.reason, userId);
+          await services.adminAuthority.record(admin, {
+            action: 'RECONCILIATION_RESOLVE',
+            targetType: 'reconciliation_discrepancy',
+            targetId: discrepancyId,
+            before: { state: before?.state ?? null },
+            after: { state: item.state },
+            reason: body.reason,
+            ...requestMeta(request),
+          });
+          const response = validateV2Response(
+            reply,
+            request,
+            reconciliationDiscrepancyDtoSchema,
+            discrepancyDto(item),
+          );
+          if (!response) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: response };
+        },
+      }).catch((error: unknown) =>
+        mapDomainError(reply, request, discrepancyId, error, {
+          conflictId: isIdempotencyConflict(error) ? idempotencyKey : undefined,
+        }),
       );
+      if (!result) return reply;
+      return reply.status(result.statusCode).send(result.body);
     },
   );
 

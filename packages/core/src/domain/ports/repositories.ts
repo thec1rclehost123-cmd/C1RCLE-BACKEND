@@ -50,6 +50,7 @@ import type {
 import type { Event } from '../models/event.js';
 import type { FinancialJournal, PostingSourceType } from '../models/financial-journal.js';
 import type { GuestProfile } from '../models/guest-profile.js';
+import type { JournalTransitionState } from '../models/journal-transition.js';
 import type {
   LeaderboardBucket,
   LeaderboardPeriodType,
@@ -1139,6 +1140,14 @@ export interface FinancialJournalRepository {
     organizationId: EntityId,
     query: PaginationQuery,
   ): Promise<Page<FinancialJournal>>;
+  /** Net credit balance of payable accounts for this organization. */
+  sumPayableByOrganization(organizationId: EntityId): Promise<number>;
+}
+
+export interface JournalTransitionRepository {
+  get(): Promise<JournalTransitionState>;
+  /** Optimistic save; the supplied version must be exactly one above storage. */
+  save(state: JournalTransitionState): Promise<void>;
 }
 
 /** Payout requests — draw-downs against the ledger-computed available balance. */

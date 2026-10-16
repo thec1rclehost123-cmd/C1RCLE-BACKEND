@@ -28,6 +28,7 @@ export * from './memory-door-sale-repository.js';
 export * from './memory-cover-wallet-repository.js';
 export * from './memory-ledger-repository.js';
 export * from './memory-financial-journal-repository.js';
+export * from './memory-journal-transition-repository.js';
 export * from './memory-payout-repository.js';
 export * from './memory-bank-account-repository.js';
 export * from './memory-dispute-repository.js';

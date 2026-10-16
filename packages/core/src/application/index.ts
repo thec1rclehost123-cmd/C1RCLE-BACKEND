@@ -169,6 +169,8 @@ export type {
 } from './finance/finance-service.js';
 export { createFinanceService } from './finance/finance-service.js';
 export * from './finance/financial-posting-service.js';
+export { JournalTransitionService } from './finance/journal-transition-service.js';
+export type { JournalBackfillPreview } from './finance/journal-transition-service.js';
 export type {
   PayoutService,
   PayoutServiceDeps,

@@ -85,4 +85,22 @@ export class MemoryFinancialJournalRepository implements FinancialJournalReposit
       .sort((left, right) => right.postedAt.localeCompare(left.postedAt));
     return page(all, query);
   }
+
+  async sumPayableByOrganization(organizationId: EntityId): Promise<number> {
+    const payableAccounts = new Set(['host_payable', 'venue_payable', 'promoter_payable']);
+    return [...this.journals.values()].reduce(
+      (sum, journal) =>
+        sum +
+        journal.lines
+          .filter(
+            (line) => line.organizationId === organizationId && payableAccounts.has(line.account),
+          )
+          .reduce(
+            (lineSum, line) =>
+              lineSum + (line.side === 'credit' ? line.amountPaise : -line.amountPaise),
+            0,
+          ),
+      0,
+    );
+  }
 }

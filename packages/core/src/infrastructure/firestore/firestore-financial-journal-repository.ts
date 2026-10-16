@@ -13,6 +13,7 @@ import type { DocumentData, DocumentSnapshot, Firestore } from 'firebase-admin/f
 
 const JOURNAL_COLLECTION = 'v2_financial_journals';
 const IDEMPOTENCY_COLLECTION = 'v2_financial_journal_idempotency';
+const JOURNAL_LINE_COLLECTION = 'v2_financial_journal_lines';
 
 function sameJournal(left: FinancialJournal, right: FinancialJournal): boolean {
   const { postedAt: _leftPostedAt, createdAt: _leftCreatedAt, ...leftFacts } = left;
@@ -53,6 +54,13 @@ export class FirestoreFinancialJournalRepository implements FinancialJournalRepo
           if (!sameJournal(existing, journal)) {
             throw new IdempotencyConflictError(journal.idempotencyKey);
           }
+          for (const line of existing.lines) {
+            tx.set(this.db.collection(JOURNAL_LINE_COLLECTION).doc(line.id), {
+              ...line,
+              journalId: existing.id,
+              postedAt: existing.postedAt,
+            });
+          }
           resolved.push(existing);
           return;
         }
@@ -61,6 +69,13 @@ export class FirestoreFinancialJournalRepository implements FinancialJournalRepo
         }
         tx.create(this.collection.doc(journal.id), toDoc(journal));
         tx.create(idempotencyRef, { journalId: journal.id });
+        for (const line of journal.lines) {
+          tx.create(this.db.collection(JOURNAL_LINE_COLLECTION).doc(line.id), {
+            ...line,
+            journalId: journal.id,
+            postedAt: journal.postedAt,
+          });
+        }
         resolved.push(journal);
       });
       return resolved;
@@ -107,6 +122,19 @@ export class FirestoreFinancialJournalRepository implements FinancialJournalRepo
       .where('organizationId', '==', organizationId)
       .orderBy('postedAt', 'desc');
     return paginateQuery(base, query, toJournal);
+  }
+
+  async sumPayableByOrganization(organizationId: EntityId): Promise<number> {
+    const snapshot = await this.db
+      .collection(JOURNAL_LINE_COLLECTION)
+      .where('organizationId', '==', organizationId)
+      .where('account', 'in', ['host_payable', 'venue_payable', 'promoter_payable'])
+      .get();
+    return snapshot.docs.reduce((sum, document) => {
+      const data = document.data();
+      const amount = data.amountPaise as number;
+      return sum + (data.side === 'credit' ? amount : -amount);
+    }, 0);
   }
 }
 

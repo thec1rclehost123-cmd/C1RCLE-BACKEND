@@ -43,6 +43,7 @@ import {
   FirestoreCoverWalletReconciliationRepository,
   FirestoreLedgerRepository,
   FirestoreFinancialJournalRepository,
+  FirestoreJournalTransitionRepository,
   FirestorePayoutRepository,
   FirestoreBankAccountRepository,
   FirestoreDisputeRepository,
@@ -92,6 +93,7 @@ import {
   MemoryCoverWalletReconciliationRepository,
   MemoryLedgerRepository,
   MemoryFinancialJournalRepository,
+  MemoryJournalTransitionRepository,
   MemoryPayoutRepository,
   MemoryBankAccountRepository,
   MemoryDisputeRepository,
@@ -167,6 +169,7 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
       // Phase 6
       ledger: new MemoryLedgerRepository(),
       financialJournals: new MemoryFinancialJournalRepository(),
+      journalTransition: new MemoryJournalTransitionRepository(),
       payouts: new MemoryPayoutRepository(),
       bankAccounts: new MemoryBankAccountRepository(),
       disputes: new MemoryDisputeRepository(),
@@ -232,6 +235,7 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
     // Phase 6
     ledger: new FirestoreLedgerRepository(db),
     financialJournals: new FirestoreFinancialJournalRepository(db),
+    journalTransition: new FirestoreJournalTransitionRepository(db),
     payouts: new FirestorePayoutRepository(db),
     bankAccounts: new FirestoreBankAccountRepository(db),
     disputes: new FirestoreDisputeRepository(db),

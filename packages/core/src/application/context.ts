@@ -48,6 +48,7 @@ import type {
   CoverWalletReconciliationRepository,
   LedgerRepository,
   FinancialJournalRepository,
+  JournalTransitionRepository,
   PayoutRepository,
   BankAccountRepository,
   DisputeRepository,
@@ -166,6 +167,7 @@ export interface ServiceDeps {
     ledger: LedgerRepository;
     /** Immutable balanced journals for the Milestone 2 accounting engine. */
     financialJournals: FinancialJournalRepository;
+    journalTransition: JournalTransitionRepository;
     payouts: PayoutRepository;
     bankAccounts: BankAccountRepository;
     disputes: DisputeRepository;

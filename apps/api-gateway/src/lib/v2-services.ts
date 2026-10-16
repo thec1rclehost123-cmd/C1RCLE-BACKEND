@@ -40,6 +40,7 @@ import {
   ProviderPaymentService,
   RefundService,
   ReconciliationService,
+  JournalTransitionService,
   SupportService,
   AdminSupportService,
   createLeaderboardService,
@@ -205,6 +206,8 @@ export interface PartnerV2Services {
   providerPayments: ProviderPaymentService;
   /** Persisted cross-system finance reconciliation. */
   reconciliation: ReconciliationService;
+  /** Explicit legacy-ledger to journal backfill/comparison/cutover controls. */
+  journalTransition: JournalTransitionService;
   /** Phase 7 support: guest/requester intake + follow-ups on your own tickets. */
   support: SupportService;
   /** Phase 7 support: admin desk over the same ticket aggregate. */
@@ -573,6 +576,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   const refund = new RefundService(deps, adminAuthority);
   const providerPayments = new ProviderPaymentService(deps);
   const reconciliation = new ReconciliationService(deps);
+  const journalTransition = new JournalTransitionService(deps);
   const adminPayout = new AdminPayoutService(deps, adminAuthority);
   const adminDispute = new AdminDisputeService(deps, adminAuthority);
   const adminOps = new AdminOperationsService(deps, adminAuthority);
@@ -656,6 +660,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     refund,
     providerPayments,
     reconciliation,
+    journalTransition,
     adminPayout,
     adminDispute,
     support,
