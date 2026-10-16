@@ -6,7 +6,14 @@ import { requireOrgAccess } from '../context.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type { LedgerEntry, LedgerEntryType } from '../../domain/models/ledger.js';
-import type { LedgerRepository } from '../../domain/ports/repositories.js';
+import type {
+  EventRepository,
+  FinancialJournalRepository,
+  JournalTransitionRepository,
+  LedgerRepository,
+  PayoutRepository,
+  ReconciliationRepository,
+} from '../../domain/ports/repositories.js';
 import type { ServiceDeps, ActorContext } from '../context.js';
 
 /**
@@ -20,6 +27,11 @@ import type { ServiceDeps, ActorContext } from '../context.js';
 
 export interface FinanceServiceDeps {
   ledger: LedgerRepository;
+  financialJournals: FinancialJournalRepository;
+  journalTransition: JournalTransitionRepository;
+  payouts: PayoutRepository;
+  events: EventRepository;
+  reconciliations: ReconciliationRepository;
   config: ServiceDeps['config'];
 }
 
@@ -41,7 +53,17 @@ export interface RecordTicketSaleInput {
 export interface BalanceSummary {
   availablePaise: number;
   pendingPaise: number;
+  reservedPaise: number;
+  heldPaise: number;
+  paidPaise: number;
   lifetimePaise: number;
+  holds: {
+    reservePaise: number;
+    cancellationPaise: number;
+    chargebackPaise: number;
+    reconciliationPaise: number;
+  };
+  readModel: 'legacy_ledger_v1' | 'financial_journal_v2';
 }
 
 export interface FinanceService {
@@ -193,7 +215,149 @@ export function createFinanceService(deps: FinanceServiceDeps): FinanceService {
     actor: ActorContext,
   ): Promise<BalanceSummary> {
     requireOrgAccess(actor, organizationId);
-    const sums = await ledger.sumByOrganizationAndType(organizationId);
+    const transition = await deps.journalTransition.get();
+    if (transition.readModel === 'financial_journal_v2') {
+      const [lines, reserved, paid, unresolved] = await Promise.all([
+        deps.financialJournals.listPayableLinesByOrganization(organizationId),
+        deps.payouts.sumRequestedOrProcessingByOrganization(organizationId),
+        deps.payouts.sumPaidByOrganization(organizationId),
+        deps.reconciliations.listDiscrepancies({ organizationId, limit: 1_000 }),
+      ]);
+      let net = 0;
+      let pending = 0;
+      let policyReserve = 0;
+      const chargebackHolds = new Map<EntityId, { amountPaise: number; closed: boolean }>();
+      let cancellationHeld = 0;
+      let lifetime = 0;
+      let holdOnUnresolvedReconciliation = false;
+      const eventCache = new Map<EntityId, Awaited<ReturnType<EventRepository['getById']>>>();
+      const orderBalances = new Map<
+        EntityId,
+        {
+          credits: (typeof lines)[number][];
+          debitPaise: number;
+        }
+      >();
+      for (const payableLine of lines) {
+        const signed =
+          payableLine.side === 'credit' ? payableLine.amountPaise : -payableLine.amountPaise;
+        net += signed;
+        if (payableLine.source.type === 'chargeback' && payableLine.side === 'debit') {
+          const current = chargebackHolds.get(payableLine.source.id);
+          chargebackHolds.set(payableLine.source.id, {
+            amountPaise: (current?.amountPaise ?? 0) + payableLine.amountPaise,
+            closed: current?.closed ?? false,
+          });
+        } else if (
+          payableLine.source.type === 'chargeback_reversal' ||
+          payableLine.source.type === 'chargeback_loss'
+        ) {
+          const current = chargebackHolds.get(payableLine.source.id);
+          chargebackHolds.set(payableLine.source.id, {
+            amountPaise: current?.amountPaise ?? 0,
+            closed: true,
+          });
+        }
+        if (payableLine.source.orderId !== null) {
+          const group = orderBalances.get(payableLine.source.orderId) ?? {
+            credits: [],
+            debitPaise: 0,
+          };
+          if (payableLine.side === 'credit') group.credits.push(payableLine);
+          else group.debitPaise += payableLine.amountPaise;
+          orderBalances.set(payableLine.source.orderId, group);
+        }
+        if (
+          payableLine.side !== 'credit' ||
+          payableLine.source.type === 'payout_failure_reversal'
+        ) {
+          continue;
+        }
+        lifetime += payableLine.amountPaise;
+        holdOnUnresolvedReconciliation ||=
+          payableLine.accountingPolicy.holdsOnUnresolvedReconciliation;
+      }
+
+      // Classify the remaining liability for each order, not its historical
+      // gross credit. Refund/adjustment/chargeback debits therefore reduce the
+      // amount that can still be pending, reserved, or cancellation-held.
+      for (const group of orderBalances.values()) {
+        const creditPaise = group.credits.reduce((sum, line) => sum + line.amountPaise, 0);
+        const remainingPaise = Math.max(0, creditPaise - group.debitPaise);
+        const representative = group.credits[0];
+        if (!representative || remainingPaise === 0) continue;
+        const eligibleAt =
+          new Date(representative.postedAt).getTime() +
+          representative.accountingPolicy.settlementDelayDays * 86_400_000;
+        let eventComplete = true;
+        if (
+          (representative.accountingPolicy.requiresEventCompletion ||
+            representative.accountingPolicy.holdsOnCancellation) &&
+          representative.source.eventId !== null
+        ) {
+          let event = eventCache.get(representative.source.eventId);
+          if (event === undefined) {
+            event = await deps.events.getById(representative.source.eventId);
+            eventCache.set(representative.source.eventId, event);
+          }
+          if (representative.accountingPolicy.requiresEventCompletion) {
+            eventComplete = event?.status === 'ended' || event?.status === 'archived';
+          }
+        }
+        const event =
+          representative.source.eventId === null
+            ? null
+            : (eventCache.get(representative.source.eventId) ?? null);
+        if (representative.accountingPolicy.holdsOnCancellation && event?.status === 'cancelled') {
+          cancellationHeld += remainingPaise;
+        } else if (config.clock.now().getTime() < eligibleAt || !eventComplete) {
+          pending += remainingPaise;
+        } else {
+          policyReserve += Math.round(
+            (remainingPaise * representative.accountingPolicy.reserveBasisPoints) / 10_000,
+          );
+        }
+      }
+      const chargebackHeld = [...chargebackHolds.values()].reduce(
+        (sum, hold) => sum + (hold.closed ? 0 : hold.amountPaise),
+        0,
+      );
+      const unresolvedForOrganization = unresolved.items.filter(
+        (item) => item.state !== 'resolved',
+      );
+      const reconciliationHeld = !holdOnUnresolvedReconciliation
+        ? 0
+        : unresolvedForOrganization.some((item) => item.amountPaise === null)
+          ? Math.max(0, net - pending - policyReserve - cancellationHeld)
+          : Math.min(
+              Math.max(0, net - pending - policyReserve - cancellationHeld),
+              unresolvedForOrganization.reduce((sum, item) => sum + (item.amountPaise ?? 0), 0),
+            );
+      return {
+        availablePaise: Math.max(
+          0,
+          net - pending - policyReserve - cancellationHeld - reconciliationHeld,
+        ),
+        pendingPaise: pending,
+        reservedPaise: reserved,
+        heldPaise: chargebackHeld + policyReserve + cancellationHeld + reconciliationHeld,
+        paidPaise: paid,
+        lifetimePaise: lifetime,
+        holds: {
+          reservePaise: policyReserve,
+          cancellationPaise: cancellationHeld,
+          chargebackPaise: chargebackHeld,
+          reconciliationPaise: reconciliationHeld,
+        },
+        readModel: 'financial_journal_v2',
+      };
+    }
+
+    const [sums, reserved, paid] = await Promise.all([
+      ledger.sumByOrganizationAndType(organizationId),
+      deps.payouts.sumRequestedOrProcessingByOrganization(organizationId),
+      deps.payouts.sumPaidByOrganization(organizationId),
+    ]);
 
     // Available = settled inflows credited to this org (host_payout/venue_share/
     // promoter_commission once settled) minus whatever has already been paid out.
@@ -208,9 +372,19 @@ export function createFinanceService(deps: FinanceServiceDeps): FinanceService {
     }
 
     return {
-      availablePaise: settled - paidOut,
+      availablePaise: settled - paidOut - reserved - paid,
       pendingPaise: pending,
+      reservedPaise: reserved,
+      heldPaise: 0,
+      paidPaise: paid,
       lifetimePaise: pending + settled + paidOut,
+      holds: {
+        reservePaise: 0,
+        cancellationPaise: 0,
+        chargebackPaise: 0,
+        reconciliationPaise: 0,
+      },
+      readModel: 'legacy_ledger_v1',
     };
   }
 

@@ -319,6 +319,121 @@ export class FinancialPostingService {
     return this.journals.postBatch([buildZeroValueEvidence(input)]);
   }
 
+  buildPayoutReservation(input: {
+    organizationId: EntityId;
+    payoutId: EntityId;
+    amountPaise: number;
+    policy: AccountingPolicySnapshot;
+    postedAt?: Date;
+  }): FinancialJournal {
+    return createPostedJournal({
+      organizationId: input.organizationId,
+      currency: 'INR',
+      source: {
+        type: 'payout_reservation',
+        id: input.payoutId,
+        orderId: null,
+        paymentId: null,
+        eventId: null,
+      },
+      idempotencyKey: `m2:payout:${input.payoutId}:reservation`,
+      accountingPolicy: input.policy,
+      postedAt: input.postedAt,
+      lines: [
+        line({
+          account: 'partner_payable',
+          side: 'debit',
+          amountPaise: input.amountPaise,
+          organizationId: input.organizationId,
+          component: 'payoutPaise',
+          memo: 'Reserve partner payable for payout',
+        }),
+        line({
+          account: 'payout_clearing',
+          side: 'credit',
+          amountPaise: input.amountPaise,
+          organizationId: input.organizationId,
+          component: 'payoutPaise',
+          memo: 'Payout awaiting transfer',
+        }),
+      ],
+    });
+  }
+
+  postPayoutReservation(
+    input: Parameters<FinancialPostingService['buildPayoutReservation']>[0],
+  ): Promise<FinancialJournal[]> {
+    return this.journals.postBatch([this.buildPayoutReservation(input)]);
+  }
+
+  async postPayoutFailureReversal(input: {
+    organizationId: EntityId;
+    payoutId: EntityId;
+    postedAt?: Date;
+  }): Promise<FinancialJournal[]> {
+    const [reservation] = await this.journals.findBySource('payout_reservation', input.payoutId);
+    if (!reservation) throw new InvalidOperationError('Payout reservation journal is missing');
+    return this.journals.postBatch([
+      createReversalJournal({
+        original: reservation,
+        source: {
+          type: 'payout_failure_reversal',
+          id: input.payoutId,
+          orderId: null,
+          paymentId: null,
+          eventId: null,
+        },
+        idempotencyKey: `m2:payout:${input.payoutId}:failure-reversal`,
+        postedAt: input.postedAt,
+      }),
+    ]);
+  }
+
+  async postPayoutCompletion(input: {
+    organizationId: EntityId;
+    payoutId: EntityId;
+    amountPaise: number;
+    transferReference: string;
+    postedAt?: Date;
+  }): Promise<FinancialJournal[]> {
+    const [reservation] = await this.journals.findBySource('payout_reservation', input.payoutId);
+    if (!reservation) throw new InvalidOperationError('Payout reservation journal is missing');
+    return this.journals.postBatch([
+      createPostedJournal({
+        organizationId: input.organizationId,
+        currency: reservation.currency,
+        source: {
+          type: 'payout_completion',
+          id: input.payoutId,
+          orderId: null,
+          paymentId: null,
+          eventId: null,
+        },
+        idempotencyKey: `m2:payout:${input.payoutId}:completion`,
+        accountingPolicy: reservation.accountingPolicy,
+        postedAt: input.postedAt,
+        lines: [
+          line({
+            account: 'payout_clearing',
+            side: 'debit',
+            amountPaise: input.amountPaise,
+            organizationId: input.organizationId,
+            component: 'payoutPaise',
+            memo: `Complete payout ${input.transferReference}`,
+          }),
+          line({
+            account: 'cash_bank_clearing',
+            side: 'credit',
+            amountPaise: input.amountPaise,
+            organizationId: input.organizationId,
+            component: 'payoutPaise',
+            memo: 'Manual bank transfer completed',
+          }),
+        ],
+      }),
+    ]);
+  }
+
   async postRefund(input: {
     readonly organizationId: EntityId;
     readonly orderId: EntityId;
@@ -522,7 +637,9 @@ export class FinancialPostingService {
     if (!allocation || !collection) {
       throw new InvalidOperationError('Chargeback requires the original posted sale journals');
     }
-    const allocationCredits = allocation.lines.filter((entry) => entry.side === 'credit');
+    const allocationCredits = collection.accountingPolicy.holdsOnDispute
+      ? allocation.lines.filter((entry) => entry.side === 'credit')
+      : [];
     const allocationTotal = allocationCredits.reduce((sum, entry) => sum + entry.amountPaise, 0);
     const recoverable = Math.min(input.amountPaise, allocationTotal);
     const allocated =
@@ -598,7 +715,7 @@ export class FinancialPostingService {
       createPostedJournal({
         organizationId: input.organizationId,
         currency: hold.currency,
-        source: hold.source,
+        source: { ...hold.source, type: 'chargeback_loss' },
         idempotencyKey: `m2:chargeback:${input.disputeId}:provider-deduction`,
         accountingPolicy: hold.accountingPolicy,
         components: hold.components,
@@ -619,6 +736,14 @@ export class FinancialPostingService {
             organizationId: input.organizationId,
             component: 'chargebackPaise',
             memo: 'Provider deducted chargeback',
+          }),
+          line({
+            account: 'partner_payable',
+            side: 'debit',
+            amountPaise: 0,
+            organizationId: input.organizationId,
+            component: null,
+            memo: 'Chargeback hold converted to confirmed loss',
           }),
         ],
       }),
@@ -656,6 +781,59 @@ export class FinancialPostingService {
     ]);
     if (!posted) throw new InvalidOperationError('Journal repository returned no reversal');
     return posted;
+  }
+
+  postManualAdjustment(input: {
+    readonly organizationId: EntityId;
+    readonly adjustmentId: EntityId;
+    readonly amountPaise: number;
+    readonly direction: 'credit' | 'debit';
+    readonly reason: string;
+    readonly actorId: EntityId;
+    readonly policy: AccountingPolicySnapshot;
+    readonly postedAt?: Date;
+  }): Promise<FinancialJournal[]> {
+    const reason = input.reason.trim();
+    if (!reason) throw new InvalidOperationError('A manual adjustment requires a reason');
+    if (!Number.isSafeInteger(input.amountPaise) || input.amountPaise <= 0) {
+      throw new InvalidOperationError('A manual adjustment requires positive integer paise');
+    }
+    const payableSide = input.direction === 'credit' ? 'credit' : 'debit';
+    const controlSide = payableSide === 'credit' ? 'debit' : 'credit';
+    return this.journals.postBatch([
+      createPostedJournal({
+        organizationId: input.organizationId,
+        currency: 'INR',
+        source: {
+          type: 'manual_adjustment',
+          id: input.adjustmentId,
+          orderId: null,
+          paymentId: null,
+          eventId: null,
+        },
+        idempotencyKey: `m2:manual-adjustment:${input.adjustmentId}`,
+        accountingPolicy: input.policy,
+        postedAt: input.postedAt,
+        lines: [
+          line({
+            account: 'manual_adjustment_control',
+            side: controlSide,
+            amountPaise: input.amountPaise,
+            organizationId: input.organizationId,
+            component: null,
+            memo: `Manual adjustment control: ${reason} (${input.actorId})`,
+          }),
+          line({
+            account: 'partner_payable',
+            side: payableSide,
+            amountPaise: input.amountPaise,
+            organizationId: input.organizationId,
+            component: null,
+            memo: `Manual partner payable adjustment: ${reason}`,
+          }),
+        ],
+      }),
+    ]);
   }
 }
 

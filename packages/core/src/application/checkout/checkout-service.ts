@@ -101,6 +101,11 @@ export class CheckoutService {
   constructor(private readonly deps: ServiceDeps) {
     this.financeService = createFinanceService({
       ledger: deps.repositories.ledger,
+      financialJournals: deps.repositories.financialJournals,
+      journalTransition: deps.repositories.journalTransition,
+      payouts: deps.repositories.payouts,
+      events: deps.repositories.events,
+      reconciliations: deps.repositories.reconciliations,
       config: deps.config,
     });
     this.financialPostingService = new FinancialPostingService(deps.repositories.financialJournals);
@@ -1152,6 +1157,7 @@ export class CheckoutService {
         : 'online_payment_capture';
     const amountFor = (entryType: (typeof entries)[number]['entryType']): number =>
       entries.find((entry) => entry.entryType === entryType)?.amount ?? 0;
+    const platformSettings = await this.deps.repositories.platformSettings.get();
     await this.financialPostingService.postTicketSale({
       organizationId: hostOrganizationId,
       orderId: order.id,
@@ -1173,6 +1179,14 @@ export class CheckoutService {
       providerFeePaise: providerPayment
         ? providerPayment.feePaise + providerPayment.taxOnFeePaise
         : 0,
+      policy: {
+        ...platformSettings.accountingPolicy,
+        // The policy snapshot is part of the journal's idempotent facts. Reuse
+        // the immutable payment/order capture time so duplicate callbacks,
+        // concurrent confirmation and fulfilment repair rebuild byte-for-byte
+        // equivalent journals instead of conflicting on the retry time.
+        capturedAt: providerPayment?.capturedAt ?? order.paidAt ?? order.createdAt,
+      },
       allocation: {
         platformPaise: amountFor('platform_fee'),
         hostOrganizationId,

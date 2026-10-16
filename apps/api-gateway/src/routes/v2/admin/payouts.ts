@@ -1,5 +1,6 @@
 import {
   adminPayoutStatusSchema,
+  completeManualPayoutSchema,
   idempotencyKeySchema,
   opaqueIdSchema,
   paginationQuerySchema,
@@ -55,6 +56,11 @@ function payoutToDto(payout: Payout) {
     status: payout.status,
     failureReason: payout.failureReason,
     processedAt: payout.processedAt,
+    transferReference: payout.transferReference,
+    transferredAt: payout.transferredAt,
+    transferMethod: payout.transferMethod,
+    transferProof: payout.transferProof,
+    approvedBy: payout.approvedBy,
     createdAt: payout.createdAt,
   };
 }
@@ -207,6 +213,57 @@ export default async function adminPayoutRoutes(fastify: FastifyInstance) {
   );
 
   /* ─── Reads ──────────────────────────────────────────────────────────────── */
+
+  fastify.post(
+    '/admin/payouts/:payoutId/complete',
+    {
+      preHandler: [
+        fastify.rateLimit('SENSITIVE_COMMAND'),
+        fastify.validateV2({
+          params: payoutIdParam,
+          headers: commandHeaders,
+          body: completeManualPayoutSchema,
+        }),
+      ],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+      const { payoutId } = request.params as z.infer<typeof payoutIdParam>;
+      const body = request.body as z.infer<typeof completeManualPayoutSchema>;
+      const idempotencyKey = request.v2Headers?.['idempotency-key'];
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: userId,
+        commandName: 'admin.payout.complete',
+        idempotencyKey,
+        context: { path: { payoutId }, body },
+        run: async () => {
+          const payout = await services.adminPayout.completeManualPayout(
+            userId,
+            payoutId,
+            body,
+            requestMeta(request),
+          );
+          const validated = validateV2Response(
+            reply,
+            request,
+            payoutResponseSchema,
+            payoutToDto(payout),
+          );
+          if (!validated) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
+        },
+      }).catch((error: unknown) =>
+        mapDomainError(reply, request, payoutId, error, {
+          conflictId: isIdempotencyConflict(error) ? idempotencyKey : undefined,
+        }),
+      );
+      if (!result) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
 
   fastify.get(
     '/admin/payouts',

@@ -62,11 +62,16 @@ export class FirestoreReconciliationRepository implements ReconciliationReposito
   }
 
   async listDiscrepancies(
-    query: PaginationQuery & { runId?: EntityId; state?: ReconciliationDiscrepancyState },
+    query: PaginationQuery & {
+      runId?: EntityId;
+      state?: ReconciliationDiscrepancyState;
+      organizationId?: EntityId;
+    },
   ): Promise<Page<ReconciliationDiscrepancy>> {
     let base: Query = this.db.collection(DISCREPANCIES);
     if (query.runId) base = base.where('runId', '==', query.runId);
     if (query.state) base = base.where('state', '==', query.state);
+    if (query.organizationId) base = base.where('organizationId', '==', query.organizationId);
     return paginateUnordered(base, query, (data) => data as ReconciliationDiscrepancy);
   }
 

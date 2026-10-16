@@ -5,6 +5,7 @@ import type { FinancialJournal, PostingSourceType } from '../../domain/models/fi
 import type {
   FinancialJournalRepository,
   Page,
+  PayableJournalLine,
   PaginationQuery,
 } from '../../domain/ports/repositories.js';
 
@@ -87,7 +88,12 @@ export class MemoryFinancialJournalRepository implements FinancialJournalReposit
   }
 
   async sumPayableByOrganization(organizationId: EntityId): Promise<number> {
-    const payableAccounts = new Set(['host_payable', 'venue_payable', 'promoter_payable']);
+    const payableAccounts = new Set([
+      'host_payable',
+      'venue_payable',
+      'promoter_payable',
+      'partner_payable',
+    ]);
     return [...this.journals.values()].reduce(
       (sum, journal) =>
         sum +
@@ -101,6 +107,31 @@ export class MemoryFinancialJournalRepository implements FinancialJournalReposit
             0,
           ),
       0,
+    );
+  }
+
+  async listPayableLinesByOrganization(organizationId: EntityId): Promise<PayableJournalLine[]> {
+    const payableAccounts = new Set([
+      'host_payable',
+      'venue_payable',
+      'promoter_payable',
+      'partner_payable',
+    ]);
+    return [...this.journals.values()].flatMap((journal) =>
+      journal.lines
+        .filter(
+          (line) => line.organizationId === organizationId && payableAccounts.has(line.account),
+        )
+        .map((line) => ({
+          journalId: journal.id,
+          account: line.account as PayableJournalLine['account'],
+          side: line.side,
+          amountPaise: line.amountPaise,
+          component: line.component,
+          source: { ...journal.source },
+          accountingPolicy: { ...journal.accountingPolicy },
+          postedAt: journal.postedAt,
+        })),
     );
   }
 }

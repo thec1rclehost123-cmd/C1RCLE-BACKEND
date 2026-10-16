@@ -18,6 +18,7 @@ import type {
   JournalTransitionState,
 } from '../../domain/models/journal-transition.js';
 import type { LedgerEntry, LedgerEntryType } from '../../domain/models/ledger.js';
+import type { Payout } from '../../domain/models/payout.js';
 import type { ServiceDeps } from '../context.js';
 
 const PAYABLE_ACCOUNT: Partial<Record<LedgerEntryType, AccountCode>> = {
@@ -167,7 +168,10 @@ export class JournalTransitionService {
     const projectionRepairs = new Map<EntityId, FinancialJournal>();
     for (const entry of entries) {
       const account = PAYABLE_ACCOUNT[entry.entryType];
-      if (!account || entry.amount === 0) continue;
+      // A paid_out row is historical evidence that the liability has already
+      // left the partner balance. Re-crediting it during backfill would make a
+      // completed payout withdrawable again after cutover.
+      if (!account || entry.amount === 0 || entry.status === 'paid_out') continue;
       const existing = await this.deps.repositories.financialJournals.findByOrderId(entry.orderId);
       const representedBy = existing.find((journal) =>
         journal.lines.some(
@@ -180,16 +184,118 @@ export class JournalTransitionService {
       }
       journals.push(buildLegacyPayableJournal(entry, account));
     }
+    let payoutCursor: string | null = null;
+    const payouts: Payout[] = [];
+    do {
+      const page = await this.deps.repositories.payouts.listByOrganization(organizationId, {
+        cursor: payoutCursor,
+        limit: 100,
+      });
+      payouts.push(...page.items);
+      payoutCursor = page.nextCursor;
+    } while (payoutCursor !== null);
+    for (const payout of payouts) {
+      if (payout.status === 'failed') continue;
+      const reservations = await this.deps.repositories.financialJournals.findBySource(
+        'payout_reservation',
+        payout.id,
+      );
+      const reservation = reservations[0];
+      if (reservation) projectionRepairs.set(reservation.id, reservation);
+      else journals.push(buildLegacyPayoutReservation(payout));
+
+      if (payout.status !== 'paid') continue;
+      const completions = await this.deps.repositories.financialJournals.findBySource(
+        'payout_completion',
+        payout.id,
+      );
+      const completion = completions[0];
+      if (completion) projectionRepairs.set(completion.id, completion);
+      else journals.push(buildLegacyPayoutCompletion(payout));
+    }
     return { journals, projectionRepairs: [...projectionRepairs.values()] };
   }
 
   private async legacyPayable(organizationId: EntityId): Promise<number> {
-    const sums = await this.deps.repositories.ledger.sumByOrganizationAndType(organizationId);
-    return (['host_payout', 'venue_share', 'promoter_commission'] as const).reduce(
-      (total, type) => total + sums[type].pending + sums[type].settled + sums[type].paidOut,
+    const [sums, paid, reserved] = await Promise.all([
+      this.deps.repositories.ledger.sumByOrganizationAndType(organizationId),
+      this.deps.repositories.payouts.sumPaidByOrganization(organizationId),
+      this.deps.repositories.payouts.sumRequestedOrProcessingByOrganization(organizationId),
+    ]);
+    const unpaid = (['host_payout', 'venue_share', 'promoter_commission'] as const).reduce(
+      (total, type) => total + sums[type].pending + sums[type].settled,
       0,
     );
+    return unpaid - paid - reserved;
   }
+}
+
+function payoutSource(type: 'payout_reservation' | 'payout_completion', payout: Payout) {
+  return {
+    type,
+    id: payout.id,
+    orderId: null,
+    paymentId: null,
+    eventId: null,
+  } as const;
+}
+
+function buildLegacyPayoutReservation(payout: Payout): FinancialJournal {
+  return createPostedJournal({
+    organizationId: payout.organizationId,
+    currency: 'INR',
+    source: payoutSource('payout_reservation', payout),
+    idempotencyKey: `m2:payout:${payout.id}:reservation`,
+    accountingPolicy: DEFAULT_ACCOUNTING_POLICY,
+    postedAt: new Date(payout.createdAt),
+    lines: [
+      {
+        account: 'partner_payable',
+        side: 'debit',
+        amountPaise: payout.amount,
+        organizationId: payout.organizationId,
+        component: 'payoutPaise',
+        memo: 'Backfill legacy payout reservation',
+      },
+      {
+        account: 'payout_clearing',
+        side: 'credit',
+        amountPaise: payout.amount,
+        organizationId: payout.organizationId,
+        component: 'payoutPaise',
+        memo: 'Backfill legacy payout awaiting transfer',
+      },
+    ],
+  });
+}
+
+function buildLegacyPayoutCompletion(payout: Payout): FinancialJournal {
+  return createPostedJournal({
+    organizationId: payout.organizationId,
+    currency: 'INR',
+    source: payoutSource('payout_completion', payout),
+    idempotencyKey: `m2:payout:${payout.id}:completion`,
+    accountingPolicy: DEFAULT_ACCOUNTING_POLICY,
+    postedAt: new Date(payout.processedAt ?? payout.updatedAt),
+    lines: [
+      {
+        account: 'payout_clearing',
+        side: 'debit',
+        amountPaise: payout.amount,
+        organizationId: payout.organizationId,
+        component: 'payoutPaise',
+        memo: 'Backfill completed legacy payout',
+      },
+      {
+        account: 'cash_bank_clearing',
+        side: 'credit',
+        amountPaise: payout.amount,
+        organizationId: payout.organizationId,
+        component: 'payoutPaise',
+        memo: 'Backfill legacy bank transfer',
+      },
+    ],
+  });
 }
 
 function buildLegacyPayableJournal(entry: LedgerEntry, account: AccountCode): FinancialJournal {

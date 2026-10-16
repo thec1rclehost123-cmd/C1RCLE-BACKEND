@@ -4,6 +4,7 @@ import { createLedgerEntry } from '../../domain/models/ledger.js';
 import { MemoryFinancialJournalRepository } from '../../infrastructure/memory/memory-financial-journal-repository.js';
 import { MemoryJournalTransitionRepository } from '../../infrastructure/memory/memory-journal-transition-repository.js';
 import { MemoryLedgerRepository } from '../../infrastructure/memory/memory-ledger-repository.js';
+import { MemoryPayoutRepository } from '../../infrastructure/memory/memory-payout-repository.js';
 
 import { JournalTransitionService } from './journal-transition-service.js';
 
@@ -14,6 +15,7 @@ const NOW = new Date('2026-10-16T12:00:00.000Z');
 function build() {
   const ledger = new MemoryLedgerRepository();
   const financialJournals = new MemoryFinancialJournalRepository();
+  const payouts = new MemoryPayoutRepository(financialJournals);
   const journalTransition = new MemoryJournalTransitionRepository();
   const organizations = [{ id: 'org_host' }, { id: 'org_venue' }];
   const deps = {
@@ -22,6 +24,7 @@ function build() {
       ledger,
       financialJournals,
       journalTransition,
+      payouts,
       organizations: {
         listAll: async ({ cursor, limit }: { cursor?: string | null; limit: number }) => {
           const start = cursor ? organizations.findIndex((item) => item.id === cursor) + 1 : 0;
@@ -41,6 +44,7 @@ function build() {
     ledger,
     financialJournals,
     journalTransition,
+    payouts,
   };
 }
 
@@ -123,5 +127,78 @@ describe('JournalTransitionService', () => {
     const secondPreview = await service.previewNextBatch();
     expect(secondPreview.journals.map((journal) => journal.organizationId)).toEqual(['org_venue']);
     expect(secondPreview.projectionRepairs).toEqual([host]);
+  });
+
+  it('never recreates a paid-out legacy liability during backfill', async () => {
+    const { service, ledger, financialJournals } = build();
+    await ledger.createBatch([
+      createLedgerEntry({
+        id: 'led_paid_out',
+        organizationId: 'org_host',
+        orderId: 'order_paid_out',
+        eventId: 'event_1',
+        entryType: 'host_payout',
+        amount: 8_000,
+        status: 'paid_out',
+        idempotencyKey: 'order_paid_out:host_payout:org_host',
+        now: NOW,
+      }),
+    ]);
+
+    expect((await service.previewNextBatch()).journals).toEqual([]);
+    await service.backfillNextBatch();
+    expect(await financialJournals.sumPayableByOrganization('org_host')).toBe(0);
+    expect((await service.compare()).discrepancies).toEqual([]);
+  });
+
+  it('backfills historical payout reservations and completion evidence before cutover', async () => {
+    const { service, ledger, financialJournals, payouts } = build();
+    await ledger.createBatch([
+      createLedgerEntry({
+        id: 'led_paid_history',
+        organizationId: 'org_host',
+        orderId: 'order_paid_history',
+        eventId: 'event_1',
+        entryType: 'host_payout',
+        amount: 80_000,
+        status: 'settled',
+        idempotencyKey: 'order_paid_history:host_payout:org_host',
+        now: NOW,
+      }),
+    ]);
+    payouts.payouts.set('payout_history', {
+      id: 'payout_history',
+      organizationId: 'org_host',
+      bankAccountId: 'bank_1',
+      amount: 80_000,
+      status: 'paid',
+      failureReason: null,
+      requestedBy: 'partner_1',
+      processedAt: NOW.toISOString(),
+      transferReference: 'UTR-HISTORY',
+      transferredAt: NOW.toISOString(),
+      transferMethod: 'bank_transfer',
+      transferProof: {
+        sha256: 'a'.repeat(64),
+        contentType: 'application/pdf',
+        sizeBytes: 128,
+      },
+      approvedBy: 'finance_1',
+      previousStatus: null,
+      version: 3,
+      createdAt: NOW.toISOString(),
+      updatedAt: NOW.toISOString(),
+    });
+
+    await service.backfillNextBatch();
+
+    expect(await financialJournals.sumPayableByOrganization('org_host')).toBe(0);
+    expect(
+      await financialJournals.findBySource('payout_reservation', 'payout_history'),
+    ).toHaveLength(1);
+    expect(
+      await financialJournals.findBySource('payout_completion', 'payout_history'),
+    ).toHaveLength(1);
+    expect((await service.compare()).discrepancies).toEqual([]);
   });
 });

@@ -395,7 +395,9 @@ export class ReconciliationService {
       if (payment && Object.keys(payment.disputes).length > 0) {
         const chargebackJournals = journals.filter(
           (journal) =>
-            journal.source.type === 'chargeback' || journal.source.type === 'chargeback_reversal',
+            journal.source.type === 'chargeback' ||
+            journal.source.type === 'chargeback_loss' ||
+            journal.source.type === 'chargeback_reversal',
         );
         for (const [disputeId, dispute] of Object.entries(payment.disputes)) {
           const hasHold = chargebackJournals.some((journal) => journal.source.id === disputeId);

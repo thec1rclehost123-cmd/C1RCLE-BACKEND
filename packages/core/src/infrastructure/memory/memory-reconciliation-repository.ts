@@ -70,12 +70,17 @@ export class MemoryReconciliationRepository implements ReconciliationRepository 
   }
 
   async listDiscrepancies(
-    query: PaginationQuery & { runId?: EntityId; state?: ReconciliationDiscrepancyState },
+    query: PaginationQuery & {
+      runId?: EntityId;
+      state?: ReconciliationDiscrepancyState;
+      organizationId?: EntityId;
+    },
   ): Promise<Page<ReconciliationDiscrepancy>> {
     return page(
       [...this.discrepancies.values()]
         .filter((item) => !query.runId || item.runId === query.runId)
         .filter((item) => !query.state || item.state === query.state)
+        .filter((item) => !query.organizationId || item.organizationId === query.organizationId)
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
       query,
     );

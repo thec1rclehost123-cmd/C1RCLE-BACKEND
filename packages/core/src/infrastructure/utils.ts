@@ -137,6 +137,7 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
   const isMemory = gw.STORAGE_DRIVER === 'memory';
 
   if (isMemory) {
+    const financialJournals = new MemoryFinancialJournalRepository();
     return {
       organizations: new MemoryOrganizationRepository(),
       invitations: new MemoryInvitationRepository(),
@@ -168,9 +169,9 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
       coverWalletReconciliations: new MemoryCoverWalletReconciliationRepository(),
       // Phase 6
       ledger: new MemoryLedgerRepository(),
-      financialJournals: new MemoryFinancialJournalRepository(),
+      financialJournals,
       journalTransition: new MemoryJournalTransitionRepository(),
-      payouts: new MemoryPayoutRepository(),
+      payouts: new MemoryPayoutRepository(financialJournals),
       bankAccounts: new MemoryBankAccountRepository(),
       disputes: new MemoryDisputeRepository(),
       leaderboard: new MemoryLeaderboardRepository(),

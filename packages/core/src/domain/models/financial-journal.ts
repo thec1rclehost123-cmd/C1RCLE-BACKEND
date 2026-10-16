@@ -63,6 +63,7 @@ export type AccountCode =
   | 'venue_payable'
   | 'host_payable'
   | 'promoter_payable'
+  | 'partner_payable'
   | 'platform_fee_revenue'
   | 'platform_commission_revenue'
   | 'ticket_collection_control'
@@ -71,7 +72,8 @@ export type AccountCode =
   | 'chargeback_loss_receivable'
   | 'chargeback_reserve'
   | 'payout_clearing'
-  | 'rounding_adjustment';
+  | 'rounding_adjustment'
+  | 'manual_adjustment_control';
 
 export type JournalSide = 'debit' | 'credit';
 
@@ -96,6 +98,7 @@ export type PostingSourceType =
   | 'void'
   | 'refund'
   | 'chargeback'
+  | 'chargeback_loss'
   | 'chargeback_reversal'
   | 'reserve'
   | 'reserve_release'

@@ -172,6 +172,8 @@ export interface PartnerV2Services {
   actor(request: FastifyRequest): ActorContext;
   /** Raw repository bundle for seed/test wiring only. */
   repos(): ServiceDeps['repositories'];
+  /** Core runtime configuration for route-composed financial commands. */
+  config(): ServiceDeps['config'];
   /** T13 audit trail written by the event bus (B09 slice consumer). */
   audits: MemoryAuditRepository;
   /** Phase 2 admin audit trail (before/after), for seed/test wiring. */
@@ -553,6 +555,11 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   // Phase 6 services
   const finance = createFinanceService({
     ledger: repositories.ledger,
+    financialJournals: repositories.financialJournals,
+    journalTransition: repositories.journalTransition,
+    payouts: repositories.payouts,
+    events: repositories.events,
+    reconciliations: repositories.reconciliations,
     config: coreConfig,
   });
 
@@ -560,6 +567,11 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     payouts: repositories.payouts,
     bankAccounts: repositories.bankAccounts,
     ledger: repositories.ledger,
+    financialJournals: repositories.financialJournals,
+    journalTransition: repositories.journalTransition,
+    events: repositories.events,
+    reconciliations: repositories.reconciliations,
+    platformSettings: repositories.platformSettings,
     config: coreConfig,
   });
 
@@ -642,6 +654,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     idempotency: new IdempotencyService(buildIdempotencyStore(), logger),
     actor: (request: FastifyRequest) => actorFromRequest(gw, request),
     repos: () => repositories,
+    config: () => coreConfig,
     /** T13 audit trail surfaced to routes/tests (B09 slice consumer). */
     audits,
     adminAudits: () => adminAudits,

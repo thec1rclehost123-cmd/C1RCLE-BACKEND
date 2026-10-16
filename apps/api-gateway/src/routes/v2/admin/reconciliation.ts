@@ -1,7 +1,9 @@
 import {
   idempotencyKeySchema,
+  financialAdjustmentResultSchema,
   opaqueIdSchema,
   paginationQuerySchema,
+  providerChargebackListResponseSchema,
   reconciliationDiscrepancyDtoSchema,
   reconciliationDiscrepancyListResponseSchema,
   reconciliationDiscrepancyStateSchema,
@@ -9,7 +11,8 @@ import {
   reconciliationRunListResponseSchema,
   resolveReconciliationDiscrepancySchema,
 } from '@c1rcle/contracts/client';
-import { NotFoundError } from '@c1rcle/core/domain';
+import { FinancialPostingService } from '@c1rcle/core/application';
+import { InvalidOperationError, isExecutable, NotFoundError } from '@c1rcle/core/domain';
 import { z } from 'zod';
 
 import type { ReconciliationDiscrepancy } from '@c1rcle/core/domain';
@@ -31,6 +34,11 @@ const discrepancyParam = z.object({ discrepancyId: opaqueIdSchema });
 const discrepancyQuery = paginationQuerySchema.extend({
   runId: opaqueIdSchema.optional(),
   state: reconciliationDiscrepancyStateSchema.optional(),
+});
+const adjustmentPayloadSchema = z.object({
+  organizationId: opaqueIdSchema,
+  amountPaise: z.number().int().positive(),
+  direction: z.enum(['credit', 'debit']),
 });
 
 function discrepancyDto(item: ReconciliationDiscrepancy) {
@@ -60,6 +68,133 @@ function pageInfo(page: { total: number; nextCursor: string | null }, pageSize: 
 }
 
 export default async function adminReconciliationRoutes(fastify: FastifyInstance) {
+  fastify.post(
+    '/admin/proposals/:proposalId/post-financial-adjustment',
+    {
+      preHandler: [
+        fastify.rateLimit('SENSITIVE_COMMAND'),
+        fastify.validateV2({
+          params: z.object({ proposalId: opaqueIdSchema }),
+          headers: commandHeaders,
+        }),
+      ],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+      const { proposalId } = request.params as { proposalId: string };
+      const idempotencyKey = request.v2Headers?.['idempotency-key'];
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: userId,
+        commandName: 'admin.finance.adjustment',
+        idempotencyKey,
+        context: { path: { proposalId }, body: {} },
+        run: async () => {
+          const admin = await services.adminAuthority.authorize(userId, 'FINANCIAL_ADJUSTMENT');
+          const proposal = await services.adminAuthority.getProposal(userId, proposalId);
+          if (proposal.action !== 'FINANCIAL_ADJUSTMENT' || !isExecutable(proposal)) {
+            throw new InvalidOperationError('Financial adjustment proposal is not approved');
+          }
+          const transition = await services.repos().journalTransition.get();
+          if (transition.readModel !== 'financial_journal_v2') {
+            throw new InvalidOperationError(
+              'Financial adjustments require the journal read model to be active',
+            );
+          }
+          const payload = adjustmentPayloadSchema.parse(proposal.payload);
+          const settings = await services.repos().platformSettings.get();
+          const now = services.config().clock.now();
+          const [journal] = await new FinancialPostingService(
+            services.repos().financialJournals,
+          ).postManualAdjustment({
+            ...payload,
+            adjustmentId: proposal.id,
+            reason: proposal.reason,
+            actorId: admin.id,
+            policy: { ...settings.accountingPolicy, capturedAt: now.toISOString() },
+            postedAt: now,
+          });
+          if (!journal) throw new Error('Financial adjustment journal was not posted');
+          await services.adminAuthority.record(admin, {
+            action: 'FINANCIAL_ADJUSTMENT',
+            targetType: 'financial_journal',
+            targetId: journal.id,
+            before: null,
+            after: payload,
+            reason: proposal.reason,
+            ...requestMeta(request),
+          });
+          const body = validateV2Response(reply, request, financialAdjustmentResultSchema, {
+            adjustmentId: proposal.id,
+            organizationId: payload.organizationId,
+            amountPaise: payload.amountPaise,
+            direction: payload.direction,
+            journalId: journal.id,
+            postedAt: journal.postedAt,
+          });
+          if (!body) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body };
+        },
+      }).catch((error: unknown) =>
+        isIdempotencyConflict(error)
+          ? mapDomainError(reply, request, proposalId, error, { conflictId: idempotencyKey })
+          : mapDomainError(reply, request, proposalId, error),
+      );
+      if (!result) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
+
+  fastify.get(
+    '/admin/chargebacks',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({ querystring: paginationQuerySchema }),
+      ],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+      await services.adminAuthority.requireAdmin(userId);
+      const query = request.query as z.infer<typeof paginationQuerySchema>;
+      const payments = await services.repos().providerPayments.listAll(query);
+      const items = (
+        await Promise.all(
+          payments.items.flatMap((payment) =>
+            Object.entries(payment.disputes).map(async ([disputeId, dispute]) => {
+              const order = payment.orderId
+                ? await services.repos().orders.getById(payment.orderId)
+                : null;
+              return {
+                disputeId,
+                paymentId: payment.id,
+                orderId: payment.orderId,
+                organizationId: order?.organizationId ?? null,
+                amountPaise: dispute.amountPaise,
+                amountDeductedPaise: dispute.amountDeductedPaise,
+                currency: payment.currency,
+                status: dispute.status,
+                reasonCode: dispute.reasonCode,
+                reasonDescription: dispute.reasonDescription,
+                respondBy: dispute.respondBy,
+                phase: dispute.phase,
+                evidenceState: dispute.evidenceState,
+                providerOccurredAt: dispute.providerOccurredAt,
+              };
+            }),
+          ),
+        )
+      ).sort((a, b) => (b.providerOccurredAt ?? '').localeCompare(a.providerOccurredAt ?? ''));
+      return validateV2Response(reply, request, providerChargebackListResponseSchema, {
+        items,
+        pageInfo: pageInfo({ total: items.length, nextCursor: payments.nextCursor }, query.limit),
+      });
+    },
+  );
+
   fastify.post(
     '/admin/reconciliation/runs',
     {

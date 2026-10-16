@@ -48,7 +48,11 @@ import type {
   ScannerSessionCreateInput,
 } from '../models/event-code.js';
 import type { Event } from '../models/event.js';
-import type { FinancialJournal, PostingSourceType } from '../models/financial-journal.js';
+import type {
+  FinancialComponentBreakdown,
+  FinancialJournal,
+  PostingSourceType,
+} from '../models/financial-journal.js';
 import type { GuestProfile } from '../models/guest-profile.js';
 import type { JournalTransitionState } from '../models/journal-transition.js';
 import type {
@@ -1142,6 +1146,18 @@ export interface FinancialJournalRepository {
   ): Promise<Page<FinancialJournal>>;
   /** Net credit balance of payable accounts for this organization. */
   sumPayableByOrganization(organizationId: EntityId): Promise<number>;
+  listPayableLinesByOrganization(organizationId: EntityId): Promise<PayableJournalLine[]>;
+}
+
+export interface PayableJournalLine {
+  journalId: EntityId;
+  account: 'host_payable' | 'venue_payable' | 'promoter_payable' | 'partner_payable';
+  side: 'debit' | 'credit';
+  amountPaise: number;
+  component: keyof FinancialComponentBreakdown | null;
+  source: FinancialJournal['source'];
+  accountingPolicy: FinancialJournal['accountingPolicy'];
+  postedAt: string;
 }
 
 export interface JournalTransitionRepository {
@@ -1153,6 +1169,12 @@ export interface JournalTransitionRepository {
 /** Payout requests — draw-downs against the ledger-computed available balance. */
 export interface PayoutRepository {
   create(payout: Payout): Promise<Payout>;
+  /** Atomically creates the payout and its payable-reservation journal within the limit. */
+  createWithinLimit(
+    payout: Payout,
+    payableLimitPaise: number,
+    reservationJournal: FinancialJournal,
+  ): Promise<Payout>;
   findById(id: EntityId): Promise<Payout | null>;
   save(payout: Payout): Promise<Payout>;
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Payout>>;
@@ -1209,7 +1231,11 @@ export interface ReconciliationRepository {
   getDiscrepancy(id: EntityId): Promise<ReconciliationDiscrepancy | null>;
   saveDiscrepancy(item: ReconciliationDiscrepancy): Promise<void>;
   listDiscrepancies(
-    query: PaginationQuery & { runId?: EntityId; state?: ReconciliationDiscrepancyState },
+    query: PaginationQuery & {
+      runId?: EntityId;
+      state?: ReconciliationDiscrepancyState;
+      organizationId?: EntityId;
+    },
   ): Promise<Page<ReconciliationDiscrepancy>>;
 }
 
