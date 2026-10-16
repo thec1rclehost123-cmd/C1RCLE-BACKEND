@@ -23,7 +23,7 @@ export const platformSettingsDtoSchema = z.object({
   refundDualApproverThresholdPaise: z.number().int().nonnegative(),
   maintenanceMode: z.boolean(),
   featureFlags: z.record(z.string(), z.boolean()),
-  accountingPolicy: accountingPolicySchema,
+  accountingPolicy: accountingPolicySchema.optional(),
   updatedAt: z.iso.datetime(),
 });
 export type PlatformSettingsDto = z.infer<typeof platformSettingsDtoSchema>;
