@@ -4,10 +4,12 @@ import { ForbiddenError, InvalidOperationError } from './errors.js';
 import {
   approveRefundRequest,
   approversRequiredFor,
+  beginRefundExecution,
   createRefundRequest,
   isFullyApproved,
   markRefundFailed,
   markRefundSettled,
+  recordRefundProviderFact,
   rejectRefundRequest,
 } from './models/refund-request.js';
 
@@ -131,6 +133,8 @@ describe('settlement', () => {
   it('records the provider refund id once settled', () => {
     let r = request();
     r = approveRefundRequest(r, 'admin_b', T0);
+    r = beginRefundExecution(r, T0);
+    r = recordRefundProviderFact(r, 'rfnd_provider_1', 'processed', T0);
     r = markRefundSettled(r, 'rfnd_provider_1', T0);
     expect(r.status).toBe('settled');
     expect(r.providerRefundId).toBe('rfnd_provider_1');
@@ -139,6 +143,7 @@ describe('settlement', () => {
   it('records a failure reason when settlement fails', () => {
     let r = request();
     r = approveRefundRequest(r, 'admin_b', T0);
+    r = beginRefundExecution(r, T0);
     r = markRefundFailed(r, 'Provider timeout', T0);
     expect(r.status).toBe('failed');
     expect(r.failureReason).toBe('Provider timeout');

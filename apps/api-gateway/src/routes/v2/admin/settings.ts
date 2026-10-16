@@ -34,6 +34,15 @@ function settingsToDto(settings: {
   refundDualApproverThresholdPaise: number;
   maintenanceMode: boolean;
   featureFlags: Record<string, boolean>;
+  accountingPolicy: {
+    version: string;
+    settlementDelayDays: number;
+    reserveBasisPoints: number;
+    requiresEventCompletion: boolean;
+    holdsOnCancellation: boolean;
+    holdsOnDispute: boolean;
+    holdsOnUnresolvedReconciliation: boolean;
+  };
   updatedAt: string;
 }) {
   return {
@@ -42,6 +51,7 @@ function settingsToDto(settings: {
     refundDualApproverThresholdPaise: settings.refundDualApproverThresholdPaise,
     maintenanceMode: settings.maintenanceMode,
     featureFlags: settings.featureFlags,
+    accountingPolicy: settings.accountingPolicy,
     updatedAt: settings.updatedAt,
   };
 }

@@ -324,6 +324,16 @@ describe('admin refunds', () => {
     expect(refundableBalance(full)).toBe(0);
   });
 
+  it('does not apply the same refund request twice after a retry', () => {
+    const locked = lockOrderForRefund(paidOrder(), T0);
+    const first = applyOrderRefund(locked, 1_000, T0, 'refund_1');
+    const replay = applyOrderRefund(first, 1_000, T0, 'refund_1');
+
+    expect(replay).toBe(first);
+    expect(replay.refundedPaise).toBe(1_000);
+    expect(replay.appliedRefundRequestIds).toEqual(['refund_1']);
+  });
+
   it('two partial refunds in sequence fully exhaust the balance', () => {
     let ord = paidOrder();
     const total = ord.grandTotalPaise;

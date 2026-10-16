@@ -72,8 +72,8 @@ export const createEventSchema = z.object({
   description: z.string().max(20_000).optional(),
   imageUrl: z.url().nullable().optional(),
   startAt: z.iso.datetime(),
-  endAt: z.iso.datetime().nullable(),
-  tags: z.array(z.string().min(1)).max(50).default([]),
+  endAt: z.iso.datetime().nullable().optional(),
+  tags: z.array(z.string().min(1).max(40)).max(50).default([]),
   compensation: eventCompensationSchema.nullable().optional(),
 });
 export type CreateEventInput = z.infer<typeof createEventSchema>;
@@ -281,6 +281,13 @@ export type CreateTicketTierRequest = z.infer<typeof createTicketTierSchema>;
 
 export const promoTypeSchema = z.enum(['public', 'private', 'single_use', 'multi_use']);
 export const promoDiscountTypeSchema = z.enum(['percent', 'fixed']);
+export const discountFundingOwnerSchema = z.enum([
+  'platform',
+  'venue',
+  'host',
+  'promoter',
+  'shared',
+]);
 
 export const promoCodeDtoSchema = z.object({
   id: opaqueIdSchema,
@@ -292,6 +299,7 @@ export const promoCodeDtoSchema = z.object({
   discountType: promoDiscountTypeSchema,
   /** Percent 0–100 when `percent`; paise when `fixed`. */
   discountValue: z.number().int().nonnegative(),
+  discountFundingOwner: discountFundingOwnerSchema,
   tierIds: z.array(opaqueIdSchema),
   maxRedemptions: z.number().int().positive().nullable(),
   maxPerUser: z.number().int().positive().nullable(),
@@ -312,6 +320,7 @@ export const createPromoCodeSchema = z
     type: promoTypeSchema.optional(),
     discountType: promoDiscountTypeSchema,
     discountValue: z.number().int().nonnegative(),
+    discountFundingOwner: discountFundingOwnerSchema,
     /** Empty/omitted = every tier, matching v1 semantics. */
     tierIds: z.array(opaqueIdSchema).max(100).optional(),
     maxRedemptions: z.number().int().positive().nullable().optional(),

@@ -2,6 +2,7 @@ import { InvalidOperationError } from '../errors.js';
 
 import type { EntityId } from '../identity.js';
 import type { PromoCode, TicketTier } from './event-catalog.js';
+import type { DiscountFundingOwner } from './financial-journal.js';
 
 /**
  * ─── Pricing engine (Phase 4) ────────────────────────────────────────────────
@@ -67,6 +68,7 @@ export interface PricingBreakdown {
   /** Σ(unit × qty), before any discount. */
   subtotalPaise: number;
   discountPaise: number;
+  discountFundingOwner?: DiscountFundingOwner | null;
   /** `subtotal - discount`, never below zero. */
   discountedSubtotalPaise: number;
   platformFeePaise: number;
@@ -130,6 +132,7 @@ export function calculatePricing(input: CalculatePricingInput): PricingBreakdown
     lines,
     subtotalPaise,
     discountPaise,
+    discountFundingOwner: discountPaise > 0 ? (input.promo?.discountFundingOwner ?? null) : null,
     discountedSubtotalPaise,
     platformFeePaise,
     paymentFeePaise,

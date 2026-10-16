@@ -4,6 +4,8 @@ import {
   ConflictError,
   EventNotFoundError,
   InvalidOperationError,
+  NotFoundError,
+  PaymentRefundedError,
   TicketTierNotFoundError,
   UnauthorizedError,
   VersionConflictError,
@@ -14,6 +16,7 @@ import { platformFeePercentFor } from '../../domain/models/onboarding.js';
 import { commissionTierFor } from '../../domain/models/partnership.js';
 import { isSystemActor, SYSTEM_ACTOR } from '../context.js';
 import { createFinanceService } from '../finance/finance-service.js';
+import { FinancialPostingService } from '../finance/financial-posting-service.js';
 import { createLeaderboardService } from '../finance/leaderboard-service.js';
 import {
   ReferralLinkService,
@@ -24,7 +27,7 @@ import type { EntityId } from '../../domain/identity.js';
 import type { CartReservation } from '../../domain/models/cart-reservation.js';
 import type { Entitlement } from '../../domain/models/entitlement.js';
 import type { CommissionTerms } from '../../domain/models/event-catalog.js';
-import type { Order } from '../../domain/models/order.js';
+import type { Order, OrderContact } from '../../domain/models/order.js';
 import type { PricingBreakdown } from '../../domain/models/pricing.js';
 import type { ActorContext, ServiceDeps } from '../context.js';
 import type { FinanceService } from '../finance/finance-service.js';
@@ -58,15 +61,54 @@ export function rsvpOrderId(eventId: EntityId, userId: EntityId): EntityId {
  *   quote → holds → intent → confirm (dual path: webhook + redirect)
  * All mutations are idempotent and use the transactional outbox for fulfillment events.
  */
+/** A fulfilment step a paid order may be missing. */
+export type FulfilmentGap = 'hold' | 'hold_conversion' | 'tickets' | 'ledger';
+
+export interface FulfilmentGaps {
+  /** False when no hold is bound to the order's provider order (nothing can be repaired). */
+  holdFound: boolean;
+  missing: FulfilmentGap[];
+}
+
+export interface PaymentRecoveryStatus {
+  holdId: EntityId;
+  eventId: EntityId;
+  status:
+    | 'pending'
+    | 'processing'
+    | 'fulfilled'
+    | 'failed'
+    | 'cancelled'
+    | 'expired'
+    | 'refunded'
+    | 'requires_support';
+  orderId: EntityId | null;
+  expiresAt: string;
+  updatedAt: string;
+}
+
+/** How long a hold keeps its seats (10 minutes). */
+export const DEFAULT_HOLD_TTL_MS = 10 * 60 * 1000;
+
+/** The smallest amount the payment provider will take (₹1). */
+export const MIN_ONLINE_PAYMENT_PAISE = 100;
+
 export class CheckoutService {
   private readonly financeService: FinanceService;
+  private readonly financialPostingService: FinancialPostingService;
   private readonly leaderboardService: LeaderboardService;
 
   constructor(private readonly deps: ServiceDeps) {
     this.financeService = createFinanceService({
       ledger: deps.repositories.ledger,
+      financialJournals: deps.repositories.financialJournals,
+      journalTransition: deps.repositories.journalTransition,
+      payouts: deps.repositories.payouts,
+      events: deps.repositories.events,
+      reconciliations: deps.repositories.reconciliations,
       config: deps.config,
     });
+    this.financialPostingService = new FinancialPostingService(deps.repositories.financialJournals);
     this.leaderboardService = createLeaderboardService({
       leaderboard: deps.repositories.leaderboard,
       config: deps.config,
@@ -86,6 +128,8 @@ export class CheckoutService {
   }): Promise<{ pricing: PricingBreakdown; attribution: CheckoutAttribution | null }> {
     const { eventId, lines, promoCode, referralCode } = input;
 
+    await this.assertOnSale(eventId);
+
     const pricingLines = lines.map((l) => ({ tierId: l.tierId, quantity: l.quantity }));
 
     const pricing = await this.deps.pricing.calculate({
@@ -93,6 +137,21 @@ export class CheckoutService {
       lines: pricingLines,
       promoCode,
     });
+
+    if (pricing.discountPaise > 0 && pricing.discountFundingOwner == null) {
+      throw new InvalidOperationError(
+        'This discount has no funding owner and cannot be used for a financial order',
+      );
+    }
+
+    if (promoCode) await this.assertPromoWithinLimits(eventId, promoCode, input.actor.userId);
+
+    // Razorpay refuses an order below 100 paise with an opaque error, after a seat
+    // has already been held. Say so up front. (A total of exactly zero is a free
+    // order and does not go through a payment provider.)
+    if (pricing.grandTotalPaise > 0 && pricing.grandTotalPaise < MIN_ONLINE_PAYMENT_PAISE) {
+      throw new InvalidOperationError('Online payments must be at least ₹1');
+    }
 
     let attribution: CheckoutAttribution | null = null;
     if (referralCode) {
@@ -124,6 +183,51 @@ export class CheckoutService {
   }
 
   /**
+   * Online sales take money only for a published event. A draft, paused,
+   * cancelled or finished event is not on sale, whatever its tiers say.
+   */
+  private async assertOnSale(eventId: EntityId): Promise<void> {
+    const event = await this.deps.repositories.events.getById(eventId);
+    if (!event) throw new EventNotFoundError(eventId);
+    if (event.status !== 'published') {
+      throw new InvalidOperationError('This event is not on sale');
+    }
+  }
+
+  /**
+   * The redemption limits of a promo (`maxRedemptions`, `maxPerUser`). Whether
+   * the code is switched on and inside its dates is checked with the pricing.
+   * Redemptions are recorded under the promo's id; older ones were recorded
+   * under its code, so both are counted.
+   */
+  private async assertPromoWithinLimits(
+    eventId: EntityId,
+    promoCode: string,
+    userId: EntityId | null,
+  ): Promise<void> {
+    const promo = await this.deps.repositories.catalog.getPromoByCode(promoCode, eventId);
+    if (!promo) return;
+    const redemptions = this.deps.repositories.promoRedemptions;
+    if (promo.maxRedemptions !== null) {
+      const counted =
+        (await redemptions.countByPromo(promo.id)) + (await redemptions.countByPromo(promo.code));
+      if (Math.max(counted, promo.redemptionCount) >= promo.maxRedemptions) {
+        throw new InvalidOperationError(
+          `Promo code ${promo.code} has reached its redemption limit`,
+        );
+      }
+    }
+    if (promo.maxPerUser !== null && userId) {
+      const byUser =
+        (await redemptions.countByPromoAndUser(promo.id, userId)) +
+        (await redemptions.countByPromoAndUser(promo.code, userId));
+      if (byUser >= promo.maxPerUser) {
+        throw new InvalidOperationError(`You have already used promo code ${promo.code}`);
+      }
+    }
+  }
+
+  /**
    * Step 2: Create Hold — reserves inventory for ~10 minutes.
    * Idempotent via Idempotency-Key.
    */
@@ -136,6 +240,8 @@ export class CheckoutService {
     appliedPromoCode: string | null;
     attribution: CheckoutAttribution | null;
     userId?: EntityId | null;
+    /** Who the tickets are for; becomes the order contact. */
+    attendee?: OrderContact | null;
     idempotencyKey: string;
     reservationTtlMs?: number;
   }): Promise<CartReservation> {
@@ -147,17 +253,22 @@ export class CheckoutService {
       appliedPromoCode,
       attribution,
       userId,
+      attendee,
       idempotencyKey,
       reservationTtlMs,
     } = input;
 
-    // Check for existing hold with same idempotency key
-    const existing =
-      await this.deps.repositories.cartReservations.getByIdempotencyKey(idempotencyKey);
-    if (existing) return existing;
-
     const now = new Date();
     const buyerId = userId ?? input.actor.userId;
+
+    // An idempotency key identifies a request by ONE buyer. Looking it up on its
+    // own would hand a buyer someone else's hold (and its holdId and pricing)
+    // whenever two people sent the same key, so the buyer is part of the key.
+    const scopedKey = buyerId
+      ? createHash('sha256').update(`${buyerId}\n${idempotencyKey}`).digest('hex').slice(0, 40)
+      : idempotencyKey;
+    const existing = await this.deps.repositories.cartReservations.getByIdempotencyKey(scopedKey);
+    if (existing) return existing;
 
     // Check inventory availability
     for (const line of lines) {
@@ -195,8 +306,8 @@ export class CheckoutService {
       }
     }
 
-    const holdId = `HOLD-${idempotencyKey}`;
-    const ttl = reservationTtlMs ?? 10 * 60 * 1000;
+    const holdId = `HOLD-${scopedKey}`;
+    const ttl = reservationTtlMs ?? DEFAULT_HOLD_TTL_MS;
 
     const hold: CartReservation = {
       id: holdId,
@@ -210,14 +321,36 @@ export class CheckoutService {
       status: 'active',
       expiresAt: new Date(now.getTime() + ttl).toISOString(),
       convertedOrderId: null,
-      idempotencyKey,
+      attendee: attendee ?? null,
+      idempotencyKey: scopedKey,
       version: 1,
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
     };
 
-    await this.deps.repositories.cartReservations.create(hold);
-    return hold;
+    const stored = await this.deps.repositories.cartReservations.create(hold);
+
+    // The availability check above and this write are separate steps, so two
+    // buyers can both have passed it for the last seat. The stored hold carries
+    // its position in the event's strict order of holds; judging capacity against
+    // the holds ordered at or before it means exactly one of them keeps the seat.
+    // The loser gives its hold back at once rather than leaving it to expire.
+    const overbooked = await this.deps.inventory.firstOverbookedTier(stored);
+    if (overbooked !== null) {
+      await this.deps.repositories.cartReservations.release(stored.id);
+      const tierName = stored.lines.find((line) => line.tierId === overbooked)?.tierName ?? 'tier';
+      throw new InvalidOperationError(`Insufficient inventory for tier ${tierName}`);
+    }
+
+    // The per-user cap has the same check-then-write shape: one buyer firing
+    // several requests at once passes the early check on every one of them. Judge
+    // it the same way, against this buyer's other holds ordered at or before this.
+    const overCap = await this.firstTierOverUserCap(stored);
+    if (overCap !== null) {
+      await this.deps.repositories.cartReservations.release(stored.id);
+      throw new InvalidOperationError(`${overCap.name} has a maximum of ${overCap.max} per user`);
+    }
+    return stored;
   }
 
   /**
@@ -302,6 +435,7 @@ export class CheckoutService {
       currency: tier.currency,
       subtotalPaise: 0,
       discountPaise: 0,
+      discountFundingOwner: null,
       discountedSubtotalPaise: 0,
       platformFeePaise: 0,
       paymentFeePaise: 0,
@@ -315,6 +449,7 @@ export class CheckoutService {
       reservationExpiresAt: now.toISOString(),
       failureReason: null,
       refundedPaise: 0,
+      appliedRefundRequestIds: [],
       version: 1,
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
@@ -343,11 +478,71 @@ export class CheckoutService {
     }
 
     const entitlements = await this.deps.repositories.entitlements.getByOrderId(orderId);
+    await this.financialPostingService.postZeroValueEvidence({
+      organizationId: order.organizationId,
+      orderId: order.id,
+      eventId: order.eventId,
+      currency: order.currency,
+      sourceType: 'free_ticket',
+      postedAt: now,
+    });
     return { order, entitlements };
   }
 
   /**
+   * The first capped tier on which a just-stored hold takes its buyer over
+   * `tier.maxPerUser`, counting what they have bought plus their live holds
+   * ordered at or before this one (so of several simultaneous requests exactly
+   * the allowed number survive).
+   */
+  private async firstTierOverUserCap(
+    hold: CartReservation,
+  ): Promise<{ name: string; max: number } | null> {
+    if (!hold.userId) return null;
+    const repos = this.deps.repositories;
+    const myPosition = hold.sequence ?? Number.MAX_SAFE_INTEGER;
+    const mine = (await repos.cartReservations.listActiveByEvent(hold.eventId, new Date())).filter(
+      (other) =>
+        other.userId === hold.userId &&
+        (other.id === hold.id || (other.sequence ?? 0) <= myPosition),
+    );
+    for (const line of hold.lines) {
+      const tier = await repos.catalog.getTierById(line.tierId);
+      if (!tier?.maxPerUser) continue;
+      const bought = await repos.orders.countPaidQuantityByUserAndEvent(
+        hold.userId,
+        hold.eventId,
+        line.tierId,
+      );
+      const held = mine.reduce(
+        (sum, other) =>
+          sum +
+          other.lines.filter((l) => l.tierId === line.tierId).reduce((n, l) => n + l.quantity, 0),
+        0,
+      );
+      if (bought + held > tier.maxPerUser) return { name: tier.name, max: tier.maxPerUser };
+    }
+    return null;
+  }
+
+  /**
+   * Whether `actor` may act on `hold`. The webhook runs as the system actor
+   * (it authenticates by HMAC, not by session); everyone else must be the
+   * hold's owner. A hold with no recorded owner is never claimable by a user.
+   */
+  private actsForHold(actor: ActorContext, hold: CartReservation): boolean {
+    if (isSystemActor(actor)) return true;
+    return hold.userId !== null && hold.userId === actor.userId;
+  }
+
+  /**
    * Step 3: Create Payment Intent — calls PaymentProvider to create order with Razorpay.
+   *
+   * One hold is bound to exactly one provider order. A second attempt (a
+   * retry with a fresh Idempotency-Key, a double click, a second tab) gets the
+   * same order back instead of minting another, because fulfilment only
+   * accepts a payment made against the order bound here — an orphaned second
+   * order that later captured would be money with nothing to fulfil.
    */
   async createPaymentIntent(input: {
     actor: ActorContext;
@@ -357,12 +552,28 @@ export class CheckoutService {
     const { holdId, idempotencyKey } = input;
 
     const hold = await this.deps.repositories.cartReservations.getById(holdId);
-    if (!hold) throw new InvalidOperationError('Hold not found');
+    // Same answer for "missing" and "not yours", so a caller cannot probe which
+    // hold ids exist.
+    if (!hold || !this.actsForHold(input.actor, hold)) {
+      throw new InvalidOperationError('Hold not found');
+    }
     if (hold.status !== 'active')
       throw new InvalidOperationError(`Hold is ${hold.status}, cannot proceed to payment`);
     if (new Date().getTime() > Date.parse(hold.expiresAt)) {
       await this.deps.repositories.cartReservations.release(holdId);
       throw new InvalidOperationError('Hold has expired');
+    }
+
+    // A hold made while the event was on sale does not oblige us to take money
+    // after the host has cancelled or paused it. (A payment already in flight is
+    // a different case: confirmPayment still honours or refunds it.)
+    await this.assertOnSale(hold.eventId);
+
+    if (hold.providerOrderId) {
+      return {
+        paymentIntentId: hold.providerOrderId,
+        amountPaise: hold.pricing.grandTotalPaise,
+      };
     }
 
     const paymentProvider = this.deps.paymentProvider;
@@ -377,15 +588,74 @@ export class CheckoutService {
       },
     });
 
+    // First writer wins. If a concurrent attempt bound a different order while
+    // we were calling the provider, that one is authoritative and ours is
+    // simply never paid.
+    const bound = await this.deps.repositories.cartReservations.bindProviderOrder(
+      holdId,
+      paymentIntent.id,
+    );
+
     return {
-      paymentIntentId: paymentIntent.id,
+      paymentIntentId: bound ?? paymentIntent.id,
       amountPaise: hold.pricing.grandTotalPaise,
     };
   }
 
   /**
-   * Step 4: Confirm Payment — dual-path idempotent fulfillment.
-   * Called by both webhook and redirect; second call is a no-op.
+   * The client-redirect confirmation: checks Razorpay's checkout-callback
+   * signature, then confirms the payment.
+   *
+   * The signature is verified against the provider order ID **stored on the
+   * hold when the attempt was created** — never against an order ID supplied by
+   * the browser. Razorpay's own guidance is explicit that the order ID must come
+   * from your server: the three callback values arrive in a browser you do not
+   * control, so a client-chosen order ID would let a caller pick the very value
+   * the signature is checked against. A `clientOrderId` the browser sends anyway
+   * is only compared with the stored one, and a difference is rejected.
+   */
+  async verifyCheckoutCallback(input: {
+    actor: ActorContext;
+    holdId: EntityId;
+    paymentId: string;
+    signature: string;
+    clientOrderId?: string | undefined;
+    idempotencyKey?: string | undefined;
+  }): Promise<{ order: Order; entitlements: Entitlement[] }> {
+    const { actor, holdId, paymentId, signature, clientOrderId } = input;
+
+    const hold = await this.deps.repositories.cartReservations.getById(holdId);
+    if (!hold || !this.actsForHold(actor, hold)) throw new InvalidOperationError('Hold not found');
+    const serverOrderId = hold.providerOrderId;
+    if (!serverOrderId) {
+      throw new InvalidOperationError('No payment attempt has been started for this hold');
+    }
+    if (clientOrderId !== undefined && clientOrderId !== serverOrderId) {
+      throw new InvalidOperationError('Payment does not belong to this hold');
+    }
+
+    const verification = await this.deps.paymentProvider.verifyPayment({
+      paymentId,
+      orderId: serverOrderId,
+      signature,
+    });
+    if (!verification.captured) {
+      throw new InvalidOperationError(`Payment ${paymentId} has not been captured`);
+    }
+
+    return this.confirmPayment({
+      actor,
+      paymentId,
+      paymentIntentId: serverOrderId,
+      holdId,
+      _idempotencyKey: input.idempotencyKey ?? paymentId,
+    });
+  }
+
+  /**
+   * Step 4: Confirm Payment — dual-path idempotent, resumable fulfillment.
+   * Called by both webhook and redirect; the second call converges on the same
+   * order, and finishes any fulfilment step the first call did not reach.
    */
   async confirmPayment(input: {
     actor: ActorContext;
@@ -394,21 +664,28 @@ export class CheckoutService {
     holdId: EntityId;
     _idempotencyKey: string;
   }): Promise<{ order: Order; entitlements: Entitlement[] }> {
-    const { paymentId, paymentIntentId, holdId } = input;
+    const { actor, paymentId, paymentIntentId, holdId } = input;
+
+    let hold = await this.deps.repositories.cartReservations.getById(holdId);
+    if (!hold || !this.actsForHold(actor, hold)) throw new InvalidOperationError('Hold not found');
 
     // Check for existing order with this payment id (idempotency) — both the
     // webhook and the client-redirect path call this method for the same
-    // payment, and whichever arrives second must be a no-op.
+    // payment, and whichever arrives second must not duplicate anything.
+    //
+    // It must also not just return: fulfilment is several writes with no
+    // enclosing transaction, so a crash between them leaves an order that is
+    // missing its hold conversion, promo record, tickets or ledger entry. A
+    // redelivered webhook is the natural repair, so run the remaining steps.
     const existingOrder = await this.deps.repositories.orders.getByPaymentId(paymentId);
     if (existingOrder) {
-      const existingEntitlements = await this.deps.repositories.entitlements.getByOrderId(
-        existingOrder.id,
-      );
-      return { order: existingOrder, entitlements: existingEntitlements };
+      const belongsToHold =
+        existingOrder.userId === hold.userId &&
+        existingOrder.eventId === hold.eventId &&
+        (hold.convertedOrderId === null || hold.convertedOrderId === existingOrder.id);
+      if (!belongsToHold) throw new InvalidOperationError('Payment belongs to a different hold');
+      return this.completeFulfilment(existingOrder, hold);
     }
-
-    const hold = await this.deps.repositories.cartReservations.getById(holdId);
-    if (!hold) throw new InvalidOperationError('Hold not found');
 
     // The hold already lost this exact race — some other caller converted it
     // (or is converting it) to an order. Rather than throwing, converge on
@@ -417,18 +694,30 @@ export class CheckoutService {
     // contention, and losing it is not an error for a dual confirmation path.
     if (hold.status === 'converted' && hold.convertedOrderId) {
       const convertedOrder = await this.deps.repositories.orders.getById(hold.convertedOrderId);
-      if (convertedOrder) {
-        const convertedEntitlements = await this.deps.repositories.entitlements.getByOrderId(
-          convertedOrder.id,
-        );
-        return { order: convertedOrder, entitlements: convertedEntitlements };
-      }
+      if (convertedOrder) return this.completeFulfilment(convertedOrder, hold);
     }
-    if (hold.status !== 'active')
+    // A hold can be past its TTL (or already released by the sweep) by the time
+    // a payment lands — the guest was inside the provider's checkout when it
+    // lapsed. That is not a reason to refuse the money: whether the payment was
+    // real is decided below, and then whether the seats are still free.
+    const lateCapture =
+      hold.status === 'released' ||
+      (hold.status === 'active' && new Date().getTime() > Date.parse(hold.expiresAt));
+    if (hold.status !== 'active' && !lateCapture)
       throw new InvalidOperationError(`Hold is ${hold.status}, cannot confirm`);
-    if (new Date().getTime() > Date.parse(hold.expiresAt)) {
-      await this.deps.repositories.cartReservations.release(holdId);
-      throw new InvalidOperationError('Hold has expired');
+
+    // The payment must have been made against the provider order bound to THIS
+    // hold. Without this, one genuine payment (signature, capture and amount
+    // all valid) could be presented against any other hold with the same
+    // total — the checks below prove the payment is real, not that it is for
+    // this purchase. The client-supplied `paymentIntentId` is only trusted
+    // after it matches the server-side binding, and the provider's own record
+    // of the payment must agree.
+    if (!hold.providerOrderId) {
+      throw new InvalidOperationError('No payment attempt has been started for this hold');
+    }
+    if (paymentIntentId !== hold.providerOrderId) {
+      throw new InvalidOperationError('Payment does not belong to this hold');
     }
 
     // Verify with the payment provider before fulfilling — never trust a
@@ -446,11 +735,27 @@ export class CheckoutService {
     if (!verified.captured) {
       throw new InvalidOperationError(`Payment ${paymentId} has not been captured`);
     }
+    // Fail closed: a payment that does not name its order cannot be tied to
+    // this hold, so it cannot fulfil it.
+    if (verified.orderId !== hold.providerOrderId) {
+      throw new InvalidOperationError('Payment was not made against this hold');
+    }
     if (verified.amountPaise !== hold.pricing.grandTotalPaise) {
       throw new InvalidOperationError(
         `Payment amount ${verified.amountPaise} does not match hold total ${hold.pricing.grandTotalPaise}`,
       );
     }
+    if (verified.currency !== undefined && verified.currency !== hold.pricing.currency) {
+      throw new InvalidOperationError(
+        `Payment currency ${verified.currency} does not match hold currency ${hold.pricing.currency}`,
+      );
+    }
+
+    // Captured after the hold lapsed: honour the payment if the seats are still
+    // free (the order is built from the frozen hold, so the guest gets exactly
+    // what they were quoted), otherwise give the money back rather than keep it
+    // for nothing. Captured money always ends in an order or a refund.
+    if (lateCapture) hold = await this.reviveHoldForLatePayment(hold, paymentId);
 
     // Create order
     const orderId = `ORD-${paymentId}`;
@@ -460,7 +765,9 @@ export class CheckoutService {
       eventId: hold.eventId,
       organizationId: hold.organizationId,
       userId: hold.userId,
-      contact: { name: 'Guest', email: 'guest@example.com', phone: '' },
+      // The attendee captured at hold time. Holds made before attendee capture
+      // existed (or by a client that does not send one) keep the old placeholder.
+      contact: hold.attendee ?? { name: 'Guest', email: 'guest@example.com', phone: '' },
       status: 'paid',
       lines: hold.lines.map((l) => ({
         tierId: l.tierId,
@@ -472,6 +779,7 @@ export class CheckoutService {
       currency: hold.pricing.currency,
       subtotalPaise: hold.pricing.subtotalPaise,
       discountPaise: hold.pricing.discountPaise,
+      discountFundingOwner: hold.pricing.discountFundingOwner ?? null,
       discountedSubtotalPaise: hold.pricing.discountedSubtotalPaise,
       platformFeePaise: hold.pricing.platformFeePaise,
       paymentFeePaise: hold.pricing.paymentFeePaise,
@@ -485,12 +793,29 @@ export class CheckoutService {
       reservationExpiresAt: hold.expiresAt,
       failureReason: null,
       refundedPaise: 0,
+      appliedRefundRequestIds: [],
       version: 1,
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
     };
 
-    // Atomic transaction: Order + CartReservation conversion + Entitlements + PromoRedemption + Outbox events
+    // A promo discount becomes financially effective at capture, not quote.
+    // Claim it under a datastore transaction before the paid order is exposed;
+    // quote-time counts are only an early UX check and cannot protect against
+    // two buyers paying concurrently for the last redemption.
+    const promoClaim = await this.claimPromoRedemption(order, hold, true);
+    if (promoClaim === 'global_limit' || promoClaim === 'user_limit') {
+      await this.deps.repositories.cartReservations.release(hold.id);
+      await this.deps.paymentProvider.refundPayment({
+        paymentId,
+        amountPaise: hold.pricing.grandTotalPaise,
+        idempotencyKey: `promo-limit-refund:${paymentId}`,
+      });
+      throw new PaymentRefundedError(
+        'The promotional offer reached its limit while your payment was completing. Your payment has been refunded in full.',
+      );
+    }
+
     try {
       await this.deps.repositories.orders.save(order);
     } catch (error) {
@@ -500,45 +825,242 @@ export class CheckoutService {
       // caller-facing error: converge on whichever write actually landed.
       if (error instanceof VersionConflictError) {
         const winner = await this.deps.repositories.orders.getByPaymentId(paymentId);
-        if (winner) {
-          const winnerEntitlements = await this.deps.repositories.entitlements.getByOrderId(
-            winner.id,
-          );
-          return { order: winner, entitlements: winnerEntitlements };
-        }
+        if (winner) return this.completeFulfilment(winner, hold);
       }
       throw error;
     }
-    await this.deps.repositories.cartReservations.convertToOrder(holdId, orderId);
-    await this.deps.repositories.promoRedemptions.create({
-      id: `RED-${orderId}-${hold.appliedPromoCode ?? 'none'}`,
-      promoId: hold.appliedPromoCode ?? '',
-      orderId,
-      userId: order.userId,
-      redeemedAt: now.toISOString(),
-    });
 
-    // Issue entitlements
-    const issuedEntitlements = issueEntitlements({
-      order,
-      admitsPerUnit: this.buildAdmitsPerUnit(hold.lines),
-      now,
-    });
-    for (const e of issuedEntitlements) {
-      await this.deps.repositories.entitlements.save(e);
+    return this.completeFulfilment(order, hold);
+  }
+
+  /** Read-only, owner-scoped source of truth for reload/lost-callback recovery. */
+  async getPaymentRecoveryStatus(
+    actor: ActorContext,
+    holdId: EntityId,
+  ): Promise<PaymentRecoveryStatus> {
+    const hold = await this.deps.repositories.cartReservations.getById(holdId);
+    if (!hold || !this.actsForHold(actor, hold)) throw new NotFoundError('hold', holdId);
+
+    const base = {
+      holdId: hold.id,
+      eventId: hold.eventId,
+      expiresAt: hold.expiresAt,
+      updatedAt: hold.updatedAt,
+    };
+    const order = hold.convertedOrderId
+      ? await this.deps.repositories.orders.getById(hold.convertedOrderId)
+      : null;
+    if (order) {
+      if (order.status === 'refunded') return { ...base, status: 'refunded', orderId: order.id };
+      if (order.status === 'failed') return { ...base, status: 'failed', orderId: order.id };
+      if (order.status === 'cancelled') return { ...base, status: 'cancelled', orderId: order.id };
+      if (order.status === 'paid') {
+        const gaps = await this.assessFulfilment(order);
+        return {
+          ...base,
+          status: gaps.missing.length === 0 ? 'fulfilled' : 'processing',
+          orderId: order.id,
+        };
+      }
+      return { ...base, status: 'processing', orderId: order.id };
     }
 
-    const entitlements = await this.deps.repositories.entitlements.getByOrderId(orderId);
+    const providerPayment = hold.providerOrderId
+      ? await this.deps.repositories.providerPayments.findByProviderOrderId(hold.providerOrderId)
+      : null;
+    if (providerPayment?.processingState === 'refunded') {
+      return { ...base, status: 'refunded', orderId: null };
+    }
+    if (providerPayment?.processingState === 'requires_support') {
+      return { ...base, status: 'requires_support', orderId: null };
+    }
+    if (providerPayment?.capturedPaise) {
+      return { ...base, status: 'processing', orderId: null };
+    }
+    if (hold.status === 'released' || Date.parse(hold.expiresAt) <= Date.now()) {
+      return { ...base, status: 'expired', orderId: null };
+    }
+    return { ...base, status: 'pending', orderId: null };
+  }
 
-    // Settlement: the only writer into the partner ledger for a ticket sale
-    // (roadmap: "the only writer, called from checkout confirmation"). Both
-    // the webhook and redirect-confirm paths converge here, but only the
-    // path that actually wins the `orders.save` race above reaches this
-    // line — `recordTicketSale` is itself idempotent per orderId, so even a
-    // retry that somehow reached here twice would be a no-op.
+  /**
+   * For a payment that arrived after its hold lapsed: bring the hold back to life
+   * and confirm its seats still fit, or refund the payment in full and say so.
+   * Captured money always ends in an order or a refund.
+   *
+   * Re-activating the hold gives it a NEW position in the event's strict order of
+   * holds, taken in a transaction, and capacity is then judged exactly as it is
+   * for a fresh hold. That is what stops a late payer and a brand-new buyer, each
+   * told "there is room" a moment apart, from both getting the last seat: the
+   * revived hold is visible to every later buyer, and every earlier one is visible
+   * to it. The refund uses a key derived from the payment id, so a redelivered
+   * webhook (which sees the same outcome) cannot refund twice.
+   */
+  private async reviveHoldForLatePayment(
+    hold: CartReservation,
+    paymentId: string,
+  ): Promise<CartReservation> {
+    const repo = this.deps.repositories.cartReservations;
+    const lapsesAt = new Date(Date.now() + DEFAULT_HOLD_TTL_MS).toISOString();
+    const revived = await repo.reactivate(hold.id, lapsesAt);
+    if (!revived) throw new InvalidOperationError('Hold not found');
+
+    let overbooked: EntityId | null;
+    try {
+      overbooked = await this.deps.inventory.firstOverbookedTier(revived);
+    } catch (error) {
+      // A tier that no longer exists means the seats cannot be honoured; anything
+      // else is an unexpected failure and must not be turned into a refund.
+      if (!(error instanceof InvalidOperationError)) throw error;
+      overbooked = revived.lines[0]?.tierId ?? '';
+    }
+    if (overbooked === null) return revived;
+
+    await repo.release(revived.id);
+    await this.deps.paymentProvider.refundPayment({
+      paymentId,
+      amountPaise: hold.pricing.grandTotalPaise,
+      idempotencyKey: `autorefund:${paymentId}`,
+    });
+    throw new PaymentRefundedError(
+      'Your payment arrived after the reservation expired and the tickets are no longer available. It has been refunded in full.',
+    );
+  }
+
+  /**
+   * What a paid order is still missing. Fulfilment is several writes with no
+   * enclosing transaction, so a crash can leave an order that was charged but
+   * never got its hold converted, its tickets or its ledger entry. A redelivered
+   * webhook usually repairs that; this reports it for the case where none comes.
+   */
+  async assessFulfilment(order: Order): Promise<FulfilmentGaps> {
+    const repos = this.deps.repositories;
+    const hold = order.paymentIntentId
+      ? await repos.cartReservations.getByProviderOrderId(order.paymentIntentId)
+      : null;
+    const missing: FulfilmentGap[] = [];
+    if (!hold) return { holdFound: false, missing: ['hold'] };
+
+    if (hold.status !== 'converted' || hold.convertedOrderId !== order.id) {
+      missing.push('hold_conversion');
+    }
+    const have = new Set((await repos.entitlements.getByOrderId(order.id)).map((e) => e.id));
+    const wanted = issueEntitlements({
+      order,
+      admitsPerUnit: this.buildAdmitsPerUnit(hold.lines),
+      now: new Date(),
+    });
+    if (wanted.some((entitlement) => !have.has(entitlement.id))) missing.push('tickets');
+    // A zero-value order has no money to split, so no ledger entry is expected.
+    if (order.grandTotalPaise > 0) {
+      const sourceType = order.paymentId?.startsWith('door_cash_')
+        ? 'door_cash_sale'
+        : order.paymentId?.startsWith('door_')
+          ? 'door_electronic_sale'
+          : 'online_payment_capture';
+      const [legacyEntries, journals] = await Promise.all([
+        repos.ledger.findByOrder(order.id),
+        repos.financialJournals.findBySource(sourceType, order.id),
+      ]);
+      if (legacyEntries.length === 0 || journals.length === 0) missing.push('ledger');
+    }
+    return { holdFound: true, missing };
+  }
+
+  /**
+   * Finishes a paid order that stalled part-way, using the same idempotent steps
+   * as fulfilment itself, then reports what (if anything) is still missing.
+   * Refuses orders that were never paid: this repairs fulfilment, it does not
+   * decide whether a payment happened.
+   */
+  async repairFulfilment(orderId: EntityId): Promise<FulfilmentGaps> {
+    const order = await this.deps.repositories.orders.getById(orderId);
+    if (!order) throw new NotFoundError('order', orderId);
+    if (order.status !== 'paid' || !order.paymentId) {
+      throw new InvalidOperationError(`Order ${orderId} is not a paid order`);
+    }
+    const before = await this.assessFulfilment(order);
+    if (!before.holdFound || before.missing.length === 0) return before;
+
+    const hold = await this.deps.repositories.cartReservations.getByProviderOrderId(
+      order.paymentIntentId ?? '',
+    );
+    if (!hold) return before;
+    await this.completeFulfilment(order, hold);
+    return this.assessFulfilment(order);
+  }
+
+  /**
+   * Runs every post-order fulfilment step, each of which is safe to repeat:
+   * hold conversion, promo redemption, ticket issuance and the ledger entry.
+   *
+   * These are separate writes, not one transaction, so any of them can be the
+   * last one that landed before a crash. Doing them as "ensure" steps — rather
+   * than as a one-shot sequence guarded by "does the order exist?" — is what
+   * lets a redelivered webhook or a repeated redirect finish the job.
+   */
+  private async completeFulfilment(
+    order: Order,
+    hold: CartReservation,
+  ): Promise<{ order: Order; entitlements: Entitlement[] }> {
+    const repos = this.deps.repositories;
+
+    if (hold.status !== 'converted') {
+      await repos.cartReservations.convertToOrder(hold.id, order.id);
+    }
+
+    // Only a promo that was actually applied is a redemption. (This used to
+    // write a redemption row with an empty promo id for every order.)
+    // Existing paid orders may pre-date the atomic claimant or may have crashed
+    // after their order write. Their discount is already financially effective,
+    // so repair records the missing audit row without retroactively rejecting it.
+    await this.claimPromoRedemption(order, hold, false);
+
+    // Entitlement ids are deterministic per (order, tier, unit) and saves are
+    // compare-and-set, so re-saving an existing one would conflict. Issue only
+    // the units that are missing.
+    const existing = await repos.entitlements.getByOrderId(order.id);
+    const have = new Set(existing.map((e) => e.id));
+    const wanted = issueEntitlements({
+      order,
+      admitsPerUnit: this.buildAdmitsPerUnit(hold.lines),
+      now: new Date(),
+    });
+    for (const entitlement of wanted) {
+      if (!have.has(entitlement.id)) await repos.entitlements.save(entitlement);
+    }
+
+    // Settlement: the only writer into the partner ledger for a ticket sale.
+    // `recordTicketSale` is idempotent per orderId, so repeating it is a no-op.
     await this.recordSettlement(order);
 
-    return { order, entitlements };
+    return { order, entitlements: await repos.entitlements.getByOrderId(order.id) };
+  }
+
+  private async claimPromoRedemption(
+    order: Order,
+    hold: CartReservation,
+    enforceLimits: boolean,
+  ): Promise<'claimed' | 'already_claimed' | 'global_limit' | 'user_limit'> {
+    if (!hold.appliedPromoCode) return 'already_claimed';
+    const promo = await this.deps.repositories.catalog.getPromoByCode(
+      hold.appliedPromoCode,
+      hold.eventId,
+    );
+    const promoId = promo?.id ?? hold.appliedPromoCode;
+    return this.deps.repositories.promoRedemptions.claim({
+      redemption: {
+        id: `RED-${order.id}-${hold.appliedPromoCode}`,
+        promoId,
+        orderId: order.id,
+        userId: order.userId,
+        redeemedAt: new Date().toISOString(),
+      },
+      promoIds: promo ? [promo.id, promo.code] : [hold.appliedPromoCode],
+      historicalRedemptionCount: enforceLimits ? (promo?.redemptionCount ?? 0) : 0,
+      maxRedemptions: enforceLimits ? (promo?.maxRedemptions ?? null) : null,
+      maxPerUser: enforceLimits ? (promo?.maxPerUser ?? null) : null,
+    });
   }
 
   /**
@@ -610,7 +1132,10 @@ export class CheckoutService {
         organizationId: hostOrganizationId,
         orderId: order.id,
         eventId: order.eventId,
-        grossAmount: order.grandTotalPaise,
+        // Compatibility ledger now follows the same basis as the canonical
+        // journal: only discounted ticket face value is distributable. Guest
+        // fees and GST remain separate liabilities/revenue components.
+        grossAmount: order.discountedSubtotalPaise,
         hostOrganizationId,
         venueOrganizationId,
         promoterOrganizationId,
@@ -621,6 +1146,58 @@ export class CheckoutService {
       },
       SYSTEM_ACTOR,
     );
+
+    const providerPayment = order.paymentId
+      ? await this.deps.repositories.providerPayments.findByPaymentId(order.paymentId)
+      : null;
+    const sourceType = order.paymentId?.startsWith('door_cash_')
+      ? 'door_cash_sale'
+      : order.paymentId?.startsWith('door_')
+        ? 'door_electronic_sale'
+        : 'online_payment_capture';
+    const amountFor = (entryType: (typeof entries)[number]['entryType']): number =>
+      entries.find((entry) => entry.entryType === entryType)?.amount ?? 0;
+    const platformSettings = await this.deps.repositories.platformSettings.get();
+    await this.financialPostingService.postTicketSale({
+      organizationId: hostOrganizationId,
+      orderId: order.id,
+      eventId: order.eventId,
+      paymentId: order.paymentId,
+      sourceType,
+      // Cash has no provider; online orders reach this method only after the
+      // provider capture was verified. Electronic door modes are rejected at
+      // command entry until a terminal confirmation integration exists.
+      providerConfirmed: sourceType !== 'door_electronic_sale',
+      currency: order.currency,
+      ticketFaceValuePaise: order.subtotalPaise,
+      discountPaise: order.discountPaise,
+      discountFundingOwner: order.discountFundingOwner,
+      netTicketRevenuePaise: order.discountedSubtotalPaise,
+      gstPaise: order.gstPaise,
+      platformFeePaise: order.platformFeePaise,
+      paymentFeePaise: order.paymentFeePaise,
+      providerFeePaise: providerPayment
+        ? providerPayment.feePaise + providerPayment.taxOnFeePaise
+        : 0,
+      policy: {
+        ...platformSettings.accountingPolicy,
+        // The policy snapshot is part of the journal's idempotent facts. Reuse
+        // the immutable payment/order capture time so duplicate callbacks,
+        // concurrent confirmation and fulfilment repair rebuild byte-for-byte
+        // equivalent journals instead of conflicting on the retry time.
+        capturedAt: providerPayment?.capturedAt ?? order.paidAt ?? order.createdAt,
+      },
+      allocation: {
+        platformPaise: amountFor('platform_fee'),
+        hostOrganizationId,
+        hostPaise: amountFor('host_payout'),
+        venueOrganizationId,
+        venuePaise: amountFor('venue_share'),
+        promoterOrganizationId,
+        promoterPaise: amountFor('promoter_commission'),
+      },
+      postedAt: this.deps.config.clock.now(),
+    });
 
     if (order.attribution) {
       await this.deps.repositories.referralLinks.recordSale(
