@@ -427,6 +427,50 @@ export default async function partnerOrganizationRoutes(fastify: FastifyInstance
       return reply.status(result.statusCode).send(result.body);
     },
   );
+  // ── REMOVE MEMBER ─────────────────────────────────────────────────────────
+  // Owners cannot be removed by the domain model (InvalidOperationError).
+  // The route requires `staff.manage`; the service enforces org-membership
+  // of the actor so non-members cannot self-escalate.
+  fastify.delete(
+    '/organizations/:organizationId/members/:userId',
+    {
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({
+          params: memberIdParam,
+          headers: orgHeaders.extend({ 'idempotency-key': idempotencyKeySchema }),
+        }),
+        fastify.requirePermission('staff.manage'),
+      ],
+    },
+    async (request, reply) => {
+      const { organizationId, userId } = request.params as z.infer<typeof memberIdParam>;
+      const actor = services.actor(request);
+      const v2Headers = request.v2Headers ?? {};
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: actor.userId,
+        commandName: 'organizations.removeMember',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { organizationId, userId }, body: {} },
+        run: async () => {
+          await services.organizations.removeMember(actor, organizationId, userId);
+          return { statusCode: 204, body: undefined as unknown as object };
+        },
+      }).catch((error: unknown) => {
+        if (isIdempotencyConflict(error)) {
+          return mapDomainError(reply, request, organizationId, error, {
+            conflictId: v2Headers['idempotency-key'],
+          });
+        }
+        return mapDomainError(reply, request, organizationId, error);
+      });
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body ?? '');
+    },
+  );
+
   // ── ACCESS CONTEXT (what this member may see and do) ──────────────────────
   // v1's rbac-permissions.ts opens with "the frontend must NEVER define or
   // evaluate these" — this is the endpoint that makes that possible. Hiding a
