@@ -347,7 +347,23 @@ export class CheckoutService {
   }
 
   /**
+   * Whether `actor` may act on `hold`. The webhook runs as the system actor
+   * (it authenticates by HMAC, not by session); everyone else must be the
+   * hold's owner. A hold with no recorded owner is never claimable by a user.
+   */
+  private actsForHold(actor: ActorContext, hold: CartReservation): boolean {
+    if (isSystemActor(actor)) return true;
+    return hold.userId !== null && hold.userId === actor.userId;
+  }
+
+  /**
    * Step 3: Create Payment Intent — calls PaymentProvider to create order with Razorpay.
+   *
+   * One hold is bound to exactly one provider order. A second attempt (a
+   * retry with a fresh Idempotency-Key, a double click, a second tab) gets the
+   * same order back instead of minting another, because fulfilment only
+   * accepts a payment made against the order bound here — an orphaned second
+   * order that later captured would be money with nothing to fulfil.
    */
   async createPaymentIntent(input: {
     actor: ActorContext;
@@ -357,12 +373,23 @@ export class CheckoutService {
     const { holdId, idempotencyKey } = input;
 
     const hold = await this.deps.repositories.cartReservations.getById(holdId);
-    if (!hold) throw new InvalidOperationError('Hold not found');
+    // Same answer for "missing" and "not yours", so a caller cannot probe which
+    // hold ids exist.
+    if (!hold || !this.actsForHold(input.actor, hold)) {
+      throw new InvalidOperationError('Hold not found');
+    }
     if (hold.status !== 'active')
       throw new InvalidOperationError(`Hold is ${hold.status}, cannot proceed to payment`);
     if (new Date().getTime() > Date.parse(hold.expiresAt)) {
       await this.deps.repositories.cartReservations.release(holdId);
       throw new InvalidOperationError('Hold has expired');
+    }
+
+    if (hold.providerOrderId) {
+      return {
+        paymentIntentId: hold.providerOrderId,
+        amountPaise: hold.pricing.grandTotalPaise,
+      };
     }
 
     const paymentProvider = this.deps.paymentProvider;
@@ -377,15 +404,24 @@ export class CheckoutService {
       },
     });
 
+    // First writer wins. If a concurrent attempt bound a different order while
+    // we were calling the provider, that one is authoritative and ours is
+    // simply never paid.
+    const bound = await this.deps.repositories.cartReservations.bindProviderOrder(
+      holdId,
+      paymentIntent.id,
+    );
+
     return {
-      paymentIntentId: paymentIntent.id,
+      paymentIntentId: bound ?? paymentIntent.id,
       amountPaise: hold.pricing.grandTotalPaise,
     };
   }
 
   /**
-   * Step 4: Confirm Payment — dual-path idempotent fulfillment.
-   * Called by both webhook and redirect; second call is a no-op.
+   * Step 4: Confirm Payment — dual-path idempotent, resumable fulfillment.
+   * Called by both webhook and redirect; the second call converges on the same
+   * order, and finishes any fulfilment step the first call did not reach.
    */
   async confirmPayment(input: {
     actor: ActorContext;
@@ -394,21 +430,28 @@ export class CheckoutService {
     holdId: EntityId;
     _idempotencyKey: string;
   }): Promise<{ order: Order; entitlements: Entitlement[] }> {
-    const { paymentId, paymentIntentId, holdId } = input;
+    const { actor, paymentId, paymentIntentId, holdId } = input;
+
+    const hold = await this.deps.repositories.cartReservations.getById(holdId);
+    if (!hold || !this.actsForHold(actor, hold)) throw new InvalidOperationError('Hold not found');
 
     // Check for existing order with this payment id (idempotency) — both the
     // webhook and the client-redirect path call this method for the same
-    // payment, and whichever arrives second must be a no-op.
+    // payment, and whichever arrives second must not duplicate anything.
+    //
+    // It must also not just return: fulfilment is several writes with no
+    // enclosing transaction, so a crash between them leaves an order that is
+    // missing its hold conversion, promo record, tickets or ledger entry. A
+    // redelivered webhook is the natural repair, so run the remaining steps.
     const existingOrder = await this.deps.repositories.orders.getByPaymentId(paymentId);
     if (existingOrder) {
-      const existingEntitlements = await this.deps.repositories.entitlements.getByOrderId(
-        existingOrder.id,
-      );
-      return { order: existingOrder, entitlements: existingEntitlements };
+      const belongsToHold =
+        existingOrder.userId === hold.userId &&
+        existingOrder.eventId === hold.eventId &&
+        (hold.convertedOrderId === null || hold.convertedOrderId === existingOrder.id);
+      if (!belongsToHold) throw new InvalidOperationError('Payment belongs to a different hold');
+      return this.completeFulfilment(existingOrder, hold);
     }
-
-    const hold = await this.deps.repositories.cartReservations.getById(holdId);
-    if (!hold) throw new InvalidOperationError('Hold not found');
 
     // The hold already lost this exact race — some other caller converted it
     // (or is converting it) to an order. Rather than throwing, converge on
@@ -417,18 +460,27 @@ export class CheckoutService {
     // contention, and losing it is not an error for a dual confirmation path.
     if (hold.status === 'converted' && hold.convertedOrderId) {
       const convertedOrder = await this.deps.repositories.orders.getById(hold.convertedOrderId);
-      if (convertedOrder) {
-        const convertedEntitlements = await this.deps.repositories.entitlements.getByOrderId(
-          convertedOrder.id,
-        );
-        return { order: convertedOrder, entitlements: convertedEntitlements };
-      }
+      if (convertedOrder) return this.completeFulfilment(convertedOrder, hold);
     }
     if (hold.status !== 'active')
       throw new InvalidOperationError(`Hold is ${hold.status}, cannot confirm`);
     if (new Date().getTime() > Date.parse(hold.expiresAt)) {
       await this.deps.repositories.cartReservations.release(holdId);
       throw new InvalidOperationError('Hold has expired');
+    }
+
+    // The payment must have been made against the provider order bound to THIS
+    // hold. Without this, one genuine payment (signature, capture and amount
+    // all valid) could be presented against any other hold with the same
+    // total — the checks below prove the payment is real, not that it is for
+    // this purchase. The client-supplied `paymentIntentId` is only trusted
+    // after it matches the server-side binding, and the provider's own record
+    // of the payment must agree.
+    if (!hold.providerOrderId) {
+      throw new InvalidOperationError('No payment attempt has been started for this hold');
+    }
+    if (paymentIntentId !== hold.providerOrderId) {
+      throw new InvalidOperationError('Payment does not belong to this hold');
     }
 
     // Verify with the payment provider before fulfilling — never trust a
@@ -446,9 +498,19 @@ export class CheckoutService {
     if (!verified.captured) {
       throw new InvalidOperationError(`Payment ${paymentId} has not been captured`);
     }
+    // Fail closed: a payment that does not name its order cannot be tied to
+    // this hold, so it cannot fulfil it.
+    if (verified.orderId !== hold.providerOrderId) {
+      throw new InvalidOperationError('Payment was not made against this hold');
+    }
     if (verified.amountPaise !== hold.pricing.grandTotalPaise) {
       throw new InvalidOperationError(
         `Payment amount ${verified.amountPaise} does not match hold total ${hold.pricing.grandTotalPaise}`,
+      );
+    }
+    if (verified.currency !== undefined && verified.currency !== hold.pricing.currency) {
+      throw new InvalidOperationError(
+        `Payment currency ${verified.currency} does not match hold currency ${hold.pricing.currency}`,
       );
     }
 
@@ -490,7 +552,6 @@ export class CheckoutService {
       updatedAt: now.toISOString(),
     };
 
-    // Atomic transaction: Order + CartReservation conversion + Entitlements + PromoRedemption + Outbox events
     try {
       await this.deps.repositories.orders.save(order);
     } catch (error) {
@@ -500,45 +561,64 @@ export class CheckoutService {
       // caller-facing error: converge on whichever write actually landed.
       if (error instanceof VersionConflictError) {
         const winner = await this.deps.repositories.orders.getByPaymentId(paymentId);
-        if (winner) {
-          const winnerEntitlements = await this.deps.repositories.entitlements.getByOrderId(
-            winner.id,
-          );
-          return { order: winner, entitlements: winnerEntitlements };
-        }
+        if (winner) return this.completeFulfilment(winner, hold);
       }
       throw error;
     }
-    await this.deps.repositories.cartReservations.convertToOrder(holdId, orderId);
-    await this.deps.repositories.promoRedemptions.create({
-      id: `RED-${orderId}-${hold.appliedPromoCode ?? 'none'}`,
-      promoId: hold.appliedPromoCode ?? '',
-      orderId,
-      userId: order.userId,
-      redeemedAt: now.toISOString(),
-    });
 
-    // Issue entitlements
-    const issuedEntitlements = issueEntitlements({
-      order,
-      admitsPerUnit: this.buildAdmitsPerUnit(hold.lines),
-      now,
-    });
-    for (const e of issuedEntitlements) {
-      await this.deps.repositories.entitlements.save(e);
+    return this.completeFulfilment(order, hold);
+  }
+
+  /**
+   * Runs every post-order fulfilment step, each of which is safe to repeat:
+   * hold conversion, promo redemption, ticket issuance and the ledger entry.
+   *
+   * These are separate writes, not one transaction, so any of them can be the
+   * last one that landed before a crash. Doing them as "ensure" steps — rather
+   * than as a one-shot sequence guarded by "does the order exist?" — is what
+   * lets a redelivered webhook or a repeated redirect finish the job.
+   */
+  private async completeFulfilment(
+    order: Order,
+    hold: CartReservation,
+  ): Promise<{ order: Order; entitlements: Entitlement[] }> {
+    const repos = this.deps.repositories;
+
+    if (hold.status === 'active') {
+      await repos.cartReservations.convertToOrder(hold.id, order.id);
     }
 
-    const entitlements = await this.deps.repositories.entitlements.getByOrderId(orderId);
+    // Only a promo that was actually applied is a redemption. (This used to
+    // write a redemption row with an empty promo id for every order.)
+    if (hold.appliedPromoCode && !(await repos.promoRedemptions.getByOrderId(order.id))) {
+      await repos.promoRedemptions.create({
+        id: `RED-${order.id}-${hold.appliedPromoCode}`,
+        promoId: hold.appliedPromoCode,
+        orderId: order.id,
+        userId: order.userId,
+        redeemedAt: new Date().toISOString(),
+      });
+    }
 
-    // Settlement: the only writer into the partner ledger for a ticket sale
-    // (roadmap: "the only writer, called from checkout confirmation"). Both
-    // the webhook and redirect-confirm paths converge here, but only the
-    // path that actually wins the `orders.save` race above reaches this
-    // line — `recordTicketSale` is itself idempotent per orderId, so even a
-    // retry that somehow reached here twice would be a no-op.
+    // Entitlement ids are deterministic per (order, tier, unit) and saves are
+    // compare-and-set, so re-saving an existing one would conflict. Issue only
+    // the units that are missing.
+    const existing = await repos.entitlements.getByOrderId(order.id);
+    const have = new Set(existing.map((e) => e.id));
+    const wanted = issueEntitlements({
+      order,
+      admitsPerUnit: this.buildAdmitsPerUnit(hold.lines),
+      now: new Date(),
+    });
+    for (const entitlement of wanted) {
+      if (!have.has(entitlement.id)) await repos.entitlements.save(entitlement);
+    }
+
+    // Settlement: the only writer into the partner ledger for a ticket sale.
+    // `recordTicketSale` is idempotent per orderId, so repeating it is a no-op.
     await this.recordSettlement(order);
 
-    return { order, entitlements };
+    return { order, entitlements: await repos.entitlements.getByOrderId(order.id) };
   }
 
   /**
