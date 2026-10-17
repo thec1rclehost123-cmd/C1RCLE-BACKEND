@@ -53,6 +53,24 @@ export const EVENT_TRANSITIONS: Readonly<Record<EventStatus, readonly EventStatu
   cancelled: [],
 };
 
+/** Terminal statuses: no outbound transitions and no attribute mutation. */
+const TERMINAL_EVENT_STATUSES: readonly EventStatus[] = ['cancelled', 'archived'];
+
+export function isTerminalEventStatus(status: EventStatus): boolean {
+  return TERMINAL_EVENT_STATUSES.includes(status);
+}
+
+/**
+ * Rejects attribute updates on a terminal event. `EVENT_TRANSITIONS` already
+ * freezes status changes, but `updateEvent` (title/pricing/promo/…) would
+ * otherwise still rewrite a cancelled or archived event.
+ */
+function assertEventMutable(event: Event): void {
+  if (isTerminalEventStatus(event.status)) {
+    throw new InvalidOperationError(`A ${event.status} event is terminal and cannot be modified`);
+  }
+}
+
 export interface TicketTierRef {
   tierId: EntityId;
   priceInPaise: number;
@@ -210,6 +228,7 @@ interface EventChanges {
 
 /** Controlled attribute update (no status changes here). Bumps version. */
 export function updateEvent(event: Event, changes: EventChanges, now?: Date): Event {
+  assertEventMutable(event);
   const stamped = bumpVersion(event, now ?? new Date());
   return { ...stamped, ...changes };
 }

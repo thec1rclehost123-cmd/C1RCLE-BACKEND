@@ -7,7 +7,7 @@
  * interface.
  */
 
-export type IdempotencyStatus = 'IN_PROGRESS' | 'COMPLETED';
+export type IdempotencyStatus = 'IN_PROGRESS' | 'COMPLETED' | 'FAILED';
 
 export interface IdempotencyRecord {
   /** Composite key: `${actorId}:${commandName}:${idempotencyKey}`. */
@@ -31,6 +31,10 @@ export interface IdempotencyStore {
   claim(key: string, requestHash: string, expiresAt: number): Promise<IdempotencyRecord | null>;
   /** Persist the completed response for replay by later retries. */
   complete(key: string, statusCode: number, responseBody: unknown): Promise<void>;
+  /** Mark an attempt FAILED — the claim is retained (never silently re-run,
+   * because a post-write failure may already have persisted a record), so a
+   * retry of the same key gets a distinct `IdempotencyFailedError`. */
+  fail(key: string): Promise<void>;
   /** Release an in-flight claim (only the winning caller may call this). */
   release(key: string): Promise<void>;
   /** Fetch a record; null when absent or expired. */

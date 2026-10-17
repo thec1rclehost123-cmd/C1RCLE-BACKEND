@@ -89,7 +89,7 @@ export class InProcessEventBus implements OutboxWriter {
     const handlers = this.handlers.get(row.type);
     const event = row.payload as DomainEvent;
     if (!handlers || handlers.size === 0) {
-      // No consumer registered (future projection): mark processed so the
+      // No consumer subscribes to this event type: mark it processed so the
       // pending row does not grow unbounded.
       await this.store.markProcessed(row.id, Date.now());
       return true;

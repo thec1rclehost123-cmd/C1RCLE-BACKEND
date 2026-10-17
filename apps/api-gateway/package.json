@@ -12,6 +12,7 @@
     "test": "vitest run",
     "test:scenarios": "vitest run --config vitest.scenarios.config.mjs",
     "seed:admin": "tsx --env-file-if-exists=.env.local src/scripts/seed-platform-admin.ts",
+    "backfill:analytics": "tsx --env-file-if-exists=.env.local src/scripts/backfill-analytics.ts",
     "configure:storage-cors": "tsx --env-file-if-exists=.env.local src/scripts/configure-storage-cors.ts"
   },
   "dependencies": {

@@ -530,6 +530,8 @@ export interface CalendarDay {
 export interface AnalyticsReadModelRepository {
   getOrganizationOverview(organizationId: EntityId): Promise<OrganizationOverview | null>;
   getEventAnalytics(eventId: EntityId): Promise<EventAnalytics | null>;
+  saveOrganizationOverview(overview: OrganizationOverview): Promise<void>;
+  saveEventAnalytics(analytics: EventAnalytics): Promise<void>;
 }
 
 // ─── Onboarding / KYC (Phase 2) ──────────────────────────────────────────────
@@ -902,6 +904,15 @@ export interface ScannerSessionRepository {
 
 /** Door Sale repository — walk-in and dine-in sales. */
 export interface DoorSaleRepository {
+  /**
+   * Idempotent create: mints the entity and persists it. If a sale already
+   * exists under `input.idempotencyKey`, the EXISTING sale is returned —
+   * a repeated or concurrent same-key create never writes a second row.
+   * Adapters must implement this atomically against the idempotency index
+   * (Firestore: one transaction; memory: the claim + write happen in a single
+   * synchronous turn). `findByIdempotencyKey`, kept for service reads, is a
+   * fast-path past this create, not a substitute for its atomicity.
+   */
   create(input: DoorSaleCreateInput): Promise<DoorSale>;
   findById(id: EntityId): Promise<DoorSale | null>;
   findByIdempotencyKey(idempotencyKey: string): Promise<DoorSale | null>;

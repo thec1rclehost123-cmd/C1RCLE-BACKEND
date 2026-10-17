@@ -521,7 +521,7 @@ export class CheckoutService {
     // Issue entitlements
     const issuedEntitlements = issueEntitlements({
       order,
-      admitsPerUnit: this.buildAdmitsPerUnit(hold.lines),
+      admitsPerUnit: await this.buildAdmitsPerUnit(hold.lines),
       now,
     });
     for (const e of issuedEntitlements) {
@@ -652,17 +652,34 @@ export class CheckoutService {
   }
 
   /**
-   * Builds admitsPerUnit map from hold lines (couple tickets = 2, etc.)
+   * Builds admitsPerUnit map from hold lines from TIER METADATA, not a guess:
+   * a tier's `guestCount` (couple tier = 2) wins, else a `couple` entryType
+   * admits 2, else 1 (see `admitsForTier`). The entitlement engine
+   * (`domain/models/entitlement.ts`) applies the same couple=2 rule, so
+   * checkouts and the door always agree on headcount. An unknown/missing tier
+   * falls back to 1 rather than failing a paid order.
    */
-  private buildAdmitsPerUnit(lines: CartReservation['lines']): Record<EntityId, number> {
+  private async buildAdmitsPerUnit(
+    lines: CartReservation['lines'],
+  ): Promise<Record<EntityId, number>> {
     const map: Record<EntityId, number> = {};
     for (const line of lines) {
-      // Tier metadata would tell us if it's a couple ticket
-      // For now default to 1; actual logic would read from tier metadata
-      map[line.tierId] = 1;
+      const tier = await this.deps.repositories.catalog.getTierById(line.tierId);
+      map[line.tierId] = admitsForTier(tier);
     }
     return map;
   }
+}
+
+/**
+ * Heads admitted per ticket unit, derived from tier metadata (D4): a tier's
+ * `guestCount` wins (a couple ticket carries 2), else a `couple` entryType
+ * admits 2, else 1. Mirrors the entitlement engine's couple=2 rule.
+ */
+export function admitsForTier(
+  tier: { guestCount?: number; entryType?: string } | null | undefined,
+): number {
+  return tier?.guestCount ?? (tier?.entryType === 'couple' ? 2 : 1);
 }
 
 function commissionForLines(lines: PricingBreakdown['lines'], terms: CommissionTerms): number {

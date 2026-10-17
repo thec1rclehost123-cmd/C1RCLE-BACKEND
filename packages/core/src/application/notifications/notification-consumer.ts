@@ -71,11 +71,18 @@ function notificationFor(event: DomainEvent): NotificationForInput | null {
   switch (event.type) {
     case 'promoter_connection.requested': {
       const payload = event.payload as EventPayloads['promoter_connection.requested'];
+      // The recipient is whichever side did NOT open the conversation — the
+      // same rule as `recipientOf` in the domain model. When the promoter
+      // opened it the target answers; when a venue/host invited a promoter the
+      // PROMOTER answers, and `targetId` would address the initiator itself.
+      const promoterOpened = payload.initiatedBy === 'promoter';
       return {
-        recipientId: payload.targetId,
-        recipientType: payload.targetType,
+        recipientId: promoterOpened ? payload.targetId : payload.promoterId,
+        recipientType: promoterOpened ? payload.targetType : 'promoter',
         type: event.type,
-        title: `${payload.promoterName} wants to connect`,
+        title: promoterOpened
+          ? `${payload.promoterName} wants to connect`
+          : `${payload.targetName} wants to connect with you`,
         body: payload.message ?? 'A new promoter connection request is waiting for your review.',
         action: { resourceType: 'promoter_connection', resourceId: payload.connectionId },
         dedupeKey: `connection:${payload.connectionId}`,

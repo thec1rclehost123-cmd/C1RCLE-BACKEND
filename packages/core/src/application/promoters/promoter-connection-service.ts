@@ -1,4 +1,8 @@
-import { InvalidOperationError, PartnershipNotFoundError } from '../../domain/errors.js';
+import {
+  InvalidOperationError,
+  OrganizationNotFoundError,
+  PartnershipNotFoundError,
+} from '../../domain/errors.js';
 import {
   approveConnection,
   blockConnection,
@@ -66,6 +70,16 @@ export class PromoterConnectionService {
     const targetId =
       command.initiatedBy === 'promoter' ? command.counterpartyId : actor.organizationId;
 
+    // The counterparty must be a real, active organization — the same bar the
+    // discovery browse applies (`listActive`), so a stale or fabricated id can
+    // never open a dangling row whose notification fails downstream. A
+    // non-active org reads as not-found rather than "exists but suspended", so
+    // the 404 cannot be used to probe for suspended tenants.
+    const counterparty = await this.deps.repositories.organizations.getById(command.counterpartyId);
+    if (!counterparty || counterparty.status !== 'active') {
+      throw new OrganizationNotFoundError(command.counterpartyId);
+    }
+
     const existing = await this.repo.findByPair(promoterId, targetId);
     if (existing && isConnectionLive(existing)) {
       // v1's "BUG-2" fix: block on pending OR active, not pending alone.
@@ -88,8 +102,14 @@ export class PromoterConnectionService {
     this.deps.logger.info('promoter_connection.requested', { connectionId: connection.id });
 
     // Notification producer: the recipient is the OTHER party, resolved for
-    // the inbox consumer rather than left to a read-time fan-out.
-    const promoterOrg = await this.deps.repositories.organizations.getById(connection.promoterId);
+    // the inbox consumer rather than left to a read-time fan-out. Both names
+    // are emitter-resolved so the consumer can address either side without a
+    // second lookup — the target name is what a promoter reads when the
+    // venue/host opened the conversation.
+    const [promoterOrg, targetOrg] = await Promise.all([
+      this.deps.repositories.organizations.getById(connection.promoterId),
+      this.deps.repositories.organizations.getById(connection.targetId),
+    ]);
     await emit(this.deps, actor, connection.id, 'promoter_connection.requested', {
       connectionId: connection.id,
       targetId,
@@ -97,6 +117,7 @@ export class PromoterConnectionService {
       initiatedBy: connection.initiatedBy,
       promoterId: connection.promoterId,
       promoterName: promoterOrg?.name ?? connection.promoterId,
+      targetName: targetOrg?.name ?? connection.targetId,
       message: connection.message,
     });
     return connection;

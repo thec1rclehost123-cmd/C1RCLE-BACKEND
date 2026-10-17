@@ -54,11 +54,20 @@ const IDEMPOTENCY_COLLECTION = 'v2_door_sale_idempotency';
 
 interface FakeDocSnapshot {
   data(): Record<string, unknown> | undefined;
+  exists: boolean;
 }
 
 interface FakeDocRef {
   set(data: Record<string, unknown>): Promise<void>;
+  create?(data: Record<string, unknown>): Promise<void>;
   get(): Promise<FakeDocSnapshot>;
+  _store: Map<string, Record<string, unknown>>;
+  _id: string;
+}
+
+interface FakeTransaction {
+  get(ref: FakeDocRef): Promise<FakeDocSnapshot>;
+  set(ref: FakeDocRef, data: Record<string, unknown>): void;
 }
 
 interface FakeCollectionRef {
@@ -67,11 +76,12 @@ interface FakeCollectionRef {
 
 /**
  * Hermetic stand-in for the Firestore handle — a Map per collection, enough
- * of the surface for the door-sale adapter (`collection().doc().set/get`).
- * The repository's constructor takes firebase-admin's `Firestore` class, which
- * cannot be implemented structurally, so the handle is `any` at that seam
- * only (no `as`-cast; `any` in a `.test.ts` matches `contract-suite.test.ts`'s
- * existing style). The rest of the repo's live Firestore coverage stays in
+ * of the surface for the door-sale adapter (`collection().doc().set/get` and
+ * `runTransaction` with buffered writes). The repository's constructor takes
+ * firebase-admin's `Firestore` class, which cannot be implemented
+ * structurally, so the handle is `any` at that seam only (no `as`-cast; `any`
+ * in a `.test.ts` matches `contract-suite.test.ts`'s existing style). The
+ * rest of the repo's live Firestore coverage stays in
  * `firestore/firestore-repositories.integration.test.ts`, which is
  * network-gated and skipped by default.
  */
@@ -93,16 +103,41 @@ function createFakeFirestore() {
       const store = storeFor(name);
       return {
         doc(id: string): FakeDocRef {
-          return {
+          const ref: FakeDocRef = {
+            _store: store,
+            _id: id,
             async set(data: Record<string, unknown>): Promise<void> {
               store.set(id, data);
             },
             async get(): Promise<FakeDocSnapshot> {
-              return { data: () => store.get(id) };
+              const data = store.get(id);
+              return { data: () => data, exists: data !== undefined };
             },
           };
+          return ref;
         },
       };
+    },
+    // Buffered transaction: reads hit the live store, writes are applied
+    // together on commit. Sequential by construction — enough to exercise the
+    // idempotent-claim path the adapter implements; true concurrency is
+    // Firestore's own transaction guarantee, not this fake's.
+    async runTransaction<T>(updateFn: (tx: FakeTransaction) => Promise<T>): Promise<T> {
+      const writes: { ref: FakeDocRef; data: Record<string, unknown> }[] = [];
+      const tx: FakeTransaction = {
+        async get(ref: FakeDocRef): Promise<FakeDocSnapshot> {
+          const data = ref._store.get(ref._id);
+          return { data: () => data, exists: data !== undefined };
+        },
+        set(ref: FakeDocRef, data: Record<string, unknown>): void {
+          writes.push({ ref, data });
+        },
+      };
+      const result = await updateFn(tx);
+      for (const write of writes) {
+        write.ref._store.set(write.ref._id, write.data);
+      }
+      return result;
     },
   };
 
@@ -181,6 +216,50 @@ describe('DoorSaleRepository.create — memory/Firestore adapter parity', () => 
     // Round-trips through the adapter's own reader.
     const found = await firestore.findByIdempotencyKey('idem_parity_2');
     expect(found?.id).toBe(created.id);
+  });
+
+  it('D2: repeated same-key creates return ONE sale — no second row', async () => {
+    const fake = createFakeFirestore();
+    const firestore = new FirestoreDoorSaleRepository(fake.db);
+
+    const first = await firestore.create(doorSaleInput({ idempotencyKey: 'idem_dup' }));
+    const second = await firestore.create(doorSaleInput({ idempotencyKey: 'idem_dup' }));
+
+    expect(second.id).toBe(first.id);
+    expect(fake.written(DOOR_SALES_COLLECTION)).toHaveLength(1);
+    const [pointer] = fake.written(IDEMPOTENCY_COLLECTION);
+    expect(pointer?.saleId).toBe(first.id);
+  });
+
+  it('D2: same-key create with different guest data still returns the first sale', async () => {
+    const fake = createFakeFirestore();
+    const firestore = new FirestoreDoorSaleRepository(fake.db);
+
+    const first = await firestore.create(doorSaleInput({ idempotencyKey: 'idem_dup_pay' }));
+
+    const second = await firestore.create(
+      doorSaleInput({
+        idempotencyKey: 'idem_dup_pay',
+        guestName: 'Someone Else',
+        amountPaise: 999,
+      }),
+    );
+
+    expect(second.id).toBe(first.id);
+    expect(second.guestName).toBe('John Doe');
+    expect(second.amountPaise).toBe(50000);
+    expect(fake.written(DOOR_SALES_COLLECTION)).toHaveLength(1);
+  });
+
+  it('D2: concurrent same-key creates on the memory adapter yield one sale', async () => {
+    const memory = new MemoryDoorSaleRepository();
+    const input = doorSaleInput({ idempotencyKey: 'idem_concurrent' });
+
+    const [a, b] = await Promise.all([memory.create(input), memory.create(input)]);
+
+    expect(a.id).toBe(b.id);
+    expect(memory.sales.size).toBe(1);
+    expect(memory.byIdempotencyKey.get('idem_concurrent')).toBe(a.id);
   });
 });
 
