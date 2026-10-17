@@ -12,6 +12,7 @@ import { z } from 'zod';
 
 import type { Payout } from '@c1rcle/core/domain';
 
+import { requirePayoutsEnabled } from '../../../lib/payouts-gate.js';
 import { isIdempotencyConflict, runIdempotent } from '../../../lib/v2-idempotency.js';
 import { requestMeta } from '../../../lib/v2-request-meta.js';
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
@@ -114,6 +115,7 @@ export default async function adminPayoutRoutes(fastify: FastifyInstance) {
     '/admin/proposals/:proposalId/release-payout',
     {
       preHandler: [
+        requirePayoutsEnabled(),
         fastify.rateLimit('SENSITIVE_COMMAND'),
         fastify.validateV2({ params: proposalIdParam, headers: commandHeaders }),
       ],
@@ -164,6 +166,7 @@ export default async function adminPayoutRoutes(fastify: FastifyInstance) {
     '/admin/payouts/batch-run',
     {
       preHandler: [
+        requirePayoutsEnabled(),
         fastify.rateLimit('SENSITIVE_COMMAND'),
         fastify.validateV2({ headers: commandHeaders, body: runPayoutBatchSchema }),
       ],
