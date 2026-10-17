@@ -301,7 +301,7 @@ describe('POST /webhooks/payments/razorpay', () => {
     await server.close();
   });
 
-  it('payment.captured with no hold/order correlation in notes -> 400', async () => {
+  it('payment.captured with no hold/order correlation in notes is acknowledged, never fulfilled', async () => {
     const server = await buildServer();
     const body = webhookPayload({ id: 'pay_no_notes', order_id: 'order_x' });
 
@@ -312,7 +312,10 @@ describe('POST /webhooks/payments/razorpay', () => {
       payload: body,
     });
 
-    expect(response.statusCode).toBe(400);
+    // 200, not 400: a retry cannot add the missing notes, and non-2xx answers
+    // make Razorpay retry for a day and eventually disable the webhook.
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ received: true });
     await server.close();
   });
 
