@@ -106,7 +106,24 @@ export class OrganizationService {
     requireOrgAccess(actor, organizationId);
     const org = await this.repo.getById(organizationId);
     if (!org) throw new OrganizationNotFoundError(organizationId);
-    return this.repo.listMembers(organizationId, query);
+    const page = await this.repo.listMembers(organizationId, query);
+    const enrichedItems = await Promise.all(
+      page.items.map(async (member) => {
+        const user = await this.deps.repositories.users.getById(member.userId).catch(() => null);
+        const fallbackEmail = !user?.email
+          ? await this.deps.userDirectory.getEmailById(member.userId).catch(() => null)
+          : null;
+        return {
+          ...member,
+          name: user?.name?.trim() ? user.name.trim() : null,
+          email: user?.email ?? fallbackEmail ?? null,
+        };
+      }),
+    );
+    return {
+      ...page,
+      items: enrichedItems,
+    };
   }
 
   async inviteMember(actor: ActorContext, command: InviteMemberCommand): Promise<Organization> {

@@ -188,6 +188,27 @@ describe('V2 partners organizations slice — read, update, members', () => {
     expect(list.statusCode).toBe(200);
     const body = list.json();
     expect(body.items.map((item: { userId: string }) => item.userId)).toContain('user_2');
+
+    const updated = await server.inject({
+      method: 'PATCH',
+      url: `/organizations/${id}/members/user_2`,
+      headers: { 'x-organization-id': id, 'idempotency-key': nextOrgKey() },
+      payload: { role: 'admin' },
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json()).toMatchObject({
+      userId: 'user_2',
+      role: 'admin',
+    });
+
+    const rejectOwner = await server.inject({
+      method: 'PATCH',
+      url: `/organizations/${id}/members/user_1`,
+      headers: { 'x-organization-id': id, 'idempotency-key': nextOrgKey() },
+      payload: { role: 'member' },
+    });
+    expect(rejectOwner.statusCode).toBe(400);
+
     await server.close();
   });
 
