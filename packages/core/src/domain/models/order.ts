@@ -4,6 +4,7 @@ import { bumpVersion, newVersionedEntity } from '../identity.js';
 
 import type { EntityId, VersionedEntity } from '../identity.js';
 import type { CommissionTerms } from './event-catalog.js';
+import type { DiscountFundingOwner } from './financial-journal.js';
 import type { PricingBreakdown } from './pricing.js';
 
 /**
@@ -114,6 +115,7 @@ export interface Order extends VersionedEntity {
   /* Money — all integer paise, all frozen at intent time. */
   subtotalPaise: number;
   discountPaise: number;
+  discountFundingOwner: DiscountFundingOwner | null;
   discountedSubtotalPaise: number;
   platformFeePaise: number;
   paymentFeePaise: number;
@@ -140,6 +142,8 @@ export interface Order extends VersionedEntity {
    * `refunded` status once this equals `grandTotalPaise`.
    */
   refundedPaise: number;
+  /** Refund request ids already reflected in `refundedPaise` (retry fence). */
+  appliedRefundRequestIds: EntityId[];
 }
 
 export interface CreateOrderInput {
@@ -174,6 +178,7 @@ export function createOrder(input: CreateOrderInput): Order {
     currency: pricing.currency,
     subtotalPaise: pricing.subtotalPaise,
     discountPaise: pricing.discountPaise,
+    discountFundingOwner: pricing.discountFundingOwner ?? null,
     discountedSubtotalPaise: pricing.discountedSubtotalPaise,
     platformFeePaise: pricing.platformFeePaise,
     paymentFeePaise: pricing.paymentFeePaise,
@@ -187,6 +192,7 @@ export function createOrder(input: CreateOrderInput): Order {
     reservationExpiresAt: new Date(now.getTime() + ttl).toISOString(),
     failureReason: null,
     refundedPaise: 0,
+    appliedRefundRequestIds: [],
     ...newVersionedEntity(now),
   };
 }
@@ -337,7 +343,13 @@ export function restoreOrderAfterRefundFailure(order: Order, now?: Date): Order 
  * with the remainder still refundable; a refund that exhausts the balance
  * moves the order to the terminal `refunded` status.
  */
-export function applyOrderRefund(order: Order, amountPaise: number, now?: Date): Order {
+export function applyOrderRefund(
+  order: Order,
+  amountPaise: number,
+  now?: Date,
+  refundRequestId?: EntityId,
+): Order {
+  if (refundRequestId && order.appliedRefundRequestIds.includes(refundRequestId)) return order;
   if (order.status !== 'refund_requested') {
     throw new InvalidOperationError(`Cannot apply a refund to order ${order.id}: not locked`);
   }
@@ -354,6 +366,9 @@ export function applyOrderRefund(order: Order, amountPaise: number, now?: Date):
     ...bumpVersion(order, at),
     status: transitionStatus(order.status, nextStatus, ORDER_TRANSITIONS),
     refundedPaise,
+    appliedRefundRequestIds: refundRequestId
+      ? [...order.appliedRefundRequestIds, refundRequestId]
+      : order.appliedRefundRequestIds,
   };
 }
 

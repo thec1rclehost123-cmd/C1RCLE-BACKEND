@@ -127,6 +127,17 @@ export class StateTransitionError extends DomainError {
   readonly to: string;
 }
 
+/**
+ * A payment was captured but cannot be honoured (the reservation lapsed and the
+ * seats are gone), so it was refunded in full. Distinct from a generic refusal
+ * so callers can tell a buyer "you have been refunded" instead of "try again".
+ */
+export class PaymentRefundedError extends DomainError {
+  constructor(message: string) {
+    super(message, 'payment_refunded');
+  }
+}
+
 export class InvalidOperationError extends DomainError {
   constructor(message: string) {
     super(message, 'invalid_operation');
@@ -153,6 +164,17 @@ export class ConflictError extends DomainError {
 export class ServiceUnavailableError extends DomainError {
   constructor(message: string) {
     super(message, 'service_unavailable');
+  }
+}
+
+/**
+ * The payment provider returned an authoritative rejection before accepting
+ * the operation. This is deliberately distinct from a transport error: only
+ * this outcome permits a caller to release money or entitlement locks.
+ */
+export class DefiniteProviderFailureError extends DomainError {
+  constructor(message = 'Payment provider definitively rejected the operation') {
+    super(message, 'provider_rejected');
   }
 }
 

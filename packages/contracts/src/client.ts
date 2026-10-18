@@ -85,6 +85,7 @@ export type {
   InvitationStatus,
   InvitationDto,
   CreateInvitationRequest,
+  UpdateMemberRoleRequest,
   VenueAvailabilityDto,
   VenueMenuDto,
   UpdateVenueMenuRequest,
@@ -99,6 +100,7 @@ export {
   venueDtoSchema,
   createVenueSchema,
   organizationMemberDtoSchema,
+  updateMemberRoleSchema,
   inviteMemberSchema,
   venueAddressSchema,
   venueProfileDtoSchema,
@@ -283,6 +285,7 @@ export type {
   CheckoutQuoteRequest,
   CheckoutQuoteResponse,
   CheckoutHoldRequest,
+  CheckoutAttendee,
   CheckoutHoldResponse,
   PaymentAttemptRequest,
   PaymentAttemptResponse,
@@ -303,6 +306,7 @@ export type {
   PaymentVerificationResponse,
   RefundRequest,
   RefundResponse,
+  PaymentRecoveryResponse,
 } from './contracts/checkout.js';
 
 export {
@@ -312,9 +316,11 @@ export {
   checkoutQuoteResponseSchema,
   cartReservationStatusSchema,
   checkoutHoldRequestSchema,
+  checkoutAttendeeSchema,
   checkoutHoldResponseSchema,
   paymentAttemptRequestSchema,
   paymentAttemptResponseSchema,
+  paymentRecoveryResponseSchema,
   paymentConfirmRequestSchema,
   paymentConfirmResponseSchema,
   rsvpRequestSchema,
@@ -589,8 +595,14 @@ export type {
   AdminRefundRequestDto,
   AdminPayoutStatus,
   RunPayoutBatchInput,
+  CompleteManualPayoutInput,
   PayoutBatchResult,
   FinanceOrderDto,
+  ReconciliationRunDto,
+  ReconciliationDiscrepancyDto,
+  ResolveReconciliationDiscrepancyInput,
+  ProviderChargebackDto,
+  FinancialAdjustmentResult,
 } from './contracts/phase6.js';
 
 export {
@@ -604,6 +616,7 @@ export {
   payoutListResponseSchema,
   adminPayoutStatusSchema,
   runPayoutBatchSchema,
+  completeManualPayoutSchema,
   payoutBatchResultSchema,
   bankAccountRequestSchema,
   bankAccountResponseSchema,
@@ -625,6 +638,17 @@ export {
   adminRefundRequestStatusSchema,
   adminRefundRequestDtoSchema,
   adminRefundRequestListResponseSchema,
+  reconciliationRunStatusSchema,
+  reconciliationDiscrepancyKindSchema,
+  reconciliationDiscrepancyStateSchema,
+  reconciliationRunDtoSchema,
+  reconciliationDiscrepancyDtoSchema,
+  reconciliationRunListResponseSchema,
+  reconciliationDiscrepancyListResponseSchema,
+  resolveReconciliationDiscrepancySchema,
+  providerChargebackDtoSchema,
+  providerChargebackListResponseSchema,
+  financialAdjustmentResultSchema,
 } from './contracts/phase6.js';
 
 // Phase 7: Trust & safety + admin desks

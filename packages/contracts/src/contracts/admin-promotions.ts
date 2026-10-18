@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { discountFundingOwnerSchema } from './event.js';
 import { opaqueIdSchema, paginatedSchema } from './shared.js';
 
 /**
@@ -24,6 +25,9 @@ export const adminPromoDtoSchema = z.object({
   type: adminPromoTypeSchema,
   discountType: adminPromoDiscountTypeSchema,
   discountValue: z.number().int().nonnegative(),
+  // Legacy promo rows predate explicit funding attribution. New financially
+  // effective promos still require the owner on create/activation.
+  discountFundingOwner: discountFundingOwnerSchema.nullable().optional(),
   maxRedemptions: z.number().int().nonnegative().nullable(),
   redemptionCount: z.number().int().nonnegative(),
   startsAt: z.iso.datetime().nullable(),

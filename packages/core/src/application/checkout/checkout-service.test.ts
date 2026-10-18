@@ -4,6 +4,7 @@ import { createCoreConfig } from '../../config/index.js';
 import { ConflictError, InvalidOperationError, UnauthorizedError } from '../../domain/errors.js';
 import { createTicketTier } from '../../domain/models/event-catalog.js';
 import { createEvent, transitionEvent } from '../../domain/models/event.js';
+import { MemoryFinancialJournalRepository } from '../../infrastructure/memory/memory-financial-journal-repository.js';
 import { MemoryLeaderboardRepository } from '../../infrastructure/memory/memory-leaderboard-repository.js';
 import { MemoryLedgerRepository } from '../../infrastructure/memory/memory-ledger-repository.js';
 import {
@@ -66,6 +67,7 @@ function buildService() {
       orders,
       entitlements,
       ledger: new MemoryLedgerRepository(),
+      financialJournals: new MemoryFinancialJournalRepository(),
       leaderboard: new MemoryLeaderboardRepository(),
     },
   } as unknown as ServiceDeps;

@@ -1,4 +1,5 @@
-import { createPayout, createPlatformAdmin } from '@c1rcle/core/domain';
+import { FinancialPostingService } from '@c1rcle/core/application';
+import { createPayout, createPlatformAdmin, DEFAULT_ACCOUNTING_POLICY } from '@c1rcle/core/domain';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { AdminRole } from '@c1rcle/core/domain';
@@ -44,6 +45,12 @@ async function seedPayout(status: 'requested' | 'processing' = 'requested') {
   const withStatus =
     status === 'processing' ? { ...payout, status: 'processing' as const } : payout;
   await services.repos().payouts.save(withStatus);
+  await new FinancialPostingService(services.repos().financialJournals).postPayoutReservation({
+    organizationId: withStatus.organizationId,
+    payoutId: withStatus.id,
+    amountPaise: withStatus.amount,
+    policy: DEFAULT_ACCOUNTING_POLICY,
+  });
   return withStatus;
 }
 
@@ -204,6 +211,64 @@ describe('POST /admin/payouts/batch-run — TIER2, single admin', () => {
     });
 
     expect(response.statusCode).toBe(403);
+  });
+});
+
+describe('POST /admin/payouts/:id/complete — manual transfer evidence', () => {
+  it('requires immutable transfer proof and records a retry exactly once', async () => {
+    await seedAdmin('admin_finance', 'finance');
+    const payout = await seedPayout('processing');
+    const key = `complete-${++keySeq}`;
+    const payload = {
+      transferReference: 'UTR-2026-0001',
+      transferredAt: '2026-10-16T12:00:00.000Z',
+      transferMethod: 'neft',
+      proof: {
+        sha256: 'a'.repeat(64),
+        contentType: 'application/pdf',
+        sizeBytes: 512,
+      },
+    };
+
+    const response = await server.inject({
+      method: 'POST',
+      url: `/admin/payouts/${payout.id}/complete`,
+      headers: { 'x-user-id': 'admin_finance', 'idempotency-key': key },
+      payload,
+    });
+    const replay = await server.inject({
+      method: 'POST',
+      url: `/admin/payouts/${payout.id}/complete`,
+      headers: { 'x-user-id': 'admin_finance', 'idempotency-key': key },
+      payload,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      status: 'paid',
+      transferReference: payload.transferReference,
+      transferredAt: payload.transferredAt,
+      transferMethod: payload.transferMethod,
+      approvedBy: 'admin_finance',
+      transferProof: payload.proof,
+    });
+    expect(replay.json()).toEqual(response.json());
+  });
+
+  it('rejects completion without proof metadata', async () => {
+    await seedAdmin('admin_finance', 'finance');
+    const payout = await seedPayout('processing');
+    const response = await server.inject({
+      method: 'POST',
+      url: `/admin/payouts/${payout.id}/complete`,
+      headers: asUser('admin_finance'),
+      payload: {
+        transferReference: 'UTR-2026-0002',
+        transferredAt: '2026-10-16T12:00:00.000Z',
+        transferMethod: 'neft',
+      },
+    });
+    expect(response.statusCode).toBe(422);
   });
 });
 
