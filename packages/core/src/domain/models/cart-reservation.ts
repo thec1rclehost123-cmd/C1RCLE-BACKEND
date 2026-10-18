@@ -2,7 +2,7 @@ import { InvalidOperationError } from '../errors.js';
 import { bumpVersion, newVersionedEntity } from '../identity.js';
 
 import type { EntityId, VersionedEntity } from '../identity.js';
-import type { OrderAttribution } from './order.js';
+import type { OrderAttribution, OrderContact } from './order.js';
 import type { PricingBreakdown } from './pricing.js';
 
 /**
@@ -39,6 +39,23 @@ export interface CartReservation extends VersionedEntity {
   expiresAt: string;
   /** Set when converted to an order. */
   convertedOrderId: EntityId | null;
+  /**
+   * The provider (Razorpay) order bound to this hold when the payment attempt
+   * was created. Fulfilment only accepts a payment made against exactly this
+   * order, so a genuine payment for one hold can never be replayed to
+   * fulfil another. First writer wins (see `bindProviderOrder`).
+   */
+  providerOrderId?: string | null;
+  /** Who the tickets are for, captured at hold time; becomes the order contact. */
+  attendee?: OrderContact | null;
+  /**
+   * Position in the event's strict order of hold creation, assigned by the
+   * repository inside a transaction (so no two holds for an event share one).
+   * Capacity is judged against the holds ordered at or before this one, which
+   * is what stops two simultaneous buyers both keeping the last seat. Absent on
+   * holds made before this existed; those count as ahead of everything.
+   */
+  sequence?: number | null;
   /** Idempotency key used to create this hold. */
   idempotencyKey: string;
 }
@@ -79,6 +96,7 @@ export function createCartReservation(input: CreateCartReservationInput): CartRe
     status: 'active',
     expiresAt: new Date(now.getTime() + ttl).toISOString(),
     convertedOrderId: null,
+    providerOrderId: null,
     idempotencyKey: input.idempotencyKey,
     ...newVersionedEntity(now),
   };

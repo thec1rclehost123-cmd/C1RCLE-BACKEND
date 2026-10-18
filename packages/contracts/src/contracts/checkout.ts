@@ -72,12 +72,28 @@ export const cartReservationStatusSchema = z.enum(['active', 'converted', 'relea
  * mirrors; the previous body-level `idempotencyKey` here did not match how
  * every other V2 write route carries it).
  */
+export const checkoutAttendeeSchema = z
+  .object({
+    name: z.string().trim().min(1).max(120),
+    email: z.email().max(254),
+    /** Optional: not every venue needs a phone number for entry. */
+    phone: z.string().trim().max(24).optional().default(''),
+  })
+  .strict();
+export type CheckoutAttendee = z.infer<typeof checkoutAttendeeSchema>;
+
 export const checkoutHoldRequestSchema = z
   .object({
     eventId: opaqueIdSchema,
     lines: z.array(checkoutLineRequestSchema).min(1),
     promoCode: z.string().optional().nullable(),
     referralCode: z.string().optional().nullable(),
+    /**
+     * Who the tickets are for. Optional so existing clients keep working;
+     * when absent the order falls back to a placeholder contact, which is what
+     * every paid order used to get.
+     */
+    attendee: checkoutAttendeeSchema.optional(),
   })
   .strict();
 export type CheckoutHoldRequest = z.infer<typeof checkoutHoldRequestSchema>;
@@ -113,6 +129,26 @@ export const paymentAttemptResponseSchema = z.object({
   keyId: z.string().optional(),
 });
 export type PaymentAttemptResponse = z.infer<typeof paymentAttemptResponseSchema>;
+
+/** Authoritative state used to recover an in-flight checkout after reload. */
+export const paymentRecoveryResponseSchema = z.object({
+  holdId: opaqueIdSchema,
+  eventId: opaqueIdSchema,
+  status: z.enum([
+    'pending',
+    'processing',
+    'fulfilled',
+    'failed',
+    'cancelled',
+    'expired',
+    'refunded',
+    'requires_support',
+  ]),
+  orderId: opaqueIdSchema.nullable(),
+  expiresAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+});
+export type PaymentRecoveryResponse = z.infer<typeof paymentRecoveryResponseSchema>;
 
 /**
  * `POST /payments/:id/verify` — client-redirect confirmation. `:id` is the

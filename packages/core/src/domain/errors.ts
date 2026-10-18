@@ -127,6 +127,17 @@ export class StateTransitionError extends DomainError {
   readonly to: string;
 }
 
+/**
+ * A payment was captured but cannot be honoured (the reservation lapsed and the
+ * seats are gone), so it was refunded in full. Distinct from a generic refusal
+ * so callers can tell a buyer "you have been refunded" instead of "try again".
+ */
+export class PaymentRefundedError extends DomainError {
+  constructor(message: string) {
+    super(message, 'payment_refunded');
+  }
+}
+
 export class InvalidOperationError extends DomainError {
   constructor(message: string) {
     super(message, 'invalid_operation');
