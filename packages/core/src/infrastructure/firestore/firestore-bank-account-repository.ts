@@ -30,6 +30,11 @@ export class FirestoreBankAccountRepository implements BankAccountRepository {
     return snap.docs.map((doc) => toAccount(doc.data()));
   }
 
+  async listAll(): Promise<BankAccount[]> {
+    const snap = await this.collection.get();
+    return snap.docs.map((doc) => toAccount(doc.data()));
+  }
+
   async findDefaultByOrganization(organizationId: EntityId): Promise<BankAccount | null> {
     const snap = await this.collection
       .where('organizationId', '==', organizationId)

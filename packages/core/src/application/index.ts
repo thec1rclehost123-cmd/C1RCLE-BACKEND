@@ -167,6 +167,8 @@ export type {
   RequestPayoutInput,
 } from './finance/payout-service.js';
 export { createPayoutService } from './finance/payout-service.js';
+export { migrateBankAccountKeys } from './finance/bank-account-key-migration.js';
+export type { BankAccountKeyMigrationReport } from './finance/bank-account-key-migration.js';
 export { AdminPayoutService } from './finance/admin-payout-service.js';
 export type {
   BankAccountService,

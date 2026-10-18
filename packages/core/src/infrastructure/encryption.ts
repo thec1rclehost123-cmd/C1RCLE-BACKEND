@@ -67,3 +67,46 @@ export function decryptField(
   ]);
   return decrypted.toString('utf8');
 }
+
+export interface FieldKey {
+  secret: string;
+  salt: string;
+}
+
+export type ReencryptResult =
+  /** Already readable with the current key; nothing to do. */
+  | { status: 'current' }
+  /** Was sealed with the legacy key; `envelope` is the same value sealed with the current key. */
+  | { status: 'migrated'; envelope: string }
+  /** Opens under neither key: corrupt, tampered, or sealed with some other secret. */
+  | { status: 'unreadable' };
+
+/**
+ * One-off key migration for a stored envelope. Tries the current key first, then
+ * the legacy one; a legacy-sealed value is re-sealed under the current key with
+ * the same context (so it stays bound to the same record).
+ *
+ * Never throws for undecryptable input and never returns or logs the plaintext —
+ * callers get a status and, only when migrated, the new envelope.
+ */
+export function reencryptField(
+  envelope: string,
+  context: string,
+  keys: { current: FieldKey; legacy: FieldKey },
+): ReencryptResult {
+  try {
+    decryptField(envelope, keys.current.secret, keys.current.salt, context);
+    return { status: 'current' };
+  } catch {
+    /* not sealed with the current key — try the legacy one */
+  }
+  try {
+    const plaintext = decryptField(envelope, keys.legacy.secret, keys.legacy.salt, context);
+    return {
+      status: 'migrated',
+      envelope: encryptField(plaintext, keys.current.secret, keys.current.salt, context),
+    };
+  } catch {
+    return { status: 'unreadable' };
+  }
+}
