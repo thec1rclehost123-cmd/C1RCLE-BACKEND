@@ -42,6 +42,8 @@ import {
   FirestoreCoverWalletTxnRepository,
   FirestoreCoverWalletReconciliationRepository,
   FirestoreLedgerRepository,
+  FirestoreFinancialJournalRepository,
+  FirestoreJournalTransitionRepository,
   FirestorePayoutRepository,
   FirestoreBankAccountRepository,
   FirestoreDisputeRepository,
@@ -51,6 +53,8 @@ import {
   FirestoreFollowRepository,
   FirestoreSocialNotificationRepository,
   FirestoreProviderPaymentRepository,
+  FirestoreProviderFinancialEventRepository,
+  FirestoreReconciliationRepository,
   FirestoreRefundRequestRepository,
   FirestoreSafetyReportRepository,
   FirestoreSupportTicketRepository,
@@ -88,6 +92,8 @@ import {
   MemoryCoverWalletTxnRepository,
   MemoryCoverWalletReconciliationRepository,
   MemoryLedgerRepository,
+  MemoryFinancialJournalRepository,
+  MemoryJournalTransitionRepository,
   MemoryPayoutRepository,
   MemoryBankAccountRepository,
   MemoryDisputeRepository,
@@ -97,6 +103,8 @@ import {
   MemoryFollowRepository,
   MemorySocialNotificationRepository,
   MemoryProviderPaymentRepository,
+  MemoryProviderFinancialEventRepository,
+  MemoryReconciliationRepository,
   MemoryRefundRequestRepository,
   MemorySafetyReportRepository,
   MemorySupportTicketRepository,
@@ -129,6 +137,7 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
   const isMemory = gw.STORAGE_DRIVER === 'memory';
 
   if (isMemory) {
+    const financialJournals = new MemoryFinancialJournalRepository();
     return {
       organizations: new MemoryOrganizationRepository(),
       invitations: new MemoryInvitationRepository(),
@@ -160,7 +169,9 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
       coverWalletReconciliations: new MemoryCoverWalletReconciliationRepository(),
       // Phase 6
       ledger: new MemoryLedgerRepository(),
-      payouts: new MemoryPayoutRepository(),
+      financialJournals,
+      journalTransition: new MemoryJournalTransitionRepository(),
+      payouts: new MemoryPayoutRepository(financialJournals),
       bankAccounts: new MemoryBankAccountRepository(),
       disputes: new MemoryDisputeRepository(),
       leaderboard: new MemoryLeaderboardRepository(),
@@ -171,6 +182,8 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
       socialNotifications: new MemorySocialNotificationRepository(),
       refundRequests: new MemoryRefundRequestRepository(),
       providerPayments: new MemoryProviderPaymentRepository(),
+      providerFinancialEvents: new MemoryProviderFinancialEventRepository(),
+      reconciliations: new MemoryReconciliationRepository(),
       supportTickets: new MemorySupportTicketRepository(),
       safetyReports: new MemorySafetyReportRepository(),
       users: new MemoryUserAccountRepository(),
@@ -222,6 +235,8 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
     coverWalletReconciliations: new FirestoreCoverWalletReconciliationRepository(db),
     // Phase 6
     ledger: new FirestoreLedgerRepository(db),
+    financialJournals: new FirestoreFinancialJournalRepository(db),
+    journalTransition: new FirestoreJournalTransitionRepository(db),
     payouts: new FirestorePayoutRepository(db),
     bankAccounts: new FirestoreBankAccountRepository(db),
     disputes: new FirestoreDisputeRepository(db),
@@ -233,6 +248,8 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
     socialNotifications: new FirestoreSocialNotificationRepository(db),
     refundRequests: new FirestoreRefundRequestRepository(db),
     providerPayments: new FirestoreProviderPaymentRepository(db),
+    providerFinancialEvents: new FirestoreProviderFinancialEventRepository(db),
+    reconciliations: new FirestoreReconciliationRepository(db),
     supportTickets: new FirestoreSupportTicketRepository(db),
     safetyReports: new FirestoreSafetyReportRepository(db),
     users: new FirestoreUserAccountRepository(db),

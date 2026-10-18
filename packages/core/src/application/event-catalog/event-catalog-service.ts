@@ -19,6 +19,7 @@ import { requireOrgAccess } from '../context.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type { Event } from '../../domain/models/event.js';
+import type { DiscountFundingOwner } from '../../domain/models/financial-journal.js';
 import type { EventCatalogRepository, PaginationQuery } from '../../domain/ports/repositories.js';
 import type { ActorContext, ServiceDeps } from '../context.js';
 
@@ -54,6 +55,7 @@ export interface CreatePromotionCommand {
   type?: PromoType;
   discountType: PromoDiscountType;
   discountValue: number;
+  discountFundingOwner: DiscountFundingOwner;
   tierIds?: EntityId[];
   maxRedemptions?: number | null;
   maxPerUser?: number | null;
@@ -142,6 +144,7 @@ export class EventCatalogService {
       type: command.type,
       discountType: command.discountType,
       discountValue: command.discountValue,
+      discountFundingOwner: command.discountFundingOwner,
       tierIds: command.tierIds,
       maxRedemptions: command.maxRedemptions ?? null,
       maxPerUser: command.maxPerUser ?? null,

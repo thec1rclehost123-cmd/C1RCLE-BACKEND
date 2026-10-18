@@ -68,6 +68,8 @@ function makeOrder(overrides: Partial<Order> = {}): Order {
     createdAt: now,
     updatedAt: now,
     ...overrides,
+    discountFundingOwner: overrides.discountFundingOwner ?? null,
+    appliedRefundRequestIds: overrides.appliedRefundRequestIds ?? [],
   };
 }
 

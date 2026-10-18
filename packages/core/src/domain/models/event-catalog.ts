@@ -2,6 +2,7 @@ import { InvalidOperationError } from '../errors.js';
 import { newVersionedEntity, bumpVersion } from '../identity.js';
 
 import type { EntityId, VersionedEntity } from '../identity.js';
+import type { DiscountFundingOwner } from './financial-journal.js';
 
 /**
  * ─── Event catalog ─────────────────────────────────────────────────────────
@@ -346,6 +347,8 @@ export interface PromoCode extends VersionedEntity {
   discountType: PromoDiscountType;
   /** Percent (0–100) when `percent`; paise when `fixed`. */
   discountValue: number;
+  /** Commercial owner that absorbs this discount. */
+  discountFundingOwner: DiscountFundingOwner;
   /** Empty = applies to all tiers (V1 semantics). */
   tierIds: EntityId[];
   /** Total allowed redemptions; null = unlimited. */
@@ -368,6 +371,7 @@ export interface CreatePromoCodeInput {
   type?: PromoType;
   discountType: PromoDiscountType;
   discountValue: number;
+  discountFundingOwner: DiscountFundingOwner;
   tierIds?: EntityId[];
   maxRedemptions?: number | null;
   maxPerUser?: number | null;
@@ -398,6 +402,7 @@ export function createPromoCode(input: CreatePromoCodeInput): PromoCode {
     type: input.type ?? 'private',
     discountType: input.discountType,
     discountValue: input.discountValue,
+    discountFundingOwner: input.discountFundingOwner,
     tierIds: input.tierIds ?? [],
     maxRedemptions: input.maxRedemptions ?? null,
     maxPerUser: input.maxPerUser ?? null,

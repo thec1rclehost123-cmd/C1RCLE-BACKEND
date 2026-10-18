@@ -50,7 +50,37 @@ export type Permission =
    * `ticket.override` because it is a credential-management right, not a
    * door-staff one: whoever holds it can hand out entry to the event.
    */
-  | 'door.manage';
+  | 'door.manage'
+  | 'finance.read'
+  | 'finance.orders.read'
+  | 'finance.refunds.request'
+  | 'finance.refunds.approve'
+  | 'finance.refunds.execute'
+  | 'finance.payouts.read'
+  | 'finance.payouts.manage'
+  | 'finance.bank_accounts.manage'
+  | 'finance.reconciliation.read'
+  | 'finance.reconciliation.resolve'
+  | 'finance.adjustments.create'
+  | 'finance.audit.read';
+
+const FINANCE_OWNER: readonly Permission[] = [
+  'finance.read',
+  'finance.orders.read',
+  'finance.refunds.request',
+  'finance.payouts.read',
+  'finance.payouts.manage',
+  'finance.bank_accounts.manage',
+  'finance.reconciliation.read',
+  'finance.audit.read',
+];
+
+const FINANCE_MANAGER: readonly Permission[] = [
+  'finance.read',
+  'finance.orders.read',
+  'finance.refunds.request',
+  'finance.payouts.read',
+];
 
 const READ_ONLY: readonly Permission[] = [
   'organization.read',
@@ -82,6 +112,7 @@ export const ROLE_PERMISSIONS: Readonly<Record<OrganizationRole, readonly Permis
     'slot-request.list',
     'ticket.override',
     'door.manage',
+    ...FINANCE_OWNER,
   ],
   admin: [
     'organization.read',
@@ -100,6 +131,7 @@ export const ROLE_PERMISSIONS: Readonly<Record<OrganizationRole, readonly Permis
     'slot-request.list',
     'ticket.override',
     'door.manage',
+    ...FINANCE_OWNER,
   ],
   manager: [
     'organization.read',
@@ -114,6 +146,7 @@ export const ROLE_PERMISSIONS: Readonly<Record<OrganizationRole, readonly Permis
     'slot-request.list',
     'ticket.override',
     'door.manage',
+    ...FINANCE_MANAGER,
   ],
   member: READ_ONLY,
 };

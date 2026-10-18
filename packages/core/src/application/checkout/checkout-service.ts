@@ -16,6 +16,7 @@ import { platformFeePercentFor } from '../../domain/models/onboarding.js';
 import { commissionTierFor } from '../../domain/models/partnership.js';
 import { isSystemActor, SYSTEM_ACTOR } from '../context.js';
 import { createFinanceService } from '../finance/finance-service.js';
+import { FinancialPostingService } from '../finance/financial-posting-service.js';
 import { createLeaderboardService } from '../finance/leaderboard-service.js';
 import {
   ReferralLinkService,
@@ -94,13 +95,20 @@ export const MIN_ONLINE_PAYMENT_PAISE = 100;
 
 export class CheckoutService {
   private readonly financeService: FinanceService;
+  private readonly financialPostingService: FinancialPostingService;
   private readonly leaderboardService: LeaderboardService;
 
   constructor(private readonly deps: ServiceDeps) {
     this.financeService = createFinanceService({
       ledger: deps.repositories.ledger,
+      financialJournals: deps.repositories.financialJournals,
+      journalTransition: deps.repositories.journalTransition,
+      payouts: deps.repositories.payouts,
+      events: deps.repositories.events,
+      reconciliations: deps.repositories.reconciliations,
       config: deps.config,
     });
+    this.financialPostingService = new FinancialPostingService(deps.repositories.financialJournals);
     this.leaderboardService = createLeaderboardService({
       leaderboard: deps.repositories.leaderboard,
       config: deps.config,
@@ -129,6 +137,12 @@ export class CheckoutService {
       lines: pricingLines,
       promoCode,
     });
+
+    if (pricing.discountPaise > 0 && pricing.discountFundingOwner == null) {
+      throw new InvalidOperationError(
+        'This discount has no funding owner and cannot be used for a financial order',
+      );
+    }
 
     if (promoCode) await this.assertPromoWithinLimits(eventId, promoCode, input.actor.userId);
 
@@ -421,6 +435,7 @@ export class CheckoutService {
       currency: tier.currency,
       subtotalPaise: 0,
       discountPaise: 0,
+      discountFundingOwner: null,
       discountedSubtotalPaise: 0,
       platformFeePaise: 0,
       paymentFeePaise: 0,
@@ -434,6 +449,7 @@ export class CheckoutService {
       reservationExpiresAt: now.toISOString(),
       failureReason: null,
       refundedPaise: 0,
+      appliedRefundRequestIds: [],
       version: 1,
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
@@ -462,6 +478,14 @@ export class CheckoutService {
     }
 
     const entitlements = await this.deps.repositories.entitlements.getByOrderId(orderId);
+    await this.financialPostingService.postZeroValueEvidence({
+      organizationId: order.organizationId,
+      orderId: order.id,
+      eventId: order.eventId,
+      currency: order.currency,
+      sourceType: 'free_ticket',
+      postedAt: now,
+    });
     return { order, entitlements };
   }
 
@@ -755,6 +779,7 @@ export class CheckoutService {
       currency: hold.pricing.currency,
       subtotalPaise: hold.pricing.subtotalPaise,
       discountPaise: hold.pricing.discountPaise,
+      discountFundingOwner: hold.pricing.discountFundingOwner ?? null,
       discountedSubtotalPaise: hold.pricing.discountedSubtotalPaise,
       platformFeePaise: hold.pricing.platformFeePaise,
       paymentFeePaise: hold.pricing.paymentFeePaise,
@@ -768,6 +793,7 @@ export class CheckoutService {
       reservationExpiresAt: hold.expiresAt,
       failureReason: null,
       refundedPaise: 0,
+      appliedRefundRequestIds: [],
       version: 1,
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
@@ -926,8 +952,17 @@ export class CheckoutService {
     });
     if (wanted.some((entitlement) => !have.has(entitlement.id))) missing.push('tickets');
     // A zero-value order has no money to split, so no ledger entry is expected.
-    if (order.grandTotalPaise > 0 && (await repos.ledger.findByOrder(order.id)).length === 0) {
-      missing.push('ledger');
+    if (order.grandTotalPaise > 0) {
+      const sourceType = order.paymentId?.startsWith('door_cash_')
+        ? 'door_cash_sale'
+        : order.paymentId?.startsWith('door_')
+          ? 'door_electronic_sale'
+          : 'online_payment_capture';
+      const [legacyEntries, journals] = await Promise.all([
+        repos.ledger.findByOrder(order.id),
+        repos.financialJournals.findBySource(sourceType, order.id),
+      ]);
+      if (legacyEntries.length === 0 || journals.length === 0) missing.push('ledger');
     }
     return { holdFound: true, missing };
   }
@@ -1097,7 +1132,10 @@ export class CheckoutService {
         organizationId: hostOrganizationId,
         orderId: order.id,
         eventId: order.eventId,
-        grossAmount: order.grandTotalPaise,
+        // Compatibility ledger now follows the same basis as the canonical
+        // journal: only discounted ticket face value is distributable. Guest
+        // fees and GST remain separate liabilities/revenue components.
+        grossAmount: order.discountedSubtotalPaise,
         hostOrganizationId,
         venueOrganizationId,
         promoterOrganizationId,
@@ -1108,6 +1146,58 @@ export class CheckoutService {
       },
       SYSTEM_ACTOR,
     );
+
+    const providerPayment = order.paymentId
+      ? await this.deps.repositories.providerPayments.findByPaymentId(order.paymentId)
+      : null;
+    const sourceType = order.paymentId?.startsWith('door_cash_')
+      ? 'door_cash_sale'
+      : order.paymentId?.startsWith('door_')
+        ? 'door_electronic_sale'
+        : 'online_payment_capture';
+    const amountFor = (entryType: (typeof entries)[number]['entryType']): number =>
+      entries.find((entry) => entry.entryType === entryType)?.amount ?? 0;
+    const platformSettings = await this.deps.repositories.platformSettings.get();
+    await this.financialPostingService.postTicketSale({
+      organizationId: hostOrganizationId,
+      orderId: order.id,
+      eventId: order.eventId,
+      paymentId: order.paymentId,
+      sourceType,
+      // Cash has no provider; online orders reach this method only after the
+      // provider capture was verified. Electronic door modes are rejected at
+      // command entry until a terminal confirmation integration exists.
+      providerConfirmed: sourceType !== 'door_electronic_sale',
+      currency: order.currency,
+      ticketFaceValuePaise: order.subtotalPaise,
+      discountPaise: order.discountPaise,
+      discountFundingOwner: order.discountFundingOwner,
+      netTicketRevenuePaise: order.discountedSubtotalPaise,
+      gstPaise: order.gstPaise,
+      platformFeePaise: order.platformFeePaise,
+      paymentFeePaise: order.paymentFeePaise,
+      providerFeePaise: providerPayment
+        ? providerPayment.feePaise + providerPayment.taxOnFeePaise
+        : 0,
+      policy: {
+        ...platformSettings.accountingPolicy,
+        // The policy snapshot is part of the journal's idempotent facts. Reuse
+        // the immutable payment/order capture time so duplicate callbacks,
+        // concurrent confirmation and fulfilment repair rebuild byte-for-byte
+        // equivalent journals instead of conflicting on the retry time.
+        capturedAt: providerPayment?.capturedAt ?? order.paidAt ?? order.createdAt,
+      },
+      allocation: {
+        platformPaise: amountFor('platform_fee'),
+        hostOrganizationId,
+        hostPaise: amountFor('host_payout'),
+        venueOrganizationId,
+        venuePaise: amountFor('venue_share'),
+        promoterOrganizationId,
+        promoterPaise: amountFor('promoter_commission'),
+      },
+      postedAt: this.deps.config.clock.now(),
+    });
 
     if (order.attribution) {
       await this.deps.repositories.referralLinks.recordSale(

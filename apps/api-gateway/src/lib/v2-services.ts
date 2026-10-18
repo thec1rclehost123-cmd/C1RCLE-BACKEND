@@ -39,6 +39,8 @@ import {
   AdminDisputeService,
   ProviderPaymentService,
   RefundService,
+  ReconciliationService,
+  JournalTransitionService,
   SupportService,
   AdminSupportService,
   createLeaderboardService,
@@ -76,6 +78,7 @@ import {
 } from '@c1rcle/core/domain';
 import {
   MemoryOutboxStore,
+  FirestoreOutboxStore,
   MemoryAuditRepository,
   MemoryAdminAuditRepository,
   FirestoreAdminAuditRepository,
@@ -169,6 +172,8 @@ export interface PartnerV2Services {
   actor(request: FastifyRequest): ActorContext;
   /** Raw repository bundle for seed/test wiring only. */
   repos(): ServiceDeps['repositories'];
+  /** Core runtime configuration for route-composed financial commands. */
+  config(): ServiceDeps['config'];
   /** T13 audit trail written by the event bus (B09 slice consumer). */
   audits: MemoryAuditRepository;
   /** Phase 2 admin audit trail (before/after), for seed/test wiring. */
@@ -201,6 +206,10 @@ export interface PartnerV2Services {
   refund: RefundService;
   /** The payment provider's record of each payment, for reconciliation. */
   providerPayments: ProviderPaymentService;
+  /** Persisted cross-system finance reconciliation. */
+  reconciliation: ReconciliationService;
+  /** Explicit legacy-ledger to journal backfill/comparison/cutover controls. */
+  journalTransition: JournalTransitionService;
   /** Phase 7 support: guest/requester intake + follow-ups on your own tickets. */
   support: SupportService;
   /** Phase 7 support: admin desk over the same ticket aggregate. */
@@ -305,8 +314,13 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
 
   const repositories: ServiceDeps['repositories'] = buildRepositories(gw);
 
-  // T13 event infrastructure: memory outbox store + in-process bus + audit.
-  const outboxStore = new MemoryOutboxStore();
+  // Financial and domain-event intents must survive a production process
+  // restart. Tests keep the deterministic memory adapter; Firestore uses the
+  // leased durable outbox.
+  const outboxStore =
+    gw.STORAGE_DRIVER === 'memory'
+      ? new MemoryOutboxStore()
+      : new FirestoreOutboxStore(firestoreClient(gw));
   const audits = new MemoryAuditRepository();
   const eventBus = new InProcessEventBus(outboxStore);
   eventBus.subscribe('event.published', createAuditConsumer(audits));
@@ -541,6 +555,11 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   // Phase 6 services
   const finance = createFinanceService({
     ledger: repositories.ledger,
+    financialJournals: repositories.financialJournals,
+    journalTransition: repositories.journalTransition,
+    payouts: repositories.payouts,
+    events: repositories.events,
+    reconciliations: repositories.reconciliations,
     config: coreConfig,
   });
 
@@ -548,6 +567,11 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     payouts: repositories.payouts,
     bankAccounts: repositories.bankAccounts,
     ledger: repositories.ledger,
+    financialJournals: repositories.financialJournals,
+    journalTransition: repositories.journalTransition,
+    events: repositories.events,
+    reconciliations: repositories.reconciliations,
+    platformSettings: repositories.platformSettings,
     config: coreConfig,
   });
 
@@ -563,6 +587,8 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
 
   const refund = new RefundService(deps, adminAuthority);
   const providerPayments = new ProviderPaymentService(deps);
+  const reconciliation = new ReconciliationService(deps);
+  const journalTransition = new JournalTransitionService(deps);
   const adminPayout = new AdminPayoutService(deps, adminAuthority);
   const adminDispute = new AdminDisputeService(deps, adminAuthority);
   const adminOps = new AdminOperationsService(deps, adminAuthority);
@@ -584,6 +610,20 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     guestProfiles: repositories.guestProfiles,
     config: coreConfig,
   });
+
+  if (gw.STORAGE_DRIVER === 'firestore') {
+    const drainPersistedOutbox = () => {
+      void eventBus.drain().catch((error: unknown) => {
+        resolvedLogger.error('outbox.drain_failed', {
+          error: error instanceof Error ? error.message : 'unknown error',
+        });
+      });
+    };
+    // Recover rows left by a previous process immediately, then poll for
+    // scheduled retries. `unref` lets graceful shutdown proceed naturally.
+    queueMicrotask(drainPersistedOutbox);
+    setInterval(drainPersistedOutbox, 1_000).unref();
+  }
 
   return {
     organizations: new OrganizationService(deps),
@@ -614,6 +654,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     idempotency: new IdempotencyService(buildIdempotencyStore(), logger),
     actor: (request: FastifyRequest) => actorFromRequest(gw, request),
     repos: () => repositories,
+    config: () => coreConfig,
     /** T13 audit trail surfaced to routes/tests (B09 slice consumer). */
     audits,
     adminAudits: () => adminAudits,
@@ -631,6 +672,8 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     dispute,
     refund,
     providerPayments,
+    reconciliation,
+    journalTransition,
     adminPayout,
     adminDispute,
     support,

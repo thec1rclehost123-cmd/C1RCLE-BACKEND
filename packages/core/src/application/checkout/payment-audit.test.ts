@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { createCoreConfig } from '../../config/index.js';
 import { createPromoCode, createTicketTier } from '../../domain/models/event-catalog.js';
 import { createEvent, transitionEvent } from '../../domain/models/event.js';
+import { MemoryFinancialJournalRepository } from '../../infrastructure/memory/memory-financial-journal-repository.js';
 import { MemoryLeaderboardRepository } from '../../infrastructure/memory/memory-leaderboard-repository.js';
 import { MemoryLedgerRepository } from '../../infrastructure/memory/memory-ledger-repository.js';
 import {
@@ -60,6 +61,7 @@ async function build(options: { eventStatus?: 'published' | 'draft' | 'cancelled
       orders,
       entitlements: new MemoryEntitlementRepository(),
       ledger: new MemoryLedgerRepository(),
+      financialJournals: new MemoryFinancialJournalRepository(),
       leaderboard: new MemoryLeaderboardRepository(),
       promoRedemptions: new MemoryPromoRedemptionRepository(),
     },
@@ -163,6 +165,7 @@ describe('a promo code must be redeemable', () => {
       code: 'SAVE50',
       discountType: 'percent',
       discountValue: 50,
+      discountFundingOwner: 'host',
       now: NOW,
       ...overrides,
     });
@@ -288,6 +291,7 @@ describe('promo redemption limits count every redemption record', () => {
       code: 'ONCE',
       discountType: 'percent',
       discountValue: 10,
+      discountFundingOwner: 'host',
       now: NOW,
       ...overrides,
     });

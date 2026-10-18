@@ -168,6 +168,9 @@ export type {
   BalanceSummary,
 } from './finance/finance-service.js';
 export { createFinanceService } from './finance/finance-service.js';
+export * from './finance/financial-posting-service.js';
+export { JournalTransitionService } from './finance/journal-transition-service.js';
+export type { JournalBackfillPreview } from './finance/journal-transition-service.js';
 export type {
   PayoutService,
   PayoutServiceDeps,
@@ -191,6 +194,7 @@ export { AdminDisputeService } from './finance/admin-dispute-service.js';
 export type { RequestRefundCommand } from './finance/refund-service.js';
 export { ProviderPaymentService } from './finance/provider-payment-service.js';
 export { RefundService } from './finance/refund-service.js';
+export { ReconciliationService } from './finance/reconciliation-service.js';
 export { SupportService } from './support/support-service.js';
 export type { SubmitTicketCommand } from './support/support-service.js';
 export { AdminSupportService } from './support/admin-support-service.js';

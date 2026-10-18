@@ -185,6 +185,46 @@ describe('providerEventFromWebhook', () => {
       amountPaise: 7000,
       currency: 'INR',
       status,
+      amountDeductedPaise: 0,
+      reasonCode: null,
+      reasonDescription: null,
+      respondBy: null,
+      phase: null,
+      evidenceState: 'none',
+      providerOccurredAt: null,
+    });
+  });
+
+  it('retains only documented dispute operations fields and normalizes provider timestamps', () => {
+    const webhook = parse({
+      event: 'payment.dispute.created',
+      payload: {
+        dispute: {
+          entity: {
+            id: 'disp_1',
+            payment_id: 'pay_1',
+            amount: 7000,
+            amount_deducted: 0,
+            currency: 'INR',
+            reason_code: 'processed_invalid_expired_card',
+            reason_description: 'Issuer reason',
+            respond_by: 1_590_431_400,
+            phase: 'chargeback',
+            created_at: 1_589_907_957,
+            evidence: { submitted_at: null },
+          },
+        },
+      },
+    });
+
+    expect(providerEventFromWebhook(webhook, null, NOW)).toMatchObject({
+      reasonCode: 'processed_invalid_expired_card',
+      reasonDescription: 'Issuer reason',
+      phase: 'chargeback',
+      amountDeductedPaise: 0,
+      evidenceState: 'none',
+      respondBy: new Date(1_590_431_400_000).toISOString(),
+      providerOccurredAt: new Date(1_589_907_957_000).toISOString(),
     });
   });
 

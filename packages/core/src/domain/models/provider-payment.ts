@@ -25,7 +25,14 @@ export type ProviderDisputeStatus = 'open' | 'under_review' | 'won' | 'lost' | '
 
 export interface ProviderDispute {
   amountPaise: number;
+  amountDeductedPaise: number;
   status: ProviderDisputeStatus;
+  reasonCode: string | null;
+  reasonDescription: string | null;
+  respondBy: string | null;
+  phase: 'fraud' | 'retrieval' | 'chargeback' | 'pre_arbitration' | 'arbitration' | null;
+  evidenceState: 'none' | 'submitted';
+  providerOccurredAt: string | null;
 }
 
 export interface ProviderPayment extends VersionedEntity {
@@ -81,6 +88,13 @@ export type ProviderPaymentEvent =
       amountPaise: number;
       currency: string;
       status: ProviderDisputeStatus;
+      amountDeductedPaise: number;
+      reasonCode: string | null;
+      reasonDescription: string | null;
+      respondBy: string | null;
+      phase: ProviderDispute['phase'];
+      evidenceState: ProviderDispute['evidenceState'];
+      providerOccurredAt: string | null;
     };
 
 /** A dispute only moves forward: a late "open" must not undo a final outcome. */
@@ -159,8 +173,12 @@ export function applyProviderPaymentEvent(
       break;
     case 'dispute': {
       const known = base.disputes[event.disputeId];
+      const knownTerminal =
+        known?.status === 'won' || known?.status === 'lost' || known?.status === 'closed';
       const advances =
-        known === undefined || DISPUTE_RANK[event.status] >= DISPUTE_RANK[known.status];
+        known === undefined ||
+        known.status === event.status ||
+        (!knownTerminal && DISPUTE_RANK[event.status] >= DISPUTE_RANK[known.status]);
       const changed =
         known === undefined ||
         known.status !== event.status ||
@@ -170,7 +188,17 @@ export function applyProviderPaymentEvent(
           ...base,
           disputes: {
             ...base.disputes,
-            [event.disputeId]: { amountPaise: event.amountPaise, status: event.status },
+            [event.disputeId]: {
+              amountPaise: event.amountPaise,
+              amountDeductedPaise: event.amountDeductedPaise,
+              status: event.status,
+              reasonCode: event.reasonCode,
+              reasonDescription: event.reasonDescription,
+              respondBy: event.respondBy,
+              phase: event.phase,
+              evidenceState: event.evidenceState,
+              providerOccurredAt: event.providerOccurredAt,
+            },
           },
         };
       }

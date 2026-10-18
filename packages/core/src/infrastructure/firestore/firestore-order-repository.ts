@@ -140,6 +140,7 @@ function toDoc(order: Order): DocumentData {
     currency: order.currency,
     subtotalPaise: order.subtotalPaise,
     discountPaise: order.discountPaise,
+    discountFundingOwner: order.discountFundingOwner ?? null,
     discountedSubtotalPaise: order.discountedSubtotalPaise,
     platformFeePaise: order.platformFeePaise,
     paymentFeePaise: order.paymentFeePaise,
@@ -153,6 +154,7 @@ function toDoc(order: Order): DocumentData {
     reservationExpiresAt: order.reservationExpiresAt,
     failureReason: order.failureReason,
     refundedPaise: order.refundedPaise,
+    appliedRefundRequestIds: order.appliedRefundRequestIds ?? [],
     version: order.version,
     createdAt: order.createdAt,
     updatedAt: order.updatedAt,
@@ -171,6 +173,8 @@ function toOrder(data: DocumentData): Order {
     currency: data.currency as string,
     subtotalPaise: data.subtotalPaise as number,
     discountPaise: data.discountPaise as number,
+    discountFundingOwner:
+      (data.discountFundingOwner as Order['discountFundingOwner'] | undefined) ?? null,
     discountedSubtotalPaise: data.discountedSubtotalPaise as number,
     platformFeePaise: data.platformFeePaise as number,
     paymentFeePaise: data.paymentFeePaise as number,
@@ -186,6 +190,7 @@ function toOrder(data: DocumentData): Order {
     // Existing orders written before this field existed have no value —
     // they predate refunds, so zero is the correct read, not a guess.
     refundedPaise: (data.refundedPaise as number | undefined) ?? 0,
+    appliedRefundRequestIds: (data.appliedRefundRequestIds as string[] | undefined) ?? [],
     version: data.version as number,
     createdAt: data.createdAt as string,
     updatedAt: data.updatedAt as string,

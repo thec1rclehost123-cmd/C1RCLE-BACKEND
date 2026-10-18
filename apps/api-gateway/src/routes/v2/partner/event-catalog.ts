@@ -462,6 +462,7 @@ function promoToDto(promo: PromoCode) {
     type: promo.type,
     discountType: promo.discountType,
     discountValue: promo.discountValue,
+    discountFundingOwner: promo.discountFundingOwner,
     tierIds: [...promo.tierIds],
     maxRedemptions: promo.maxRedemptions,
     maxPerUser: promo.maxPerUser,

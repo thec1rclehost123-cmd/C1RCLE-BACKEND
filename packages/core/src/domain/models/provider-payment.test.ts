@@ -48,6 +48,13 @@ const dispute = (
   amountPaise,
   currency: 'INR',
   status,
+  amountDeductedPaise: status === 'lost' ? amountPaise : 0,
+  reasonCode: 'test_reason',
+  reasonDescription: null,
+  respondBy: null,
+  phase: 'chargeback',
+  evidenceState: 'none',
+  providerOccurredAt: T0.toISOString(),
 });
 
 function build(...events: ProviderPaymentEvent[]): ProviderPayment {

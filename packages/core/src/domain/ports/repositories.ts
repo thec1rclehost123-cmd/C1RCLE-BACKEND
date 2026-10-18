@@ -48,7 +48,13 @@ import type {
   ScannerSessionCreateInput,
 } from '../models/event-code.js';
 import type { Event } from '../models/event.js';
+import type {
+  FinancialComponentBreakdown,
+  FinancialJournal,
+  PostingSourceType,
+} from '../models/financial-journal.js';
 import type { GuestProfile } from '../models/guest-profile.js';
+import type { JournalTransitionState } from '../models/journal-transition.js';
 import type {
   LeaderboardBucket,
   LeaderboardPeriodType,
@@ -68,7 +74,13 @@ import type { Payout, PayoutStatus } from '../models/payout.js';
 import type { PlatformSettings } from '../models/platform-settings.js';
 import type { PlatformUser } from '../models/platform-user.js';
 import type { PromoterConnection } from '../models/promoter-connection.js';
+import type { ProviderFinancialEvent } from '../models/provider-financial-event.js';
 import type { ProviderPayment } from '../models/provider-payment.js';
+import type {
+  ReconciliationDiscrepancy,
+  ReconciliationDiscrepancyState,
+  ReconciliationRun,
+} from '../models/reconciliation.js';
 import type { ReferralLink } from '../models/referral-link.js';
 import type { AdminRefundRequest, AdminRefundRequestStatus } from '../models/refund-request.js';
 import type {
@@ -1116,9 +1128,53 @@ export interface LedgerRepository {
   ): Promise<Record<LedgerEntryType, { pending: number; settled: number; paidOut: number }>>;
 }
 
+/**
+ * Immutable, balanced accounting journals. `postBatch` is repair-safe: a
+ * retry returns the first committed journal for each idempotency key and a
+ * key may never be reused for different journal content.
+ */
+export interface FinancialJournalRepository {
+  postBatch(journals: FinancialJournal[]): Promise<FinancialJournal[]>;
+  findById(id: EntityId): Promise<FinancialJournal | null>;
+  findByIdempotencyKey(idempotencyKey: string): Promise<FinancialJournal | null>;
+  findBySource(sourceType: PostingSourceType, sourceId: EntityId): Promise<FinancialJournal[]>;
+  findByOrderId(orderId: EntityId): Promise<FinancialJournal[]>;
+  findReversals(journalId: EntityId): Promise<FinancialJournal[]>;
+  listByOrganization(
+    organizationId: EntityId,
+    query: PaginationQuery,
+  ): Promise<Page<FinancialJournal>>;
+  /** Net credit balance of payable accounts for this organization. */
+  sumPayableByOrganization(organizationId: EntityId): Promise<number>;
+  listPayableLinesByOrganization(organizationId: EntityId): Promise<PayableJournalLine[]>;
+}
+
+export interface PayableJournalLine {
+  journalId: EntityId;
+  account: 'host_payable' | 'venue_payable' | 'promoter_payable' | 'partner_payable';
+  side: 'debit' | 'credit';
+  amountPaise: number;
+  component: keyof FinancialComponentBreakdown | null;
+  source: FinancialJournal['source'];
+  accountingPolicy: FinancialJournal['accountingPolicy'];
+  postedAt: string;
+}
+
+export interface JournalTransitionRepository {
+  get(): Promise<JournalTransitionState>;
+  /** Optimistic save; the supplied version must be exactly one above storage. */
+  save(state: JournalTransitionState): Promise<void>;
+}
+
 /** Payout requests — draw-downs against the ledger-computed available balance. */
 export interface PayoutRepository {
   create(payout: Payout): Promise<Payout>;
+  /** Atomically creates the payout and its payable-reservation journal within the limit. */
+  createWithinLimit(
+    payout: Payout,
+    payableLimitPaise: number,
+    reservationJournal: FinancialJournal,
+  ): Promise<Payout>;
   findById(id: EntityId): Promise<Payout | null>;
   save(payout: Payout): Promise<Payout>;
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Payout>>;
@@ -1162,7 +1218,35 @@ export interface DisputeRepository {
 export interface ProviderPaymentRepository {
   findByPaymentId(paymentId: string): Promise<ProviderPayment | null>;
   findByProviderOrderId(providerOrderId: string): Promise<ProviderPayment | null>;
+  listAll(query: PaginationQuery): Promise<Page<ProviderPayment>>;
   save(record: ProviderPayment): Promise<void>;
+}
+
+export interface ReconciliationRepository {
+  createRun(run: ReconciliationRun): Promise<void>;
+  saveRun(run: ReconciliationRun): Promise<void>;
+  getRun(id: EntityId): Promise<ReconciliationRun | null>;
+  listRuns(query: PaginationQuery): Promise<Page<ReconciliationRun>>;
+  createDiscrepancies(items: ReconciliationDiscrepancy[]): Promise<void>;
+  getDiscrepancy(id: EntityId): Promise<ReconciliationDiscrepancy | null>;
+  saveDiscrepancy(item: ReconciliationDiscrepancy): Promise<void>;
+  listDiscrepancies(
+    query: PaginationQuery & {
+      runId?: EntityId;
+      state?: ReconciliationDiscrepancyState;
+      organizationId?: EntityId;
+    },
+  ): Promise<Page<ReconciliationDiscrepancy>>;
+}
+
+export interface ProviderFinancialEventRepository {
+  /** First writer wins. Exact replays return the canonical stored event. */
+  ingest(event: ProviderFinancialEvent): Promise<ProviderFinancialEvent>;
+  findById(id: EntityId): Promise<ProviderFinancialEvent | null>;
+  findByProviderEventId(providerEventId: string): Promise<ProviderFinancialEvent | null>;
+  listByPaymentId(paymentId: string): Promise<ProviderFinancialEvent[]>;
+  markProcessed(id: EntityId, result: string, processedAt: Date): Promise<void>;
+  markSupportRequired(id: EntityId, result: string, processedAt: Date): Promise<void>;
 }
 
 export interface AdminRefundRequestRepository {

@@ -31,6 +31,16 @@ describe('role → permission table', () => {
     expect(member).not.toContain('event.create');
     expect(member).not.toContain('event.publish');
     expect(member).not.toContain('staff.manage');
+    expect(member.filter((permission) => permission.startsWith('finance.'))).toEqual([]);
+  });
+
+  it('separates finance viewing, payout management, and platform-only approval duties', () => {
+    expect(roleHasPermission('manager', 'finance.read')).toBe(true);
+    expect(roleHasPermission('manager', 'finance.payouts.manage')).toBe(false);
+    expect(roleHasPermission('owner', 'finance.payouts.manage')).toBe(true);
+    expect(roleHasPermission('owner', 'finance.refunds.approve')).toBe(false);
+    expect(roleHasPermission('admin', 'finance.refunds.execute')).toBe(false);
+    expect(roleHasPermission('member', 'finance.orders.read')).toBe(false);
   });
 
   it('withholds staff.manage from a manager — inviting people is an owner/admin act', () => {
@@ -56,6 +66,16 @@ describe('role → permission table', () => {
       'event.cancel',
       'slot-request.create',
       'slot-request.list',
+      'ticket.override',
+      'door.manage',
+      'finance.read',
+      'finance.orders.read',
+      'finance.refunds.request',
+      'finance.payouts.read',
+      'finance.payouts.manage',
+      'finance.bank_accounts.manage',
+      'finance.reconciliation.read',
+      'finance.audit.read',
     ];
     const granted = new Set(Object.values(ROLE_PERMISSIONS).flat());
     // A permission no role holds is dead policy: it can only ever deny.
