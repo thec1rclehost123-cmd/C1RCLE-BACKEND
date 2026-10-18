@@ -313,16 +313,29 @@ export const offlineManifestRequestSchema = z.object({ eventId: opaqueIdSchema }
 export type OfflineManifestRequest = z.infer<typeof offlineManifestRequestSchema>;
 
 export const offlineManifestResponseSchema = z.object({
+  /** Format version; a device must refuse a version it does not understand. */
+  version: z.literal(1),
+  eventId: opaqueIdSchema,
   manifest: z.array(
     z.object({
       entitlementId: opaqueIdSchema,
       validFrom: z.iso.datetime(),
       validTo: z.iso.datetime(),
-      signature: z.string(),
+      /**
+       * Per-ticket key (hex) for verifying this ticket's rotating QR offline.
+       * Scoped to one ticket, useless after `expiresAt`; keep in secure storage.
+       */
+      ticketKey: z.string().regex(/^[0-9a-f]{64}$/),
     }),
   ),
   signedAt: z.iso.datetime(),
   expiresAt: z.iso.datetime(),
+  /** Identifies `publicKey` so a rotated key is recognisable. */
+  keyId: z.string().min(1),
+  /** Raw 32-byte Ed25519 public key, base64. */
+  publicKey: z.string().min(1),
+  /** Ed25519 signature (base64) over the canonical manifest bytes. */
+  manifestSignature: z.string().min(1),
 });
 export type OfflineManifestResponse = z.infer<typeof offlineManifestResponseSchema>;
 
