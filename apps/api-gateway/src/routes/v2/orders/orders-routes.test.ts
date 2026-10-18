@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { createV2Services } from '../../../lib/v2-services.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
+import { publishEventForTest } from '../../../test-utils/publish-event.js';
 import checkoutRoutes from '../checkout/checkout-routes.js';
 import paymentRoutes from '../checkout/payment-routes.js';
 import partnerEventCatalogRoutes from '../partner/event-catalog.js';
@@ -71,6 +72,7 @@ async function seedPaidOrder(server: Server): Promise<string> {
     payload: { title: 'Sky Night', venueId, startAt: '2026-09-01T18:00:00Z' },
   });
   const eventId: string = event.json().id;
+  await publishEventForTest(eventId);
   const tier = await server.inject({
     method: 'POST',
     url: `/events/${eventId}/ticket-tiers`,
@@ -95,7 +97,7 @@ async function seedPaidOrder(server: Server): Promise<string> {
   const paymentIntentId: string = attempt.json().paymentIntentId;
   const paymentId = `pay_order_test_${++keySeq}`;
   const provider = memoryProvider();
-  provider.simulateCapture(paymentId, grandTotalPaise);
+  provider.simulateCapture(paymentId, grandTotalPaise, paymentIntentId);
   const signature = provider.generateSignature({ paymentId, orderId: paymentIntentId });
   const verify = await server.inject({
     method: 'POST',

@@ -1,4 +1,5 @@
-import { ForbiddenError, InvalidOperationError, NotFoundError } from '../../domain/errors.js';
+import { ForbiddenError, IdempotencyConflictError, NotFoundError } from '../../domain/errors.js';
+import { deterministicFinancialId } from '../../domain/models/financial-journal.js';
 import {
   beginProcessing,
   createPayout,
@@ -7,12 +8,20 @@ import {
 } from '../../domain/models/payout.js';
 import { requireOrgAccess } from '../context.js';
 
+import { createFinanceService } from './finance-service.js';
+import { FinancialPostingService } from './financial-posting-service.js';
+
 import type { EntityId } from '../../domain/identity.js';
-import type { Payout } from '../../domain/models/payout.js';
+import type { Payout, PayoutTransferEvidence } from '../../domain/models/payout.js';
 import type {
   BankAccountRepository,
   LedgerRepository,
+  FinancialJournalRepository,
+  EventRepository,
+  JournalTransitionRepository,
+  PlatformSettingsRepository,
   PayoutRepository,
+  ReconciliationRepository,
 } from '../../domain/ports/repositories.js';
 import type { ServiceDeps, ActorContext } from '../context.js';
 
@@ -28,6 +37,11 @@ export interface PayoutServiceDeps {
   payouts: PayoutRepository;
   bankAccounts: BankAccountRepository;
   ledger: LedgerRepository;
+  financialJournals: FinancialJournalRepository;
+  journalTransition: JournalTransitionRepository;
+  events: EventRepository;
+  reconciliations: ReconciliationRepository;
+  platformSettings: PlatformSettingsRepository;
   config: ServiceDeps['config'];
 }
 
@@ -35,6 +49,7 @@ export interface RequestPayoutInput {
   organizationId: EntityId;
   amount: number; // paise
   bankAccountId?: EntityId; // defaults to the org's default account
+  idempotencyKey: string;
 }
 
 export interface PayoutService {
@@ -42,7 +57,11 @@ export interface PayoutService {
   /** Operator action: moves a requested payout into processing. */
   beginProcessingPayout(payoutId: EntityId, actor: ActorContext): Promise<Payout>;
   /** Operator action: marks a processing payout as paid. */
-  completePayout(payoutId: EntityId, actor: ActorContext): Promise<Payout>;
+  completePayout(
+    payoutId: EntityId,
+    evidence: Omit<PayoutTransferEvidence, 'approvedBy'>,
+    actor: ActorContext,
+  ): Promise<Payout>;
   /** Operator action: marks a payout failed with a reason. */
   failPayout(payoutId: EntityId, reason: string, actor: ActorContext): Promise<Payout>;
   listPayouts(
@@ -53,25 +72,18 @@ export interface PayoutService {
   getPayout(payoutId: EntityId, actor: ActorContext): Promise<Payout | null>;
 }
 
-async function availableBalance(
-  ledger: LedgerRepository,
-  payouts: PayoutRepository,
-  organizationId: EntityId,
-): Promise<number> {
-  const sums = await ledger.sumByOrganizationAndType(organizationId);
-  let settled = 0;
-  for (const entryType of ['host_payout', 'venue_share', 'promoter_commission'] as const) {
-    settled += sums[entryType].settled;
-  }
-  const [paidOut, reserved] = await Promise.all([
-    payouts.sumPaidByOrganization(organizationId),
-    payouts.sumRequestedOrProcessingByOrganization(organizationId),
-  ]);
-  return settled - paidOut - reserved;
-}
-
 export function createPayoutService(deps: PayoutServiceDeps): PayoutService {
-  const { payouts, bankAccounts, ledger, config } = deps;
+  const { payouts, bankAccounts, config } = deps;
+  const posting = new FinancialPostingService(deps.financialJournals);
+  const finance = createFinanceService({
+    ledger: deps.ledger,
+    financialJournals: deps.financialJournals,
+    journalTransition: deps.journalTransition,
+    payouts: deps.payouts,
+    events: deps.events,
+    reconciliations: deps.reconciliations,
+    config: deps.config,
+  });
 
   async function requestPayout(input: RequestPayoutInput, actor: ActorContext): Promise<Payout> {
     requireOrgAccess(actor, input.organizationId);
@@ -84,21 +96,46 @@ export function createPayoutService(deps: PayoutServiceDeps): PayoutService {
       throw new ForbiddenError('Bank account does not belong to this organization');
     }
 
-    const available = await availableBalance(ledger, payouts, input.organizationId);
-    if (input.amount > available) {
-      throw new InvalidOperationError(
-        `Requested payout ${input.amount} exceeds available balance ${available}`,
-      );
+    const payoutId = deterministicFinancialId(
+      'payout',
+      `${input.organizationId}:${input.idempotencyKey}`,
+    );
+    const replay = await payouts.findById(payoutId);
+    if (replay) {
+      if (
+        replay.organizationId !== input.organizationId ||
+        replay.bankAccountId !== bankAccount.id ||
+        replay.amount !== input.amount ||
+        replay.requestedBy !== actor.userId
+      ) {
+        throw new IdempotencyConflictError(input.idempotencyKey);
+      }
+      return replay;
     }
 
+    const balance = await finance.getBalances(input.organizationId, actor);
+    const payableLimit = balance.availablePaise + balance.reservedPaise + balance.paidPaise;
+
     const payout = createPayout({
+      id: payoutId,
       organizationId: input.organizationId,
       bankAccountId: bankAccount.id,
       amount: input.amount,
       requestedBy: actor.userId,
       now: config.clock.now(),
     });
-    return payouts.create(payout);
+    const settings = await deps.platformSettings.get();
+    const reservation = posting.buildPayoutReservation({
+      organizationId: payout.organizationId,
+      payoutId: payout.id,
+      amountPaise: payout.amount,
+      policy: {
+        ...settings.accountingPolicy,
+        capturedAt: payout.createdAt,
+      },
+      postedAt: new Date(payout.createdAt),
+    });
+    return payouts.createWithinLimit(payout, payableLimit, reservation);
   }
 
   async function beginProcessingPayout(payoutId: EntityId, actor: ActorContext): Promise<Payout> {
@@ -108,11 +145,27 @@ export function createPayoutService(deps: PayoutServiceDeps): PayoutService {
     return payouts.save(beginProcessing(payout, config.clock.now()));
   }
 
-  async function completePayout(payoutId: EntityId, actor: ActorContext): Promise<Payout> {
+  async function completePayout(
+    payoutId: EntityId,
+    evidence: Omit<PayoutTransferEvidence, 'approvedBy'>,
+    actor: ActorContext,
+  ): Promise<Payout> {
     const payout = await payouts.findById(payoutId);
     if (!payout) throw new NotFoundError('Payout', payoutId);
     requireOrgAccess(actor, payout.organizationId);
-    return payouts.save(markPayoutPaid(payout, config.clock.now()));
+    const paid = markPayoutPaid(
+      payout,
+      { ...evidence, approvedBy: actor.userId },
+      config.clock.now(),
+    );
+    await posting.postPayoutCompletion({
+      organizationId: payout.organizationId,
+      payoutId: payout.id,
+      amountPaise: payout.amount,
+      transferReference: paid.transferReference ?? evidence.transferReference,
+      postedAt: config.clock.now(),
+    });
+    return payouts.save(paid);
   }
 
   async function failPayout(
@@ -123,7 +176,13 @@ export function createPayoutService(deps: PayoutServiceDeps): PayoutService {
     const payout = await payouts.findById(payoutId);
     if (!payout) throw new NotFoundError('Payout', payoutId);
     requireOrgAccess(actor, payout.organizationId);
-    return payouts.save(markPayoutFailed(payout, reason, config.clock.now()));
+    const failed = markPayoutFailed(payout, reason, config.clock.now());
+    await posting.postPayoutFailureReversal({
+      organizationId: payout.organizationId,
+      payoutId: payout.id,
+      postedAt: config.clock.now(),
+    });
+    return payouts.save(failed);
   }
 
   async function listPayouts(

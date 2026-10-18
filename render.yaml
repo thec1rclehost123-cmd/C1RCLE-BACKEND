@@ -121,6 +121,11 @@ services:
       - key: RATE_LIMIT_STORE
         value: memory
 
+      # Payout release gate: off until the funds flow, provider and tax approvals are on
+      # file (see docs/operations/payments-release-gate.md). Change only with sign-off.
+      - key: PAYOUTS_ENABLED
+        value: 'false'
+
       # Phase 4 payments. Optional in the schema; required once the checkout
       # and webhook routes are registered.
       - key: RAZORPAY_KEY_ID

@@ -623,6 +623,20 @@ export function mapDomainError(
     );
     return undefined;
   }
+  // A captured payment that could not be honoured and was refunded. 409 with the
+  // server's message: the buyer must be told they were refunded, not to retry.
+  if (known?.code === 'payment_refunded') {
+    reply.status(409).send(
+      buildV2ErrorResponse({
+        status: 409,
+        message: known.message ?? 'Your payment has been refunded',
+        code: 'conflict',
+        requestId: request.id,
+        details: { outcome: 'refunded' },
+      }),
+    );
+    return undefined;
+  }
   if (known?.code === 'idempotency_conflict' || known?.code === 'idempotency_in_flight') {
     reply.status(409).send(
       buildV2ErrorResponse({

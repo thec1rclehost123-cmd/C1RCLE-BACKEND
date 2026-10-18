@@ -31,6 +31,12 @@ export interface EventPayloads {
   'event.updated': { title?: string; venueId?: EntityId };
   'event.published': { title: string };
   'event.cancelled': { title: string };
+  'finance.refund.settled': {
+    refundRequestId: EntityId;
+    orderId: EntityId;
+    amountPaise: number;
+    providerRefundId: string;
+  };
   // Phase 8: follow graph. Consumers: audit; follower-count projections later.
   'follow.created': { followerId: EntityId; targetType: 'venue' | 'host'; targetId: EntityId };
   'follow.removed': { followerId: EntityId; targetType: 'venue' | 'host'; targetId: EntityId };

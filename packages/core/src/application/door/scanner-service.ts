@@ -857,6 +857,7 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
       preview &&
       preview.eventId === event.id &&
       preview.status !== 'void' &&
+      !preview.refundLock &&
       preview.scanCountAllowed === 2 &&
       preview.scanCount === 0 &&
       session.deviceId !== null
@@ -1387,7 +1388,7 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
         limit: 500,
       });
       for (const entitlement of page.items) {
-        if (entitlement.status === 'void') continue;
+        if (entitlement.status === 'void' || entitlement.refundLock) continue;
         if (entitlement.scanCount >= entitlement.scanCountAllowed) continue;
         entries.push({
           entitlementId: entitlement.id,

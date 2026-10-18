@@ -61,12 +61,18 @@ function toRefundDto(request: AdminRefundRequest) {
     amountPaise: request.amountPaise,
     requestedBy: request.requestedBy,
     reason: request.reason,
+    scope: request.scope,
+    ticketLines: request.ticketLines,
+    targetEntitlementIds: request.targetEntitlementIds,
     approversRequired: request.approversRequired,
     approvals: request.approvals,
     status: request.status,
     rejectedBy: request.rejectedBy,
     rejectionReason: request.rejectionReason,
     providerRefundId: request.providerRefundId,
+    providerStatus: request.providerStatus,
+    executionIdempotencyKey: request.executionIdempotencyKey,
+    executionAttempts: request.executionAttempts,
     failureReason: request.failureReason,
     createdAt: request.createdAt,
     updatedAt: request.updatedAt,
@@ -111,6 +117,7 @@ export default async function adminRefundRoutes(fastify: FastifyInstance) {
               orderId: body.orderId,
               amountPaise: body.amountPaise,
               reason: body.reason,
+              ticketLines: body.ticketLines,
             },
             requestMeta(request),
           );
@@ -216,6 +223,56 @@ export default async function adminRefundRoutes(fastify: FastifyInstance) {
             userId,
             refundRequestId,
             body.reason,
+            requestMeta(request),
+          );
+          const validated = validateV2Response(
+            reply,
+            request,
+            refundOutcomeSchema,
+            toOutcomeDto(outcome),
+          );
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
+        },
+      }).catch((error: unknown) =>
+        isIdempotencyConflict(error)
+          ? mapDomainError(reply, request, refundRequestId, error, {
+              conflictId: v2Headers['idempotency-key'],
+            })
+          : mapDomainError(reply, request, refundRequestId, error),
+      );
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
+
+  /* ─── Execute approved provider refund ─────────────────────────────────── */
+
+  fastify.post(
+    '/admin/refunds/:refundRequestId/execute',
+    {
+      preHandler: [
+        fastify.rateLimit('SENSITIVE_COMMAND'),
+        fastify.validateV2({ params: refundIdParam, headers: commandHeaders }),
+      ],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+      const { refundRequestId } = request.params as z.infer<typeof refundIdParam>;
+      const v2Headers = request.v2Headers ?? {};
+
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: userId,
+        commandName: 'admin.refund.execute',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { refundRequestId }, body: {} },
+        run: async () => {
+          const outcome = await services.refund.executeRefund(
+            userId,
+            refundRequestId,
             requestMeta(request),
           );
           const validated = validateV2Response(
