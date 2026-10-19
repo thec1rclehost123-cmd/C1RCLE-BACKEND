@@ -863,6 +863,7 @@ export class CheckoutService {
         };
       }
       return { ...base, status: 'processing', orderId: order.id };
+    }
 
     const providerPayment = hold.providerOrderId
       ? await this.deps.repositories.providerPayments.findByProviderOrderId(hold.providerOrderId)
