@@ -81,6 +81,7 @@ export default async function phase5CoverWalletRoutes(fastify: FastifyInstance) 
       preHandler: [
         fastify.rateLimit('STANDARD_COMMAND'),
         fastify.validateV2({ body: coverWalletIssueRequestSchema, headers: idempotencyHeaders }),
+        fastify.requirePermission('door.manage'),
       ],
     },
     async (request, reply) => {
@@ -136,7 +137,11 @@ export default async function phase5CoverWalletRoutes(fastify: FastifyInstance) 
   fastify.get(
     '/cover-wallets/:walletId',
     {
-      preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({ params: walletIdParam })],
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({ params: walletIdParam }),
+        fastify.requirePermission('venue.read'),
+      ],
     },
     async (request, reply) => {
       const { walletId } = request.params as z.infer<typeof walletIdParam>;
@@ -179,7 +184,11 @@ export default async function phase5CoverWalletRoutes(fastify: FastifyInstance) 
   fastify.get(
     '/cover-wallets/:walletId/qr',
     {
-      preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({ params: walletIdParam })],
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({ params: walletIdParam }),
+        fastify.requirePermission('venue.read'),
+      ],
     },
     async (request, reply) => {
       const { walletId } = request.params as z.infer<typeof walletIdParam>;
@@ -209,6 +218,7 @@ export default async function phase5CoverWalletRoutes(fastify: FastifyInstance) 
       preHandler: [
         fastify.rateLimit('STANDARD_COMMAND'),
         fastify.validateV2({ params: walletIdParam, body: coverWalletDebitBody }),
+        fastify.requirePermission('ticket.override'),
       ],
     },
     async (request, reply) => {
@@ -276,6 +286,7 @@ export default async function phase5CoverWalletRoutes(fastify: FastifyInstance) 
       preHandler: [
         fastify.rateLimit('STANDARD_COMMAND'),
         fastify.validateV2({ params: walletIdParam, body: coverWalletCreditRequestSchema }),
+        fastify.requirePermission('door.manage'),
       ],
     },
     async (request, reply) => {
@@ -337,6 +348,7 @@ export default async function phase5CoverWalletRoutes(fastify: FastifyInstance) 
       preHandler: [
         fastify.rateLimit('STANDARD_COMMAND'),
         fastify.validateV2({ params: walletIdParam, headers: idempotencyHeaders }),
+        fastify.requirePermission('door.manage'),
       ],
     },
     async (request, reply) => {
@@ -386,6 +398,7 @@ export default async function phase5CoverWalletRoutes(fastify: FastifyInstance) 
       preHandler: [
         fastify.rateLimit('STANDARD_COMMAND'),
         fastify.validateV2({ params: walletIdParam, headers: idempotencyHeaders }),
+        fastify.requirePermission('door.manage'),
       ],
     },
     async (request, reply) => {
@@ -437,6 +450,7 @@ export default async function phase5CoverWalletRoutes(fastify: FastifyInstance) 
           body: coverWalletTerminateBody,
           headers: idempotencyHeaders,
         }),
+        fastify.requirePermission('door.manage'),
       ],
     },
     async (request, reply) => {
@@ -492,6 +506,7 @@ export default async function phase5CoverWalletRoutes(fastify: FastifyInstance) 
           body: coverWalletReconciliationRequestSchema,
           headers: idempotencyHeaders,
         }),
+        fastify.requirePermission('door.manage'),
       ],
     },
     async (request, reply) => {
@@ -664,7 +679,11 @@ export function mapDomainError(
     );
     return undefined;
   }
-  if (known?.code === 'idempotency_conflict' || known?.code === 'idempotency_in_flight') {
+  if (
+    known?.code === 'idempotency_conflict' ||
+    known?.code === 'idempotency_in_flight' ||
+    known?.code === 'idempotency_failed'
+  ) {
     reply.status(409).send(
       buildV2ErrorResponse({
         status: 409,

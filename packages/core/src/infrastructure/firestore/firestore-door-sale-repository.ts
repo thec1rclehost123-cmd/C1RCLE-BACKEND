@@ -35,14 +35,48 @@ export class FirestoreDoorSaleRepository implements DoorSaleRepository {
    * bivariant), so the same call returned a different id depending on which
    * adapter was wired, and a port-shaped call would have written `id:
    * undefined`. Matches `MemoryDoorSaleRepository.create` exactly.
+   *
+   * Idempotent and atomic: the sale row and the idempotency pointer are
+   * written in ONE Firestore transaction with the pointer's existence checked
+   * first inside the same transaction. Two concurrent same-key creates
+   * therefore cannot both write a sale — the loser of the claim re-reads the
+   * pointer and returns the winner's existing sale. Previously the sale and
+   * pointer were two separate `set()` calls (check-then-write by the service),
+   * so parallel requests both passed the empty-key check and produced two
+   * sales for one key. The early claim also means a retry after a partial
+   * write replays against the already-persisted sale instead of minting a
+   * second one.
    */
   async create(input: DoorSaleCreateInput): Promise<DoorSale> {
     const sale = createDoorSale(input);
-    await this.collection.doc(sale.id).set(toDoc(sale));
-    if (sale.idempotencyKey) {
-      await this.idempotencyCollection.doc(sale.idempotencyKey).set({ saleId: sale.id });
+
+    const saleRef = this.collection.doc(sale.id);
+    if (!sale.idempotencyKey) {
+      // Door sales always carry a key (the port default is null as a leftover
+      // from the wire model); without one there is nothing to dedupe on, so a
+      // plain write is the only option.
+      await saleRef.set(toDoc(sale));
+      return sale;
     }
-    return sale;
+
+    const idemRef = this.idempotencyCollection.doc(sale.idempotencyKey);
+    return this.db.runTransaction(async (tx) => {
+      const idemSnap = await tx.get(idemRef);
+      if (idemSnap.exists) {
+        const existingId = (idemSnap.data() as { saleId?: string } | undefined)?.saleId;
+        if (typeof existingId === 'string') {
+          const existingSnap = await tx.get(this.collection.doc(existingId));
+          const stored = existingSnap.data();
+          // A live sale already owns this key — return it (the dedupe path).
+          // If the pointer's sale row is missing (a write interrupted between
+          // the old doc and pointer), reclaim the key for this new sale below.
+          if (stored) return toSale(stored);
+        }
+      }
+      tx.set(idemRef, { saleId: sale.id });
+      tx.set(saleRef, toDoc(sale));
+      return sale;
+    });
   }
 
   async findById(id: EntityId): Promise<DoorSale | null> {

@@ -22,8 +22,9 @@ import type { ActorContext } from '../context.js';
  * Every count below comes from an existing repository aggregate
  * (`countByEventAndStatus`/`getEventStats`) — Firestore `.count()` queries,
  * never a full document read, so this stays cheap enough to poll.
- * `GET /door/stats/ws` (live push) still needs `@fastify/websocket`
- * registered on the app, which it isn't — polling only for now.
+ * `GET /door/stats/stream` (live push) is Server-Sent Events, not a WebSocket
+ * — see `phase5-routes.ts` for the rationale; this service just supplies the
+ * snapshot each tick recomputes.
  */
 
 export interface DoorStatsServiceDeps {

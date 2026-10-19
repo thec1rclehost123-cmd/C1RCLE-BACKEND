@@ -78,6 +78,15 @@ export class FirestoreIdempotencyStore implements IdempotencyStore {
     );
   }
 
+  async fail(key: string): Promise<void> {
+    await this.collection.doc(encodeKey(key)).set(
+      {
+        status: 'FAILED',
+      },
+      { merge: true },
+    );
+  }
+
   async release(key: string): Promise<void> {
     await this.collection.doc(encodeKey(key)).delete();
   }

@@ -73,6 +73,7 @@ export default async function doorOpsRoutes(fastify: FastifyInstance) {
       preHandler: [
         fastify.rateLimit('AUTH_READ'),
         fastify.validateV2({ querystring: doorEventListQuerySchema }),
+        fastify.requirePermission('venue.read'),
       ],
     },
     async (request, reply) => {
@@ -100,6 +101,7 @@ export default async function doorOpsRoutes(fastify: FastifyInstance) {
       preHandler: [
         fastify.rateLimit('STANDARD_COMMAND'),
         fastify.validateV2({ body: scannerDeviceBindBodySchema }),
+        fastify.requirePermission('door.manage'),
       ],
     },
     async (request, reply) => {
@@ -361,6 +363,7 @@ export default async function doorOpsRoutes(fastify: FastifyInstance) {
       preHandler: [
         fastify.rateLimit('AUTH_READ'),
         fastify.validateV2({ querystring: doorGuestListQuerySchema }),
+        fastify.requirePermission('venue.read'),
       ],
     },
     async (request, reply) => {
@@ -401,6 +404,7 @@ export default async function doorOpsRoutes(fastify: FastifyInstance) {
       preHandler: [
         fastify.rateLimit('AUTH_READ'),
         fastify.validateV2({ querystring: attendanceReportQuerySchema }),
+        fastify.requirePermission('venue.read'),
       ],
     },
     async (request, reply) => {

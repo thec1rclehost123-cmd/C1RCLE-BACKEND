@@ -10,8 +10,9 @@ Both dashboard surfaces — the legacy per-studio screens
 (`C1RCLE-FRONTEND/apps/partner-dashboard/src/components/venue/screens/PartnersScreen.tsx`,
 used by `/venue|host|promoter/partners`) and the v3 `StudioPartnersClient`
 (`components/partner-v3/partners/`, used by `/partner/[studio]/partners`) —
-call the same gateway endpoints via `lib/api/partner-connections.ts` and
-`lib/api/partner-discover.ts`, so every fix below covers both UIs at once.
+call the same gateway endpoints via `lib/api/partner-actions.ts`
+(send/resolve) and `lib/api/partner-data.ts` (load), so every fix below
+covers both UIs at once.
 
 ---
 
