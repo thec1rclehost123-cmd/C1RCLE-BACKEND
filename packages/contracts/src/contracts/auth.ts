@@ -18,8 +18,11 @@ export const userSchema = z.object({
    * True when the account is still on its staff-invitation temporary
    * password. The client must route to the password-change screen; the
    * gateway 403s every non-auth route until the rotation completes.
+   *
+   * Optional with a false default so clients can parse sessions emitted by a
+   * gateway that predates staff-invitation password rotation.
    */
-  mustChangePassword: z.boolean(),
+  mustChangePassword: z.boolean().default(false),
 });
 export type User = z.infer<typeof userSchema>;
 

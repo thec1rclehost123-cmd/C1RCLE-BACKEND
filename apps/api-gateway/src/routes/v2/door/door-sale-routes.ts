@@ -70,6 +70,7 @@ export default async function phase5DoorSaleRoutes(fastify: FastifyInstance) {
       preHandler: [
         fastify.rateLimit('STANDARD_COMMAND'),
         fastify.validateV2({ body: doorWalkInRequestSchema, headers: doorHeaders }),
+        fastify.requirePermission('ticket.override'),
       ],
     },
     async (request, reply) => {
@@ -84,10 +85,10 @@ export default async function phase5DoorSaleRoutes(fastify: FastifyInstance) {
         context: { path: {}, body },
         run: async () => {
           // Server-side price recalculation happens inside createWalkIn via
-          // catalog.findWalkInTier(eventId) — `tierId`/`quantity` on the wire
-          // contract are currently NOT consumed by DoorService (single
-          // walk-in tier per event drives price regardless of client
-          // selection); see task report for this as a flagged gap.
+          // catalog.findWalkInTier(eventId). The contract is `.strict()` and
+          // carries NO `tierId`/`quantity`/price fields, so any client trying
+          // to select a tier or name a price is REJECTED at validation (422) —
+          // the single walk-in tier per event is the only price, by design.
           const sale = await services.door.createWalkIn(
             {
               eventId: body.eventId,
@@ -132,6 +133,7 @@ export default async function phase5DoorSaleRoutes(fastify: FastifyInstance) {
       preHandler: [
         fastify.rateLimit('STANDARD_COMMAND'),
         fastify.validateV2({ body: doorDineInRequestSchema, headers: doorHeaders }),
+        fastify.requirePermission('ticket.override'),
       ],
     },
     async (request, reply) => {
@@ -146,7 +148,8 @@ export default async function phase5DoorSaleRoutes(fastify: FastifyInstance) {
         context: { path: {}, body },
         run: async () => {
           // Same server-side recalculation as walk-in, via
-          // catalog.findDineInTier(eventId).
+          // catalog.findDineInTier(eventId); the strict contract likewise
+          // rejects any tier-selection or price fields at validation.
           const sale = await services.door.createDineIn(
             {
               eventId: body.eventId,
@@ -195,6 +198,7 @@ export default async function phase5DoorSaleRoutes(fastify: FastifyInstance) {
       preHandler: [
         fastify.rateLimit('AUTH_READ'),
         fastify.validateV2({ querystring: doorSalesQuerySchema, headers: doorHeaders }),
+        fastify.requirePermission('venue.read'),
       ],
     },
     async (request, reply) => {
@@ -333,7 +337,11 @@ export function mapDomainError(
     );
     return undefined;
   }
-  if (known?.code === 'idempotency_conflict' || known?.code === 'idempotency_in_flight') {
+  if (
+    known?.code === 'idempotency_conflict' ||
+    known?.code === 'idempotency_in_flight' ||
+    known?.code === 'idempotency_failed'
+  ) {
     reply.status(409).send(
       buildV2ErrorResponse({
         status: 409,

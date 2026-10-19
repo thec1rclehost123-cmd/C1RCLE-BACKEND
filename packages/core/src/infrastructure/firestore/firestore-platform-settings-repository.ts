@@ -1,4 +1,7 @@
-import { PLATFORM_SETTINGS_DOC_ID } from '../../domain/models/platform-settings.js';
+import {
+  DEFAULT_PLATFORM_SETTINGS,
+  PLATFORM_SETTINGS_DOC_ID,
+} from '../../domain/models/platform-settings.js';
 
 import type { PlatformSettings } from '../../domain/models/platform-settings.js';
 import type { PlatformSettingsRepository } from '../../domain/ports/repositories.js';
@@ -15,16 +18,17 @@ export class FirestorePlatformSettingsRepository implements PlatformSettingsRepo
 
   async get(): Promise<PlatformSettings> {
     const snap = await this.db.collection(COLLECTION).doc(PLATFORM_SETTINGS_DOC_ID).get();
-    return snap.exists
-      ? (snap.data() as unknown as PlatformSettings)
-      : {
-          platformFeeRate: 0.15,
-          refundSingleApproverThresholdPaise: 50_000,
-          refundDualApproverThresholdPaise: 500_000,
-          maintenanceMode: false,
-          featureFlags: {},
-          updatedAt: new Date(0).toISOString(),
-        };
+    if (!snap.exists) return structuredClone(DEFAULT_PLATFORM_SETTINGS);
+    const stored = snap.data() as Partial<PlatformSettings>;
+    return {
+      ...structuredClone(DEFAULT_PLATFORM_SETTINGS),
+      ...stored,
+      featureFlags: stored.featureFlags ?? {},
+      accountingPolicy: {
+        ...DEFAULT_PLATFORM_SETTINGS.accountingPolicy,
+        ...(stored.accountingPolicy ?? {}),
+      },
+    };
   }
 
   async save(settings: PlatformSettings): Promise<void> {

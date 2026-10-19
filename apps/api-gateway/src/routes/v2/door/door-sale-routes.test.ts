@@ -112,6 +112,40 @@ describe('V2 door sales slice — walk-in / dine-in / sales list', () => {
     await server.close();
   });
 
+  it('D2: rejects tierId/quantity/price outright — the contract is strict, pricing stays server-side', async () => {
+    const server = await buildServer();
+    const { event } = await seedEventWithTiers();
+
+    for (const extra of [
+      { tierId: 'tier_walkin' },
+      { quantity: 3 },
+      { priceInPaise: 1 },
+      { tierId: 'tier_walkin', quantity: 2, priceInPaise: 100 },
+    ]) {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/door/walk-in',
+        headers: HEADERS,
+        payload: {
+          eventId: event.id,
+          guestName: 'Ada Lovelace',
+          totalGuests: 1,
+          paymentMode: 'cash',
+          idempotencyKey: `idem-reject-${Math.random().toString(36).slice(2)}`,
+          ...extra,
+        },
+      });
+      expect(response.statusCode).toBe(422);
+      // Explicit rejection at the boundary — no client-selected tier or price
+      // ever reaches DoorService.
+      expect(response.json().fieldErrors).toHaveProperty('_root');
+      (response.json().fieldErrors._root as string[]).forEach((message: string) =>
+        expect(message).toMatch(/unrecognized/i),
+      );
+    }
+    await server.close();
+  });
+
   it('creates a dine-in sale priced server-side from the dine-in tier', async () => {
     const server = await buildServer();
     const { event, dineInTier } = await seedEventWithTiers();
@@ -205,6 +239,51 @@ describe('V2 door sales slice — walk-in / dine-in / sales list', () => {
 
     expect(response.statusCode).toBe(404);
     expect(response.json()).toMatchObject({ code: 'not_found', status: 404 });
+    await server.close();
+  });
+});
+
+describe('V2 door-sale RBAC', () => {
+  // `actorRole` drives `services.actor`'s memory-driver membership (the same
+  // path the existing role-gate suites use); the fakeAuthPlugin in this file
+  // hardcodes owner, so it is intentionally bypassed here.
+  const buildMemberServer = () =>
+    buildPartnerTestServer({ routes: [phase5DoorSaleRoutes], actorRole: 'member' });
+
+  it('denies a read-only member the walk-in and dine-in routes (403)', async () => {
+    const server = await buildMemberServer();
+    const { event } = await seedEventWithTiers();
+    for (const [url, key] of [
+      ['/door/walk-in', 'idem-rbac-walkin'],
+      ['/door/dine-in', 'idem-rbac-dinein'],
+    ] as const) {
+      const response = await server.inject({
+        method: 'POST',
+        url,
+        headers: HEADERS,
+        payload: {
+          eventId: event.id,
+          guestName: 'Denied Guest',
+          totalGuests: 1,
+          paymentMode: 'cash',
+          idempotencyKey: key,
+        },
+      });
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toMatchObject({ code: 'forbidden', status: 403 });
+    }
+    await server.close();
+  });
+
+  it('lets a read-only member read the sales list (venue.read)', async () => {
+    const server = await buildMemberServer();
+    const { event } = await seedEventWithTiers();
+    const response = await server.inject({
+      method: 'GET',
+      url: `/door/sales?eventId=${event.id}`,
+      headers: HEADERS,
+    });
+    expect(response.statusCode).toBe(200);
     await server.close();
   });
 });

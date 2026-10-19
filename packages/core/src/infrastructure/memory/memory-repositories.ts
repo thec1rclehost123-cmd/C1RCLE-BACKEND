@@ -443,17 +443,43 @@ export class MemoryAnalyticsReadModelRepository implements AnalyticsReadModelRep
   async getEventAnalytics(eventId: EntityId): Promise<EventAnalytics | null> {
     return this.eventAnalytics.get(eventId) ?? null;
   }
+
+  async saveOrganizationOverview(overview: OrganizationOverview): Promise<void> {
+    this.overviews.set(overview.organizationId, { ...overview });
+  }
+
+  async saveEventAnalytics(analytics: EventAnalytics): Promise<void> {
+    this.eventAnalytics.set(analytics.eventId, { ...analytics });
+  }
 }
 
 export class MemoryCartReservationRepository implements CartReservationRepository {
   reservations = new Map<EntityId, CartReservation>();
   byIdempotencyKey = new Map<string, CartReservation>();
 
-  async create(reservation: CartReservation, _tx?: TxContext | null): Promise<void> {
-    this.reservations.set(reservation.id, reservation);
+  private eventSequence = new Map<EntityId, number>();
+
+  async create(reservation: CartReservation, _tx?: TxContext | null): Promise<CartReservation> {
+    // Synchronous, so no two holds for an event can take the same number.
+    const sequence = (this.eventSequence.get(reservation.eventId) ?? 0) + 1;
+    this.eventSequence.set(reservation.eventId, sequence);
+    const stored = { ...reservation, sequence };
+    this.reservations.set(stored.id, stored);
     if (reservation.idempotencyKey) {
-      this.byIdempotencyKey.set(reservation.idempotencyKey, reservation);
+      this.byIdempotencyKey.set(reservation.idempotencyKey, stored);
     }
+    return stored;
+  }
+
+  async reactivate(reservationId: EntityId, expiresAt: string): Promise<CartReservation | null> {
+    const existing = this.reservations.get(reservationId);
+    if (!existing) return null;
+    if (existing.status === 'converted') return existing;
+    const sequence = (this.eventSequence.get(existing.eventId) ?? 0) + 1;
+    this.eventSequence.set(existing.eventId, sequence);
+    const revived: CartReservation = { ...existing, status: 'active', expiresAt, sequence };
+    this.reservations.set(reservationId, revived);
+    return revived;
   }
 
   async getById(reservationId: EntityId): Promise<CartReservation | null> {
@@ -482,6 +508,25 @@ export class MemoryCartReservationRepository implements CartReservationRepositor
         convertedOrderId: orderId,
       });
     }
+  }
+
+  async bindProviderOrder(
+    reservationId: EntityId,
+    providerOrderId: string,
+    _tx?: TxContext | null,
+  ): Promise<string | null> {
+    const r = this.reservations.get(reservationId);
+    if (!r) return null;
+    if (r.providerOrderId) return r.providerOrderId;
+    this.reservations.set(reservationId, { ...r, providerOrderId });
+    return providerOrderId;
+  }
+
+  async getByProviderOrderId(providerOrderId: string): Promise<CartReservation | null> {
+    for (const r of this.reservations.values()) {
+      if (r.providerOrderId === providerOrderId) return r;
+    }
+    return null;
   }
 
   async cleanupExpired(now: Date, _tx?: TxContext | null): Promise<number> {
@@ -548,6 +593,15 @@ export class MemoryOrderRepository implements OrderRepository {
   async listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<Order>> {
     const all = [...this.orders.values()].filter((o) => o.eventId === eventId);
     return serializeSlice(all, query);
+  }
+
+  async listSeatClaims(eventId: EntityId) {
+    return [...this.orders.values()]
+      .filter((o) => o.eventId === eventId)
+      .map((o) => ({
+        status: o.status,
+        lines: o.lines.map((l) => ({ tierId: l.tierId, quantity: l.quantity })),
+      }));
   }
 
   async countPaidQuantityByUserAndEvent(
@@ -666,6 +720,41 @@ interface PromoRedemptionRecord {
 
 export class MemoryPromoRedemptionRepository implements PromoRedemptionRepository {
   redemptions = new Map<EntityId, PromoRedemptionRecord>();
+
+  async claim(input: {
+    redemption: PromoRedemptionRecord;
+    promoIds: EntityId[];
+    historicalRedemptionCount: number;
+    maxRedemptions: number | null;
+    maxPerUser: number | null;
+  }): Promise<'claimed' | 'already_claimed' | 'global_limit' | 'user_limit'> {
+    const existing = [...this.redemptions.values()].find(
+      (redemption) => redemption.orderId === input.redemption.orderId,
+    );
+    if (existing) return 'already_claimed';
+
+    const aliases = new Set(input.promoIds);
+    const promoCount = [...this.redemptions.values()].filter((redemption) =>
+      aliases.has(redemption.promoId),
+    ).length;
+    if (
+      input.maxRedemptions !== null &&
+      Math.max(promoCount, input.historicalRedemptionCount) >= input.maxRedemptions
+    ) {
+      return 'global_limit';
+    }
+
+    if (input.maxPerUser !== null && input.redemption.userId) {
+      const userCount = [...this.redemptions.values()].filter(
+        (redemption) =>
+          aliases.has(redemption.promoId) && redemption.userId === input.redemption.userId,
+      ).length;
+      if (userCount >= input.maxPerUser) return 'user_limit';
+    }
+
+    this.redemptions.set(input.redemption.id, input.redemption);
+    return 'claimed';
+  }
 
   async create(redemption: PromoRedemptionRecord, _tx?: TxContext | null): Promise<void> {
     this.redemptions.set(redemption.id, redemption);

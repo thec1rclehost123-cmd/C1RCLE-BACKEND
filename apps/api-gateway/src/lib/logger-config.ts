@@ -16,6 +16,10 @@ export const redactPaths = [
   '*.razorpay_signature',
   '*.razorpay_payment_id',
   '*.secret',
+  // Payer details on a Razorpay payment object, should one ever reach a log call.
+  '*.card',
+  '*.contact',
+  '*.vpa',
   // Auth bootstrap + session material
   '*idToken*',
   '*refreshToken*',

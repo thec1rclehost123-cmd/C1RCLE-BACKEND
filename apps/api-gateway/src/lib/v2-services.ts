@@ -18,8 +18,10 @@ import {
   AdminOperationsService,
   InProcessEventBus,
   createAuditConsumer,
-  createProjectionConsumer,
+  ANALYTICS_PROJECTION_EVENT_TYPES,
+  createAnalyticsProjectionConsumer,
   CheckoutService,
+  FulfilmentRepairService,
   InventoryService,
   PricingService,
   OrderService,
@@ -36,7 +38,10 @@ import {
   createBankAccountService,
   createDisputeService,
   AdminDisputeService,
+  ProviderPaymentService,
   RefundService,
+  ReconciliationService,
+  JournalTransitionService,
   SupportService,
   AdminSupportService,
   createLeaderboardService,
@@ -74,6 +79,7 @@ import {
 } from '@c1rcle/core/domain';
 import {
   MemoryOutboxStore,
+  FirestoreOutboxStore,
   MemoryAuditRepository,
   MemoryAdminAuditRepository,
   FirestoreAdminAuditRepository,
@@ -141,6 +147,8 @@ export interface PartnerV2Services {
   /** Phase 7 admin: platform directory views + venue suspension resolution. */
   adminOps: AdminOperationsService;
   checkout: CheckoutService;
+  /** Finds paid orders whose fulfilment stalled part-way and finishes them. */
+  fulfilmentRepair: FulfilmentRepairService;
   /** Phase 4 PR1: unauthenticated guest-facing discovery reads. */
   public: PublicService;
   /**
@@ -165,6 +173,8 @@ export interface PartnerV2Services {
   actor(request: FastifyRequest): ActorContext;
   /** Raw repository bundle for seed/test wiring only. */
   repos(): ServiceDeps['repositories'];
+  /** Core runtime configuration for route-composed financial commands. */
+  config(): ServiceDeps['config'];
   /** T13 audit trail written by the event bus (B09 slice consumer). */
   audits: MemoryAuditRepository;
   /** Phase 2 admin audit trail (before/after), for seed/test wiring. */
@@ -195,6 +205,12 @@ export interface PartnerV2Services {
   adminDispute: AdminDisputeService;
   /** Phase 6 admin: amount-tiered refund approval over an order's payment. */
   refund: RefundService;
+  /** The payment provider's record of each payment, for reconciliation. */
+  providerPayments: ProviderPaymentService;
+  /** Persisted cross-system finance reconciliation. */
+  reconciliation: ReconciliationService;
+  /** Explicit legacy-ledger to journal backfill/comparison/cutover controls. */
+  journalTransition: JournalTransitionService;
   /** Phase 7 support: guest/requester intake + follow-ups on your own tickets. */
   support: SupportService;
   /** Phase 7 support: admin desk over the same ticket aggregate. */
@@ -299,14 +315,19 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
 
   const repositories: ServiceDeps['repositories'] = buildRepositories(gw);
 
-  // T13 event infrastructure: memory outbox store + in-process bus + audit.
-  const outboxStore = new MemoryOutboxStore();
+  // Financial and domain-event intents must survive a production process
+  // restart. Tests keep the deterministic memory adapter; Firestore uses the
+  // leased durable outbox.
+  const outboxStore =
+    gw.STORAGE_DRIVER === 'memory'
+      ? new MemoryOutboxStore()
+      : new FirestoreOutboxStore(firestoreClient(gw));
   const audits = new MemoryAuditRepository();
   const eventBus = new InProcessEventBus(outboxStore);
   eventBus.subscribe('event.published', createAuditConsumer(audits));
   eventBus.subscribe('event.updated', createAuditConsumer(audits));
-  // Future projection consumer (no-op now — wire exists for B11 projections).
-  eventBus.subscribe('event.published', createProjectionConsumer);
+  // B11: the analytics projection consumer is subscribed below, once `deps`
+  // exists — it needs the AnalyticsService instance, which needs `deps`.
   // Phase 8 pub/sub: follow graph changes are audited, and every publish fans
   // out "new event" notifications to venue + host followers. The publisher
   // (EventService / SocialService) never calls these directly.
@@ -446,6 +467,17 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   eventBus.subscribe('partnership.requested', notificationConsumer);
   eventBus.subscribe('event.published', notificationConsumer);
 
+  // B11: analytics projection. Built here (not with the audit subscriptions
+  // above) because the projector IS the AnalyticsService instance the returned
+  // bag exposes — one instance, two uses. Every `event.*` lifecycle change
+  // reconciles the event's own row and its organization's roll-up; the periodic
+  // refresh in `app.ts` covers the order/scan writes that emit no event.
+  const analytics = new AnalyticsService(deps);
+  const analyticsProjectionConsumer = createAnalyticsProjectionConsumer(analytics);
+  for (const type of ANALYTICS_PROJECTION_EVENT_TYPES) {
+    eventBus.subscribe(type, analyticsProjectionConsumer);
+  }
+
   const adminAuthority = new AdminAuthorityService(deps);
   const onboardingService = new OnboardingService(deps, adminAuthority);
 
@@ -513,6 +545,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   });
 
   const checkout = new CheckoutService(deps);
+  const fulfilmentRepair = new FulfilmentRepairService(deps, checkout);
 
   // The paid walk-up sale. `settleOrder` is injected from the checkout
   // service so door revenue lands in the finance ledger through the SAME
@@ -534,6 +567,11 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   // Phase 6 services
   const finance = createFinanceService({
     ledger: repositories.ledger,
+    financialJournals: repositories.financialJournals,
+    journalTransition: repositories.journalTransition,
+    payouts: repositories.payouts,
+    events: repositories.events,
+    reconciliations: repositories.reconciliations,
     config: coreConfig,
   });
 
@@ -541,6 +579,11 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     payouts: repositories.payouts,
     bankAccounts: repositories.bankAccounts,
     ledger: repositories.ledger,
+    financialJournals: repositories.financialJournals,
+    journalTransition: repositories.journalTransition,
+    events: repositories.events,
+    reconciliations: repositories.reconciliations,
+    platformSettings: repositories.platformSettings,
     config: coreConfig,
   });
 
@@ -555,6 +598,9 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   });
 
   const refund = new RefundService(deps, adminAuthority);
+  const providerPayments = new ProviderPaymentService(deps);
+  const reconciliation = new ReconciliationService(deps);
+  const journalTransition = new JournalTransitionService(deps);
   const adminPayout = new AdminPayoutService(deps, adminAuthority);
   const adminDispute = new AdminDisputeService(deps, adminAuthority);
   const adminOps = new AdminOperationsService(deps, adminAuthority);
@@ -577,6 +623,20 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     config: coreConfig,
   });
 
+  if (gw.STORAGE_DRIVER === 'firestore') {
+    const drainPersistedOutbox = () => {
+      void eventBus.drain().catch((error: unknown) => {
+        resolvedLogger.error('outbox.drain_failed', {
+          error: error instanceof Error ? error.message : 'unknown error',
+        });
+      });
+    };
+    // Recover rows left by a previous process immediately, then poll for
+    // scheduled retries. `unref` lets graceful shutdown proceed naturally.
+    queueMicrotask(drainPersistedOutbox);
+    setInterval(drainPersistedOutbox, 1_000).unref();
+  }
+
   return {
     organizations: new OrganizationService(deps),
     venues: new VenueService(deps),
@@ -588,13 +648,14 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     venueSlotRequests: new VenueSlotRequestService(deps),
     events: new EventService(deps),
     catalog: new EventCatalogService(deps),
-    analytics: new AnalyticsService(deps),
+    analytics,
     onboarding: onboardingService,
 
     social: new SocialService(deps),
     adminAuthority,
     adminOps,
     checkout,
+    fulfilmentRepair,
     public: new PublicService(deps),
     paymentProvider,
     orders: new OrderService(deps),
@@ -605,6 +666,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     idempotency: new IdempotencyService(buildIdempotencyStore(), logger),
     actor: (request: FastifyRequest) => actorFromRequest(gw, request),
     repos: () => repositories,
+    config: () => coreConfig,
     /** T13 audit trail surfaced to routes/tests (B09 slice consumer). */
     audits,
     adminAudits: () => adminAudits,
@@ -621,6 +683,9 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     bankAccount,
     dispute,
     refund,
+    providerPayments,
+    reconciliation,
+    journalTransition,
     adminPayout,
     adminDispute,
     support,

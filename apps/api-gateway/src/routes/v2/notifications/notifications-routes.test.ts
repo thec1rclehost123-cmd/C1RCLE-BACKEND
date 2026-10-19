@@ -107,6 +107,36 @@ describe('producers', () => {
     await server.close();
   });
 
+  it('routes a venue-initiated connection request into the PROMOTER inbox', async () => {
+    // `targetId` is the initiator when the venue opened the conversation — the
+    // promoter is the side that must answer, so the inbox entry lands there.
+    const server = await buildServer();
+    const promoter = await createOrganization(server);
+    const venueOrg = await createOrganization(server);
+    const invited = await server.inject({
+      method: 'POST',
+      url: '/promoter-connections',
+      headers: write(venueOrg),
+      payload: { counterpartyId: promoter, targetType: 'venue', initiatedBy: 'target' },
+    });
+    expect(invited.statusCode).toBe(201);
+
+    const promoterPage = await inbox(server, promoter);
+    expect(promoterPage.unreadCount).toBe(1);
+    expect(promoterPage.items[0]).toMatchObject({
+      recipientId: promoter,
+      recipientType: 'promoter',
+      type: 'promoter_connection.requested',
+      read: false,
+      action: { resourceType: 'promoter_connection', resourceId: expect.any(String) },
+    });
+
+    // The initiator must not receive its own request as an answerable card.
+    const initiatorPage = await inbox(server, venueOrg);
+    expect(initiatorPage.unreadCount).toBe(0);
+    await server.close();
+  });
+
   it('routes a partnership request into the venue org inbox', async () => {
     const server = await buildServer();
     const venueOrg = await createOrganization(server);

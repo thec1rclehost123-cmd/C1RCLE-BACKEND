@@ -497,7 +497,7 @@ describe('scenario: guest purchase + door check-in + finance settlement', () => 
 
     // ── Capture + webhook fulfilment ────────────────────────────────────────
     const paymentId = `pay_scenario_${keySeq}`;
-    memoryProvider().simulateCapture(paymentId, grandTotalPaise);
+    memoryProvider().simulateCapture(paymentId, grandTotalPaise, paymentIntentId);
     const body = webhookPayload({ id: paymentId, order_id: paymentIntentId, holdId });
     const webhook = await server.inject({
       method: 'POST',

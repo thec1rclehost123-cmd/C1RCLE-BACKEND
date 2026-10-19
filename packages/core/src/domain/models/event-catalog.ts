@@ -2,6 +2,7 @@ import { InvalidOperationError } from '../errors.js';
 import { newVersionedEntity, bumpVersion } from '../identity.js';
 
 import type { EntityId, VersionedEntity } from '../identity.js';
+import type { DiscountFundingOwner } from './financial-journal.js';
 
 /**
  * ─── Event catalog ─────────────────────────────────────────────────────────
@@ -346,6 +347,8 @@ export interface PromoCode extends VersionedEntity {
   discountType: PromoDiscountType;
   /** Percent (0–100) when `percent`; paise when `fixed`. */
   discountValue: number;
+  /** Commercial owner that absorbs this discount. */
+  discountFundingOwner: DiscountFundingOwner;
   /** Empty = applies to all tiers (V1 semantics). */
   tierIds: EntityId[];
   /** Total allowed redemptions; null = unlimited. */
@@ -368,6 +371,7 @@ export interface CreatePromoCodeInput {
   type?: PromoType;
   discountType: PromoDiscountType;
   discountValue: number;
+  discountFundingOwner: DiscountFundingOwner;
   tierIds?: EntityId[];
   maxRedemptions?: number | null;
   maxPerUser?: number | null;
@@ -398,6 +402,7 @@ export function createPromoCode(input: CreatePromoCodeInput): PromoCode {
     type: input.type ?? 'private',
     discountType: input.discountType,
     discountValue: input.discountValue,
+    discountFundingOwner: input.discountFundingOwner,
     tierIds: input.tierIds ?? [],
     maxRedemptions: input.maxRedemptions ?? null,
     maxPerUser: input.maxPerUser ?? null,
@@ -407,6 +412,23 @@ export function createPromoCode(input: CreatePromoCodeInput): PromoCode {
     isActive: true,
     ...newVersionedEntity(input.now ?? new Date()),
   };
+}
+
+/**
+ * Whether a promo may be applied right now: switched on, inside its date window.
+ * Counting redemptions needs the redemption store, so that part lives in the
+ * checkout service; this is the part that needs only the promo and the clock.
+ */
+export function assertPromoUsable(promo: PromoCode, now: Date): void {
+  if (!promo.isActive) {
+    throw new InvalidOperationError(`Promo code ${promo.code} is not active`);
+  }
+  if (promo.startsAt && Date.parse(promo.startsAt) > now.getTime()) {
+    throw new InvalidOperationError(`Promo code ${promo.code} is not valid yet`);
+  }
+  if (promo.endsAt && Date.parse(promo.endsAt) <= now.getTime()) {
+    throw new InvalidOperationError(`Promo code ${promo.code} has expired`);
+  }
 }
 
 /** Records one redemption (saturated at never above maxRedemptions). */

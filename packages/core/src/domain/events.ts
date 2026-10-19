@@ -31,15 +31,22 @@ export interface EventPayloads {
   'event.updated': { title?: string; venueId?: EntityId };
   'event.published': { title: string };
   'event.cancelled': { title: string };
+  'finance.refund.settled': {
+    refundRequestId: EntityId;
+    orderId: EntityId;
+    amountPaise: number;
+    providerRefundId: string;
+  };
   // Phase 8: follow graph. Consumers: audit; follower-count projections later.
   'follow.created': { followerId: EntityId; targetType: 'venue' | 'host'; targetId: EntityId };
   'follow.removed': { followerId: EntityId; targetType: 'venue' | 'host'; targetId: EntityId };
   /**
    * A promoter (or the converse: a venue/host offering itself to a promoter)
-   * opened a connection. `targetId` is the RECIPIENT org — the notification
-   * consumer addresses the inbox entry there, not at the event's own
-   * `organizationId` (the requester's org). `promoterName` is resolved by the
-   * emitter so the consumer never performs a second lookup.
+   * opened a connection. `targetId` is the target SIDE of the pair — when
+   * `initiatedBy` is `'target'` that side is the initiator, so the consumer
+   * must pick the recipient from `initiatedBy` (target side when the promoter
+   * opened it, promoter otherwise), never from `targetId` alone. Names are
+   * emitter-resolved so the inbox needs no fan-out at read time.
    */
   'promoter_connection.requested': {
     connectionId: EntityId;
@@ -48,6 +55,7 @@ export interface EventPayloads {
     initiatedBy: 'promoter' | 'target';
     promoterId: EntityId;
     promoterName: string;
+    targetName: string;
     message: string | null;
   };
   /**

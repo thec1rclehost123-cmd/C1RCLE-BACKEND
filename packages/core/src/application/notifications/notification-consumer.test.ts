@@ -65,6 +65,7 @@ const connectionRequested = (connectionId = 'conn_1', targetId = 'org_venue') =>
       initiatedBy: 'promoter',
       promoterId: 'org_promoter',
       promoterName: 'Ace',
+      targetName: 'Lumen House',
       message: null,
     },
   });
@@ -94,6 +95,37 @@ describe('notification consumer — producer mapping', () => {
       action: { resourceType: 'promoter_connection', resourceId: 'conn_1' },
     });
     expect(item?.title).toContain('Ace');
+  });
+
+  it('addresses a target-initiated connection request to the PROMOTER org', async () => {
+    // The venue/host opened the conversation, so `targetId` names the
+    // INITIATOR here — the promoter is the side that must answer, and
+    // addressing `targetId` would drop the invite in the initiator's own inbox.
+    const { repo, consume } = makeHarness();
+    await consume(
+      event('promoter_connection.requested', {
+        payload: {
+          connectionId: 'conn_2',
+          targetId: 'org_venue',
+          targetType: 'venue',
+          initiatedBy: 'target',
+          promoterId: 'org_promoter',
+          promoterName: 'Ace',
+          targetName: 'Lumen House',
+          message: 'Fridays with us?',
+        },
+      }),
+    );
+
+    const item = firstOf(repo);
+    expect(item).toMatchObject({
+      recipientId: 'org_promoter',
+      recipientType: 'promoter',
+      type: 'promoter_connection.requested',
+      read: false,
+      action: { resourceType: 'promoter_connection', resourceId: 'conn_2' },
+    });
+    expect(item?.title).toContain('Lumen House');
   });
 
   it('addresses a host-initiated partnership to the venue org', async () => {

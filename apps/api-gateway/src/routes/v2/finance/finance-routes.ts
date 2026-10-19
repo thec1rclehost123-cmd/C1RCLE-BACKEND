@@ -22,6 +22,8 @@ import { z } from 'zod';
 import type { FinanceOrderRow } from '@c1rcle/core/application';
 import type { BankAccount, Dispute, LedgerEntry, Payout } from '@c1rcle/core/domain';
 
+import { requirePayoutsEnabled } from '../../../lib/payouts-gate.js';
+import { isIdempotencyConflict, runIdempotent } from '../../../lib/v2-idempotency.js';
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
 
@@ -59,7 +61,7 @@ export default async function financeRoutes(fastify: FastifyInstance) {
       preHandler: [
         fastify.rateLimit('AUTH_READ'),
         fastify.validateV2({ params: organizationIdParam }),
-        fastify.requirePermission('organization.read'),
+        fastify.requirePermission('finance.read'),
       ],
     },
     async (request, reply) => {
@@ -82,7 +84,7 @@ export default async function financeRoutes(fastify: FastifyInstance) {
       preHandler: [
         fastify.rateLimit('AUTH_READ'),
         fastify.validateV2({ params: organizationIdParam, querystring: paginationQuerySchema }),
-        fastify.requirePermission('organization.read'),
+        fastify.requirePermission('finance.read'),
       ],
     },
     async (request, reply) => {
@@ -129,7 +131,7 @@ export default async function financeRoutes(fastify: FastifyInstance) {
       preHandler: [
         fastify.rateLimit('AUTH_READ'),
         fastify.validateV2({ params: organizationIdParam, querystring: paginationQuerySchema }),
-        fastify.requirePermission('organization.read'),
+        fastify.requirePermission('finance.orders.read'),
       ],
     },
     async (request, reply) => {
@@ -162,30 +164,49 @@ export default async function financeRoutes(fastify: FastifyInstance) {
     '/organizations/:organizationId/payouts',
     {
       preHandler: [
+        requirePayoutsEnabled(),
         fastify.rateLimit('STANDARD_COMMAND'),
         fastify.validateV2({ params: organizationIdParam, body: payoutRequestSchema }),
-        fastify.requirePermission('organization.update'),
+        fastify.requirePermission('finance.payouts.manage'),
       ],
     },
     async (request, reply) => {
       const { organizationId } = request.params as z.infer<typeof organizationIdParam>;
       const body = request.body as z.infer<typeof payoutRequestSchema>;
       const actor = services.actor(request);
-      const payout = await services.payout
-        .requestPayout(
-          { organizationId, amount: body.amountPaise, bankAccountId: body.bankAccountId },
-          actor,
-        )
-        .catch((error: unknown) => mapDomainError(reply, request, organizationId, error));
-      if (payout === undefined) return reply;
-      const validated = validateV2Response(
-        reply,
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
         request,
-        payoutResponseSchema,
-        payoutToDto(payout),
+        actorId: actor.userId,
+        commandName: 'finance.payout.request',
+        idempotencyKey: body.idempotencyKey,
+        context: { path: { organizationId }, body },
+        run: async () => {
+          const payout = await services.payout.requestPayout(
+            {
+              organizationId,
+              amount: body.amountPaise,
+              bankAccountId: body.bankAccountId,
+              idempotencyKey: body.idempotencyKey,
+            },
+            actor,
+          );
+          const validated = validateV2Response(
+            reply,
+            request,
+            payoutResponseSchema,
+            payoutToDto(payout),
+          );
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 201, body: validated };
+        },
+      }).catch((error: unknown) =>
+        mapDomainError(reply, request, organizationId, error, {
+          conflictId: isIdempotencyConflict(error) ? body.idempotencyKey : undefined,
+        }),
       );
-      if (validated === undefined) return reply;
-      return reply.status(201).send(validated);
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
     },
   );
 
@@ -196,7 +217,7 @@ export default async function financeRoutes(fastify: FastifyInstance) {
       preHandler: [
         fastify.rateLimit('AUTH_READ'),
         fastify.validateV2({ params: organizationIdParam, querystring: paginationQuerySchema }),
-        fastify.requirePermission('organization.read'),
+        fastify.requirePermission('finance.payouts.read'),
       ],
     },
     async (request, reply) => {
@@ -228,7 +249,7 @@ export default async function financeRoutes(fastify: FastifyInstance) {
       preHandler: [
         fastify.rateLimit('AUTH_READ'),
         fastify.validateV2({ params: payoutIdParam }),
-        fastify.requirePermission('organization.read'),
+        fastify.requirePermission('finance.payouts.read'),
       ],
     },
     async (request, reply) => {
@@ -262,7 +283,7 @@ export default async function financeRoutes(fastify: FastifyInstance) {
       preHandler: [
         fastify.rateLimit('STANDARD_COMMAND'),
         fastify.validateV2({ params: organizationIdParam, body: bankAccountRequestSchema }),
-        fastify.requirePermission('organization.update'),
+        fastify.requirePermission('finance.bank_accounts.manage'),
       ],
     },
     async (request, reply) => {
@@ -300,7 +321,7 @@ export default async function financeRoutes(fastify: FastifyInstance) {
       preHandler: [
         fastify.rateLimit('AUTH_READ'),
         fastify.validateV2({ params: organizationIdParam }),
-        fastify.requirePermission('organization.read'),
+        fastify.requirePermission('finance.read'),
       ],
     },
     async (request, reply) => {
@@ -325,7 +346,7 @@ export default async function financeRoutes(fastify: FastifyInstance) {
       preHandler: [
         fastify.rateLimit('STANDARD_COMMAND'),
         fastify.validateV2({ params: bankAccountIdParam }),
-        fastify.requirePermission('organization.update'),
+        fastify.requirePermission('finance.bank_accounts.manage'),
       ],
     },
     async (request, reply) => {
@@ -355,7 +376,7 @@ export default async function financeRoutes(fastify: FastifyInstance) {
       preHandler: [
         fastify.rateLimit('STANDARD_COMMAND'),
         fastify.validateV2({ params: bankAccountIdParam }),
-        fastify.requirePermission('organization.update'),
+        fastify.requirePermission('finance.bank_accounts.manage'),
       ],
     },
     async (request, reply) => {
@@ -571,6 +592,11 @@ function payoutToDto(payout: Payout) {
     status: payout.status,
     failureReason: payout.failureReason,
     processedAt: payout.processedAt,
+    transferReference: payout.transferReference,
+    transferredAt: payout.transferredAt,
+    transferMethod: payout.transferMethod,
+    transferProof: payout.transferProof,
+    approvedBy: payout.approvedBy,
     createdAt: payout.createdAt,
   };
 }
@@ -616,7 +642,7 @@ function mapDomainError(
   request: FastifyRequest,
   resourceId: string,
   error: unknown,
-  options: { hideForbidden?: boolean } = {},
+  options: { hideForbidden?: boolean; conflictId?: string } = {},
 ): undefined {
   const known = error as { code?: string; message?: string };
   if (known?.code === 'not_found' || (error instanceof Error && error.message === 'not_found')) {
@@ -672,6 +698,18 @@ function mapDomainError(
         message: known.message ?? 'Version conflict',
         code: 'conflict',
         requestId: request.id,
+      }),
+    );
+    return undefined;
+  }
+  if (known?.code === 'idempotency_conflict' || known?.code === 'idempotency_in_flight') {
+    reply.status(409).send(
+      buildV2ErrorResponse({
+        status: 409,
+        message: known.message ?? 'Idempotency conflict',
+        code: 'conflict',
+        requestId: request.id,
+        details: { idempotencyKey: options.conflictId },
       }),
     );
     return undefined;

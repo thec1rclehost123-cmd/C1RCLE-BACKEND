@@ -24,6 +24,7 @@ describe('V1 parity guard — proven field names are locked on V2 models', () =>
       type: 'single_use',
       discountType: 'percent',
       discountValue: 20,
+      discountFundingOwner: 'host',
       tierIds: ['tier_1'],
       maxRedemptions: 100,
       maxPerUser: 1,
