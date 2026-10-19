@@ -180,8 +180,78 @@ export class OrganizationService {
     requireOrgAccess(actor, organizationId);
     const org = await this.repo.getById(organizationId);
     if (!org) throw new OrganizationNotFoundError(organizationId);
-    const updated = removeMember(org, userId, this.deps.config.clock.now());
+    const memberToRemove = org.members.find((m) => m.userId === userId);
+    const now = this.deps.config.clock.now();
+    const updated = removeMember(org, userId, now);
     await this.repo.save(updated);
+
+    if (memberToRemove && this.deps.repositories.invitations) {
+      try {
+        const user = await this.deps.repositories.users?.getById(userId).catch(() => null);
+        const fallbackEmail = !user?.email
+          ? await this.deps.userDirectory?.getEmailById(userId).catch(() => null)
+          : null;
+        let email = memberToRemove.email ?? user?.email ?? fallbackEmail ?? null;
+        let matchedInvite: OrganizationInvitation | null = null;
+        const existingInvites = await this.deps.repositories.invitations
+          .listByOrganization(organizationId, { limit: 100 })
+          .catch(() => null);
+        if (existingInvites) {
+          matchedInvite =
+            existingInvites.items.find(
+              (inv) =>
+                inv.acceptedBy === userId ||
+                (email && inv.email.toLowerCase() === email.toLowerCase()),
+            ) ?? null;
+          if (matchedInvite && !email) {
+            email = matchedInvite.email;
+          }
+        }
+
+        if (email) {
+          const normalized = normalizeEmail(email);
+          const revokedInvite: OrganizationInvitation = {
+            id: matchedInvite ? matchedInvite.id : this.deps.config.ids(),
+            organizationId,
+            email: normalized,
+            role: memberToRemove.role,
+            capabilities: memberToRemove.capabilities,
+            status: 'revoked',
+            invitedBy: actor.userId,
+            expiresAt: now.toISOString(),
+            acceptedAt: null,
+            acceptedBy: null,
+            version: matchedInvite ? matchedInvite.version + 1 : 1,
+            createdAt: matchedInvite?.createdAt ?? memberToRemove.joinedAt ?? now.toISOString(),
+            updatedAt: now.toISOString(),
+          };
+          await this.deps.repositories.invitations.save(revokedInvite);
+        }
+
+        // Revoke credentials and clear rotation requirement if no other org memberships remain
+        let hasOtherOrgs = false;
+        try {
+          const memberOrgs = await this.repo.listForMember(userId, { limit: 2 });
+          hasOtherOrgs = memberOrgs.items.some((item) => item.id !== organizationId);
+        } catch {
+          // fail safe: proceed to revoke if lookup fails or unsupported
+        }
+
+        if (!hasOtherOrgs) {
+          if (this.deps.credentialProvisioner.revokeLogin) {
+            await this.deps.credentialProvisioner.revokeLogin(userId, email ?? undefined);
+          }
+          await this.deps.rotationStore.setRequired(userId, false);
+        }
+      } catch (error: unknown) {
+        this.deps.logger.warn('organization.revoke_invitation_save_failed', {
+          organizationId,
+          userId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
     return updated;
   }
 
@@ -320,6 +390,30 @@ export class OrganizationService {
     const invitation = await this.fetchOwnedInvitation(actor, invitationId);
     const revoked = revokeInvitation(invitation, this.deps.config.clock.now());
     await this.deps.repositories.invitations.save(revoked);
+
+    try {
+      let provisionedUserId: string | null = null;
+      if (this.deps.userDirectory) {
+        provisionedUserId = await this.deps.userDirectory.findUserIdByEmail(invitation.email);
+      }
+      if (this.deps.credentialProvisioner.revokeLogin) {
+        await this.deps.credentialProvisioner.revokeLogin(
+          provisionedUserId ?? '',
+          invitation.email,
+        );
+      }
+      if (provisionedUserId) {
+        await this.deps.rotationStore.setRequired(provisionedUserId, false);
+      }
+    } catch (error: unknown) {
+      this.deps.logger.warn('organization.revoke_invitation_credential_failed', {
+        organizationId: invitation.organizationId,
+        invitationId: invitation.id,
+        email: invitation.email,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
     return revoked;
   }
 
