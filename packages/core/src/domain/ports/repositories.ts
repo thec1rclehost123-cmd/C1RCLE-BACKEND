@@ -48,7 +48,13 @@ import type {
   ScannerSessionCreateInput,
 } from '../models/event-code.js';
 import type { Event } from '../models/event.js';
+import type {
+  FinancialComponentBreakdown,
+  FinancialJournal,
+  PostingSourceType,
+} from '../models/financial-journal.js';
 import type { GuestProfile } from '../models/guest-profile.js';
+import type { JournalTransitionState } from '../models/journal-transition.js';
 import type {
   LeaderboardBucket,
   LeaderboardPeriodType,
@@ -57,7 +63,7 @@ import type {
 import type { LedgerEntry, LedgerEntryType } from '../models/ledger.js';
 import type { Notification } from '../models/notification.js';
 import type { OnboardingRequest, OnboardingStatus } from '../models/onboarding.js';
-import type { Order } from '../models/order.js';
+import type { Order, OrderStatus } from '../models/order.js';
 import type {
   Organization,
   OrganizationInvitation,
@@ -68,6 +74,13 @@ import type { Payout, PayoutStatus } from '../models/payout.js';
 import type { PlatformSettings } from '../models/platform-settings.js';
 import type { PlatformUser } from '../models/platform-user.js';
 import type { PromoterConnection } from '../models/promoter-connection.js';
+import type { ProviderFinancialEvent } from '../models/provider-financial-event.js';
+import type { ProviderPayment } from '../models/provider-payment.js';
+import type {
+  ReconciliationDiscrepancy,
+  ReconciliationDiscrepancyState,
+  ReconciliationRun,
+} from '../models/reconciliation.js';
 import type { ReferralLink } from '../models/referral-link.js';
 import type { AdminRefundRequest, AdminRefundRequestStatus } from '../models/refund-request.js';
 import type {
@@ -530,6 +543,8 @@ export interface CalendarDay {
 export interface AnalyticsReadModelRepository {
   getOrganizationOverview(organizationId: EntityId): Promise<OrganizationOverview | null>;
   getEventAnalytics(eventId: EntityId): Promise<EventAnalytics | null>;
+  saveOrganizationOverview(overview: OrganizationOverview): Promise<void>;
+  saveEventAnalytics(analytics: EventAnalytics): Promise<void>;
 }
 
 // ─── Onboarding / KYC (Phase 2) ──────────────────────────────────────────────
@@ -623,16 +638,46 @@ export interface TxContext {
 
 /** Cart reservation (hold) — short-lived inventory lock before payment. */
 export interface CartReservationRepository {
-  /** Creates a new hold. Fails if inventory is not available. */
-  create(reservation: CartReservation, tx?: TxContext | null): Promise<void>;
+  /**
+   * Stores a new hold and returns it with its `sequence` assigned: the next
+   * number in the event's strict order of hold creation, taken inside a
+   * transaction. It does NOT check inventory: the caller judges capacity after
+   * this returns, against the holds ordered at or before the returned one.
+   */
+  create(reservation: CartReservation, tx?: TxContext | null): Promise<CartReservation>;
   /** Fetches by id. */
   getById(reservationId: EntityId): Promise<CartReservation | null>;
   /** Fetches by idempotency key (for idempotent hold creation). */
   getByIdempotencyKey(key: string): Promise<CartReservation | null>;
+  /**
+   * Brings a lapsed (expired or released) hold back to life for a payment that
+   * arrived late: active again until `expiresAt`, with a NEW position in the
+   * event's strict order of holds (taken in the same transaction as creation
+   * takes its position). Returns null if the hold does not exist, and a hold
+   * that was already converted to an order unchanged.
+   */
+  reactivate(reservationId: EntityId, expiresAt: string): Promise<CartReservation | null>;
   /** Releases the hold (marks as released/expired). */
   release(reservationId: EntityId, tx?: TxContext | null): Promise<void>;
   /** Converts a hold to an order (atomic with order creation). */
   convertToOrder(reservationId: EntityId, orderId: EntityId, tx?: TxContext | null): Promise<void>;
+  /**
+   * Binds the provider order to the hold, first writer wins, and returns the
+   * order id that ended up bound (the caller's, or the one an earlier/racing
+   * attempt already bound). Returns `null` when the hold does not exist. A
+   * hold is bound to at most one provider order, which is what lets fulfilment
+   * reject a payment made against any other order.
+   */
+  bindProviderOrder(
+    reservationId: EntityId,
+    providerOrderId: string,
+    tx?: TxContext | null,
+  ): Promise<string | null>;
+  /**
+   * The hold a provider order was bound to, if any. Used to find the hold behind
+   * a paid order (an order records the provider order id, not the hold id).
+   */
+  getByProviderOrderId(providerOrderId: string): Promise<CartReservation | null>;
   /** Cleans up expired holds (called by a worker). */
   cleanupExpired(now: Date, tx?: TxContext | null): Promise<number>;
   /**
@@ -657,6 +702,12 @@ export interface CartReservationRepository {
 }
 
 /** Order repository — the commerce aggregate. */
+/** One line of an order, as far as seat counting is concerned. */
+export interface SeatClaimLine {
+  tierId: EntityId;
+  quantity: number;
+}
+
 export interface OrderRepository {
   /** Fetches by id. */
   getById(orderId: EntityId): Promise<Order | null>;
@@ -670,6 +721,13 @@ export interface OrderRepository {
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Order>>;
   /** Lists orders for an event. */
   listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<Order>>;
+  /**
+   * Every order of an event reduced to what inventory needs: its status and the
+   * tiers and quantities it holds. One read of just those two fields instead of
+   * paging through whole orders, which is what makes counting sold seats scale.
+   * Includes orders of every status; the caller decides which ones hold a seat.
+   */
+  listSeatClaims(eventId: EntityId): Promise<{ status: OrderStatus; lines: SeatClaimLine[] }[]>;
   /** Lists all orders platform-wide (admin read-only dashboards). */
   listAll(query: PaginationQuery): Promise<Page<Order>>;
   /** Hard-deletes an order (support operation). */
@@ -756,6 +814,24 @@ export interface ClaimAdmissionOptions {
 
 /** Promo redemption tracking (shared with Phase 3 event-catalog). */
 export interface PromoRedemptionRepository {
+  /**
+   * Atomically records the financially-effective redemption while enforcing
+   * both promo-wide and per-user limits. `promoIds` includes the canonical id
+   * plus any legacy alias that older redemption rows may contain.
+   */
+  claim(input: {
+    redemption: {
+      id: EntityId;
+      promoId: EntityId;
+      orderId: EntityId;
+      userId: EntityId | null;
+      redeemedAt: string;
+    };
+    promoIds: EntityId[];
+    historicalRedemptionCount: number;
+    maxRedemptions: number | null;
+    maxPerUser: number | null;
+  }): Promise<'claimed' | 'already_claimed' | 'global_limit' | 'user_limit'>;
   /** Records a redemption. Fails if duplicate for same order. */
   create(
     redemption: {
@@ -902,6 +978,15 @@ export interface ScannerSessionRepository {
 
 /** Door Sale repository — walk-in and dine-in sales. */
 export interface DoorSaleRepository {
+  /**
+   * Idempotent create: mints the entity and persists it. If a sale already
+   * exists under `input.idempotencyKey`, the EXISTING sale is returned —
+   * a repeated or concurrent same-key create never writes a second row.
+   * Adapters must implement this atomically against the idempotency index
+   * (Firestore: one transaction; memory: the claim + write happen in a single
+   * synchronous turn). `findByIdempotencyKey`, kept for service reads, is a
+   * fast-path past this create, not a substitute for its atomicity.
+   */
   create(input: DoorSaleCreateInput): Promise<DoorSale>;
   findById(id: EntityId): Promise<DoorSale | null>;
   findByIdempotencyKey(idempotencyKey: string): Promise<DoorSale | null>;
@@ -1054,9 +1139,53 @@ export interface LedgerRepository {
   ): Promise<Record<LedgerEntryType, { pending: number; settled: number; paidOut: number }>>;
 }
 
+/**
+ * Immutable, balanced accounting journals. `postBatch` is repair-safe: a
+ * retry returns the first committed journal for each idempotency key and a
+ * key may never be reused for different journal content.
+ */
+export interface FinancialJournalRepository {
+  postBatch(journals: FinancialJournal[]): Promise<FinancialJournal[]>;
+  findById(id: EntityId): Promise<FinancialJournal | null>;
+  findByIdempotencyKey(idempotencyKey: string): Promise<FinancialJournal | null>;
+  findBySource(sourceType: PostingSourceType, sourceId: EntityId): Promise<FinancialJournal[]>;
+  findByOrderId(orderId: EntityId): Promise<FinancialJournal[]>;
+  findReversals(journalId: EntityId): Promise<FinancialJournal[]>;
+  listByOrganization(
+    organizationId: EntityId,
+    query: PaginationQuery,
+  ): Promise<Page<FinancialJournal>>;
+  /** Net credit balance of payable accounts for this organization. */
+  sumPayableByOrganization(organizationId: EntityId): Promise<number>;
+  listPayableLinesByOrganization(organizationId: EntityId): Promise<PayableJournalLine[]>;
+}
+
+export interface PayableJournalLine {
+  journalId: EntityId;
+  account: 'host_payable' | 'venue_payable' | 'promoter_payable' | 'partner_payable';
+  side: 'debit' | 'credit';
+  amountPaise: number;
+  component: keyof FinancialComponentBreakdown | null;
+  source: FinancialJournal['source'];
+  accountingPolicy: FinancialJournal['accountingPolicy'];
+  postedAt: string;
+}
+
+export interface JournalTransitionRepository {
+  get(): Promise<JournalTransitionState>;
+  /** Optimistic save; the supplied version must be exactly one above storage. */
+  save(state: JournalTransitionState): Promise<void>;
+}
+
 /** Payout requests — draw-downs against the ledger-computed available balance. */
 export interface PayoutRepository {
   create(payout: Payout): Promise<Payout>;
+  /** Atomically creates the payout and its payable-reservation journal within the limit. */
+  createWithinLimit(
+    payout: Payout,
+    payableLimitPaise: number,
+    reservationJournal: FinancialJournal,
+  ): Promise<Payout>;
   findById(id: EntityId): Promise<Payout | null>;
   save(payout: Payout): Promise<Payout>;
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Payout>>;
@@ -1090,6 +1219,47 @@ export interface DisputeRepository {
 }
 
 /** Admin refund requests (Phase 6 admin). Version-checked saves for the N-approver accumulator. */
+/**
+ * The provider's record of each payment (see `provider-payment.ts`). Keyed by
+ * the provider's payment id. `save` is optimistic: it throws
+ * `VersionConflictError` when the stored version is not `record.version - 1`
+ * (a new record has version 1 and must not already exist), so two webhooks for
+ * the same payment cannot overwrite each other.
+ */
+export interface ProviderPaymentRepository {
+  findByPaymentId(paymentId: string): Promise<ProviderPayment | null>;
+  findByProviderOrderId(providerOrderId: string): Promise<ProviderPayment | null>;
+  listAll(query: PaginationQuery): Promise<Page<ProviderPayment>>;
+  save(record: ProviderPayment): Promise<void>;
+}
+
+export interface ReconciliationRepository {
+  createRun(run: ReconciliationRun): Promise<void>;
+  saveRun(run: ReconciliationRun): Promise<void>;
+  getRun(id: EntityId): Promise<ReconciliationRun | null>;
+  listRuns(query: PaginationQuery): Promise<Page<ReconciliationRun>>;
+  createDiscrepancies(items: ReconciliationDiscrepancy[]): Promise<void>;
+  getDiscrepancy(id: EntityId): Promise<ReconciliationDiscrepancy | null>;
+  saveDiscrepancy(item: ReconciliationDiscrepancy): Promise<void>;
+  listDiscrepancies(
+    query: PaginationQuery & {
+      runId?: EntityId;
+      state?: ReconciliationDiscrepancyState;
+      organizationId?: EntityId;
+    },
+  ): Promise<Page<ReconciliationDiscrepancy>>;
+}
+
+export interface ProviderFinancialEventRepository {
+  /** First writer wins. Exact replays return the canonical stored event. */
+  ingest(event: ProviderFinancialEvent): Promise<ProviderFinancialEvent>;
+  findById(id: EntityId): Promise<ProviderFinancialEvent | null>;
+  findByProviderEventId(providerEventId: string): Promise<ProviderFinancialEvent | null>;
+  listByPaymentId(paymentId: string): Promise<ProviderFinancialEvent[]>;
+  markProcessed(id: EntityId, result: string, processedAt: Date): Promise<void>;
+  markSupportRequired(id: EntityId, result: string, processedAt: Date): Promise<void>;
+}
+
 export interface AdminRefundRequestRepository {
   getById(id: EntityId): Promise<AdminRefundRequest | null>;
   /** Every request against one order — used to compute the refundable remainder. */

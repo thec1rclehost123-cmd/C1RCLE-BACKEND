@@ -144,14 +144,18 @@ function dayOfWeekIndex(instant: Date): number {
 /**
  * ─── Analytics ────────────────────────────────────────────────────────────────
  *
- * Read model first, compute-on-request as the failback: the projection worker
- * that fills the read model has not shipped yet (see `audit-consumers.ts`), so
- * the "read-model only" stance was actually returning fabricated zeroes or a
- * 404 for orgs/events with real sales data — worse than an honest scan. This
- * service therefore keeps the cached model as the fast path and falls back to a
- * bounded scan of source aggregates when the cache is missing. The doc comments
- * on both public methods flag which numbers are projection-only (not yet
- * derivable from any source aggregate).
+ * Read model first, compute-on-request as the fallback. The read model is
+ * filled by `AnalyticsService.projectOrganizationOverview` /
+ * `projectEventAnalytics`, which the `event.*` projection consumer and the
+ * periodic refresh in the gateway drive (see `analytics-projection.ts`). The
+ * fallback stays for two honest reasons: a row can be missing (an org that
+ * predates the projection, or a fresh event), and it is the same bounded scan
+ * the projection runs — so the two paths agree by construction rather than by
+ * a maintained invariant.
+ *
+ * The doc comments on the compute path flag which numbers are projection-only
+ * (`views`, `guestlistSignups`, `conversionRate` — no source aggregate exists
+ * for them yet, so both paths write zero).
  */
 export class AnalyticsService {
   constructor(private deps: ServiceDeps) {}
@@ -177,6 +181,36 @@ export class AnalyticsService {
     const analytics = await this.repo.getEventAnalytics(eventId);
     if (analytics) return analytics;
     return this.computeEventAnalytics(event);
+  }
+
+  /**
+   * Recomputes the organization's read-model row and stores it. Called by the
+   * projection consumer (on `event.*`) and by the periodic refresh — never by a
+   * request handler. The recompute is the same bounded scan the read path
+   * falls back to, so a projected row and a cache-miss answer agree by
+   * construction; storing it just turns the next read into a document get.
+   *
+   * Idempotent by design: the row is a pure function of the source
+   * aggregates, and the adapter upserts, so an at-least-once redelivery (the
+   * bus dedupe is in-memory only) simply writes the same numbers again.
+   */
+  async projectOrganizationOverview(organizationId: EntityId): Promise<OrganizationOverview> {
+    const overview = await this.computeOrganizationOverview(organizationId);
+    await this.repo.saveOrganizationOverview(overview);
+    return overview;
+  }
+
+  /**
+   * Recomputes and stores one event's analytics. Returns `null` when the event
+   * no longer exists (a deleted/cancelled event has nothing to project) rather
+   * than throwing — the caller is a background consumer, not a request.
+   */
+  async projectEventAnalytics(eventId: EntityId): Promise<EventAnalytics | null> {
+    const event = await this.deps.repositories.events.getById(eventId);
+    if (!event) return null;
+    const analytics = await this.computeEventAnalytics(event);
+    await this.repo.saveEventAnalytics(analytics);
+    return analytics;
   }
 
   /**

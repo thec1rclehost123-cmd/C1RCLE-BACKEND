@@ -42,12 +42,118 @@ afterEach(() => {
 });
 
 describe('RazorpayPaymentProvider — signature primitives', () => {
-  it('generates the canonical HMAC-SHA256 signature (sorted keys, key=value&…)', () => {
+  // Known-answer vector, computed independently with
+  //   printf 'order_EKwxwAgItmmXdp|pay_EKwxwAgItmmXdp' | openssl dgst -sha256 -hmac '<key secret>'
+  // so the expected value does not come from the implementation under test.
+  // (This is a self-generated vector for Razorpay's documented scheme
+  // HMAC_SHA256(order_id|payment_id, key_secret), not one published by Razorpay.)
+  const VECTOR = {
+    keySecret: 'rzp_test_key_secret_example',
+    orderId: 'order_EKwxwAgItmmXdp',
+    paymentId: 'pay_EKwxwAgItmmXdp',
+    signature: 'd0bd7ac27b0059bab53e8f01b37f7d9f9f0f9725336fa6738ef59a2c32ff3fe9',
+  };
+  const vectorProvider = () =>
+    new RazorpayPaymentProvider({ ...CONFIG, keySecret: VECTOR.keySecret });
+
+  it('signs order_id|payment_id with the KEY secret (known-answer vector)', () => {
+    expect(
+      vectorProvider().generateSignature({ paymentId: VECTOR.paymentId, orderId: VECTOR.orderId }),
+    ).toBe(VECTOR.signature);
+  });
+
+  it('does not use the webhook secret or the old sorted key=value form', () => {
     const signature = provider().generateSignature({ paymentId: 'pay_1', orderId: 'ord_1' });
-    const expected = createHmac('sha256', CONFIG.webhookSecret)
+    const oldWebhookKeyed = createHmac('sha256', CONFIG.webhookSecret)
       .update('orderId=ord_1&paymentId=pay_1')
       .digest('hex');
-    expect(signature).toBe(expected);
+    const webhookKeyedNewForm = createHmac('sha256', CONFIG.webhookSecret)
+      .update('ord_1|pay_1')
+      .digest('hex');
+    expect(signature).not.toBe(oldWebhookKeyed);
+    expect(signature).not.toBe(webhookKeyedNewForm);
+    expect(signature).toBe(
+      createHmac('sha256', CONFIG.keySecret).update('ord_1|pay_1').digest('hex'),
+    );
+  });
+
+  describe('verifyPayment — checkout callback', () => {
+    const capturedPayment = {
+      id: VECTOR.paymentId,
+      amount: 1000,
+      currency: 'INR',
+      status: 'captured',
+      captured: true,
+      order_id: VECTOR.orderId,
+    };
+    const verify = (signature: string, overrides: { orderId?: string; paymentId?: string } = {}) =>
+      vectorProvider().verifyPayment({
+        paymentId: overrides.paymentId ?? VECTOR.paymentId,
+        orderId: overrides.orderId ?? VECTOR.orderId,
+        signature,
+      });
+
+    it('accepts the genuine signature and reports the order the payment belongs to', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(capturedPayment)));
+      await expect(verify(VECTOR.signature)).resolves.toMatchObject({
+        captured: true,
+        orderId: VECTOR.orderId,
+        currency: 'INR',
+      });
+    });
+
+    it('rejects a signature made with a different secret, without calling the provider', async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal('fetch', fetchMock);
+      const forged = createHmac('sha256', 'attacker_guess')
+        .update(`${VECTOR.orderId}|${VECTOR.paymentId}`)
+        .digest('hex');
+      await expect(verify(forged)).rejects.toThrow('Invalid payment signature');
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects a valid signature replayed against a different order or payment', async () => {
+      vi.stubGlobal('fetch', vi.fn());
+      await expect(verify(VECTOR.signature, { orderId: 'order_OTHER' })).rejects.toThrow(
+        'Invalid payment signature',
+      );
+      await expect(verify(VECTOR.signature, { paymentId: 'pay_OTHER' })).rejects.toThrow(
+        'Invalid payment signature',
+      );
+    });
+
+    it.each([
+      ['truncated', VECTOR.signature.slice(0, 20)],
+      ['empty', ''],
+      ['over-long', `${VECTOR.signature}00`],
+      ['non-hex', 'z'.repeat(64)],
+    ])(
+      'rejects a %s signature cleanly (an invalid-signature error, not a RangeError)',
+      async (_l, bad) => {
+        vi.stubGlobal('fetch', vi.fn());
+        await expect(verify(bad)).rejects.toThrow('Invalid payment signature');
+      },
+    );
+  });
+
+  describe('verifyWebhookSignature', () => {
+    const body = '{"event":"payment.captured"}';
+    const good = createHmac('sha256', CONFIG.webhookSecret).update(body).digest('hex');
+
+    it('accepts the body signed with the webhook secret', () => {
+      expect(provider().verifyWebhookSignature(body, good)).toBe(true);
+    });
+
+    it('rejects a wrong or wrong-length signature without throwing', () => {
+      expect(provider().verifyWebhookSignature(body, 'x'.repeat(64))).toBe(false);
+      expect(provider().verifyWebhookSignature(body, good.slice(0, 10))).toBe(false);
+      expect(provider().verifyWebhookSignature(body, '')).toBe(false);
+    });
+
+    it('rejects a body signed with the API key secret (the two secrets are distinct)', () => {
+      const keySigned = createHmac('sha256', CONFIG.keySecret).update(body).digest('hex');
+      expect(provider().verifyWebhookSignature(body, keySigned)).toBe(false);
+    });
   });
 
   it('verifies a matching webhook HMAC', () => {
@@ -411,5 +517,78 @@ describe('RazorpayPaymentProvider — payment id validation', () => {
       const [url] = fetchMock.mock.calls.at(-1) as [string];
       expect(url).toBe(`https://razorpay.test/v1/payments/${id}`);
     }
+  });
+});
+
+describe('RazorpayPaymentProvider — order amount integrity and payment mapping', () => {
+  const request = {
+    amountPaise: 108_850,
+    currency: 'INR',
+    idempotencyKey: 'idem-1',
+    metadata: { holdId: 'HOLD-1' },
+  };
+
+  it('returns the order when the provider echoes the requested amount and currency', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          jsonResponse({ id: 'order_1', amount: 108_850, currency: 'INR', status: 'created' }),
+        ),
+    );
+    await expect(provider().createOrder(request)).resolves.toMatchObject({
+      id: 'order_1',
+      amountPaise: 108_850,
+    });
+  });
+
+  it.each([
+    ['a different amount', { amount: 100, currency: 'INR' }],
+    ['a different currency', { amount: 108_850, currency: 'USD' }],
+  ])('refuses an order the provider created with %s', async (_l, overrides) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(jsonResponse({ id: 'order_1', status: 'created', ...overrides })),
+    );
+    await expect(provider().createOrder(request)).rejects.toThrow(
+      'does not match the requested amount',
+    );
+  });
+
+  it('maps the provider order id and currency from a fetched payment', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        jsonResponse({
+          id: 'pay_1',
+          amount: 5000,
+          currency: 'INR',
+          status: 'captured',
+          captured: true,
+          order_id: 'order_9',
+        }),
+      ),
+    );
+    await expect(provider().getPayment('pay_1')).resolves.toMatchObject({
+      orderId: 'order_9',
+      currency: 'INR',
+    });
+  });
+
+  it('reports a null order id for a payment made without an order', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        jsonResponse({
+          id: 'pay_1',
+          amount: 5000,
+          currency: 'INR',
+          status: 'captured',
+          captured: true,
+        }),
+      ),
+    );
+    await expect(provider().getPayment('pay_1')).resolves.toMatchObject({ orderId: null });
   });
 });

@@ -20,7 +20,18 @@ export interface PlatformSettings {
   maintenanceMode: boolean;
   /** Arbitrary feature flags for gradual rollouts. */
   featureFlags: Record<string, boolean>;
+  accountingPolicy: AccountingPolicyConfig;
   updatedAt: string;
+}
+
+export interface AccountingPolicyConfig {
+  version: string;
+  settlementDelayDays: number;
+  reserveBasisPoints: number;
+  requiresEventCompletion: boolean;
+  holdsOnCancellation: boolean;
+  holdsOnDispute: boolean;
+  holdsOnUnresolvedReconciliation: boolean;
 }
 
 export interface PlatformSettingsInput {
@@ -29,6 +40,7 @@ export interface PlatformSettingsInput {
   refundDualApproverThresholdPaise?: number;
   maintenanceMode?: boolean;
   featureFlags?: Record<string, boolean>;
+  accountingPolicy?: AccountingPolicyConfig;
 }
 
 /** Firestore document key for the singleton settings doc. */
@@ -44,5 +56,14 @@ export const DEFAULT_PLATFORM_SETTINGS: Readonly<PlatformSettings> = {
   refundDualApproverThresholdPaise: DEFAULT_DUAL_THRESHOLD,
   maintenanceMode: false,
   featureFlags: {},
+  accountingPolicy: {
+    version: 'm2-test-policy-v1',
+    settlementDelayDays: 3,
+    reserveBasisPoints: 0,
+    requiresEventCompletion: true,
+    holdsOnCancellation: true,
+    holdsOnDispute: true,
+    holdsOnUnresolvedReconciliation: true,
+  },
   updatedAt: new Date(0).toISOString(),
 };

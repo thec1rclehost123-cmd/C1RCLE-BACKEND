@@ -12,6 +12,7 @@ import adminOrganizationActionRoutes from './admin/organization-actions.js';
 import adminPayoutRoutes from './admin/payouts.js';
 import adminPromotersRoutes from './admin/promoters.js';
 import adminPromotionsRoutes from './admin/promotions.js';
+import adminReconciliationRoutes from './admin/reconciliation.js';
 import adminRefundRoutes from './admin/refunds.js';
 import adminSettingsRoutes from './admin/settings.js';
 import adminSupportRoutes from './admin/support.js';
@@ -134,6 +135,7 @@ export async function registerV2Routes(
       await guestProfileRoutes(v2);
       await adminRoutes(v2);
       await adminRefundRoutes(v2);
+      await adminReconciliationRoutes(v2);
       await adminPayoutRoutes(v2);
       await adminDisputeRoutes(v2);
       await adminDirectoryRoutes(v2);

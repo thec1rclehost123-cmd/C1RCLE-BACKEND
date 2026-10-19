@@ -59,6 +59,13 @@ export class MemoryIdempotencyStore implements IdempotencyStore {
     });
   }
 
+  async fail(key: string): Promise<void> {
+    this.inFlight.delete(key);
+    const record = this.records.get(key);
+    if (!record) return;
+    this.records.set(key, { ...record, status: 'FAILED' });
+  }
+
   async release(key: string): Promise<void> {
     this.inFlight.delete(key);
     this.records.delete(key);

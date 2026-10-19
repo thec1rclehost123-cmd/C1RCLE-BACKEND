@@ -14,6 +14,7 @@ import {
   VersionConflictError,
   StateTransitionError,
   InvalidOperationError,
+  IdempotencyFailedError,
 } from '@c1rcle/core/domain';
 
 import type { ApiErrorCode } from '@c1rcle/contracts';
@@ -46,6 +47,10 @@ export function mapDomainError(error: DomainError): {
   if (error instanceof ConflictError) return { status: 409, code: 'conflict' };
   if (error instanceof InvalidOperationError) return { status: 400, code: 'validation' };
   if (error instanceof ServiceUnavailableError) return { status: 503, code: 'server' };
+  // B1: a prior attempt with this key FAILED at an unknown point (possibly
+  // after the write). Client must inspect, not blindly re-run — 409 so the
+  // distinct message survives the 5xx redaction.
+  if (error instanceof IdempotencyFailedError) return { status: 409, code: 'conflict' };
   return { status: 500, code: 'server' };
 }
 

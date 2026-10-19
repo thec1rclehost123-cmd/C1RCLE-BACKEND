@@ -113,6 +113,7 @@ function doorPricing(tier: TicketTier, quantity: number): PricingBreakdown {
     ],
     subtotalPaise,
     discountPaise: 0,
+    discountFundingOwner: null,
     discountedSubtotalPaise: subtotalPaise,
     platformFeePaise: 0,
     paymentFeePaise: 0,
@@ -134,6 +135,11 @@ export function createDoorTicketSaleService(
     command: DoorTicketSaleCommand,
     actor: ActorContext,
   ): Promise<DoorTicketSaleResult> {
+    if (command.paymentMode !== 'cash') {
+      throw new InvalidOperationError(
+        'Electronic door sales require provider or terminal confirmation and are not enabled',
+      );
+    }
     const event = await deps.events.findById(command.eventId);
     if (!event) throw new NotFoundError('Event', command.eventId);
     requireOrgAccess(actor, event.organizationId);

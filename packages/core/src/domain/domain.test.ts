@@ -161,6 +161,27 @@ describe('event — status machine', () => {
     expect(updated.status).toBe('draft');
     expect(updated.version).toBe(2);
   });
+
+  it('refuses attribute updates once the event is terminal', () => {
+    const cancelled = cancelEvent(event, 'venue flooded', LATER);
+    expect(() => updateEvent(cancelled, { title: 'Renamed' }, LATER)).toThrow(
+      InvalidOperationError,
+    );
+
+    let archived = event;
+    for (const next of [
+      'review',
+      'scheduled',
+      'published',
+      'started',
+      'ended',
+      'archived',
+    ] as const) {
+      archived = transitionEvent(archived, next, LATER);
+    }
+    expect(archived.status).toBe('archived');
+    expect(() => updateEvent(archived, { title: 'Renamed' }, LATER)).toThrow(InvalidOperationError);
+  });
 });
 
 describe('organization — membership rules', () => {

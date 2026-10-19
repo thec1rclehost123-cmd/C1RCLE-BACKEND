@@ -127,6 +127,17 @@ export class StateTransitionError extends DomainError {
   readonly to: string;
 }
 
+/**
+ * A payment was captured but cannot be honoured (the reservation lapsed and the
+ * seats are gone), so it was refunded in full. Distinct from a generic refusal
+ * so callers can tell a buyer "you have been refunded" instead of "try again".
+ */
+export class PaymentRefundedError extends DomainError {
+  constructor(message: string) {
+    super(message, 'payment_refunded');
+  }
+}
+
 export class InvalidOperationError extends DomainError {
   constructor(message: string) {
     super(message, 'invalid_operation');
@@ -156,6 +167,17 @@ export class ServiceUnavailableError extends DomainError {
   }
 }
 
+/**
+ * The payment provider returned an authoritative rejection before accepting
+ * the operation. This is deliberately distinct from a transport error: only
+ * this outcome permits a caller to release money or entitlement locks.
+ */
+export class DefiniteProviderFailureError extends DomainError {
+  constructor(message = 'Payment provider definitively rejected the operation') {
+    super(message, 'provider_rejected');
+  }
+}
+
 export class IdempotencyConflictError extends DomainError {
   constructor(idempotencyKey: string) {
     super(
@@ -170,6 +192,21 @@ export class IdempotencyInFlightError extends DomainError {
     super(
       `Request with Idempotency-Key ${idempotencyKey} is already in flight`,
       'idempotency_in_flight',
+    );
+  }
+}
+
+/**
+ * A previous attempt with this key already ran and errored at an unknown
+ * point — it may have persisted the record before failing (outbox / emit /
+ * response-validation), so a retry must NOT re-run it. The client inspects the
+ * outcome instead of blindly retrying with the same key.
+ */
+export class IdempotencyFailedError extends DomainError {
+  constructor(idempotencyKey: string) {
+    super(
+      `A previous attempt with Idempotency-Key ${idempotencyKey} failed partway; re-running it could duplicate the write. Inspect the original response instead of retrying with the same key.`,
+      'idempotency_failed',
     );
   }
 }

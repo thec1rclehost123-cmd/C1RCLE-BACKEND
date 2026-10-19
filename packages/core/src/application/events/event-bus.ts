@@ -17,22 +17,37 @@ export type EventHandler = (event: DomainEvent) => Promise<void>;
 export interface EventBusOptions {
   /** Retries before a row goes to the DLQ (default: outbox max attempts). */
   maxAttempts?: number;
+  workerId?: string;
+  leaseMs?: number;
+  baseRetryDelayMs?: number;
+  maxRetryDelayMs?: number;
+  now?: () => number;
 }
 
 export class InProcessEventBus implements OutboxWriter {
   private readonly handlers = new Map<string, Set<EventHandler>>();
-  /** Idempotency by event id per handler (dedupe), survives bus restarts. */
+  /** Best-effort in-process dedupe; durable consumers must enforce sink idempotency. */
   private readonly processedByHandler = new Map<string, Set<EntityId>>();
   /** Stable per-subscription identity (see `handlerKey`). */
   private readonly handlerIds = new WeakMap<EventHandler, number>();
   private nextHandlerId = 0;
   private readonly store: OutboxStore;
   private readonly maxAttempts: number;
+  private readonly workerId: string;
+  private readonly leaseMs: number;
+  private readonly baseRetryDelayMs: number;
+  private readonly maxRetryDelayMs: number;
+  private readonly now: () => number;
   private draining = false;
 
   constructor(store: OutboxStore, options: EventBusOptions = {}) {
     this.store = store;
     this.maxAttempts = options.maxAttempts ?? OUTBOX_MAX_ATTEMPTS;
+    this.workerId = options.workerId ?? 'in-process-worker';
+    this.leaseMs = options.leaseMs ?? 30_000;
+    this.baseRetryDelayMs = options.baseRetryDelayMs ?? 1_000;
+    this.maxRetryDelayMs = options.maxRetryDelayMs ?? 60_000;
+    this.now = options.now ?? Date.now;
   }
 
   /** OutboxWriter contract: write the event, then drain in the same call. */
@@ -42,16 +57,25 @@ export class InProcessEventBus implements OutboxWriter {
   }
 
   /** Delegates to the store so the bus honours the full OutboxWriter port. */
-  markProcessed(id: EntityId, processedAt: number): Promise<void> {
-    return this.store.markProcessed(id, processedAt);
+  markProcessed(id: EntityId, processedAt: number, leaseToken?: string): Promise<void> {
+    return this.store.markProcessed(id, processedAt, leaseToken);
   }
 
-  markFailed(id: EntityId, attempts: number): Promise<void> {
-    return this.store.markFailed(id, attempts);
+  markFailed(id: EntityId, attempts: number, leaseToken?: string): Promise<void> {
+    return this.store.markFailed(id, attempts, leaseToken);
   }
 
   bumpAttempts(id: EntityId): Promise<number> {
     return this.store.bumpAttempts(id);
+  }
+
+  scheduleRetry(
+    id: EntityId,
+    nextAttemptAt: number,
+    error: string,
+    leaseToken?: string,
+  ): Promise<void> {
+    return this.store.scheduleRetry(id, nextAttemptAt, error, leaseToken);
   }
 
   subscribe(type: string, handler: EventHandler): void {
@@ -69,7 +93,11 @@ export class InProcessEventBus implements OutboxWriter {
     if (this.draining) return 0;
     this.draining = true;
     try {
-      const pending = await this.store.listPending();
+      const pending = await this.store.claimPending({
+        workerId: this.workerId,
+        now: this.now(),
+        leaseMs: this.leaseMs,
+      });
       let processed = 0;
       for (const row of pending) {
         const handled = await this.dispatchRow(row);
@@ -85,17 +113,19 @@ export class InProcessEventBus implements OutboxWriter {
     id: EntityId;
     type: string;
     payload: unknown;
+    leaseToken?: string | null;
   }): Promise<boolean> {
     const handlers = this.handlers.get(row.type);
     const event = row.payload as DomainEvent;
     if (!handlers || handlers.size === 0) {
-      // No consumer registered (future projection): mark processed so the
+      // No consumer subscribes to this event type: mark it processed so the
       // pending row does not grow unbounded.
-      await this.store.markProcessed(row.id, Date.now());
+      await this.store.markProcessed(row.id, this.now(), row.leaseToken ?? undefined);
       return true;
     }
 
     let allSucceeded = true;
+    let lastError = 'event handler failed';
     for (const handler of handlers) {
       const key = this.handlerKey(row.type, handler);
       const seen = this.processedByHandler.get(key) ?? new Set<EntityId>();
@@ -103,19 +133,31 @@ export class InProcessEventBus implements OutboxWriter {
       try {
         await handler(event);
         seen.add(row.id);
-      } catch {
+      } catch (error) {
         allSucceeded = false;
+        lastError = error instanceof Error ? error.message.slice(0, 500) : 'event handler failed';
       }
     }
 
     if (allSucceeded) {
-      await this.store.markProcessed(row.id, Date.now());
+      await this.store.markProcessed(row.id, this.now(), row.leaseToken ?? undefined);
       return true;
     }
 
-    const attempts = await this.store.bumpAttempts(row.id);
+    const attempts = (row as { attempts?: number }).attempts ?? 1;
     if (attempts >= this.maxAttempts) {
-      await this.store.markFailed(row.id, attempts); // DLQ
+      await this.store.markFailed(row.id, attempts, row.leaseToken ?? undefined); // DLQ/support required
+    } else {
+      const delay = Math.min(
+        this.baseRetryDelayMs * 2 ** Math.max(0, attempts - 1),
+        this.maxRetryDelayMs,
+      );
+      await this.store.scheduleRetry(
+        row.id,
+        this.now() + delay,
+        lastError,
+        row.leaseToken ?? undefined,
+      );
     }
     return false;
   }

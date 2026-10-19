@@ -76,6 +76,15 @@ export interface Entitlement extends VersionedEntity {
   scanCount: number;
   /** Timestamps of each scan, newest last. Door audit trail. */
   scannedAt: string[];
+  /**
+   * A provider refund may be in flight while the ticket still exists. The
+   * lock is tied to one immutable refund request so retries are idempotent and
+   * another refund cannot freeze or release the same admission right.
+   */
+  refundLock?: {
+    refundRequestId: EntityId;
+    frozenAt: string;
+  } | null;
 }
 
 /**
@@ -138,6 +147,7 @@ export function issueEntitlements(input: IssueEntitlementsInput): Entitlement[] 
         scanCountAllowed: admits,
         scanCount: 0,
         scannedAt: [],
+        refundLock: null,
         ...newVersionedEntity(now),
       });
     }
@@ -153,6 +163,9 @@ export function issueEntitlements(input: IssueEntitlementsInput): Entitlement[] 
  * scan would strand the second guest outside.
  */
 export function scanEntitlement(entitlement: Entitlement, now?: Date): Entitlement {
+  if (entitlement.refundLock) {
+    throw new InvalidOperationError('This ticket is temporarily locked for a refund');
+  }
   if (entitlement.status === 'void') {
     throw new InvalidOperationError('This ticket has been voided');
   }
@@ -172,22 +185,69 @@ export function scanEntitlement(entitlement: Entitlement, now?: Date): Entitleme
 }
 
 /** Voids a ticket — a refund, or an admin pulling it. */
-export function voidEntitlement(entitlement: Entitlement, now?: Date): Entitlement {
+export function voidEntitlement(
+  entitlement: Entitlement,
+  now?: Date,
+  refundRequestId?: EntityId,
+): Entitlement {
   if (entitlement.status === 'void') return entitlement;
+  if (
+    entitlement.refundLock &&
+    refundRequestId !== undefined &&
+    entitlement.refundLock.refundRequestId !== refundRequestId
+  ) {
+    throw new InvalidOperationError('This ticket is locked by a different refund request');
+  }
   return {
     ...bumpVersion(entitlement, now ?? new Date()),
     status: transitionStatus(entitlement.status, 'void', ENTITLEMENT_TRANSITIONS),
+    refundLock: null,
   };
+}
+
+export function freezeEntitlementForRefund(
+  entitlement: Entitlement,
+  refundRequestId: EntityId,
+  now?: Date,
+): Entitlement {
+  if (entitlement.status === 'void') {
+    throw new InvalidOperationError('A void ticket cannot be frozen for refund');
+  }
+  if (entitlement.refundLock?.refundRequestId === refundRequestId) return entitlement;
+  if (entitlement.refundLock) {
+    throw new InvalidOperationError('This ticket is already locked by another refund request');
+  }
+  const at = now ?? new Date();
+  return {
+    ...bumpVersion(entitlement, at),
+    refundLock: { refundRequestId, frozenAt: at.toISOString() },
+  };
+}
+
+export function releaseEntitlementRefundLock(
+  entitlement: Entitlement,
+  refundRequestId: EntityId,
+  now?: Date,
+): Entitlement {
+  if (!entitlement.refundLock) return entitlement;
+  if (entitlement.refundLock.refundRequestId !== refundRequestId) {
+    throw new InvalidOperationError('This ticket is locked by a different refund request');
+  }
+  return { ...bumpVersion(entitlement, now ?? new Date()), refundLock: null };
 }
 
 /** Whether this entitlement can still admit anyone. */
 export function canAdmit(entitlement: Entitlement): boolean {
-  return entitlement.status !== 'void' && entitlement.scanCount < entitlement.scanCountAllowed;
+  return (
+    !entitlement.refundLock &&
+    entitlement.status !== 'void' &&
+    entitlement.scanCount < entitlement.scanCountAllowed
+  );
 }
 
 /** People still admissible on this entitlement. */
 export function remainingAdmissions(entitlement: Entitlement): number {
-  if (entitlement.status === 'void') return 0;
+  if (entitlement.status === 'void' || entitlement.refundLock) return 0;
   return Math.max(0, entitlement.scanCountAllowed - entitlement.scanCount);
 }
 
@@ -241,6 +301,15 @@ export function evaluateAdmission(
       admitted: false,
       denyReason: 'void_ticket',
       denyMessage: 'Ticket has been voided',
+      scansUsed,
+      scansAllowed,
+    };
+  }
+  if (entitlement.refundLock) {
+    return {
+      admitted: false,
+      denyReason: 'void_ticket',
+      denyMessage: 'Ticket is temporarily unavailable while a refund is reviewed',
       scansUsed,
       scansAllowed,
     };

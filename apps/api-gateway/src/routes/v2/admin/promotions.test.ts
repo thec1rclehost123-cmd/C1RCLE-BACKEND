@@ -51,6 +51,7 @@ function promo(overrides: Partial<PromoCode>): PromoCode {
     createdAt: now,
     updatedAt: now,
     ...overrides,
+    discountFundingOwner: overrides.discountFundingOwner ?? 'host',
   };
 }
 

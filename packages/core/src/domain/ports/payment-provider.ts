@@ -34,6 +34,44 @@ export interface PaymentVerificationResponse {
   paymentId: string;
   amountPaise: number;
   captured: boolean;
+  /**
+   * The provider order this payment was made against (Razorpay `order_id`).
+   * Fulfilment compares it with the order bound to the hold, so one genuine
+   * payment cannot be replayed against a different hold with the same total.
+   * `null`/absent only when the provider does not report one.
+   */
+  orderId?: string | null;
+  /** ISO-4217 code the provider captured in. */
+  currency?: string;
+}
+
+/**
+ * Razorpay Checkout callback signature: `HMAC_SHA256(order_id + "|" + payment_id,
+ * KEY_SECRET)`, hex. This is the scheme Razorpay documents for the browser
+ * callback, and it is keyed by the API **key secret** — not the webhook secret,
+ * which signs webhook bodies instead. Shared by the real adapter and the memory
+ * adapter so the two cannot drift: a test that builds a signature the memory
+ * provider accepts builds one the real provider accepts.
+ */
+export function computeCheckoutSignature(input: {
+  orderId: string;
+  paymentId: string;
+  keySecret: string;
+}): string {
+  return createHmac('sha256', input.keySecret)
+    .update(`${input.orderId}|${input.paymentId}`)
+    .digest('hex');
+}
+
+/**
+ * Constant-time comparison that is safe for attacker-controlled input.
+ * `timingSafeEqual` throws a `RangeError` on unequal lengths, which surfaced as
+ * an HTTP 500 for a truncated signature; a length mismatch is simply "not equal".
+ */
+export function safeHexEqual(expected: string, provided: string): boolean {
+  const expectedBuf = Buffer.from(expected, 'utf8');
+  const providedBuf = Buffer.from(provided, 'utf8');
+  return expectedBuf.length === providedBuf.length && timingSafeEqual(expectedBuf, providedBuf);
 }
 
 export interface RefundRequest {
@@ -86,9 +124,9 @@ export interface PaymentProvider {
  * no way to exercise checkout/payments without a live Razorpay account,
  * which every other Phase 4 port already avoids.
  *
- * Mirrors the real Razorpay adapter's signature scheme exactly (HMAC-SHA256
- * over a deterministic `key=value&...` canonicalization of the sorted
- * payload, `timingSafeEqual` comparison) so route/webhook tests exercise the
+ * Uses the same checkout-signature scheme as the real Razorpay adapter
+ * (`computeCheckoutSignature`: HMAC-SHA256 of `order_id|payment_id` under the
+ * KEY secret, compared with `safeHexEqual`) so route/webhook tests exercise the
  * genuine signature-verification code path, not a bypass — only the
  * network call is simulated, never the security check.
  */
@@ -96,12 +134,19 @@ export class MemoryPaymentProvider implements PaymentProvider {
   private readonly orders = new Map<string, PaymentOrderResponse>();
   private readonly payments = new Map<string, PaymentVerificationResponse>();
 
-  constructor(private readonly webhookSecret: string) {}
+  /**
+   * @param webhookSecret signs/verifies webhook bodies (kept for call-site
+   *   compatibility; the memory provider has no webhook transport of its own)
+   * @param keySecret signs the checkout callback; defaults to `webhookSecret`
+   *   so existing single-secret test setups keep working.
+   */
+  constructor(
+    private readonly webhookSecret: string,
+    private readonly keySecret: string = webhookSecret,
+  ) {}
 
   generateSignature(payload: { paymentId: string; orderId: string }): string {
-    const sortedKeys = Object.keys(payload).sort() as (keyof typeof payload)[];
-    const canonical = sortedKeys.map((k) => `${k}=${payload[k]}`).join('&');
-    return createHmac('sha256', this.webhookSecret).update(canonical).digest('hex');
+    return computeCheckoutSignature({ ...payload, keySecret: this.keySecret });
   }
 
   async createOrder(request: PaymentOrderRequest): Promise<PaymentOrderResponse> {
@@ -123,11 +168,9 @@ export class MemoryPaymentProvider implements PaymentProvider {
       paymentId: request.paymentId,
       orderId: request.orderId,
     });
-    const expectedBuf = Buffer.from(expected, 'utf8');
-    const providedBuf = Buffer.from(request.signature, 'utf8');
-    const signatureValid =
-      expectedBuf.length === providedBuf.length && timingSafeEqual(expectedBuf, providedBuf);
-    if (!signatureValid) throw new InvalidOperationError('Invalid payment signature');
+    if (!safeHexEqual(expected, request.signature)) {
+      throw new InvalidOperationError('Invalid payment signature');
+    }
 
     const payment = await this.getPayment(request.paymentId);
     if (!payment) throw new InvalidOperationError('Payment not found');
@@ -144,6 +187,8 @@ export class MemoryPaymentProvider implements PaymentProvider {
       paymentId,
       amountPaise: amountPaise ?? existing?.amountPaise ?? 0,
       captured: true,
+      orderId: existing?.orderId ?? null,
+      currency: existing?.currency ?? 'INR',
     };
     this.payments.set(paymentId, captured);
     return captured;
@@ -170,12 +215,19 @@ export class MemoryPaymentProvider implements PaymentProvider {
    * interface; callers reach it only through the concrete class, exactly
    * like every other memory adapter's test-seeding escape hatch in this repo.
    */
-  simulateCapture(paymentId: string, amountPaise: number): void {
+  simulateCapture(
+    paymentId: string,
+    amountPaise: number,
+    orderId: string | null = null,
+    currency = 'INR',
+  ): void {
     this.payments.set(paymentId, {
       verified: true,
       paymentId,
       amountPaise,
       captured: true,
+      orderId,
+      currency,
     });
   }
 }

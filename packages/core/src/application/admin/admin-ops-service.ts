@@ -279,6 +279,7 @@ export class AdminOperationsService {
       ...current,
       ...patch,
       featureFlags: patch.featureFlags ?? current.featureFlags,
+      accountingPolicy: patch.accountingPolicy ?? current.accountingPolicy,
       updatedAt: this.deps.config.clock.now().toISOString(),
     };
     await this.deps.repositories.platformSettings.save(updated);
@@ -291,12 +292,14 @@ export class AdminOperationsService {
         refundSingleApproverThresholdPaise: current.refundSingleApproverThresholdPaise,
         refundDualApproverThresholdPaise: current.refundDualApproverThresholdPaise,
         maintenanceMode: current.maintenanceMode,
+        accountingPolicyVersion: current.accountingPolicy.version,
       },
       after: {
         platformFeeRate: updated.platformFeeRate,
         refundSingleApproverThresholdPaise: updated.refundSingleApproverThresholdPaise,
         refundDualApproverThresholdPaise: updated.refundDualApproverThresholdPaise,
         maintenanceMode: updated.maintenanceMode,
+        accountingPolicyVersion: updated.accountingPolicy.version,
       },
       reason: null,
       ipAddress: meta?.ipAddress,
