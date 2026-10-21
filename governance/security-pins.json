@@ -119,6 +119,13 @@
       "why": "Denial of Service via malformed indexed source maps in source-map-js < 1.2.2. Pulled in transitively by magicast and postcss.",
       "overrides": { "source-map-js": ">=1.2.2" },
       "minResolved": "1.2.2"
+    },
+    {
+      "name": "vite",
+      "advisories": ["CVE-2026-112942", "GHSA-587h-7wmj-h5pm"],
+      "why": "Command injection via improper file path validation in launch-editor, bundled in the vite dev server, in 8.2.0 through 8.2.3. Reached only through vitest (a devDependency), but pnpm audit and the Docker Trivy scan fail HIGH on it. Pinned EXACTLY to 8.2.4 and scoped to the 8.2 line vitest already resolves, so a newer major is not pulled in by accident.",
+      "overrides": { "vite@>=8.2.0 <8.3.0": "8.2.4" },
+      "resolved": ["8.2.4"]
     }
   ]
 }
