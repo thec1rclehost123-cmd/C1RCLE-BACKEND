@@ -26,7 +26,7 @@ Needs a scanner session that may scan. Response:
 ```
 { version: 1, eventId, signedAt, expiresAt,       // expiresAt = signedAt + 12 h
   keyId, publicKey (base64 raw Ed25519), manifestSignature (base64),
-  manifest: [{ entitlementId, validFrom, validTo, ticketKey }] }
+  manifest: [{ entitlementId, validFrom, validTo, seatsRemaining, ticketKey }] }
 ```
 
 Included: tickets that are not void, not under a refund lock, and not already fully scanned. **Not** included: anything issued after `signedAt` (such a ticket must be scanned online).
@@ -36,7 +36,7 @@ The signature covers these exact bytes (UTF-8):
 ```
 c1rcle-offline-manifest-v1\n<eventId>\n<signedAt>\n<expiresAt>\n<sha256hex(lines)>
 lines = for each entry sorted by entitlementId (plain string compare):
-        "<entitlementId>|<validFrom>|<validTo>|<ticketKey>\n"
+        "<entitlementId>|<validFrom>|<validTo>|<seatsRemaining>|<ticketKey>\n"
 ```
 
 The Ed25519 key is derived from `MAGIC_TICKET_SECRET` via HKDF-SHA256 (salt `c1rcle`, info `offline-manifest-ed25519-v1`), so there is no extra secret to provision and every API instance signs identically. Rotating `MAGIC_TICKET_SECRET` rotates the signing key and every ticket key at once; a device must refuse a manifest whose `version` it does not know.
@@ -54,6 +54,7 @@ Each scan `{ payload, scannedAt, deviceId }` is re-run through the full server d
 ## Limits you should know about
 
 - **Refunds/voids are invisible to a device until it syncs.** The manifest is a snapshot.
+- **Couple tickets offline.** Online, staff must confirm both guests and both seats are consumed in one claim. Offline there is no confirmation token: `seatsRemaining` (2 for an untouched couple ticket) lets the device admit one seat per scan of the QR until it reaches 0, and each offline scan syncs as one seat. The "both walk in together" guarantee is relaxed offline.
 - **Two offline gates can both admit the same ticket.** The server admits it once and reports the second as a conflict at sync. If a venue cannot accept that, give each gate its own ticket subset (not built) or keep entry points online.
 - **`scannedAt` is the device's claim.** It is bounded as above but not provable; this relies on scanner sessions being issued only to trusted staff (`device` binding and session revocation still apply online).
 - **Manifest size.** Each entry is roughly 250 bytes; an event with tens of thousands of tickets produces a multi-megabyte response. Pagination or per-gate manifests are a follow-up if that becomes real.

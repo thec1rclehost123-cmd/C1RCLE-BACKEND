@@ -321,6 +321,8 @@ export const offlineManifestResponseSchema = z.object({
       entitlementId: opaqueIdSchema,
       validFrom: z.iso.datetime(),
       validTo: z.iso.datetime(),
+      /** Seats still admissible when signed (a couple ticket is 2). */
+      seatsRemaining: z.number().int().positive(),
       /**
        * Per-ticket key (hex) for verifying this ticket's rotating QR offline.
        * Scoped to one ticket, useless after `expiresAt`; keep in secure storage.

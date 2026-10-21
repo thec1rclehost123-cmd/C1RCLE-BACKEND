@@ -699,6 +699,8 @@ describe('offline manifest + sync', () => {
     const token = await scannerToken();
     await seedEntitlement('ENT-off-1');
     await seedEntitlement('ENT-off-2', { status: 'void' });
+    await seedEntitlement('ENT-off-couple', { scanCountAllowed: 2 });
+    await seedEntitlement('ENT-off-half', { scanCountAllowed: 2, scanCount: 1 });
 
     const response = await server.inject({
       method: 'GET',
@@ -718,6 +720,16 @@ describe('offline manifest + sync', () => {
       (m: { entitlementId: string }) => m.entitlementId === 'ENT-off-1',
     );
     expect(entry.ticketKey).toMatch(/^[0-9a-f]{64}$/);
+    // Seats still admissible, so a device can count its own offline admissions.
+    const seats = Object.fromEntries(
+      body.manifest.map((m: { entitlementId: string; seatsRemaining: number }) => [
+        m.entitlementId,
+        m.seatsRemaining,
+      ]),
+    );
+    expect(seats['ENT-off-1']).toBe(1);
+    expect(seats['ENT-off-couple']).toBe(2);
+    expect(seats['ENT-off-half']).toBe(1);
     // The device can verify the whole manifest with only the public key.
     const signed = {
       eventId: body.eventId,

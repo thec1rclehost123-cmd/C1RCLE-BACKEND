@@ -165,6 +165,7 @@ export interface ManifestSigningInput {
     entitlementId: string;
     validFrom: string;
     validTo: string;
+    seatsRemaining: number;
     ticketKey: string;
   }[];
 }
@@ -178,7 +179,9 @@ export function manifestSigningBytes(input: ManifestSigningInput): Buffer {
     .sort((a, b) =>
       a.entitlementId < b.entitlementId ? -1 : a.entitlementId > b.entitlementId ? 1 : 0,
     )
-    .map((e) => `${e.entitlementId}|${e.validFrom}|${e.validTo}|${e.ticketKey}\n`);
+    .map(
+      (e) => `${e.entitlementId}|${e.validFrom}|${e.validTo}|${e.seatsRemaining}|${e.ticketKey}\n`,
+    );
   const digest = createHash('sha256').update(lines.join('')).digest('hex');
   return Buffer.from(
     `c1rcle-offline-manifest-v1\n${input.eventId}\n${input.signedAt}\n${input.expiresAt}\n${digest}`,

@@ -285,6 +285,12 @@ export interface OfflineManifestEntry {
   validFrom: string;
   validTo: string;
   /**
+   * Seats this ticket could still admit when the manifest was signed
+   * (`scanCountAllowed - scanCount`). A couple ticket is 2. The device counts
+   * its own offline admissions against this; the server re-checks at sync.
+   */
+  seatsRemaining: number;
+  /**
    * Per-ticket verification key (hex). Lets the device check this ticket's
    * rotating QR offline; it verifies nothing else and is useless after the
    * manifest expires. Treat it like a session token: keep it in secure storage.
@@ -1421,6 +1427,7 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
           entitlementId: entitlement.id,
           validFrom: signedAt.toISOString(),
           validTo: expiresAt.toISOString(),
+          seatsRemaining: entitlement.scanCountAllowed - entitlement.scanCount,
           ticketKey: deriveTicketKey(config.magicTicketSecret, entitlement.id),
         });
       }

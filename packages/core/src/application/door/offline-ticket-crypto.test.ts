@@ -28,7 +28,7 @@ const KAT = {
   publicKey: 'MtUqNKj9Q6R8rL8SRtgQ6swSb3iEl9M540w2gvh2NUw=',
   keyId: '695b5c6cdba3a96d',
   manifestSignature:
-    'LWlhoqcAYQcmpcnwzdaOIaDyZOTk+sHIK1tToSnpK6fTmznV1KO7PViObCYrkZMLCFXXIGQ1Pj4ayM/8VaOFDA==',
+    'WjIEdcujbhVC+foySz5O9rgMcyCr5Ovb5dZebx3KqWhauQVryRgZrm71Mfn4HMjwkbzMvEkLJVaHvzGVOcASAg==',
 };
 const MANIFEST = {
   eventId: 'evt_kat',
@@ -39,6 +39,7 @@ const MANIFEST = {
       entitlementId: ID,
       validFrom: '2026-10-18T10:00:00.000Z',
       validTo: '2026-10-18T22:00:00.000Z',
+      seatsRemaining: 2,
       ticketKey: KAT.ticketKey,
     },
   ],
