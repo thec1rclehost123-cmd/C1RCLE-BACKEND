@@ -24,7 +24,7 @@ Cloudflare, which really knows the visitor's address, adds two request headers o
 | `X-Origin-Verify` | a secret shared only with this container | Cloudflare Transform Rule (static value) |
 | `X-C1-Client-IP` | the visitor's address | Cloudflare Transform Rule (`ip.src`) |
 
-nginx believes `X-C1-Client-IP` **only** when `X-Origin-Verify` matches `NGINX_ORIGIN_VERIFY_SECRET` and the value is a well-formed address. In every other case the client is the socket peer, so a forged header changes nothing. The decided address (`$c1rcle_client_ip`) then drives the rate-limit zones, the access log (`clientIp`, with `peerIp` and `originVerified` alongside) and the `X-Forwarded-For` / `X-Real-IP` sent to Fastify. Both stamped headers are stripped before Fastify.
+nginx believes `X-C1-Client-IP` **only** when `X-Origin-Verify` matches `NGINX_ORIGIN_VERIFY_SECRET` and the value is a well-formed address. In every other case the client is the socket peer, so a forged header changes nothing. The decided address (`$c1rcle_client_ip`) then drives the rate-limit zones and the `X-Forwarded-For` / `X-Real-IP` sent to Fastify. The access log (`clientIp`, with `peerIp` and `originVerified` alongside) carries an **anonymised** form of it: IPv4 truncated to its /24 (`203.0.113.0`) and IPv6 to its /48, anything unparseable as `redacted`. Client addresses are personal data and the platform retains logs; the full address is used for limiting and reaches Fastify, but a log line only needs the network. Both stamped headers are stripped before Fastify.
 
 Because the stamping happens on our own Cloudflare zone, this does not depend on which headers Render's own edge adds or removes, which Render does not document.
 
@@ -55,7 +55,7 @@ Cloudflare overwrites any value the client supplied for these headers, so a clie
 1. Deploy this change (the new variables are optional, so nothing changes yet).
 2. Set `NGINX_ORIGIN_VERIFY_SECRET` on the Render service. The service redeploys.
 3. Create the Cloudflare rule above. From this moment requests through Cloudflare carry the secret and the verified address.
-4. Confirm in the access log: `clientIp` is the visitor, `originVerified` is `1`.
+4. Confirm in the access log: `clientIp` is the visitor's network (for example `203.0.113.0`), `originVerified` is `1`.
 5. Only then set `NGINX_ORIGIN_LOCKED_SERVER_NAMES=api-staging.thec1rcle.com` (redeploys). Setting it before step 3 would lock out the hostname.
 
 ## Rotating the secret

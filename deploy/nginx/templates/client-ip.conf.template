@@ -29,6 +29,19 @@ map "$c1rcle_origin_verified:$http_x_c1_client_ip" $c1rcle_client_ip {
     "~^1:(?<c1rcle_verified_ip>[0-9A-Fa-f:.]{2,45})$" $c1rcle_verified_ip;
 }
 
+# The address that goes into the access log is anonymised: IPv4 to its /24
+# (203.0.113.77 -> 203.0.113.0) and IPv6 to its /48. Access logs are retained
+# by the platform and a client address is personal data; the full address is
+# still what the rate limits key on and what Fastify receives (for abuse
+# handling), but a log line only needs the network to show where traffic comes
+# from. Anything that does not parse as either shape is logged as "redacted"
+# rather than passed through.
+map $c1rcle_client_ip $c1rcle_client_ip_logged {
+    default "redacted";
+    "~^(?<c1rcle_v4_net>[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})\.[0-9]{1,3}$" "$c1rcle_v4_net.0";
+    "~^(?<c1rcle_v6_net>[0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4}):[0-9A-Fa-f:]+$" "$c1rcle_v6_net::";
+}
+
 # Hostnames that must arrive through Cloudflare. A request for one of these
 # without a valid X-Origin-Verify is refused (403) by the server block, which
 # closes the "skip Cloudflare and hit the origin directly" bypass.

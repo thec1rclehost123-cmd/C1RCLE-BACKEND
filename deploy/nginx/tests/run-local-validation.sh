@@ -198,15 +198,23 @@ curl -sS -o /dev/null -H 'Host: extra.localhost.test' -H "X-Origin-Verify: $orig
 sleep 1
 ip_logs=$(docker logs "$container_name" 2>&1)
 case "$ip_logs" in
-    *'"clientIp":"198.51.100.66"'*)
+    *'198.51.100.'*)
         echo "An unverified X-C1-Client-IP was trusted as the client address" >&2
         exit 1
         ;;
 esac
+# The proven address is used (rate limits, Fastify) but the LOG carries only its
+# /24: client addresses are personal data and the platform retains logs.
 case "$ip_logs" in
-    *'"clientIp":"203.0.113.77"'*'"originVerified":1'*) : ;;
+    *'"clientIp":"203.0.113.0"'*'"originVerified":1'*) : ;;
     *)
-        echo "Expected the verified X-C1-Client-IP to be used as the client address" >&2
+        echo "Expected the verified client address to be logged as its anonymised /24" >&2
+        exit 1
+        ;;
+esac
+case "$ip_logs" in
+    *'203.0.113.77'*)
+        echo "A full client address reached the access log; it must be anonymised" >&2
         exit 1
         ;;
 esac
