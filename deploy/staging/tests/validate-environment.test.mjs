@@ -194,6 +194,64 @@ test('an environment without additional server names renders exactly one allowed
   assert.match(content, /server_name api\.staging\.c1rcle\.com;/);
 });
 
+test('accepts an origin lock on a served host and keeps it optional', () => {
+  const secret = 'a'.repeat(40);
+  const locked = validateStagingEnvironment(
+    validEnvironment({
+      NGINX_ADDITIONAL_SERVER_NAMES: 'api-staging.c1rcle.com',
+      NGINX_ORIGIN_VERIFY_SECRET: secret,
+      NGINX_ORIGIN_LOCKED_SERVER_NAMES: 'API-STAGING.c1rcle.com',
+    }),
+  );
+  assert.equal(locked.ok, true, locked.issues.join('\n'));
+  assert.deepEqual(locked.values.originLockedServerNames, ['api-staging.c1rcle.com']);
+
+  const plain = validateStagingEnvironment(validEnvironment());
+  assert.equal(plain.ok, true, plain.issues.join('\n'));
+  assert.deepEqual(plain.values.originLockedServerNames, []);
+});
+
+test('rejects origin-lock values that would lock everything out or alter nginx config', () => {
+  const cases = [
+    [
+      'a secret that is too short',
+      { NGINX_ORIGIN_VERIFY_SECRET: 'short' },
+      'NGINX_ORIGIN_VERIFY_SECRET',
+    ],
+    [
+      'a secret with a quote',
+      { NGINX_ORIGIN_VERIFY_SECRET: `${'a'.repeat(40)}"x` },
+      'NGINX_ORIGIN_VERIFY_SECRET',
+    ],
+    [
+      'a secret with a semicolon',
+      { NGINX_ORIGIN_VERIFY_SECRET: `${'a'.repeat(40)};x` },
+      'NGINX_ORIGIN_VERIFY_SECRET',
+    ],
+    [
+      'a locked host with no secret',
+      { NGINX_ORIGIN_LOCKED_SERVER_NAMES: 'api.staging.c1rcle.com' },
+      'NGINX_ORIGIN_LOCKED_SERVER_NAMES',
+    ],
+    [
+      'a locked host that is not served',
+      {
+        NGINX_ORIGIN_VERIFY_SECRET: 'a'.repeat(40),
+        NGINX_ORIGIN_LOCKED_SERVER_NAMES: 'other.c1rcle.com',
+      },
+      'NGINX_ORIGIN_LOCKED_SERVER_NAMES',
+    ],
+  ];
+  for (const [label, overrides, field] of cases) {
+    const result = validateStagingEnvironment(validEnvironment(overrides));
+    assert.equal(result.ok, false, `expected ${label} to be rejected`);
+    assert.ok(
+      result.issues.some((issue) => issue.includes(field)),
+      `expected an ${field} issue for ${label}, got: ${result.issues.join('; ')}`,
+    );
+  }
+});
+
 test('rejects additional server names that could alter the nginx config', () => {
   for (const bad of [
     '*.c1rcle.com',

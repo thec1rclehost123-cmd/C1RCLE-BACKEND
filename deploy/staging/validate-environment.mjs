@@ -4,6 +4,7 @@ import path from 'node:path';
 
 const TLS_MODES = new Set(['external', 'nginx']);
 const ADDITIONAL_SERVER_NAME_PATTERN = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/;
+const ORIGIN_VERIFY_SECRET_PATTERN = /^[A-Za-z0-9._~-]{32,256}$/;
 const LOG_LEVELS = new Set(['debug', 'info', 'warn', 'error', 'silent']);
 
 function hasValue(env, name) {
@@ -222,6 +223,43 @@ export function validateStagingEnvironment(env = process.env) {
       addIssue(issues, 'NGINX_ADDITIONAL_SERVER_NAMES', `repeats a hostname: ${name}`);
     }
     seenServerNames.add(name);
+  }
+
+  // Optional origin lock: Cloudflare stamps X-Origin-Verify, and the hostnames
+  // listed here are refused without it. The secret is written into nginx config,
+  // so it follows the same strict character set the entrypoint enforces.
+  const originSecret =
+    typeof env.NGINX_ORIGIN_VERIFY_SECRET === 'string' ? env.NGINX_ORIGIN_VERIFY_SECRET : '';
+  if (originSecret !== '') {
+    if (!ORIGIN_VERIFY_SECRET_PATTERN.test(originSecret)) {
+      addIssue(
+        issues,
+        'NGINX_ORIGIN_VERIFY_SECRET',
+        'must be 32 to 256 characters of letters, digits and . _ ~ -',
+      );
+    }
+  }
+  const rawLockedNames =
+    typeof env.NGINX_ORIGIN_LOCKED_SERVER_NAMES === 'string'
+      ? env.NGINX_ORIGIN_LOCKED_SERVER_NAMES.trim().toLowerCase()
+      : '';
+  values.originLockedServerNames =
+    rawLockedNames === '' ? [] : rawLockedNames.split(/[\s,]+/).filter(Boolean);
+  if (values.originLockedServerNames.length > 0 && originSecret === '') {
+    addIssue(
+      issues,
+      'NGINX_ORIGIN_LOCKED_SERVER_NAMES',
+      'requires NGINX_ORIGIN_VERIFY_SECRET (it would lock every request out)',
+    );
+  }
+  for (const name of values.originLockedServerNames) {
+    if (!seenServerNames.has(name)) {
+      addIssue(
+        issues,
+        'NGINX_ORIGIN_LOCKED_SERVER_NAMES',
+        `must name a served host (NGINX_SERVER_NAME or an additional name): ${name}`,
+      );
+    }
   }
 
   values.upstream = requireValue(env, issues, 'FASTIFY_UPSTREAM');

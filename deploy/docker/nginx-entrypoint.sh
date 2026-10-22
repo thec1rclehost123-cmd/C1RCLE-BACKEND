@@ -137,6 +137,50 @@ if [ -n "${NGINX_ADDITIONAL_SERVER_NAMES:-}" ]; then
 fi
 export NGINX_SERVER_NAMES NGINX_HOST_MAP_ENTRIES
 
+# Origin verification (see templates/client-ip.conf.template). Both values are
+# written into nginx config, so both are validated strictly and fail closed.
+#   NGINX_ORIGIN_VERIFY_SECRET        shared secret Cloudflare stamps on requests
+#   NGINX_ORIGIN_LOCKED_SERVER_NAMES  hostnames that are refused without it
+# Unset, nothing changes: the client IP stays the socket peer.
+NGINX_ORIGIN_VERIFY_MAP_ENTRIES=""
+NGINX_ORIGIN_LOCKED_MAP_ENTRIES=""
+if [ -n "${NGINX_ORIGIN_VERIFY_SECRET:-}" ]; then
+    case "$NGINX_ORIGIN_VERIFY_SECRET" in
+        *[!A-Za-z0-9._~-]*)
+            echo "NGINX_ORIGIN_VERIFY_SECRET may contain only letters, digits and . _ ~ -" >&2
+            exit 64
+            ;;
+    esac
+    if [ "${#NGINX_ORIGIN_VERIFY_SECRET}" -lt 32 ] || [ "${#NGINX_ORIGIN_VERIFY_SECRET}" -gt 256 ]; then
+        echo "NGINX_ORIGIN_VERIFY_SECRET must be 32 to 256 characters" >&2
+        exit 64
+    fi
+    NGINX_ORIGIN_VERIFY_MAP_ENTRIES="    \"${NGINX_ORIGIN_VERIFY_SECRET}\" 1;"
+fi
+if [ -n "${NGINX_ORIGIN_LOCKED_SERVER_NAMES:-}" ]; then
+    if [ -z "${NGINX_ORIGIN_VERIFY_SECRET:-}" ]; then
+        echo "NGINX_ORIGIN_LOCKED_SERVER_NAMES requires NGINX_ORIGIN_VERIFY_SECRET (it would lock every request out)" >&2
+        exit 64
+    fi
+    if [ "$topology" != "api-only" ]; then
+        echo "NGINX_ORIGIN_LOCKED_SERVER_NAMES is only supported with NGINX_TOPOLOGY=api-only" >&2
+        exit 64
+    fi
+    locked_names=$(printf '%s' "$NGINX_ORIGIN_LOCKED_SERVER_NAMES" | tr ',' ' ' | tr '[:upper:]' '[:lower:]')
+    for locked_name in $locked_names; do
+        case " $NGINX_SERVER_NAMES " in
+            *" $locked_name "*) : ;;
+            *)
+                echo "NGINX_ORIGIN_LOCKED_SERVER_NAMES must name a served host, not: $locked_name" >&2
+                exit 64
+                ;;
+        esac
+        NGINX_ORIGIN_LOCKED_MAP_ENTRIES="${NGINX_ORIGIN_LOCKED_MAP_ENTRIES:+$NGINX_ORIGIN_LOCKED_MAP_ENTRIES
+}    $locked_name 1;"
+    done
+fi
+export NGINX_ORIGIN_VERIFY_MAP_ENTRIES NGINX_ORIGIN_LOCKED_MAP_ENTRIES
+
 template_path="/etc/nginx/c1rcle-templates/${profile}${template_suffix}.conf.template"
 
 validate_port NGINX_HTTP_PORT
@@ -165,6 +209,16 @@ envsubst '${FASTIFY_UPSTREAM} ${BFF_GUEST_UPSTREAM} ${BFF_PARTNER_UPSTREAM} ${BF
 
 if grep -Fq '${' /etc/nginx/conf.d/c1rcle-api.conf; then
     echo "Rendered Nginx config contains unresolved placeholders" >&2
+    exit 64
+fi
+
+# Client IP + origin verification: rendered for every profile and topology (a
+# no-op unless NGINX_ORIGIN_VERIFY_SECRET is set).
+envsubst '${NGINX_ORIGIN_VERIFY_MAP_ENTRIES} ${NGINX_ORIGIN_LOCKED_MAP_ENTRIES}' \
+    < /etc/nginx/c1rcle-templates/client-ip.conf.template \
+    > /etc/nginx/conf.d/c1rcle-client-ip.conf
+if grep -Fq '${' /etc/nginx/conf.d/c1rcle-client-ip.conf; then
+    echo "Rendered client-IP Nginx config contains unresolved placeholders" >&2
     exit 64
 fi
 

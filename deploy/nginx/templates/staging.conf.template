@@ -33,6 +33,9 @@ server {
     server_name ${NGINX_SERVER_NAMES};
 
     if ($c1rcle_host_allowed = 0) { return 444; }
+    # A locked host must arrive through Cloudflare with the shared secret; the
+    # request is refused here rather than served around the proxy.
+    if ($c1rcle_origin_blocked) { return 403; }
 
     client_max_body_size 1m;
     limit_conn c1rcle_edge_connections 100;
