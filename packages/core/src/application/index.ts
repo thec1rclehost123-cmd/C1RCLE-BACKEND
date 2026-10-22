@@ -115,6 +115,18 @@ export type {
   OfflineSyncResult,
 } from './door/scanner-service.js';
 export { createScannerService } from './door/scanner-service.js';
+export {
+  MAGIC_WINDOW_SEC,
+  buildRotatingQr,
+  checkRotatingQr,
+  deriveManifestSigningKey,
+  deriveTicketKey,
+  manifestSigningBytes,
+  parseRotatingQr,
+  signManifest,
+  verifyManifest,
+} from './door/offline-ticket-crypto.js';
+export type { ManifestSigningInput, ManifestSigningKey } from './door/offline-ticket-crypto.js';
 export type {
   DoorOpsService,
   DoorOpsServiceDeps,
