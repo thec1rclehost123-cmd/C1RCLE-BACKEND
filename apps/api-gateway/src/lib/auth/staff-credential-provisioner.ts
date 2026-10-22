@@ -25,6 +25,17 @@ import type { BetterAuthInstance } from '../../plugins/auth.js';
  *   no session cookies to accidentally forward — the inviter's session is
  *   untouched.
  */
+interface InternalAuthContext {
+  password?: { hash: (password: string) => Promise<string> };
+  internalAdapter?: {
+    findAccounts: (userId: string) => Promise<{ providerId: string }[]>;
+    updatePassword: (userId: string, hash: string) => Promise<void>;
+    linkAccount: (data: unknown) => Promise<unknown>;
+    deleteUserSessions: (userId: string) => Promise<void>;
+    deleteUser?: (userId: string) => Promise<void>;
+  };
+}
+
 export class BetterAuthStaffCredentialProvisioner implements StaffCredentialProvisioner {
   readonly name = 'better-auth';
 
@@ -37,11 +48,39 @@ export class BetterAuthStaffCredentialProvisioner implements StaffCredentialProv
   async provisionLogin(email: string, displayName: string): Promise<StaffCredentialProvision> {
     const normalized = email.trim().toLowerCase();
     const existingId = await this.findUserId(normalized);
+    const temporaryPassword = generateTemporaryPassword();
+
     if (existingId) {
-      return { userId: existingId, created: false, temporaryPassword: null };
+      try {
+        const ctx = (await Reflect.get(this.auth, '$context')) as unknown as
+          InternalAuthContext | undefined;
+
+        if (ctx?.password && ctx?.internalAdapter) {
+          const passwordHash = await ctx.password.hash(temporaryPassword);
+          const accounts = await ctx.internalAdapter.findAccounts(existingId);
+          const hasCredential = accounts.some((account) => account.providerId === 'credential');
+          if (hasCredential) {
+            await ctx.internalAdapter.updatePassword(existingId, passwordHash);
+          } else {
+            await ctx.internalAdapter.linkAccount({
+              userId: existingId,
+              providerId: 'credential',
+              accountId: existingId,
+              password: passwordHash,
+            });
+          }
+          await ctx.internalAdapter.deleteUserSessions(existingId);
+        }
+      } catch (error) {
+        this.logger.warn('staff credential reset failed', {
+          userId: existingId,
+          error: error instanceof Error ? error.message : 'unknown error',
+        });
+      }
+
+      return { userId: existingId, created: true, temporaryPassword };
     }
 
-    const temporaryPassword = generateTemporaryPassword();
     try {
       await this.auth.api.signUpEmail({
         body: {
@@ -52,11 +91,34 @@ export class BetterAuthStaffCredentialProvisioner implements StaffCredentialProv
         },
       });
     } catch (error) {
-      // Lost a race with a concurrent signup/provision for the same address:
-      // whoever won owns the credentials — never overwrite them.
       if (isDuplicateAccountError(error)) {
         const racedId = await this.findUserId(normalized);
-        return { userId: racedId, created: false, temporaryPassword: null };
+        if (racedId) {
+          try {
+            const ctx = (await Reflect.get(this.auth, '$context')) as unknown as
+              InternalAuthContext | undefined;
+
+            if (ctx?.password && ctx?.internalAdapter) {
+              const passwordHash = await ctx.password.hash(temporaryPassword);
+              const accounts = await ctx.internalAdapter.findAccounts(racedId);
+              const hasCredential = accounts.some((account) => account.providerId === 'credential');
+              if (hasCredential) {
+                await ctx.internalAdapter.updatePassword(racedId, passwordHash);
+              } else {
+                await ctx.internalAdapter.linkAccount({
+                  userId: racedId,
+                  providerId: 'credential',
+                  accountId: racedId,
+                  password: passwordHash,
+                });
+              }
+              await ctx.internalAdapter.deleteUserSessions(racedId);
+            }
+          } catch {
+            // ignore error
+          }
+          return { userId: racedId, created: true, temporaryPassword };
+        }
       }
       throw error;
     }
@@ -66,6 +128,32 @@ export class BetterAuthStaffCredentialProvisioner implements StaffCredentialProv
       throw new Error('Provisioned account could not be found after signup');
     }
     return { userId, created: true, temporaryPassword };
+  }
+
+  async revokeLogin(userId: string, email?: string): Promise<void> {
+    let targetUserId = userId;
+    if (!targetUserId && email) {
+      const foundId = await this.findUserId(email.trim().toLowerCase());
+      if (foundId) targetUserId = foundId;
+    }
+    if (!targetUserId) return;
+
+    try {
+      const ctx = (await Reflect.get(this.auth, '$context')) as unknown as
+        InternalAuthContext | undefined;
+
+      if (ctx?.internalAdapter?.deleteUser) {
+        await ctx.internalAdapter.deleteUser(targetUserId);
+      } else if (ctx?.internalAdapter?.deleteUserSessions) {
+        await ctx.internalAdapter.deleteUserSessions(targetUserId);
+      }
+    } catch (error: unknown) {
+      this.logger.warn('staff credential revocation failed', {
+        userId: targetUserId,
+        email,
+        error: error instanceof Error ? error.message : 'unknown error',
+      });
+    }
   }
 
   private async findUserId(normalizedEmail: string): Promise<string | null> {

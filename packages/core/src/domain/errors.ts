@@ -196,6 +196,21 @@ export class IdempotencyInFlightError extends DomainError {
   }
 }
 
+/**
+ * A previous attempt with this key already ran and errored at an unknown
+ * point — it may have persisted the record before failing (outbox / emit /
+ * response-validation), so a retry must NOT re-run it. The client inspects the
+ * outcome instead of blindly retrying with the same key.
+ */
+export class IdempotencyFailedError extends DomainError {
+  constructor(idempotencyKey: string) {
+    super(
+      `A previous attempt with Idempotency-Key ${idempotencyKey} failed partway; re-running it could duplicate the write. Inspect the original response instead of retrying with the same key.`,
+      'idempotency_failed',
+    );
+  }
+}
+
 export class NotFoundError extends DomainError {
   constructor(resource: string, id: string) {
     super(`${resource} ${id} not found`, 'not_found');

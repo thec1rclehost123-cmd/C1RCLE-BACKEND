@@ -119,6 +119,18 @@ const envSchema = z.object({
    * REDIS_URL, and falls back to memory if Redis is unreachable.
    */
   RATE_LIMIT_STORE: z.enum(['memory', 'redis']).default('memory'),
+  /**
+   * Release gate for payouts. While the funds flow (who may hold and distribute
+   * ticket money) and the tax rules are awaiting written legal, provider and CA
+   * approval, the endpoints that request, batch-run or release a payout are
+   * switched off. Unset: ON outside production (dev, tests), OFF in production.
+   * Set `true` only once those approvals are on file. Freezing a payout is a
+   * safety action and stays available either way; reads are unaffected.
+   */
+  PAYOUTS_ENABLED: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((value) => (value === undefined ? undefined : value === 'true')),
   FIRESTORE_PROJECT_ID: z.string().min(1).default('c1rcle-staging'),
   /** B12: which repository adapter set `lib/v2-services.ts` wires up. */
   STORAGE_DRIVER: z.enum(['memory', 'firestore']).default('memory'),

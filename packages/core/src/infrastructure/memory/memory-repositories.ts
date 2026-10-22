@@ -443,6 +443,14 @@ export class MemoryAnalyticsReadModelRepository implements AnalyticsReadModelRep
   async getEventAnalytics(eventId: EntityId): Promise<EventAnalytics | null> {
     return this.eventAnalytics.get(eventId) ?? null;
   }
+
+  async saveOrganizationOverview(overview: OrganizationOverview): Promise<void> {
+    this.overviews.set(overview.organizationId, { ...overview });
+  }
+
+  async saveEventAnalytics(analytics: EventAnalytics): Promise<void> {
+    this.eventAnalytics.set(analytics.eventId, { ...analytics });
+  }
 }
 
 export class MemoryCartReservationRepository implements CartReservationRepository {

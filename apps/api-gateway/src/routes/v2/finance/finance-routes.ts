@@ -22,6 +22,7 @@ import { z } from 'zod';
 import type { FinanceOrderRow } from '@c1rcle/core/application';
 import type { BankAccount, Dispute, LedgerEntry, Payout } from '@c1rcle/core/domain';
 
+import { requirePayoutsEnabled } from '../../../lib/payouts-gate.js';
 import { isIdempotencyConflict, runIdempotent } from '../../../lib/v2-idempotency.js';
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
@@ -163,6 +164,7 @@ export default async function financeRoutes(fastify: FastifyInstance) {
     '/organizations/:organizationId/payouts',
     {
       preHandler: [
+        requirePayoutsEnabled(),
         fastify.rateLimit('STANDARD_COMMAND'),
         fastify.validateV2({ params: organizationIdParam, body: payoutRequestSchema }),
         fastify.requirePermission('finance.payouts.manage'),

@@ -72,6 +72,18 @@ function runIdempotencyStoreContract(name: string, make: () => IdempotencyStore)
     expect(await store.claim('k4', 'hash-a', future())).toBeNull();
   });
 
+  it(`[${name}] marks a retained claim FAILED so a retry rejects instead of re-running`, async () => {
+    const store = make();
+    await store.claim('k6', 'hash-a', future());
+    await store.fail('k6');
+
+    const record = await store.get('k6');
+    expect(record?.status).toBe('FAILED');
+    // A retry sees the FAILED record (B1: never silently re-runs a command
+    // whose first attempt may have persisted before erroring).
+    expect((await store.claim('k6', 'hash-a', future()))?.status).toBe('FAILED');
+  });
+
   it(`[${name}] preserves the request hash so reuse with a different body is detectable`, async () => {
     const store = make();
     await store.claim('k5', 'hash-original', future());

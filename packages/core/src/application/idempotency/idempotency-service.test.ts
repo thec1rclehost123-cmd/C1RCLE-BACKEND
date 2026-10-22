@@ -76,20 +76,38 @@ describe('IdempotencyService (B08)', () => {
     expect(retry.replayed).toBe(true);
   });
 
-  it('failed work releases the claim so a retry can execute', async () => {
+  it('B1: a failed attempt keeps the claim (marked FAILED) so a retry rejects instead of re-running', async () => {
     const { service } = makeService();
     let calls = 0;
     const cmd = command({
       work: async () => {
         calls += 1;
-        if (calls === 1) throw new Error('boom');
-        return { statusCode: 201, body: { id: 'evt_1' } };
+        throw new Error('boom');
       },
     });
     await expect(service.executeOnce(cmd)).rejects.toThrow('boom');
-    const retry = await service.executeOnce(cmd);
-    expect(retry.replayed).toBe(false);
-    expect(calls).toBe(2);
+    await expect(service.executeOnce(cmd)).rejects.toMatchObject({
+      code: 'idempotency_failed',
+    });
+    expect(calls).toBe(1);
+  });
+
+  it('B1: exit gate — post-persist failure plus same-key retry yields exactly one record', async () => {
+    // Simulates a command whose durable entity write succeeded and the FAILURE
+    // came after it (emit/outbox/response-validation). The old release-on-error
+    // behavior would let the retry run `work` again and mint a duplicate id.
+    const { service } = makeService();
+    const persisted = new Array<string>();
+    const cmd = command({
+      work: async () => {
+        const id = `evt_${persisted.length + 1}`;
+        persisted.push(id); // the "entity write" that already happened
+        throw new Error('emit failed after write');
+      },
+    });
+    await expect(service.executeOnce(cmd)).rejects.toThrow('emit failed after write');
+    await expect(service.executeOnce(cmd)).rejects.toMatchObject({ code: 'idempotency_failed' });
+    expect(persisted).toHaveLength(1); // the retry never re-ran work → one record only
   });
 
   it('expired records are not replayed (TTL authority)', async () => {

@@ -173,6 +173,31 @@ export function normalizePartnerType(partnerType: string): PartnerType {
   return 'venue';
 }
 
+/**
+ * Bridges V2's tenancy role to v1's operational matrix role.
+ *
+ * `owner` and `admin` share the OWNER matrix: the API authorizes them nearly
+ * alike (RBAC gives `admin` the owner set minus `organization.create`), so
+ * hiding the full dashboard from an admin would under-report authority that
+ * every finance/payout/settings read already accepts. `manager` is the
+ * operational MANAGER; `member` drops to the least-privileged STAFF matrix.
+ * Missing membership (`undefined`) is treated as `member` → STAFF.
+ */
+export function tenancyRoleToPartnerRole(
+  role: 'owner' | 'admin' | 'manager' | 'member' | undefined,
+): PartnerRole {
+  switch (role) {
+    case 'owner':
+    case 'admin':
+      return 'OWNER';
+    case 'manager':
+      return 'MANAGER';
+    case 'member':
+    case undefined:
+      return 'STAFF';
+  }
+}
+
 export function permissionsFor(partnerType: string, role: string): readonly PartnerPermission[] {
   const type = normalizePartnerType(partnerType);
   const normalized = normalizePartnerRole(role);
@@ -281,7 +306,7 @@ export function tabVisibilityFor(partnerType: string, role: string): TabVisibili
       presence: true,
       crm: true,
       settings: false,
-      finance: false,
+      finance: true,
     };
   }
   if (normalized === 'STAFF') {
