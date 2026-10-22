@@ -108,16 +108,27 @@ docker run --rm \
     --add-host host.docker.internal:host-gateway \
     "$image_name"
 
+# host.docker.internal resolves to an IPv4 address and, on Docker Desktop, an
+# IPv6 one that is unreachable. nginx round-robins across both, so which request
+# lands on the dead address depends on how many requests came before it, and one
+# unlucky request marks the whole upstream down for 10s (a spurious 502). The
+# live container therefore targets the IPv4 address directly.
+upstream_ipv4=$(docker run --rm --add-host host.docker.internal:host-gateway \
+    --entrypoint getent "$image_name" ahostsv4 host.docker.internal 2>/dev/null | awk 'NR==1 {print $1}')
+upstream_host="${upstream_ipv4:-host.docker.internal}"
+
 echo "Starting Nginx in front of Fastify..."
 docker run --detach --rm \
     --name "$container_name" \
     --add-host host.docker.internal:host-gateway \
     --publish 18081:8081 \
     --env NGINX_PROFILE=staging \
-    --env FASTIFY_UPSTREAM=host.docker.internal:8080 \
+    --env "FASTIFY_UPSTREAM=${upstream_host}:8080" \
     --env PORT=8081 \
     --env NGINX_SERVER_NAME=localhost \
     --env NGINX_ADDITIONAL_SERVER_NAMES=extra.localhost.test \
+    --env NGINX_ORIGIN_VERIFY_SECRET=local-validation-origin-secret-0123456789abcdef \
+    --env NGINX_ORIGIN_LOCKED_SERVER_NAMES=extra.localhost.test \
     --env NGINX_READINESS_TOKEN=local-validation-readiness-token \
     --env NGINX_FORWARDED_PROTO=http \
     "$image_name" >/dev/null
@@ -160,12 +171,51 @@ case "$health_response" in
 esac
 
 echo "Checking the host allow-list (canonical name, additional name, unknown name)..."
+origin_secret='local-validation-origin-secret-0123456789abcdef'
+# extra.localhost.test is also origin-locked: it is served only with the secret.
 extra_host_status=$(curl -sS -o /dev/null -w '%{http_code}' -H 'Host: extra.localhost.test' \
+    -H "X-Origin-Verify: $origin_secret" \
     http://localhost:18081/api/v2/internal/health)
 if [ "$extra_host_status" != "200" ]; then
-    echo "Expected the additional server name to be served, got $extra_host_status" >&2
+    echo "Expected the additional server name to be served with the secret, got $extra_host_status" >&2
     exit 1
 fi
+echo "Checking the origin lock and the verified client IP..."
+for lock_headers in "" "X-Origin-Verify: wrong-secret-wrong-secret-wrong-secret-xx"; do
+    locked_status=$(curl -sS -o /dev/null -w '%{http_code}' -H 'Host: extra.localhost.test' \
+        ${lock_headers:+-H "$lock_headers"} http://localhost:18081/api/v2/internal/health)
+    if [ "$locked_status" != "403" ]; then
+        echo "Expected a locked host without a valid secret to return 403, got $locked_status" >&2
+        exit 1
+    fi
+done
+# A forged address with no secret must be ignored; a proven one must be used.
+curl -sS -o /dev/null -H 'X-C1-Client-IP: 198.51.100.66' http://localhost:18081/api/v2/internal/health
+curl -sS -o /dev/null -H 'Host: extra.localhost.test' -H "X-Origin-Verify: $origin_secret" \
+    -H 'X-C1-Client-IP: 203.0.113.77' http://localhost:18081/api/v2/internal/health
+curl -sS -o /dev/null -H 'Host: extra.localhost.test' -H "X-Origin-Verify: $origin_secret" \
+    -H 'X-C1-Client-IP: 1.2.3.4; not-an-ip' http://localhost:18081/api/v2/internal/health
+sleep 1
+ip_logs=$(docker logs "$container_name" 2>&1)
+case "$ip_logs" in
+    *'"clientIp":"198.51.100.66"'*)
+        echo "An unverified X-C1-Client-IP was trusted as the client address" >&2
+        exit 1
+        ;;
+esac
+case "$ip_logs" in
+    *'"clientIp":"203.0.113.77"'*'"originVerified":1'*) : ;;
+    *)
+        echo "Expected the verified X-C1-Client-IP to be used as the client address" >&2
+        exit 1
+        ;;
+esac
+case "$ip_logs" in
+    *'not-an-ip'*)
+        echo "A malformed client address reached the logs" >&2
+        exit 1
+        ;;
+esac
 # An unknown Host must be dropped (444 closes the connection, so curl reports
 # an empty reply / code 000) and never reach Fastify.
 if unknown_host_status=$(curl -sS -m 5 -o /dev/null -w '%{http_code}' -H 'Host: not-allowed.test' \
@@ -187,6 +237,35 @@ for bad_names in '*.wildcard.test' 'a.test;return 200' 'https://a.test/x' 'local
         --add-host host.docker.internal:host-gateway \
         "$image_name" >/dev/null 2>&1; then
         echo "Expected NGINX_ADDITIONAL_SERVER_NAMES=$bad_names to be rejected" >&2
+        exit 1
+    fi
+done
+
+echo "Checking that malformed origin-lock settings fail closed..."
+# Each entry is "SECRET|LOCKED_NAMES". Every one of these must be refused:
+# a secret that is too short, contains a quote or a semicolon, a locked host
+# with no secret at all, and a locked host this edge does not serve.
+for bad_lock in \
+    'too-short|' \
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"bbb|' \
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;bbb|' \
+    '|localhost' \
+    'local-validation-origin-secret-0123456789abcdef|elsewhere.test'; do
+    bad_secret="${bad_lock%%|*}"
+    bad_locked="${bad_lock#*|}"
+    if docker run --rm \
+        --env NGINX_PROFILE=staging \
+        --env FASTIFY_UPSTREAM=host.docker.internal:8080 \
+        --env PORT=8081 \
+        --env NGINX_SERVER_NAME=localhost \
+        --env NGINX_READINESS_TOKEN=local-validation-readiness-token \
+        --env NGINX_FORWARDED_PROTO=http \
+        --env "NGINX_ORIGIN_VERIFY_SECRET=$bad_secret" \
+        --env "NGINX_ORIGIN_LOCKED_SERVER_NAMES=$bad_locked" \
+        --env NGINX_VALIDATE_ONLY=1 \
+        --add-host host.docker.internal:host-gateway \
+        "$image_name" >/dev/null 2>&1; then
+        echo "Expected origin-lock settings [$bad_secret] [$bad_locked] to be rejected" >&2
         exit 1
     fi
 done

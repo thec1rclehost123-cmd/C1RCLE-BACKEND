@@ -38,6 +38,8 @@ server {
     server_name ${NGINX_SERVER_NAMES};
 
     if ($c1rcle_host_allowed = 0) { return 444; }
+    # A locked host must arrive through Cloudflare with the shared secret.
+    if ($c1rcle_origin_blocked) { return 403; }
 
     ssl_certificate ${NGINX_TLS_CERTIFICATE};
     ssl_certificate_key ${NGINX_TLS_CERTIFICATE_KEY};
