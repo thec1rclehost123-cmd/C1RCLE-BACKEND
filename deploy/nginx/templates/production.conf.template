@@ -12,7 +12,7 @@ map $scheme $c1rcle_forwarded_proto {
 
 map $host $c1rcle_host_allowed {
     default 0;
-    ${NGINX_SERVER_NAME} 1;
+${NGINX_HOST_MAP_ENTRIES}
 }
 
 # IP-based gating (geo on $remote_addr) does not work on platforms whose
@@ -27,7 +27,7 @@ map $http_x_readiness_token $c1rcle_readiness_allowed {
 
 server {
     listen ${NGINX_HTTP_PORT};
-    server_name ${NGINX_SERVER_NAME};
+    server_name ${NGINX_SERVER_NAMES};
 
     if ($c1rcle_host_allowed = 0) { return 444; }
     return 308 https://$host$request_uri;
@@ -35,7 +35,7 @@ server {
 
 server {
     listen ${NGINX_HTTPS_PORT} ssl;
-    server_name ${NGINX_SERVER_NAME};
+    server_name ${NGINX_SERVER_NAMES};
 
     if ($c1rcle_host_allowed = 0) { return 444; }
 

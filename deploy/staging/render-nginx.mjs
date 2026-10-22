@@ -36,6 +36,12 @@ export function renderStagingNginx(environment = process.env) {
     NGINX_HTTP_PORT: String(result.values.httpPort),
     NGINX_HTTPS_PORT: result.values.httpsPort === null ? '' : String(result.values.httpsPort),
     NGINX_SERVER_NAME: result.values.serverName,
+    NGINX_SERVER_NAMES: [result.values.serverName, ...result.values.additionalServerNames].join(
+      ' ',
+    ),
+    NGINX_HOST_MAP_ENTRIES: [result.values.serverName, ...result.values.additionalServerNames]
+      .map((name) => `    ${name} 1;`)
+      .join('\n'),
     NGINX_TLS_CERTIFICATE: result.values.tlsCertificate,
     NGINX_TLS_CERTIFICATE_KEY: result.values.tlsCertificateKey,
     NGINX_READINESS_TOKEN: result.values.readinessToken,
