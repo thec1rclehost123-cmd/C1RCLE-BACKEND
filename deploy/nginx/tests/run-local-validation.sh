@@ -117,6 +117,7 @@ docker run --detach --rm \
     --env FASTIFY_UPSTREAM=host.docker.internal:8080 \
     --env PORT=8081 \
     --env NGINX_SERVER_NAME=localhost \
+    --env NGINX_ADDITIONAL_SERVER_NAMES=extra.localhost.test \
     --env NGINX_READINESS_TOKEN=local-validation-readiness-token \
     --env NGINX_FORWARDED_PROTO=http \
     "$image_name" >/dev/null
@@ -157,6 +158,38 @@ case "$health_response" in
         exit 1
         ;;
 esac
+
+echo "Checking the host allow-list (canonical name, additional name, unknown name)..."
+extra_host_status=$(curl -sS -o /dev/null -w '%{http_code}' -H 'Host: extra.localhost.test' \
+    http://localhost:18081/api/v2/internal/health)
+if [ "$extra_host_status" != "200" ]; then
+    echo "Expected the additional server name to be served, got $extra_host_status" >&2
+    exit 1
+fi
+# An unknown Host must be dropped (444 closes the connection, so curl reports
+# an empty reply / code 000) and never reach Fastify.
+if unknown_host_status=$(curl -sS -m 5 -o /dev/null -w '%{http_code}' -H 'Host: not-allowed.test' \
+    http://localhost:18081/api/v2/internal/health 2>/dev/null); then
+    echo "Expected an unknown Host to be refused, got $unknown_host_status" >&2
+    exit 1
+fi
+echo "Checking that malformed additional server names fail closed..."
+for bad_names in '*.wildcard.test' 'a.test;return 200' 'https://a.test/x' 'localhost'; do
+    if docker run --rm \
+        --env NGINX_PROFILE=staging \
+        --env FASTIFY_UPSTREAM=host.docker.internal:8080 \
+        --env PORT=8081 \
+        --env NGINX_SERVER_NAME=localhost \
+        --env NGINX_READINESS_TOKEN=local-validation-readiness-token \
+        --env NGINX_FORWARDED_PROTO=http \
+        --env "NGINX_ADDITIONAL_SERVER_NAMES=$bad_names" \
+        --env NGINX_VALIDATE_ONLY=1 \
+        --add-host host.docker.internal:host-gateway \
+        "$image_name" >/dev/null 2>&1; then
+        echo "Expected NGINX_ADDITIONAL_SERVER_NAMES=$bad_names to be rejected" >&2
+        exit 1
+    fi
+done
 
 echo "Checking readiness token gate..."
 readiness_no_token=$(curl -sS -o /dev/null -w '%{http_code}' http://localhost:18081/api/v2/internal/readiness)
