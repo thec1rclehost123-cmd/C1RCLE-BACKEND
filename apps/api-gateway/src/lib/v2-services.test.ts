@@ -21,7 +21,7 @@ function fakeRequest(organizationId = 'org_1', userId = 'usr_1') {
       activeMembership: {
         organizationId,
         role: 'owner',
-        capabilities: ['host', 'venue', 'promoter'],
+        capabilities: ['venue'],
       },
     },
     headers: { 'x-organization-id': organizationId },

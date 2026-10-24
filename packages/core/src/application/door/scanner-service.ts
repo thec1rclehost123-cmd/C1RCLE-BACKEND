@@ -23,6 +23,16 @@ import {
 } from '../../domain/models/scanner-device.js';
 import { requireOrgAccess } from '../context.js';
 
+import {
+  MAGIC_WINDOW_SEC,
+  buildRotatingQr,
+  checkRotatingQr,
+  deriveManifestSigningKey,
+  deriveTicketKey,
+  parseRotatingQr,
+  signManifest,
+} from './offline-ticket-crypto.js';
+
 import type { EntityId } from '../../domain/identity.js';
 import type { Entitlement } from '../../domain/models/entitlement.js';
 import type {
@@ -275,13 +285,33 @@ export interface OfflineManifestEntry {
   entitlementId: EntityId;
   validFrom: string;
   validTo: string;
-  signature: string;
+  /**
+   * Seats this ticket could still admit when the manifest was signed
+   * (`scanCountAllowed - scanCount`). A couple ticket is 2. The device counts
+   * its own offline admissions against this; the server re-checks at sync.
+   */
+  seatsRemaining: number;
+  /**
+   * Per-ticket verification key (hex). Lets the device check this ticket's
+   * rotating QR offline; it verifies nothing else and is useless after the
+   * manifest expires. Treat it like a session token: keep it in secure storage.
+   */
+  ticketKey: string;
 }
 
 export interface OfflineManifest {
+  /** Format version. Devices must refuse a version they do not understand. */
+  version: 1;
+  eventId: EntityId;
   manifest: OfflineManifestEntry[];
   signedAt: string;
   expiresAt: string;
+  /** Identifies `publicKey`, so a rotated key is recognisable. */
+  keyId: string;
+  /** Raw Ed25519 public key, base64. */
+  publicKey: string;
+  /** Ed25519 over the canonical manifest bytes (see `manifestSigningBytes`), base64. */
+  manifestSignature: string;
 }
 
 export interface OfflineSyncInput {
@@ -295,10 +325,15 @@ export interface OfflineSyncResult {
   conflicts: { payload: string; reason: string }[];
 }
 
-/** Rotating-QR window. Both sides of ±1 window are accepted (±65s of drift). */
-const MAGIC_WINDOW_SEC = 30;
 /** An offline manifest is a short-lived pre-authorization, not a licence. */
 const OFFLINE_MANIFEST_TTL_MS = 12 * 60 * 60 * 1000;
+/**
+ * How long after a manifest expires a device may still sync scans it took
+ * under it (a shift ends, the van has no signal, the sync happens next day).
+ */
+const OFFLINE_SYNC_GRACE_MS = 24 * 60 * 60 * 1000;
+/** A device clock may run ahead of the server by this much before a scan is refused. */
+const OFFLINE_CLOCK_SKEW_MS = 5 * 60 * 1000;
 /**
  * How long staff have to answer "are both guests here?". Long enough to look
  * up from the phone and count two people; short enough that a token screenshot
@@ -472,27 +507,20 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
    * fall-through to the bare-id path, which is exactly how a signature check
    * gets bypassed.
    */
-  function decodeQr(qrPayload: string): { entitlementId: EntityId | null; magic: boolean } {
-    const parts = qrPayload.split(':');
-    if (parts.length !== 3 || !parts.every((p) => p.length > 0)) {
-      return { entitlementId: qrPayload, magic: false };
-    }
-    const [entitlementId, windowStr, signature] = parts as [string, string, string];
-    const windowStart = Number.parseInt(windowStr, 10);
-    if (!Number.isFinite(windowStart)) return { entitlementId: null, magic: true };
-    const current = hmacMatches(signature, hmacHex(`${entitlementId}:${windowStart}`));
-    const previous = hmacMatches(
-      signature,
-      hmacHex(`${entitlementId}:${windowStart - MAGIC_WINDOW_SEC}`),
-    );
-    if (!current && !previous) return { entitlementId: null, magic: true };
-    // A signature that verifies for a window far in the past or future is a
+  function decodeQr(
+    qrPayload: string,
+    atMs: number = Date.now(),
+  ): { entitlementId: EntityId | null; magic: boolean } {
+    const parsed = parseRotatingQr(qrPayload);
+    if (parsed === null) return { entitlementId: qrPayload, magic: false };
+    // `atMs` is "now" for an online scan and the device's own scan time for an
+    // offline one. A signature that verifies for a window far from `atMs` is a
     // replayed screenshot, not clock drift.
-    const nowWindow = Math.floor(Date.now() / 1000 / MAGIC_WINDOW_SEC) * MAGIC_WINDOW_SEC;
-    if (Math.abs(nowWindow - windowStart) > MAGIC_WINDOW_SEC * 2) {
+    const ticketKey = deriveTicketKey(config.magicTicketSecret, parsed.entitlementId);
+    if (!checkRotatingQr({ ticketKey, parsed, atMs })) {
       return { entitlementId: null, magic: true };
     }
-    return { entitlementId, magic: true };
+    return { entitlementId: parsed.entitlementId, magic: true };
   }
 
   function ticketSummary(entitlement: Entitlement): TicketSummary {
@@ -1050,9 +1078,14 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
       throw new ConflictError('A ticket QR is available only while the entitlement is active.');
     }
 
-    const windowStart = Math.floor(Date.now() / 1000 / MAGIC_WINDOW_SEC) * MAGIC_WINDOW_SEC;
+    const nowMs = Date.now();
+    const windowStart = Math.floor(nowMs / 1000 / MAGIC_WINDOW_SEC) * MAGIC_WINDOW_SEC;
     return {
-      qrPayload: `${ticketId}:${windowStart}:${hmacHex(`${ticketId}:${windowStart}`)}`,
+      qrPayload: buildRotatingQr(
+        deriveTicketKey(config.magicTicketSecret, ticketId),
+        ticketId,
+        nowMs,
+      ),
       expiresAt: new Date((windowStart + MAGIC_WINDOW_SEC) * 1000).toISOString(),
       refreshIntervalSec: MAGIC_WINDOW_SEC,
     };
@@ -1413,19 +1446,36 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
           entitlementId: entitlement.id,
           validFrom: signedAt.toISOString(),
           validTo: expiresAt.toISOString(),
-          signature: hmacHex(
-            `manifest:${event.id}:${entitlement.id}:${signedAt.toISOString()}:${expiresAt.toISOString()}`,
-          ),
+          seatsRemaining: entitlement.scanCountAllowed - entitlement.scanCount,
+          ticketKey: deriveTicketKey(config.magicTicketSecret, entitlement.id),
         });
       }
       cursor = page.nextCursor;
     } while (cursor);
 
+    const signingKey = getManifestSigningKey();
     return {
+      version: 1,
+      eventId: event.id,
       manifest: entries,
       signedAt: signedAt.toISOString(),
       expiresAt: expiresAt.toISOString(),
+      keyId: signingKey.keyId,
+      publicKey: signingKey.publicKey,
+      manifestSignature: signManifest(signingKey, {
+        eventId: event.id,
+        signedAt: signedAt.toISOString(),
+        expiresAt: expiresAt.toISOString(),
+        entries,
+      }),
     };
+  }
+
+  let manifestSigningKey: ReturnType<typeof deriveManifestSigningKey> | undefined;
+  /** Derived once per service instance; deterministic, so all instances agree. */
+  function getManifestSigningKey(): ReturnType<typeof deriveManifestSigningKey> {
+    manifestSigningKey ??= deriveManifestSigningKey(config.magicTicketSecret);
+    return manifestSigningKey;
   }
 
   /**
@@ -1455,9 +1505,41 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
 
     const conflicts: { payload: string; reason: string }[] = [];
     let synced = 0;
+    const nowMs = Date.now();
 
     for (const offline of input.scans) {
-      const decoded = decodeQr(offline.payload);
+      // The device's clock is untrusted input, so it is bounded: not in the
+      // future beyond ordinary skew, and not older than a manifest could have
+      // been valid plus the grace to sync a shift's backlog.
+      const scannedAtMs = Date.parse(offline.scannedAt);
+      if (
+        !Number.isFinite(scannedAtMs) ||
+        scannedAtMs > nowMs + OFFLINE_CLOCK_SKEW_MS ||
+        scannedAtMs < nowMs - (OFFLINE_MANIFEST_TTL_MS + OFFLINE_SYNC_GRACE_MS)
+      ) {
+        conflicts.push({ payload: offline.payload, reason: 'offline_expired' });
+        await recordScan({
+          eventId: event.id,
+          organizationId: event.organizationId,
+          venueId: event.venueId,
+          session,
+          actor,
+          input: { scannedAt: offline.scannedAt },
+          entitlementId: null,
+          entitlement: null,
+          admitted: false,
+          denyReason: 'offline_expired',
+          denyMessage: 'Offline scan time is outside the window this event accepts',
+          scansUsed: null,
+          scansAllowed: null,
+          isOffline: true,
+          offlineDeviceId: offline.deviceId,
+        });
+        continue;
+      }
+
+      // Verify against when the device scanned, not when it reached the server.
+      const decoded = decodeQr(offline.payload, scannedAtMs);
       if (!decoded.entitlementId) {
         conflicts.push({ payload: offline.payload, reason: 'invalid_signature' });
         await recordScan({

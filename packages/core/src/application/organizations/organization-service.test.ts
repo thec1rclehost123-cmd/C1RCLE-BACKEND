@@ -177,11 +177,12 @@ describe('OrganizationService.createInvitation emails', () => {
     expect(email?.temporaryPassword).toMatch(/^[A-Za-z2-9]{16}$/);
     expect(email?.acceptUrl).toContain(`?email=${encodeURIComponent('newbie@example.com')}`);
     const provision = await provisioner.provisionLogin('newbie@example.com');
-    expect(provision.created).toBe(false);
+    expect(provision.created).toBe(true);
+    expect(provision.temporaryPassword).toBeTruthy();
     expect(await rotationStore.isRequired(provision.userId ?? '')).toBe(true);
   });
 
-  it('never touches existing accounts: no credentials, no rotation flag', async () => {
+  it('emails fresh credentials and requires rotation when inviting previously existing accounts', async () => {
     const sender = new CapturingEmailSender();
     const rotationStore = new MemoryStaffRotationStore();
     const provisioner = new MemoryStaffCredentialProvisioner();
@@ -197,9 +198,9 @@ describe('OrganizationService.createInvitation emails', () => {
     });
 
     const email = sender.sent[0];
-    expect(email?.temporaryPassword).toBeUndefined();
+    expect(email?.temporaryPassword).toMatch(/^[A-Za-z2-9]{16}$/);
     const provision = await provisioner.provisionLogin('veteran@example.com');
-    expect(await rotationStore.isRequired(provision.userId ?? '')).toBe(false);
+    expect(await rotationStore.isRequired(provision.userId ?? '')).toBe(true);
   });
 
   it('still creates the invitation when provisioning fails (fail-open)', async () => {
@@ -285,5 +286,71 @@ describe('OrganizationService.createInvitation emails', () => {
     const listed = await service.listInvitations(owner, orgId, { limit: 20, cursor: null });
     expect(listed.items).toHaveLength(0);
     expect(sender.sent).toHaveLength(0);
+  });
+
+  it('revokes credentials when member is removed and re-provisions on re-invite', async () => {
+    const sender = new CapturingEmailSender();
+    const rotationStore = new MemoryStaffRotationStore();
+    const provisioner = new MemoryStaffCredentialProvisioner();
+    const userDirectory = provisioner.directory;
+    const deps = makeDeps(
+      sender,
+      'https://partners.example.com',
+      provisioner,
+      rotationStore,
+      userDirectory,
+    );
+    const service = new OrganizationService(deps);
+    const { orgId, owner } = await seedOrg(service);
+
+    // 1. Invite and accept
+    const invite = await service.createInvitation(owner, {
+      organizationId: orgId,
+      email: 'staff@example.com',
+      role: 'member',
+    });
+    const provisionedId = await userDirectory.findUserIdByEmail('staff@example.com');
+    expect(provisionedId).not.toBeNull();
+    if (!provisionedId) throw new Error('Expected provisionedId');
+    const initialPassword = provisioner.getPassword(provisionedId);
+    expect(initialPassword).toBeTruthy();
+
+    await service.acceptInvitation(owner, {
+      invitationId: invite.id,
+      userId: provisionedId,
+    });
+
+    // 2. Remove member (revoke access)
+    await service.removeMember(owner, orgId, provisionedId);
+
+    // Credentials and rotation flag must be revoked/removed
+    expect(provisioner.getPassword(provisionedId)).toBeNull();
+    expect(await userDirectory.findUserIdByEmail('staff@example.com')).toBeNull();
+    expect(await rotationStore.isRequired(provisionedId)).toBe(false);
+
+    // Revoked invite must exist in invitations
+    const invitations = await service.listInvitations(owner, orgId, { limit: 20, cursor: null });
+    const revoked = invitations.items.find((i) => i.email === 'staff@example.com');
+    expect(revoked).toBeDefined();
+    expect(revoked?.status).toBe('revoked');
+
+    // 3. Re-invite ("Add again")
+    sender.sent.length = 0;
+    const reInvite = await service.createInvitation(owner, {
+      organizationId: orgId,
+      email: 'staff@example.com',
+      role: 'manager',
+    });
+
+    expect(reInvite.status).toBe('pending');
+    expect(sender.sent).toHaveLength(1);
+    const newEmail = sender.sent[0];
+    expect(newEmail?.temporaryPassword).toMatch(/^[A-Za-z2-9]{16}$/);
+    expect(newEmail?.temporaryPassword).not.toBe(initialPassword);
+
+    const newUserId = await userDirectory.findUserIdByEmail('staff@example.com');
+    expect(newUserId).not.toBeNull();
+    if (!newUserId) throw new Error('Expected newUserId');
+    expect(await rotationStore.isRequired(newUserId)).toBe(true);
   });
 });

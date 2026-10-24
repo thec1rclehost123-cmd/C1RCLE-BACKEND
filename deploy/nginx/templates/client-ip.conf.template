@@ -1,0 +1,45 @@
+# Client IP and origin verification. Rendered into conf.d by
+# deploy/docker/nginx-entrypoint.sh for every profile and topology.
+#
+# Problem: behind a platform proxy the socket peer ($remote_addr) is the
+# platform's hop, identical for every visitor, so per-client rate limits and
+# audit IPs collapse into one bucket. A header that says "the client is X" is
+# worthless on its own, because anyone can send it.
+#
+# Mechanism: Cloudflare (which really does know the visitor's address) is
+# configured to stamp two request headers on this API's hostname:
+#   X-Origin-Verify  a secret only Cloudflare and this container know
+#   X-C1-Client-IP   the visitor's address (Cloudflare's ip.src)
+# The address is believed ONLY when the secret matches, and only when it is a
+# well-formed IP. Anything else (no secret, wrong secret, or the secret with a
+# malformed address) falls back to the socket peer, so a forged header changes
+# nothing. A request that reaches the origin directly, around Cloudflare, can
+# never carry the secret.
+#
+# With NGINX_ORIGIN_VERIFY_SECRET unset the secret map is empty and this is a
+# no-op: $c1rcle_client_ip is just $remote_addr, exactly as before.
+
+map $http_x_origin_verify $c1rcle_origin_verified {
+    default 0;
+${NGINX_ORIGIN_VERIFY_MAP_ENTRIES}
+}
+
+map "$c1rcle_origin_verified:$http_x_c1_client_ip" $c1rcle_client_ip {
+    default $remote_addr;
+    "~^1:(?<c1rcle_verified_ip>[0-9A-Fa-f:.]{2,45})$" $c1rcle_verified_ip;
+}
+
+# Hostnames that must arrive through Cloudflare. A request for one of these
+# without a valid X-Origin-Verify is refused (403) by the server block, which
+# closes the "skip Cloudflare and hit the origin directly" bypass.
+map $host $c1rcle_origin_locked_host {
+    default 0;
+${NGINX_ORIGIN_LOCKED_MAP_ENTRIES}
+}
+
+# 1 only for a locked host that did NOT present a valid secret. nginx's `if`
+# takes a single variable, so the two facts are combined here.
+map "$c1rcle_origin_locked_host:$c1rcle_origin_verified" $c1rcle_origin_blocked {
+    default 0;
+    "1:0" 1;
+}

@@ -19,11 +19,14 @@ sidecar_fastify_port="${SIDECAR_FASTIFY_PORT:-8081}"
 
 fastify_pid=""
 nginx_pid=""
+log_tail_pids=""
 
 shutdown() {
     trap - TERM INT
     [ -n "$nginx_pid" ] && kill -TERM "$nginx_pid" 2>/dev/null || true
     [ -n "$fastify_pid" ] && kill -TERM "$fastify_pid" 2>/dev/null || true
+    # The log tailers never exit on their own, so stop them before `wait`.
+    for tail_pid in $log_tail_pids; do kill -TERM "$tail_pid" 2>/dev/null || true; done
     wait 2>/dev/null || true
     exit 0
 }
@@ -63,6 +66,19 @@ if [ "$ready" != "1" ]; then
     kill -TERM "$fastify_pid" 2>/dev/null || true
     exit 1
 fi
+
+# nginx writes its access and error logs to files (nginx.conf), but the platform
+# only captures this container's stdout/stderr, so without this the edge's
+# request log, including the client address and whether the origin secret was
+# verified, is invisible in Render's log viewer. Tailing the files (rather than
+# symlinking them to /dev/stdout) keeps working for the unprivileged user this
+# container runs as, where opening the platform's stdout pipe can be refused.
+mkdir -p /var/log/nginx
+touch /var/log/nginx/access.log /var/log/nginx/error.log
+tail -n 0 -F /var/log/nginx/access.log &
+log_tail_pids="$!"
+tail -n 0 -F /var/log/nginx/error.log >&2 &
+log_tail_pids="$log_tail_pids $!"
 
 echo "[sidecar] Fastify healthy. Starting nginx (public edge)..."
 export FASTIFY_UPSTREAM="127.0.0.1:${sidecar_fastify_port}"

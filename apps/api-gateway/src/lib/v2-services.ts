@@ -20,7 +20,8 @@ import {
   AdminOperationsService,
   InProcessEventBus,
   createAuditConsumer,
-  createProjectionConsumer,
+  ANALYTICS_PROJECTION_EVENT_TYPES,
+  createAnalyticsProjectionConsumer,
   CheckoutService,
   FulfilmentRepairService,
   InventoryService,
@@ -335,8 +336,8 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   eventBus.subscribe('event.updated', createAuditConsumer(audits));
   eventBus.subscribe('event.cancelled', createAuditConsumer(audits));
   eventBus.subscribe('event.cancellation.order_affected', createAuditConsumer(audits));
-  // Future projection consumer (no-op now — wire exists for B11 projections).
-  eventBus.subscribe('event.published', createProjectionConsumer);
+  // B11: the analytics projection consumer is subscribed below, once `deps`
+  // exists — it needs the AnalyticsService instance, which needs `deps`.
   // Phase 8 pub/sub: follow graph changes are audited, and every publish fans
   // out "new event" notifications to venue + host followers. The publisher
   // (EventService / SocialService) never calls these directly.
@@ -492,6 +493,17 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   eventBus.subscribe('promoter_connection.requested', notificationConsumer);
   eventBus.subscribe('partnership.requested', notificationConsumer);
   eventBus.subscribe('event.published', notificationConsumer);
+
+  // B11: analytics projection. Built here (not with the audit subscriptions
+  // above) because the projector IS the AnalyticsService instance the returned
+  // bag exposes — one instance, two uses. Every `event.*` lifecycle change
+  // reconciles the event's own row and its organization's roll-up; the periodic
+  // refresh in `app.ts` covers the order/scan writes that emit no event.
+  const analytics = new AnalyticsService(deps);
+  const analyticsProjectionConsumer = createAnalyticsProjectionConsumer(analytics);
+  for (const type of ANALYTICS_PROJECTION_EVENT_TYPES) {
+    eventBus.subscribe(type, analyticsProjectionConsumer);
+  }
 
   const adminAuthority = new AdminAuthorityService(deps);
   const onboardingService = new OnboardingService(deps, adminAuthority);
@@ -664,7 +676,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     venueSlotRequests: new VenueSlotRequestService(deps),
     events: new EventService(deps),
     catalog: new EventCatalogService(deps),
-    analytics: new AnalyticsService(deps),
+    analytics,
     onboarding: onboardingService,
 
     social: new SocialService(deps),

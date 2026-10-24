@@ -108,14 +108,6 @@ export class PublicService {
     };
   }
 
-  /** Public, currently sellable tiers for a published event page. */
-  async getEventTicketTiers(idOrSlug: EntityId) {
-    const detail = await this.getEvent(idOrSlug);
-    return (await this.deps.repositories.catalog.listTiers(detail.event.id)).filter(
-      (tier) => tier.status === 'active',
-    );
-  }
-
   /** Venue public profile by slug. A suspended venue is not discoverable. */
   async getVenue(slug: string): Promise<Venue> {
     const venue = await this.venues.getBySlugGlobal(slug);

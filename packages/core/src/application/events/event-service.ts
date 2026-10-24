@@ -346,6 +346,7 @@ export class EventService {
   async review(actor: ActorContext, eventId: EntityId): Promise<Event> {
     const event = await this.fetchOwned(actor, eventId);
     const updated = transitionEvent(event, 'review', this.deps.config.clock.now());
+    if (updated === event) return event;
     await this.repo.save(updated);
     return updated;
   }
@@ -403,6 +404,7 @@ export class EventService {
   async pauseSales(actor: ActorContext, eventId: EntityId): Promise<Event> {
     const event = await this.fetchOwned(actor, eventId);
     const updated = transitionEvent(event, 'sales_paused', this.deps.config.clock.now());
+    if (updated === event) return event;
     await this.repo.save(updated);
     await emit(this.deps, actor, updated.id, 'event.updated', {
       title: updated.title,
@@ -413,6 +415,7 @@ export class EventService {
   async resumeSales(actor: ActorContext, eventId: EntityId): Promise<Event> {
     const event = await this.fetchOwned(actor, eventId);
     const updated = transitionEvent(event, 'published', this.deps.config.clock.now());
+    if (updated === event) return event;
     await this.repo.save(updated);
     await emit(this.deps, actor, updated.id, 'event.published', {
       title: updated.title,
@@ -458,6 +461,7 @@ export class EventService {
       startAt: source.startAt,
       endAt: source.endAt,
       tags: source.tags,
+      compensation: source.compensation,
       now: this.deps.config.clock.now(),
     });
     await this.repo.save(copy);
@@ -468,10 +472,18 @@ export class EventService {
     return copy;
   }
 
-  /** Preview: the event plus its public visibility flag (cached surface). */
-  async getPreview(eventId: EntityId): Promise<{ event: Event; isPublic: boolean }> {
-    const event = await this.repo.getById(eventId);
-    if (!event) throw new EventNotFoundError(eventId);
+  /**
+   * Preview: the event plus its public visibility flag (cached surface).
+   *
+   * Tenant-scoped like every other read — a preview of a *draft* exposes the
+   * full uncompiled event (compensation, description, tags), so an unscoped
+   * `getById` would be a cross-tenant IDOR on unpublished events.
+   */
+  async getPreview(
+    actor: ActorContext,
+    eventId: EntityId,
+  ): Promise<{ event: Event; isPublic: boolean }> {
+    const event = await this.fetchOwned(actor, eventId);
     return { event, isPublic: isPublicStatus(event.status) };
   }
 
@@ -479,6 +491,7 @@ export class EventService {
   async transitionTo(actor: ActorContext, eventId: EntityId, to: EventStatus): Promise<Event> {
     const event = await this.fetchOwned(actor, eventId);
     const updated = transitionEvent(event, to, this.deps.config.clock.now());
+    if (updated === event) return event;
     await this.repo.save(updated);
     return updated;
   }

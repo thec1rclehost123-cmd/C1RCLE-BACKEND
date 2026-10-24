@@ -160,3 +160,115 @@ test('reports missing values and malformed infrastructure inputs together', () =
   assert.match(result.issues.join('\n'), /BETTER_AUTH_TRUSTED_ORIGINS/);
   assert.match(result.issues.join('\n'), /REDIS_URL/);
 });
+
+test('accepts additional server names and renders every one into the host allow-list', () => {
+  const env = validEnvironment({
+    NGINX_ADDITIONAL_SERVER_NAMES: 'api-staging.c1rcle.com, Legacy.Staging.C1RCLE.com',
+  });
+  const result = validateStagingEnvironment(env);
+  assert.equal(result.ok, true, result.issues.join('\n'));
+  assert.deepEqual(result.values.additionalServerNames, [
+    'api-staging.c1rcle.com',
+    'legacy.staging.c1rcle.com',
+  ]);
+
+  const { content } = renderStagingNginx(env);
+  assert.match(
+    content,
+    /server_name api\.staging\.c1rcle\.com api-staging\.c1rcle\.com legacy\.staging\.c1rcle\.com;/,
+  );
+  for (const name of [
+    'api.staging.c1rcle.com',
+    'api-staging.c1rcle.com',
+    'legacy.staging.c1rcle.com',
+  ]) {
+    assert.match(content, new RegExp(`^\\s+${name.replaceAll('.', '\\.')} 1;$`, 'm'));
+  }
+});
+
+test('an environment without additional server names renders exactly one allowed host', () => {
+  const result = validateStagingEnvironment(validEnvironment());
+  assert.equal(result.ok, true, result.issues.join('\n'));
+  assert.deepEqual(result.values.additionalServerNames, []);
+  const { content } = renderStagingNginx(validEnvironment());
+  assert.match(content, /server_name api\.staging\.c1rcle\.com;/);
+});
+
+test('accepts an origin lock on a served host and keeps it optional', () => {
+  const secret = 'a'.repeat(40);
+  const locked = validateStagingEnvironment(
+    validEnvironment({
+      NGINX_ADDITIONAL_SERVER_NAMES: 'api-staging.c1rcle.com',
+      NGINX_ORIGIN_VERIFY_SECRET: secret,
+      NGINX_ORIGIN_LOCKED_SERVER_NAMES: 'API-STAGING.c1rcle.com',
+    }),
+  );
+  assert.equal(locked.ok, true, locked.issues.join('\n'));
+  assert.deepEqual(locked.values.originLockedServerNames, ['api-staging.c1rcle.com']);
+
+  const plain = validateStagingEnvironment(validEnvironment());
+  assert.equal(plain.ok, true, plain.issues.join('\n'));
+  assert.deepEqual(plain.values.originLockedServerNames, []);
+});
+
+test('rejects origin-lock values that would lock everything out or alter nginx config', () => {
+  const cases = [
+    [
+      'a secret that is too short',
+      { NGINX_ORIGIN_VERIFY_SECRET: 'short' },
+      'NGINX_ORIGIN_VERIFY_SECRET',
+    ],
+    [
+      'a secret with a quote',
+      { NGINX_ORIGIN_VERIFY_SECRET: `${'a'.repeat(40)}"x` },
+      'NGINX_ORIGIN_VERIFY_SECRET',
+    ],
+    [
+      'a secret with a semicolon',
+      { NGINX_ORIGIN_VERIFY_SECRET: `${'a'.repeat(40)};x` },
+      'NGINX_ORIGIN_VERIFY_SECRET',
+    ],
+    [
+      'a locked host with no secret',
+      { NGINX_ORIGIN_LOCKED_SERVER_NAMES: 'api.staging.c1rcle.com' },
+      'NGINX_ORIGIN_LOCKED_SERVER_NAMES',
+    ],
+    [
+      'a locked host that is not served',
+      {
+        NGINX_ORIGIN_VERIFY_SECRET: 'a'.repeat(40),
+        NGINX_ORIGIN_LOCKED_SERVER_NAMES: 'other.c1rcle.com',
+      },
+      'NGINX_ORIGIN_LOCKED_SERVER_NAMES',
+    ],
+  ];
+  for (const [label, overrides, field] of cases) {
+    const result = validateStagingEnvironment(validEnvironment(overrides));
+    assert.equal(result.ok, false, `expected ${label} to be rejected`);
+    assert.ok(
+      result.issues.some((issue) => issue.includes(field)),
+      `expected an ${field} issue for ${label}, got: ${result.issues.join('; ')}`,
+    );
+  }
+});
+
+test('rejects additional server names that could alter the nginx config', () => {
+  for (const bad of [
+    '*.c1rcle.com',
+    'a.c1rcle.com;return 200',
+    'https://a.c1rcle.com/x',
+    'a.c1rcle.com"b',
+    '.a.c1rcle.com',
+    'a..c1rcle.com',
+    'api.staging.c1rcle.com',
+  ]) {
+    const result = validateStagingEnvironment(
+      validEnvironment({ NGINX_ADDITIONAL_SERVER_NAMES: bad }),
+    );
+    assert.equal(result.ok, false, `expected "${bad}" to be rejected`);
+    assert.ok(
+      result.issues.some((issue) => issue.includes('NGINX_ADDITIONAL_SERVER_NAMES')),
+      `expected an NGINX_ADDITIONAL_SERVER_NAMES issue for "${bad}", got: ${result.issues.join('; ')}`,
+    );
+  }
+});

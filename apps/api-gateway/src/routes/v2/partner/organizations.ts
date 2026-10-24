@@ -4,13 +4,18 @@ import {
   paginationQuerySchema,
   organizationDtoSchema,
   organizationMemberDtoSchema,
+  updateMemberRoleSchema,
   inviteMemberSchema,
   invitationDtoSchema,
   createInvitationSchema,
   partnerAccessDtoSchema,
   paginatedSchema,
 } from '@c1rcle/contracts/client';
-import { effectiveInvitationStatus, partnerAccessContext } from '@c1rcle/core/domain';
+import {
+  effectiveInvitationStatus,
+  partnerAccessContext,
+  tenancyRoleToPartnerRole,
+} from '@c1rcle/core/domain';
 import { z } from 'zod';
 
 import type {
@@ -38,6 +43,7 @@ import type { FastifyInstance } from 'fastify';
 const services = createV2Services();
 
 const organizationIdParam = z.object({ organizationId: opaqueIdSchema });
+const memberIdParam = z.object({ organizationId: opaqueIdSchema, userId: opaqueIdSchema });
 
 const createOrganizationBody = z
   .object({
@@ -360,6 +366,115 @@ export default async function partnerOrganizationRoutes(fastify: FastifyInstance
       return reply.status(result.statusCode).send(result.body);
     },
   );
+
+  fastify.patch(
+    '/organizations/:organizationId/members/:userId',
+    {
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({
+          params: memberIdParam,
+          body: updateMemberRoleSchema,
+          headers: orgHeaders.extend({ 'idempotency-key': idempotencyKeySchema }),
+        }),
+        fastify.requirePermission('staff.manage'),
+      ],
+    },
+    async (request, reply) => {
+      const { organizationId, userId } = request.params as z.infer<typeof memberIdParam>;
+      const body = request.body as z.infer<typeof updateMemberRoleSchema>;
+      const actor = services.actor(request);
+      const v2Headers = request.v2Headers ?? {};
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: actor.userId,
+        commandName: 'organizations.changeRole',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { organizationId, userId }, body },
+        run: async () => {
+          const org = await services.organizations.changeRole(
+            actor,
+            organizationId,
+            userId,
+            body.role,
+          );
+          const member = org.members.find((m) => m.userId === userId);
+          if (!member) throw new Error('Member not found after role update');
+          const user = await services
+            .repos()
+            .users.getById(userId)
+            .catch(() => null);
+          const enrichedMember = {
+            ...member,
+            name: user?.name?.trim() ? user.name.trim() : null,
+            email: user?.email ?? null,
+          };
+          const validated = validateV2Response(
+            reply,
+            request,
+            organizationMemberDtoSchema,
+            enrichedMember,
+          );
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
+        },
+      }).catch((error: unknown) => {
+        if (isIdempotencyConflict(error)) {
+          return mapDomainError(reply, request, organizationId, error, {
+            conflictId: v2Headers['idempotency-key'],
+          });
+        }
+        return mapDomainError(reply, request, organizationId, error);
+      });
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
+  // ── REMOVE MEMBER ─────────────────────────────────────────────────────────
+  // Owners cannot be removed by the domain model (InvalidOperationError).
+  // The route requires `staff.manage`; the service enforces org-membership
+  // of the actor so non-members cannot self-escalate.
+  fastify.delete(
+    '/organizations/:organizationId/members/:userId',
+    {
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({
+          params: memberIdParam,
+          headers: orgHeaders.extend({ 'idempotency-key': idempotencyKeySchema }),
+        }),
+        fastify.requirePermission('staff.manage'),
+      ],
+    },
+    async (request, reply) => {
+      const { organizationId, userId } = request.params as z.infer<typeof memberIdParam>;
+      const actor = services.actor(request);
+      const v2Headers = request.v2Headers ?? {};
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: actor.userId,
+        commandName: 'organizations.removeMember',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { organizationId, userId }, body: {} },
+        run: async () => {
+          await services.organizations.removeMember(actor, organizationId, userId);
+          return { statusCode: 204, body: undefined as unknown as object };
+        },
+      }).catch((error: unknown) => {
+        if (isIdempotencyConflict(error)) {
+          return mapDomainError(reply, request, organizationId, error, {
+            conflictId: v2Headers['idempotency-key'],
+          });
+        }
+        return mapDomainError(reply, request, organizationId, error);
+      });
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body ?? '');
+    },
+  );
+
   // ── ACCESS CONTEXT (what this member may see and do) ──────────────────────
   // v1's rbac-permissions.ts opens with "the frontend must NEVER define or
   // evaluate these" — this is the endpoint that makes that possible. Hiding a
@@ -387,7 +502,7 @@ export default async function partnerOrganizationRoutes(fastify: FastifyInstance
       // Capability decides WHICH matrix applies: the same person can be a
       // venue manager and a host owner, and those are different dashboards.
       const partnerType = primaryPartnerType(membership?.capabilities ?? []);
-      const context = partnerAccessContext(partnerType, toPartnerRole(membership?.role));
+      const context = partnerAccessContext(partnerType, tenancyRoleToPartnerRole(membership?.role));
 
       const payload = {
         organizationId,
@@ -600,23 +715,11 @@ function primaryPartnerType(capabilities: readonly Capability[]): string {
 }
 
 /**
- * Bridges V2's tenancy role to v1's operational role vocabulary. `admin` maps
- * to MANAGER rather than OWNER: an org admin runs the tenant, but "owner" in
- * the partner matrix carries payout and settings authority that should be
- * granted deliberately, not inherited.
+ * ✂ Bridges V2's tenancy role to v1's operational role vocabulary. Moved into
+ * the core domain (`tenancyRoleToPartnerRole`) so the matrix mapping is one
+ * testable authority instead of a private route helper; see
+ * `packages/core/src/domain/models/partner-access.ts`.
  */
-function toPartnerRole(role: OrganizationRole | undefined): string {
-  switch (role) {
-    case 'owner':
-      return 'OWNER';
-    case 'admin':
-    case 'manager':
-      return 'MANAGER';
-    case 'member':
-    case undefined:
-      return 'STAFF';
-  }
-}
 
 /** Converts the core domain Organization to the canonical wire DTO (caller-scoped). */
 export function organizationToDto(org: Organization, userId: string) {

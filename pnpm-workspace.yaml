@@ -64,3 +64,10 @@ overrides:
   # indexed source maps. Pulled in transitively by magicast and postcss. 1.2.2 is
   # the patched release.
   source-map-js: '>=1.2.2'
+  # vite 8.2.0 - 8.2.3 (CVE-2026-112942, GHSA-587h-7wmj-h5pm): command injection
+  # via improper file path validation in launch-editor, bundled in the dev server.
+  # Reached only through vitest (devDependency), but pnpm audit and the Docker
+  # Trivy scan both fail HIGH on it. 8.2.4 is the patched release on the 8.2 line
+  # vitest already resolves; pinned EXACTLY and scoped to that line so a newer
+  # major is not pulled in by accident.
+  'vite@>=8.2.0 <8.3.0': '8.2.4'

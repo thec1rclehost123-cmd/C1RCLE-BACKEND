@@ -320,11 +320,12 @@ export default async function phase5ScannerRoutes(fastify: FastifyInstance) {
   );
 
   // ── GET /door/offline-manifest ────────────────────────────────────────────
-  // Real, because the verifying side is real too: entries are signed with the
-  // same key `POST /door/offline-sync` verifies, and syncing re-runs the full
-  // atomic admission rather than trusting the device's decision. Shipping the
-  // manifest without that verifying side (the reason this used to be a 501)
-  // would have been a device trusting a signature nobody ever checked.
+  // The manifest is what lets a device with no signal verify rotating QR codes:
+  // it carries a per-ticket key for each admissible ticket (never the master
+  // secret) and is signed with Ed25519, so the device checks it with a public
+  // key it cannot forge with. It is NOT an admission: `POST /door/offline-sync`
+  // re-runs the full atomic admission for every scan, so the server, not the
+  // device, makes the final decision.
   fastify.get(
     '/door/offline-manifest',
     {

@@ -50,6 +50,7 @@ const ENTRY_POINTS = [
   'templates/production.conf.template',
   'templates/staging-edge.conf.template',
   'templates/production-edge.conf.template',
+  'templates/client-ip.conf.template',
 ].map((p) => join(nginxDir, p));
 
 // ---------------------------------------------------------------------------

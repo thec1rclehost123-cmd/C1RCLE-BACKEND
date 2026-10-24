@@ -63,11 +63,20 @@ export type {
   ReviewCommand,
 } from './onboarding/onboarding-service.js';
 export { AnalyticsService } from './analytics/analytics-service.js';
+export {
+  ANALYTICS_PROJECTION_EVENT_TYPES,
+  createAnalyticsProjectionConsumer,
+  refreshAnalyticsReadModel,
+} from './analytics/analytics-projection.js';
+export type {
+  AnalyticsRefreshDeps,
+  AnalyticsRefreshResult,
+} from './analytics/analytics-projection.js';
 export { IdempotencyService } from './idempotency/idempotency-service.js';
 export type { IdempotentCommand, IdempotentResult } from './idempotency/idempotency-service.js';
 export { InProcessEventBus } from './events/event-bus.js';
 export type { EventHandler } from './events/event-bus.js';
-export { createAuditConsumer, createProjectionConsumer } from './events/audit-consumers.js';
+export { createAuditConsumer } from './events/audit-consumers.js';
 export {
   EventCancellationService,
   eventCancellationRefundRequestId,
@@ -111,6 +120,18 @@ export type {
   OfflineSyncResult,
 } from './door/scanner-service.js';
 export { createScannerService } from './door/scanner-service.js';
+export {
+  MAGIC_WINDOW_SEC,
+  buildRotatingQr,
+  checkRotatingQr,
+  deriveManifestSigningKey,
+  deriveTicketKey,
+  manifestSigningBytes,
+  parseRotatingQr,
+  signManifest,
+  verifyManifest,
+} from './door/offline-ticket-crypto.js';
+export type { ManifestSigningInput, ManifestSigningKey } from './door/offline-ticket-crypto.js';
 export type {
   DoorOpsService,
   DoorOpsServiceDeps,

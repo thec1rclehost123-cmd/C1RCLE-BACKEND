@@ -82,8 +82,17 @@ export const organizationMemberDtoSchema = z.object({
   capabilities: z.array(z.enum(['host', 'venue', 'promoter'])),
   joinedAt: z.iso.datetime(),
   invitedBy: opaqueIdSchema.optional(),
+  name: z.string().nullable().optional(),
+  email: z.string().nullable().optional(),
 });
 export type OrganizationMemberDto = z.infer<typeof organizationMemberDtoSchema>;
+
+export const updateMemberRoleSchema = z
+  .object({
+    role: z.enum(['admin', 'manager', 'member']),
+  })
+  .strict();
+export type UpdateMemberRoleRequest = z.infer<typeof updateMemberRoleSchema>;
 
 export const inviteMemberSchema = z
   .object({
