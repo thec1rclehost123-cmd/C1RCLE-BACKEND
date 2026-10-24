@@ -296,6 +296,16 @@ export interface SlotRequestRepository {
   /** Outgoing (host-side) requests: everything submitted by this organization. */
   listByHost(hostId: EntityId, query: PaginationQuery): Promise<Page<SlotRequest>>;
   save(request: SlotRequest, tx?: TxContext | null): Promise<void>;
+  /** Atomically changes an open Venue slot to pending and inserts its request. */
+  createForOpenSlot(request: SlotRequest): Promise<void>;
+  /** Atomically updates a slot-bound request and its pending/booked slot state. */
+  transitionForSlot(request: SlotRequest, updated: SlotRequest): Promise<void>;
+  /** Atomically claims an accepted slot request for its single Host event. */
+  claimAcceptedSlotEvent(
+    slotRequestId: EntityId,
+    hostId: EntityId,
+    eventId: EntityId,
+  ): Promise<SlotRequest>;
 }
 
 export interface VenueSlotRepository {
@@ -320,6 +330,8 @@ export interface VenueSlotRepository {
    * between guard and write), which is atomic within a single event-loop turn.
    */
   createBlockIfFree(block: VenueSlot): Promise<VenueSlot>;
+  /** Atomic overlap-checked insertion for explicit Venue availability offers. */
+  createOpenSlotIfFree(slot: VenueSlot): Promise<VenueSlot>;
 }
 
 // ─── Events ──────────────────────────────────────────────────────────────────
@@ -406,8 +418,10 @@ export interface EventAnalytics {
   totalRevenuePaise: number;
   ticketsSold: number;
   totalCheckIns: number;
-  /** Venue-reported capacity (V1 `capacity` on the analytics doc). */
-  capacity: number;
+  /** Sum of the configured ticket-tier quotas; distinct from room capacity. */
+  totalTicketInventory: number;
+  /** Venue-reported capacity; null means the venue never configured one. */
+  capacity: number | null;
   /** Event-page views (V1 `views`). */
   views: number;
   /** Guest-list signups (V1 `guestlistSignups`). */
@@ -415,11 +429,12 @@ export interface EventAnalytics {
   /** Paise (V1: whole rupees). */
   avgTicketPricePaise: number;
   /** Ratios 0..1, precomputed at write time (V1 computed same names). */
-  occupancyRate: number;
-  sellThroughRate: number;
+  occupancyRate: number | null;
+  sellThroughRate: number | null;
   refundAmountPaise: number;
   refundRate: number;
-  noShowRate: number;
+  /** Null until an event end time exists and has elapsed. */
+  noShowRate: number | null;
   repeatGuests: number;
   conversionRate: number;
 }
@@ -463,15 +478,21 @@ export interface OrganizationTrends {
   to: string;
   /** Ascending by key. At most `MAX_TREND_BUCKETS` entries. */
   buckets: TrendBucket[];
-  /**
-   * Lifetime totals over everything the scan saw, which is **not** the sum of
-   * `buckets` whenever data falls outside the requested window. Conflating them
-   * would make a legitimately narrow range look like data loss.
-   */
+  /** Window totals, equal to the sum of the requested buckets. */
   totals: {
+    /** Net captured order total after refunds. */
     revenuePaise: number;
+    /** Captured order-line units, including free RSVP lines. */
     tickets: number;
     checkIns: number;
+    totalTicketsIssued: number;
+    paidTickets: number;
+    freeRsvpTickets: number;
+    paidOrderCount: number;
+    /** Paid-order grand totals before refunds. */
+    guestGrossCollectedPaise: number;
+    /** Discounted ticket subtotals before refunds, excluding fees and tax. */
+    ticketRevenuePaise: number;
   };
 }
 
@@ -481,6 +502,12 @@ export interface TrendBucket {
   revenuePaise: number;
   tickets: number;
   checkIns: number;
+  totalTicketsIssued: number;
+  paidTickets: number;
+  freeRsvpTickets: number;
+  paidOrderCount: number;
+  guestGrossCollectedPaise: number;
+  ticketRevenuePaise: number;
 }
 
 /**
@@ -709,6 +736,8 @@ export interface SeatClaimLine {
 export interface OrderRepository {
   /** Fetches by id. */
   getById(orderId: EntityId): Promise<Order | null>;
+  /** Fetches by immutable support-safe booking reference. */
+  getByBookingReference(bookingReference: string): Promise<Order | null>;
   /** Fetches by payment id (idempotency anchor for dual confirmation). */
   getByPaymentId(paymentId: string): Promise<Order | null>;
   /** Fetches by idempotency key (for idempotent order creation). */

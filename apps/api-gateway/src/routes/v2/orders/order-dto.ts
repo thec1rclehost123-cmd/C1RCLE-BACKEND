@@ -1,4 +1,5 @@
 import type { OrderDto } from '@c1rcle/contracts/client';
+import { bookingReferenceForOrderId } from '@c1rcle/core/domain';
 import type { Order } from '@c1rcle/core/domain';
 
 /**
@@ -10,6 +11,7 @@ import type { Order } from '@c1rcle/core/domain';
 export function orderToDto(order: Order): OrderDto {
   return {
     id: order.id,
+    bookingReference: order.bookingReference ?? bookingReferenceForOrderId(order.id),
     eventId: order.eventId,
     organizationId: order.organizationId,
     userId: order.userId,
@@ -29,6 +31,7 @@ export function orderToDto(order: Order): OrderDto {
     paidAt: order.paidAt,
     reservationExpiresAt: order.reservationExpiresAt,
     failureReason: order.failureReason,
+    eventCancellation: order.eventCancellation ?? null,
     refundedPaise: order.refundedPaise,
     version: order.version,
     createdAt: order.createdAt,

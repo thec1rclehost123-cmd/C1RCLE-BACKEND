@@ -10,6 +10,7 @@ import {
   UnauthorizedError,
   VersionConflictError,
 } from '../../domain/errors.js';
+import { deterministicDomainEventId, domainEvent } from '../../domain/events.js';
 import { issueEntitlements } from '../../domain/models/entitlement.js';
 import { effectiveTierPricePaise } from '../../domain/models/event-catalog.js';
 import { platformFeePercentFor } from '../../domain/models/onboarding.js';
@@ -18,6 +19,7 @@ import { isSystemActor, SYSTEM_ACTOR } from '../context.js';
 import { createFinanceService } from '../finance/finance-service.js';
 import { FinancialPostingService } from '../finance/financial-posting-service.js';
 import { createLeaderboardService } from '../finance/leaderboard-service.js';
+import { ProviderPaymentService } from '../finance/provider-payment-service.js';
 import {
   ReferralLinkService,
   signPromoterAttribution,
@@ -29,6 +31,7 @@ import type { Entitlement } from '../../domain/models/entitlement.js';
 import type { CommissionTerms } from '../../domain/models/event-catalog.js';
 import type { Order, OrderContact } from '../../domain/models/order.js';
 import type { PricingBreakdown } from '../../domain/models/pricing.js';
+import type { PaymentVerificationResponse } from '../../domain/ports/payment-provider.js';
 import type { ActorContext, ServiceDeps } from '../context.js';
 import type { FinanceService } from '../finance/finance-service.js';
 import type { LeaderboardService } from '../finance/leaderboard-service.js';
@@ -97,8 +100,13 @@ export class CheckoutService {
   private readonly financeService: FinanceService;
   private readonly financialPostingService: FinancialPostingService;
   private readonly leaderboardService: LeaderboardService;
+  private readonly providerPayments: ProviderPaymentService;
 
-  constructor(private readonly deps: ServiceDeps) {
+  constructor(
+    private readonly deps: ServiceDeps,
+    providerPayments = new ProviderPaymentService(deps),
+  ) {
+    this.providerPayments = providerPayments;
     this.financeService = createFinanceService({
       ledger: deps.repositories.ledger,
       financialJournals: deps.repositories.financialJournals,
@@ -413,6 +421,11 @@ export class CheckoutService {
       throw new ConflictError('An RSVP already exists for this event');
     }
 
+    // The authenticated Guest profile is the authoritative attendee identity.
+    // Keep contact email/phone blank for RSVP; they are not needed to issue the
+    // pass, and the profile name is sufficient for the partner attendee roster.
+    const guestProfile = await this.deps.repositories.guestProfiles.getByUserId(actor.userId);
+
     await this.deps.inventory.assertAvailable(event.id, tierId, 1);
 
     const now = new Date();
@@ -421,7 +434,7 @@ export class CheckoutService {
       eventId: event.id,
       organizationId: event.organizationId,
       userId: actor.userId,
-      contact: { name: 'RSVP Guest', email: '', phone: '' },
+      contact: { name: guestProfile?.displayName ?? 'RSVP Guest', email: '', phone: '' },
       status: 'paid',
       lines: [
         {
@@ -466,10 +479,20 @@ export class CheckoutService {
           const winnerEntitlements = await this.deps.repositories.entitlements.getByOrderId(
             winner.id,
           );
+          await this.ensureOrderFulfilledEvent(winner);
           return { order: winner, entitlements: winnerEntitlements };
         }
       }
       throw error;
+    }
+
+    const latestEvent = await this.deps.repositories.events.getById(order.eventId);
+    if (latestEvent?.status === 'cancelled') {
+      await this.ensureOrderFulfilledEvent(order);
+      return {
+        order: (await this.deps.repositories.orders.getById(order.id)) ?? order,
+        entitlements: await this.deps.repositories.entitlements.getByOrderId(order.id),
+      };
     }
 
     const issuedEntitlements = issueEntitlements({ order, now });
@@ -486,6 +509,7 @@ export class CheckoutService {
       sourceType: 'free_ticket',
       postedAt: now,
     });
+    await this.ensureOrderFulfilledEvent(order);
     return { order, entitlements };
   }
 
@@ -649,6 +673,7 @@ export class CheckoutService {
       paymentIntentId: serverOrderId,
       holdId,
       _idempotencyKey: input.idempotencyKey ?? paymentId,
+      _verifiedPayment: verification,
     });
   }
 
@@ -663,8 +688,9 @@ export class CheckoutService {
     paymentIntentId: string;
     holdId: EntityId;
     _idempotencyKey: string;
+    _verifiedPayment?: PaymentVerificationResponse;
   }): Promise<{ order: Order; entitlements: Entitlement[] }> {
-    const { actor, paymentId, paymentIntentId, holdId } = input;
+    const { actor, paymentId, paymentIntentId, holdId, _verifiedPayment } = input;
 
     let hold = await this.deps.repositories.cartReservations.getById(holdId);
     if (!hold || !this.actsForHold(actor, hold)) throw new InvalidOperationError('Hold not found');
@@ -684,7 +710,14 @@ export class CheckoutService {
         existingOrder.eventId === hold.eventId &&
         (hold.convertedOrderId === null || hold.convertedOrderId === existingOrder.id);
       if (!belongsToHold) throw new InvalidOperationError('Payment belongs to a different hold');
-      return this.completeFulfilment(existingOrder, hold);
+      if (_verifiedPayment) {
+        this.assertProviderCaptureMatchesHold(_verifiedPayment, hold, paymentIntentId);
+        await this.recordProviderCapture(_verifiedPayment, hold, null);
+      }
+      const result = await this.completeFulfilment(existingOrder, hold);
+      if (_verifiedPayment)
+        await this.recordProviderCapture(_verifiedPayment, hold, result.order.id);
+      return result;
     }
 
     // The hold already lost this exact race — some other caller converted it
@@ -694,7 +727,16 @@ export class CheckoutService {
     // contention, and losing it is not an error for a dual confirmation path.
     if (hold.status === 'converted' && hold.convertedOrderId) {
       const convertedOrder = await this.deps.repositories.orders.getById(hold.convertedOrderId);
-      if (convertedOrder) return this.completeFulfilment(convertedOrder, hold);
+      if (convertedOrder) {
+        if (_verifiedPayment) {
+          this.assertProviderCaptureMatchesHold(_verifiedPayment, hold, paymentIntentId);
+          await this.recordProviderCapture(_verifiedPayment, hold, null);
+        }
+        const result = await this.completeFulfilment(convertedOrder, hold);
+        if (_verifiedPayment)
+          await this.recordProviderCapture(_verifiedPayment, hold, result.order.id);
+        return result;
+      }
     }
     // A hold can be past its TTL (or already released by the sweep) by the time
     // a payment lands — the guest was inside the provider's checkout when it
@@ -728,7 +770,7 @@ export class CheckoutService {
     // route and signature verification at the redirect route authenticate
     // *who* is calling; this authenticates *what actually happened* with the
     // money, which is a separate and equally required check (D-022).
-    const verified = await this.deps.paymentProvider.getPayment(paymentId);
+    const verified = _verifiedPayment ?? (await this.deps.paymentProvider.getPayment(paymentId));
     if (!verified) {
       throw new InvalidOperationError(`Payment ${paymentId} was not found with the provider`);
     }
@@ -750,6 +792,8 @@ export class CheckoutService {
         `Payment currency ${verified.currency} does not match hold currency ${hold.pricing.currency}`,
       );
     }
+
+    await this.recordProviderCapture(verified, hold, null);
 
     // Captured after the hold lapsed: honour the payment if the seats are still
     // free (the order is built from the frozen hold, so the guest gets exactly
@@ -830,7 +874,65 @@ export class CheckoutService {
       throw error;
     }
 
-    return this.completeFulfilment(order, hold);
+    const result = await this.completeFulfilment(order, hold);
+    await this.recordProviderCapture(verified, hold, result.order.id);
+    return result;
+  }
+
+  private assertProviderCaptureMatchesHold(
+    verified: PaymentVerificationResponse,
+    hold: CartReservation,
+    providerOrderId: string,
+  ): void {
+    if (!verified.captured)
+      throw new InvalidOperationError(`Payment ${verified.paymentId} has not been captured`);
+    if (verified.orderId !== providerOrderId || providerOrderId !== hold.providerOrderId) {
+      throw new InvalidOperationError('Payment was not made against this hold');
+    }
+    if (verified.amountPaise !== hold.pricing.grandTotalPaise) {
+      throw new InvalidOperationError('Payment amount does not match hold total');
+    }
+    if (verified.currency !== undefined && verified.currency !== hold.pricing.currency) {
+      throw new InvalidOperationError('Payment currency does not match hold currency');
+    }
+  }
+
+  private async recordProviderCapture(
+    verified: PaymentVerificationResponse,
+    hold: CartReservation,
+    orderId: EntityId | null,
+  ): Promise<void> {
+    const existing = await this.deps.repositories.providerPayments.findByPaymentId(
+      verified.paymentId,
+    );
+    if (existing) {
+      if (
+        existing.providerOrderId !== hold.providerOrderId ||
+        existing.capturedPaise !== verified.amountPaise ||
+        existing.currency !== (verified.currency ?? hold.pricing.currency) ||
+        (orderId !== null && existing.orderId !== null && existing.orderId !== orderId)
+      ) {
+        throw new InvalidOperationError('Provider payment record conflicts with verified capture');
+      }
+      if (orderId === null || existing.orderId === orderId) return;
+    }
+
+    const receivedAt = this.deps.config.clock.now();
+    await this.providerPayments.recordEvent(
+      {
+        type: 'captured',
+        paymentId: verified.paymentId,
+        providerOrderId: hold.providerOrderId ?? null,
+        orderId,
+        correlated: true,
+        amountPaise: verified.amountPaise,
+        currency: verified.currency ?? hold.pricing.currency,
+        feePaise: existing?.feePaise ?? verified.feePaise ?? 0,
+        taxOnFeePaise: existing?.taxOnFeePaise ?? verified.taxOnFeePaise ?? 0,
+        occurredAt: existing?.capturedAt ?? receivedAt.toISOString(),
+      },
+      { trustedIngestion: 'internal_provider_response', receivedAt },
+    );
   }
 
   /** Read-only, owner-scoped source of truth for reload/lost-callback recovery. */
@@ -872,6 +974,26 @@ export class CheckoutService {
       return { ...base, status: 'refunded', orderId: null };
     }
     if (providerPayment?.processingState === 'requires_support') {
+      await this.deps.outbox.append(
+        domainEvent({
+          id: deterministicDomainEventId(
+            'payment.support_required',
+            providerPayment.id,
+            String(providerPayment.version),
+          ),
+          type: 'payment.support_required',
+          aggregateId: providerPayment.id,
+          organizationId: hold.organizationId,
+          actorId: SYSTEM_ACTOR.userId,
+          payload: {
+            paymentId: providerPayment.id,
+            holdId: hold.id,
+            organizationId: hold.organizationId,
+            stateVersion: providerPayment.version,
+          },
+          occurredAt: this.deps.config.clock.now().getTime(),
+        }),
+      );
       return { ...base, status: 'requires_support', orderId: null };
     }
     if (providerPayment?.capturedPaise) {
@@ -881,6 +1003,45 @@ export class CheckoutService {
       return { ...base, status: 'expired', orderId: null };
     }
     return { ...base, status: 'pending', orderId: null };
+  }
+
+  /**
+   * Reconcile a captured provider payment when the browser redirect callback
+   * was lost. The caller must own the hold; provider capture is re-read from
+   * Razorpay before the normal idempotent fulfillment path is invoked.
+   */
+  async reconcilePaymentRecovery(
+    actor: ActorContext,
+    holdId: EntityId,
+  ): Promise<PaymentRecoveryStatus> {
+    const hold = await this.deps.repositories.cartReservations.getById(holdId);
+    if (!hold || !this.actsForHold(actor, hold)) throw new NotFoundError('hold', holdId);
+
+    const current = await this.getPaymentRecoveryStatus(actor, holdId);
+    if (current.status === 'fulfilled' || current.status === 'refunded') return current;
+    if (!hold.providerOrderId) return current;
+
+    const recorded = await this.deps.repositories.providerPayments.findByProviderOrderId(
+      hold.providerOrderId,
+    );
+    if (!recorded || recorded.capturedPaise <= 0) return current;
+
+    // A persisted webhook fact is a reconciliation hint, not authority to
+    // issue tickets. Confirm capture and its order/amount/currency with the
+    // provider before entering the same idempotent fulfillment path as the
+    // signed webhook and redirect callback.
+    const verified = await this.deps.paymentProvider.getPayment(recorded.id);
+    if (!verified?.captured) return current;
+
+    await this.confirmPayment({
+      actor,
+      paymentId: verified.paymentId,
+      paymentIntentId: hold.providerOrderId,
+      holdId,
+      _idempotencyKey: `recovery:${verified.paymentId}`,
+      _verifiedPayment: verified,
+    });
+    return this.getPaymentRecoveryStatus(actor, holdId);
   }
 
   /**
@@ -1005,6 +1166,18 @@ export class CheckoutService {
   ): Promise<{ order: Order; entitlements: Entitlement[] }> {
     const repos = this.deps.repositories;
 
+    const event = await repos.events.getById(order.eventId);
+    if (event?.status === 'cancelled') {
+      // Captured money is preserved as an order, but a cancellation that won
+      // the race must enqueue the approval-gated refund before any usable
+      // admission right is issued.
+      await this.ensureOrderFulfilledEvent(order);
+      return {
+        order: (await repos.orders.getById(order.id)) ?? order,
+        entitlements: await repos.entitlements.getByOrderId(order.id),
+      };
+    }
+
     if (hold.status !== 'converted') {
       await repos.cartReservations.convertToOrder(hold.id, order.id);
     }
@@ -1034,7 +1207,23 @@ export class CheckoutService {
     // `recordTicketSale` is idempotent per orderId, so repeating it is a no-op.
     await this.recordSettlement(order);
 
-    return { order, entitlements: await repos.entitlements.getByOrderId(order.id) };
+    const entitlements = await repos.entitlements.getByOrderId(order.id);
+    await this.ensureOrderFulfilledEvent(order);
+    return { order, entitlements };
+  }
+
+  private async ensureOrderFulfilledEvent(order: Order): Promise<void> {
+    await this.deps.outbox.append(
+      domainEvent({
+        id: deterministicDomainEventId('order.fulfilled', order.id),
+        type: 'order.fulfilled',
+        aggregateId: order.id,
+        organizationId: order.organizationId,
+        actorId: order.userId ?? SYSTEM_ACTOR.userId,
+        payload: { orderId: order.id, eventId: order.eventId },
+        occurredAt: this.deps.config.clock.now().getTime(),
+      }),
+    );
   }
 
   private async claimPromoRedemption(

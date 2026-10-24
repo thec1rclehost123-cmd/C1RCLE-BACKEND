@@ -5,13 +5,14 @@ import {
   paginationQuerySchema,
   versionHeaderSchema,
   eventDtoSchema,
+  eventOperationsDtoSchema,
+  organizationEventListResponseSchema,
   promoterAssignedEventDtoSchema,
   updateEventSchema,
   cancelEventSchema,
   posterUploadUrlRequestSchema,
   posterUploadUrlDtoSchema,
   eventPreviewDtoSchema,
-  paginatedSchema,
 } from '@c1rcle/contracts/client';
 import { z } from 'zod';
 
@@ -64,6 +65,7 @@ const createEventBody = z
     description: z.string().max(20000).optional(),
     imageUrl: z.url().nullable().optional(),
     venueId: opaqueIdSchema,
+    slotRequestId: opaqueIdSchema.optional(),
     startAt: z.iso.datetime(),
     endAt: z.iso.datetime().nullable().optional(),
     tags: z.array(z.string().min(1).max(40)).max(50).optional(),
@@ -92,7 +94,7 @@ const readHeaders = z.looseObject({
   'x-organization-id': opaqueIdSchema,
 });
 
-const eventListSchema = paginatedSchema(eventDtoSchema);
+const eventListSchema = organizationEventListResponseSchema;
 const assignedEventListSchema = z.array(promoterAssignedEventDtoSchema);
 
 export default async function partnerEventRoutes(fastify: FastifyInstance) {
@@ -162,11 +164,14 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
       const query = request.query as z.infer<typeof paginationQuerySchema>;
       const actor = services.actor(request);
       if (requirePathOrg(reply, request, actor, organizationId) === undefined) return reply;
-      const page = await services.events.list(actor, {
+      const page = await services.events.listWithOperations(actor, {
         limit: query.limit,
         cursor: query.cursor ?? null,
       });
-      const items = page.items.map(eventToDto);
+      const items = page.items.map(({ event, ...operations }) => ({
+        ...eventToDto(event),
+        ...operations,
+      }));
       const payload = {
         items,
         pageInfo: {
@@ -174,6 +179,7 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
           pageSize: query.limit,
           total: page.total,
           hasNextPage: page.nextCursor !== null,
+          nextCursor: page.nextCursor,
         },
       };
       const validated = validateV2Response(reply, request, eventListSchema, payload);
@@ -198,11 +204,19 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
     async (request, reply) => {
       const { eventId } = request.params as z.infer<typeof eventIdParam>;
       const actor = services.actor(request);
-      const event = await services.events.get(actor, eventId).catch((error: unknown) => {
-        return mapDomainError(reply, request, eventId, error, { hideForbidden: true });
-      });
+      const event = await services.events
+        .getWithOperations(actor, eventId)
+        .catch((error: unknown) => {
+          return mapDomainError(reply, request, eventId, error, { hideForbidden: true });
+        });
       if (event === undefined) return reply;
-      const validated = validateV2Response(reply, request, eventDtoSchema, eventToDto(event));
+      const validated = validateV2Response(reply, request, eventOperationsDtoSchema, {
+        ...eventToDto(event.event),
+        capacity: event.capacity,
+        venueName: event.venueName,
+        ticketsSold: event.ticketsSold,
+        salesCountComplete: event.salesCountComplete,
+      });
       if (validated === undefined) return reply;
       return reply.send(validated);
     },
@@ -238,6 +252,7 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
         run: async () => {
           const event = await services.events.create(actor, {
             venueId: body.venueId,
+            slotRequestId: body.slotRequestId ?? null,
             title: body.title,
             summary: body.summary,
             description: body.description,

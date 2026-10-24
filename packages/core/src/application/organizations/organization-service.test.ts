@@ -11,6 +11,7 @@ import {
 import { FormatCheckVerificationProvider } from '../../domain/ports/verification.js';
 import { MemoryAdminAuditRepository } from '../../infrastructure/memory/memory-audit-repository.js';
 import { MemoryOutboxStore } from '../../infrastructure/memory/memory-outbox-store.js';
+import { MemoryEmailDeliveryRepository } from '../../infrastructure/memory/memory-email-delivery-repository.js';
 import { buildRepositories } from '../../infrastructure/utils.js';
 import { noopLogger } from '../../telemetry/logger.js';
 import { InventoryService } from '../inventory/inventory-service.js';
@@ -85,6 +86,7 @@ function makeDeps(
     config,
     logger: noopLogger,
     outbox: new MemoryOutboxStore(),
+    emailDeliveries: new MemoryEmailDeliveryRepository(),
     adminAudit: new MemoryAdminAuditRepository(),
     verification: new FormatCheckVerificationProvider(),
     objectStorage: new EchoObjectStorage(),

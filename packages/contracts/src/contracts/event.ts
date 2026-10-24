@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { opaqueIdSchema } from './shared.js';
+import { opaqueIdSchema, pageInfoSchema } from './shared.js';
 
 /**
  * ─── Event + Catalog Contracts ────────────────────────────────────────────────
@@ -59,6 +59,21 @@ export const eventDtoSchema = z.object({
 });
 export type EventDto = z.infer<typeof eventDtoSchema>;
 
+/** Partner event list includes the cursor needed to continue tenant pagination. */
+export const eventOperationsDtoSchema = eventDtoSchema.extend({
+  capacity: z.number().int().positive().nullable(),
+  venueName: z.string().nullable(),
+  ticketsSold: z.number().int().nonnegative(),
+  salesCountComplete: z.boolean(),
+});
+export type EventOperationsDto = z.infer<typeof eventOperationsDtoSchema>;
+
+export const organizationEventListResponseSchema = z.object({
+  items: z.array(eventOperationsDtoSchema),
+  pageInfo: pageInfoSchema.extend({ nextCursor: opaqueIdSchema.nullable() }),
+});
+export type OrganizationEventListResponse = z.infer<typeof organizationEventListResponseSchema>;
+
 export const eventPreviewDtoSchema = z.object({
   event: eventDtoSchema,
   isPublic: z.boolean(),
@@ -67,6 +82,7 @@ export type EventPreviewDto = z.infer<typeof eventPreviewDtoSchema>;
 
 export const createEventSchema = z.object({
   venueId: opaqueIdSchema,
+  slotRequestId: opaqueIdSchema.optional(),
   title: z.string().min(1).max(200),
   summary: z.string().max(1000).optional(),
   description: z.string().max(20_000).optional(),
@@ -131,7 +147,7 @@ export type UpdateEventInput = z.infer<typeof updateEventSchema>;
 
 export const cancelEventSchema = z
   .object({
-    reason: z.string().min(1).max(1000),
+    reason: z.string().trim().min(1).max(1000),
   })
   .strict();
 export type CancelEventInput = z.infer<typeof cancelEventSchema>;

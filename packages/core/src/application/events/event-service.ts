@@ -3,6 +3,7 @@ import {
   VersionConflictError,
   InvalidOperationError,
 } from '../../domain/errors.js';
+import { deterministicDomainEventId, domainEvent } from '../../domain/events.js';
 import {
   createEvent,
   transitionEvent,
@@ -16,6 +17,7 @@ import {
 import { requireOrgAccess, emit } from '../context.js';
 
 import type { EntityId } from '../../domain/identity.js';
+import type { SlotRequest } from '../../domain/models/venue.js';
 import type { EventRepository, PaginationQuery } from '../../domain/ports/repositories.js';
 import type { ActorContext, ServiceDeps } from '../context.js';
 
@@ -29,6 +31,7 @@ export interface CreateEventCommand {
   endAt?: string | null;
   tags?: string[];
   compensation?: EventCompensation | null;
+  slotRequestId?: EntityId | null;
 }
 
 export interface UpdateEventCommand {
@@ -73,8 +76,100 @@ export class EventService {
 
   async create(actor: ActorContext, command: CreateEventCommand): Promise<Event> {
     await this.assertVenueAccess(actor, command.venueId);
+    const isHost = actor.capabilities.includes('host');
+    let acceptedRequest: SlotRequest | null = null;
+    if (isHost) {
+      if (!command.slotRequestId) {
+        throw new InvalidOperationError(
+          'Hosts must create events from an accepted Venue slot request',
+        );
+      }
+      acceptedRequest = await this.deps.repositories.slotRequests.getById(command.slotRequestId);
+      if (
+        !acceptedRequest ||
+        acceptedRequest.hostId !== actor.organizationId ||
+        acceptedRequest.venueId !== command.venueId ||
+        acceptedRequest.status !== 'accepted' ||
+        !acceptedRequest.slotId
+      ) {
+        throw new InvalidOperationError(
+          'The accepted Venue slot request is unavailable for this Host',
+        );
+      }
+      const slot = await this.deps.repositories.venueSlots.getSlotById(acceptedRequest.slotId);
+      const start = Date.parse(command.startAt);
+      const end = command.endAt ? Date.parse(command.endAt) : NaN;
+      if (
+        !slot ||
+        slot.status !== 'booked' ||
+        slot.slotRequestId !== acceptedRequest.id ||
+        slot.requestingHostId !== actor.organizationId ||
+        !Number.isFinite(start) ||
+        !Number.isFinite(end) ||
+        start < Date.parse(slot.startTime) ||
+        end > Date.parse(slot.endTime) ||
+        end <= start
+      ) {
+        throw new InvalidOperationError(
+          'Event date and time must fit within the accepted Venue slot',
+        );
+      }
+      if (acceptedRequest.eventId) {
+        const existingEvent = await this.repo.getById(acceptedRequest.eventId);
+        if (existingEvent) {
+          const sameCreateCommand =
+            existingEvent.organizationId === actor.organizationId &&
+            existingEvent.venueId === command.venueId &&
+            existingEvent.title === command.title &&
+            existingEvent.summary === (command.summary ?? '') &&
+            existingEvent.description === (command.description ?? '') &&
+            existingEvent.imageUrl === (command.imageUrl ?? null) &&
+            existingEvent.startAt === command.startAt &&
+            existingEvent.endAt === (command.endAt ?? null) &&
+            JSON.stringify(existingEvent.tags) === JSON.stringify(command.tags ?? []) &&
+            JSON.stringify(existingEvent.compensation) ===
+              JSON.stringify(command.compensation ?? null);
+          if (sameCreateCommand) return existingEvent;
+          throw new InvalidOperationError(
+            'The accepted Venue slot request is unavailable for this Host',
+          );
+        }
+        // A prior create may have claimed the request then failed before the
+        // event save. Reuse its ID below so the accepted reservation can recover.
+      }
+      const overlappingEvents = await this.repo.listByVenue(command.venueId, {
+        cursor: null,
+        limit: 1000,
+      });
+      if (
+        overlappingEvents.items.some(
+          (event) =>
+            event.status !== 'cancelled' &&
+            event.endAt &&
+            start < Date.parse(event.endAt) &&
+            end > Date.parse(event.startAt),
+        )
+      ) {
+        throw new InvalidOperationError('The accepted Venue slot conflicts with another event');
+      }
+    } else if (command.slotRequestId) {
+      throw new InvalidOperationError('Only a Host can create an event from a Host slot request');
+    }
+    if (command.endAt) {
+      const overlappingSlots = await this.deps.repositories.venueSlots.listOverlappingSlots(
+        command.venueId,
+        command.startAt,
+        command.endAt,
+      );
+      const conflictingSlot = overlappingSlots.find(
+        (slot) => slot.status !== 'cancelled' && slot.id !== acceptedRequest?.slotId,
+      );
+      if (conflictingSlot) {
+        throw new InvalidOperationError('The event conflicts with a Venue calendar slot');
+      }
+    }
     const event = createEvent({
-      id: this.deps.config.ids(),
+      id: acceptedRequest?.eventId ?? this.deps.config.ids(),
       organizationId: actor.organizationId,
       venueId: command.venueId,
       title: command.title,
@@ -87,6 +182,13 @@ export class EventService {
       compensation: command.compensation ?? null,
       now: this.deps.config.clock.now(),
     });
+    if (acceptedRequest) {
+      await this.deps.repositories.slotRequests.claimAcceptedSlotEvent(
+        acceptedRequest.id,
+        actor.organizationId,
+        event.id,
+      );
+    }
     await this.repo.save(event);
     await emit(this.deps, actor, event.id, 'event.created', {
       title: event.title,
@@ -150,6 +252,71 @@ export class EventService {
     return this.repo.listByOrganization(actor.organizationId, query);
   }
 
+  /** Bounded tenant-scoped operations view for the partner event list. */
+  async listWithOperations(actor: ActorContext, query: PaginationQuery) {
+    requireOrgAccess(actor, actor.organizationId);
+    const page = await this.repo.listByOrganization(actor.organizationId, query);
+    const [orders, venues] = await Promise.all([
+      this.deps.repositories.orders.listByOrganization(actor.organizationId, {
+        cursor: null,
+        limit: 1000,
+      }),
+      this.deps.repositories.venues.getByIds([
+        ...new Set(page.items.flatMap((event) => (event.venueId ? [event.venueId] : []))),
+      ]),
+    ]);
+    const soldByEvent = new Map<EntityId, number>();
+    for (const order of orders.items) {
+      if (!['paid', 'refund_requested', 'refunded'].includes(order.status)) continue;
+      soldByEvent.set(
+        order.eventId,
+        (soldByEvent.get(order.eventId) ?? 0) +
+          order.lines.reduce((sum, line) => sum + line.quantity, 0),
+      );
+    }
+    const venueNames = new Map(venues.map((venue) => [venue.id, venue.public.name]));
+    const salesCountComplete = orders.nextCursor === null;
+    return {
+      ...page,
+      items: page.items.map((event) => ({
+        event,
+        capacity: event.capacity,
+        venueName: event.venueId ? (venueNames.get(event.venueId) ?? null) : null,
+        ticketsSold: soldByEvent.get(event.id) ?? 0,
+        salesCountComplete,
+      })),
+    };
+  }
+
+  /** Tenant-scoped event detail with the same bounded sales evidence as the list. */
+  async getWithOperations(actor: ActorContext, eventId: EntityId) {
+    const event = await this.fetchOwned(actor, eventId);
+    const [orders, venues] = await Promise.all([
+      this.deps.repositories.orders.listByOrganization(actor.organizationId, {
+        cursor: null,
+        limit: 1000,
+      }),
+      event.venueId ? this.deps.repositories.venues.getByIds([event.venueId]) : Promise.resolve([]),
+    ]);
+    const ticketsSold = orders.items
+      .filter(
+        (order) =>
+          order.eventId === event.id &&
+          ['paid', 'refund_requested', 'refunded'].includes(order.status),
+      )
+      .reduce(
+        (total, order) => total + order.lines.reduce((sum, line) => sum + line.quantity, 0),
+        0,
+      );
+    return {
+      event,
+      capacity: event.capacity,
+      venueName: venues[0]?.public.name ?? null,
+      ticketsSold,
+      salesCountComplete: orders.nextCursor === null,
+    };
+  }
+
   async update(actor: ActorContext, command: UpdateEventCommand): Promise<Event> {
     const event = await this.fetchOwned(actor, command.eventId);
     if (command.expectedVersion !== null && event.version !== command.expectedVersion) {
@@ -158,8 +325,19 @@ export class EventService {
     const updated = updateEvent(event, command.changes, this.deps.config.clock.now());
     if (updated === event) return event;
     await this.repo.save(updated);
+    const materialChange =
+      event.title !== updated.title || event.startAt !== updated.startAt
+        ? {
+            eventVersion: updated.version,
+            previousTitle: event.title,
+            title: updated.title,
+            previousStartAt: event.startAt,
+            startAt: updated.startAt,
+          }
+        : null;
     await emit(this.deps, actor, updated.id, 'event.updated', {
       title: updated.title,
+      materialChange,
     });
     return updated;
   }
@@ -245,10 +423,24 @@ export class EventService {
   async cancel(actor: ActorContext, eventId: EntityId, reason: string): Promise<Event> {
     const event = await this.fetchOwned(actor, eventId);
     const updated = cancelEvent(event, reason, this.deps.config.clock.now());
-    await this.repo.save(updated);
-    await emit(this.deps, actor, updated.id, 'event.cancelled', {
-      title: updated.title,
-    });
+    if (updated !== event) await this.repo.save(updated);
+    // Stable identity turns a retry into an outbox repair if the process died
+    // after the event CAS but before enqueueing downstream cancellation work.
+    await this.deps.outbox.append(
+      domainEvent({
+        id: deterministicDomainEventId('event.cancelled', updated.id, String(updated.version)),
+        type: 'event.cancelled',
+        aggregateId: updated.id,
+        organizationId: updated.organizationId,
+        actorId: actor.userId,
+        payload: {
+          title: updated.title,
+          reason: updated.cancellationReason ?? reason,
+          eventVersion: updated.version,
+        },
+        occurredAt: this.deps.config.clock.now().getTime(),
+      }),
+    );
     return updated;
   }
 

@@ -2,6 +2,7 @@ import { compareAndSet } from './compare-and-set.js';
 import { paginateQuery, paginateUnordered } from './pagination.js';
 
 import type { EntityId } from '../../domain/identity.js';
+import { bookingReferenceForOrderId } from '../../domain/models/order.js';
 import type { Order, OrderStatus } from '../../domain/models/order.js';
 import type {
   OrderRepository,
@@ -28,6 +29,16 @@ export class FirestoreOrderRepository implements OrderRepository {
   async getById(orderId: EntityId): Promise<Order | null> {
     const snap = await this.collection.doc(orderId).get();
     const data = snap.data();
+    return data ? toOrder(data) : null;
+  }
+
+  async getByBookingReference(bookingReference: string): Promise<Order | null> {
+    const snap = await this.collection
+      .where('bookingReference', '==', bookingReference.toUpperCase())
+      .limit(1)
+      .get();
+    if (snap.empty) return null;
+    const data = snap.docs[0]?.data();
     return data ? toOrder(data) : null;
   }
 
@@ -59,7 +70,10 @@ export class FirestoreOrderRepository implements OrderRepository {
 
   async listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Order>> {
     const base = this.collection.where('organizationId', '==', organizationId);
-    return paginateUnordered(base, query, toOrder);
+    // The deployed index supports this exact predicate/order pair. A recent
+    // partner order page must be globally newest-first; sorting only the first
+    // arbitrary Firestore page can silently omit the actual latest orders.
+    return paginateQuery(base.orderBy('createdAt', 'desc'), query, toOrder);
   }
 
   /**
@@ -131,6 +145,7 @@ export class FirestoreOrderRepository implements OrderRepository {
 function toDoc(order: Order): DocumentData {
   return {
     id: order.id,
+    bookingReference: order.bookingReference ?? bookingReferenceForOrderId(order.id),
     eventId: order.eventId,
     organizationId: order.organizationId,
     userId: order.userId,
@@ -153,6 +168,7 @@ function toDoc(order: Order): DocumentData {
     paidAt: order.paidAt,
     reservationExpiresAt: order.reservationExpiresAt,
     failureReason: order.failureReason,
+    eventCancellation: order.eventCancellation ?? null,
     refundedPaise: order.refundedPaise,
     appliedRefundRequestIds: order.appliedRefundRequestIds ?? [],
     version: order.version,
@@ -164,6 +180,9 @@ function toDoc(order: Order): DocumentData {
 function toOrder(data: DocumentData): Order {
   return {
     id: data.id as string,
+    bookingReference:
+      (data.bookingReference as string | undefined) ??
+      bookingReferenceForOrderId(data.id as string),
     eventId: data.eventId as string,
     organizationId: data.organizationId as string,
     userId: data.userId as string | null,
@@ -187,6 +206,7 @@ function toOrder(data: DocumentData): Order {
     paidAt: data.paidAt as string | null,
     reservationExpiresAt: data.reservationExpiresAt as string,
     failureReason: data.failureReason as string | null,
+    eventCancellation: (data.eventCancellation as Order['eventCancellation'] | undefined) ?? null,
     // Existing orders written before this field existed have no value —
     // they predate refunds, so zero is the correct read, not a guess.
     refundedPaise: (data.refundedPaise as number | undefined) ?? 0,

@@ -1,8 +1,10 @@
 import type { Logger } from '@c1rcle/core';
+import { PermanentEmailDeliveryError } from '@c1rcle/core/domain';
 import type {
   EmailSender,
   StaffInvitationEmail,
   OnboardingChangesRequestedEmailParams,
+  TransactionalEmail,
 } from '@c1rcle/core/domain';
 
 /**
@@ -207,6 +209,48 @@ export class ResendEmailSender implements EmailSender {
       const errorData = (await response.json().catch(() => ({}))) as { message?: string };
       throw new Error(errorData.message ?? 'Unable to send notification email.');
     }
+  }
+
+  async sendTransactionalEmail(
+    message: TransactionalEmail,
+  ): Promise<{ providerMessageId: string }> {
+    if (!this.apiKey) {
+      if (this.nodeEnv === 'production') throw new Error('Email provider not configured');
+      this.logger.info('dev_email_transactional', {
+        idempotencyKey: message.idempotencyKey,
+        subject: message.subject,
+      });
+      return { providerMessageId: `dev-${message.idempotencyKey}` };
+    }
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        'Content-Type': 'application/json',
+        'Idempotency-Key': message.idempotencyKey,
+      },
+      body: JSON.stringify({
+        from: 'noreply@thec1rcle.com',
+        to: message.to,
+        subject: message.subject,
+        html: message.html,
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) {
+      if (
+        response.status >= 400 &&
+        response.status < 500 &&
+        ![408, 409, 429].includes(response.status)
+      ) {
+        throw new PermanentEmailDeliveryError();
+      }
+      throw new Error('Email provider temporary rejection');
+    }
+    const result = (await response.json()) as { id?: unknown };
+    if (typeof result.id !== 'string' || !result.id)
+      throw new Error('Email provider response missing message id');
+    return { providerMessageId: result.id };
   }
 }
 

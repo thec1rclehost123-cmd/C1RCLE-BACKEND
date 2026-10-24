@@ -17,6 +17,7 @@ import {
   MemoryVerificationAttemptRepository,
 } from '../../infrastructure/memory/memory-onboarding-repository.js';
 import { MemoryOutboxStore } from '../../infrastructure/memory/memory-outbox-store.js';
+import { MemoryEmailDeliveryRepository } from '../../infrastructure/memory/memory-email-delivery-repository.js';
 import {
   MemoryCartReservationRepository,
   MemoryEntitlementRepository,
@@ -118,6 +119,7 @@ function buildDeps() {
     config,
     logger: noopLogger,
     outbox: new MemoryOutboxStore(),
+    emailDeliveries: new MemoryEmailDeliveryRepository(),
     adminAudit: new MemoryAdminAuditRepository(),
     verification: new FormatCheckVerificationProvider(),
     objectStorage: new EchoObjectStorage(),

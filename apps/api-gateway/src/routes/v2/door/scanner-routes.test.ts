@@ -442,6 +442,31 @@ describe('POST /door/sessions', () => {
 });
 
 describe('POST /door/check-ins', () => {
+  it('refuses admission after the event is cancelled without spending the ticket', async () => {
+    const token = await scannerToken();
+    const entitlement = await seedEntitlement('ENT-cancelled-event');
+    const eventRepository = services.repos().events as unknown as {
+      events: Map<string, Record<string, unknown>>;
+    };
+    const original = eventRepository.events.get(EVENT_ID);
+    if (!original) throw new Error('missing seeded event');
+    eventRepository.events.set(EVENT_ID, {
+      ...original,
+      status: 'cancelled',
+      isPublic: false,
+      cancellationReason: 'weather',
+    });
+
+    try {
+      const response = await scan(token, entitlement.id);
+      expect(response.statusCode, response.body).toBe(400);
+      expect(response.json()).toMatchObject({ code: 'validation' });
+      expect((await services.repos().entitlements.findById(entitlement.id))?.scanCount).toBe(0);
+    } finally {
+      eventRepository.events.set(EVENT_ID, original);
+    }
+  });
+
   it('admits a valid ticket and actually spends the admission', async () => {
     const token = await scannerToken();
     const entitlement = await seedEntitlement('ENT-admit-1');
@@ -745,6 +770,28 @@ describe('GET /tickets/:ticketId/qr', () => {
     expect(response.json().refreshIntervalSec).toBe(30);
     expect(response.headers['cache-control']).toBe('no-store');
   });
+
+  it.each([
+    ['void', { status: 'void' as const }],
+    [
+      'refund-locked',
+      { refundLock: { refundRequestId: 'REF-qr', frozenAt: new Date().toISOString() } },
+    ],
+  ])(
+    'does not mint a QR for an authorized holder whose ticket is %s',
+    async (_state, overrides) => {
+      const entitlement = await seedEntitlement(`ENT-qr-${_state}`, {
+        userId: 'guest_9',
+        ...overrides,
+      });
+      currentActor = { userId: 'guest_9', organizationId: '', role: 'member', capabilities: [] };
+
+      const response = await server.inject({ method: 'GET', url: `/tickets/${entitlement.id}/qr` });
+
+      expect(response.statusCode, response.body).toBe(409);
+      expect(response.json()).toMatchObject({ code: 'conflict', status: 409 });
+    },
+  );
 
   it('404s for a stranger who is neither the holder nor org staff', async () => {
     const entitlement = await seedEntitlement('ENT-qr-stranger', { userId: 'guest_9' });

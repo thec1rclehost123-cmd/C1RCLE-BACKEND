@@ -37,6 +37,22 @@ export interface OnboardingChangesRequestedEmailParams {
   note: string;
 }
 
+export interface TransactionalEmail {
+  to: string;
+  subject: string;
+  html: string;
+  /** Stable per logical message; passed through to the provider on retries. */
+  idempotencyKey: string;
+}
+
+/** Provider rejected a message permanently; retries will not fix its request. */
+export class PermanentEmailDeliveryError extends Error {
+  constructor() {
+    super('Email provider permanently rejected the message');
+    this.name = 'PermanentEmailDeliveryError';
+  }
+}
+
 export interface EmailSender {
   readonly name: string;
   sendOtpEmail(recipient: string, code: string): Promise<void>;
@@ -48,6 +64,7 @@ export interface EmailSender {
     recipient: string,
     params: OnboardingChangesRequestedEmailParams,
   ): Promise<void>;
+  sendTransactionalEmail?(message: TransactionalEmail): Promise<{ providerMessageId: string }>;
 }
 
 /**
@@ -83,5 +100,15 @@ export class LoggingEmailSender implements EmailSender {
       legalName: params.legalName,
       noteLength: params.note.length,
     });
+  }
+
+  async sendTransactionalEmail(
+    message: TransactionalEmail,
+  ): Promise<{ providerMessageId: string }> {
+    this.logger.info('dev_email_transactional', {
+      idempotencyKey: message.idempotencyKey,
+      subject: message.subject,
+    });
+    return { providerMessageId: `dev-${message.idempotencyKey}` };
   }
 }

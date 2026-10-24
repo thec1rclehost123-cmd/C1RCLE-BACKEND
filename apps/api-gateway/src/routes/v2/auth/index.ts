@@ -553,7 +553,13 @@ function toUnixMs(value: unknown): number {
 }
 
 function toUserDto(
-  user: { id: string; email: string; name: string; image?: string | null },
+  user: {
+    id: string;
+    email: string;
+    name: string;
+    image?: string | null;
+    role?: string | null;
+  },
   mustChangePassword: boolean,
 ): {
   id: string;
@@ -568,9 +574,12 @@ function toUserDto(
     email: user.email,
     displayName:
       user.name && user.name.length > 0 ? user.name : (user.email.split('@')[0] ?? 'User'),
-    // Phase 0 scope is partner-dashboard auth only; guest/admin auth are
-    // later phases (docs/roadmap/ROADMAP.md) and will need a real role source.
-    role: 'partner',
+    // Better Auth's persisted additional field is the platform-role source.
+    // Unknown or absent values must fail closed to the least-privileged role.
+    role:
+      user.role === 'partner' || user.role === 'admin' || user.role === 'guest'
+        ? user.role
+        : 'guest',
     // `avatarUrl` is `z.url().nullable()` — Better Auth's Firestore-backed
     // user record stores an unset image as `''`, not `null`/`undefined`, so
     // `?? null` alone let a non-URL empty string through and 500'd every

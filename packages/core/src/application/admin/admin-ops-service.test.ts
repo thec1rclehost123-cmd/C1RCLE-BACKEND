@@ -4,6 +4,8 @@ import { createCoreConfig, type CoreConfig } from '../../config/index.js';
 import { ForbiddenError } from '../../domain/errors.js';
 import { createPlatformAdmin, type AdminRole } from '../../domain/models/admin-authority.js';
 import { createPromoterAssignment } from '../../domain/models/event-catalog.js';
+import { createOrder } from '../../domain/models/order.js';
+import { calculatePricing } from '../../domain/models/pricing.js';
 import { LoggingEmailSender } from '../../domain/ports/email-sender.js';
 import { EchoObjectStorage } from '../../domain/ports/object-storage.js';
 import { MemoryPaymentProvider } from '../../domain/ports/payment-provider.js';
@@ -15,6 +17,7 @@ import {
 import { FormatCheckVerificationProvider } from '../../domain/ports/verification.js';
 import { MemoryAdminAuditRepository } from '../../infrastructure/memory/memory-audit-repository.js';
 import { MemoryOutboxStore } from '../../infrastructure/memory/memory-outbox-store.js';
+import { MemoryEmailDeliveryRepository } from '../../infrastructure/memory/memory-email-delivery-repository.js';
 import { buildRepositories } from '../../infrastructure/utils.js';
 import { noopLogger } from '../../telemetry/logger.js';
 import { InventoryService } from '../inventory/inventory-service.js';
@@ -27,6 +30,7 @@ import type {
   EventCatalogRepository,
   PlatformAdminRepository,
 } from '../../domain/ports/repositories.js';
+import type { TicketTier } from '../../domain/models/event-catalog.js';
 import type { MemoryUserAccountRepository } from '../../infrastructure/memory/memory-user-account-repository.js';
 import type { ServiceDeps } from '../context.js';
 
@@ -63,6 +67,7 @@ describe('AdminOperationsService — promoter & settings authority', () => {
       config,
       logger: noopLogger,
       outbox: new MemoryOutboxStore(),
+      emailDeliveries: new MemoryEmailDeliveryRepository(),
       adminAudit,
       verification: new FormatCheckVerificationProvider(),
       objectStorage: new EchoObjectStorage(),
@@ -217,5 +222,47 @@ describe('AdminOperationsService — promoter & settings authority', () => {
 
     const byEmail = await ops.globalLookup('admin_ops', 'guest@c1rcle.test');
     expect(byEmail).toContainEqual({ type: 'user', id: 'user_1', label: 'guest@c1rcle.test' });
+  });
+
+  it('globalLookup finds an order by its guest-safe booking reference', async () => {
+    const { deps, repositories } = makeDeps();
+    await seedAdmin(repositories.platformAdmins, 'admin_ops', 'ops');
+    const ticketTier: TicketTier = {
+      id: 'tier_1',
+      eventId: 'event_1',
+      organizationId: 'org_1',
+      name: 'General',
+      description: '',
+      entryType: 'general',
+      currency: 'INR',
+      priceInPaise: 100_000,
+      quantity: 10,
+      status: 'active',
+      salesStartAt: null,
+      salesEndAt: null,
+      maxPerOrder: null,
+      version: 1,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    };
+    const order = createOrder({
+      id: 'order_support_lookup',
+      eventId: 'event_1',
+      organizationId: 'org_1',
+      userId: 'user_1',
+      contact: { name: 'Guest', email: 'guest@example.com', phone: '9876543210' },
+      pricing: calculatePricing({ lines: [{ tier: ticketTier, quantity: 1 }] }),
+      now: new Date('2026-01-01T00:00:00.000Z'),
+    });
+    await repositories.orders.save(order);
+
+    const authority = new AdminAuthorityService(deps);
+    const ops = new AdminOperationsService(deps, authority);
+
+    await expect(ops.globalLookup('admin_ops', order.bookingReference!)).resolves.toContainEqual({
+      type: 'order',
+      id: order.id,
+      label: order.bookingReference,
+    });
   });
 });

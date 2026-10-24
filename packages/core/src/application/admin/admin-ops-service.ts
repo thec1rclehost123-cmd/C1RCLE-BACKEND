@@ -15,6 +15,7 @@ import {
   reinstateOrganization,
   suspendOrganization,
 } from '../../domain/models/organization.js';
+import { bookingReferenceForOrderId } from '../../domain/models/order.js';
 import { banUser, unbanUser } from '../../domain/models/user-ban.js';
 import { reinstateVenue, suspendVenue } from '../../domain/models/venue.js';
 
@@ -32,6 +33,7 @@ import type {
 import type { PlatformUser } from '../../domain/models/platform-user.js';
 import type { Venue } from '../../domain/models/venue.js';
 import type { AuditRequestMeta } from '../../domain/ports/audit.js';
+import type { EmailDelivery } from '../../domain/ports/email-delivery.js';
 import type { Page, PaginationQuery } from '../../domain/ports/repositories.js';
 import type { ServiceDeps } from '../context.js';
 
@@ -139,6 +141,15 @@ export class AdminOperationsService {
   async listOrders(adminUserId: EntityId, query: PaginationQuery): Promise<Page<Order>> {
     await this.authority.requireAdmin(adminUserId);
     return this.orders.listAll(query);
+  }
+
+  /** Safe communications evidence for support/admin investigations. */
+  async listEmailDeliveries(
+    adminUserId: EntityId,
+    aggregateId: EntityId,
+  ): Promise<EmailDelivery[]> {
+    await this.authority.requireAdmin(adminUserId);
+    return this.deps.emailDeliveries.listForAggregate(aggregateId, 50);
   }
 
   /**
@@ -806,7 +817,9 @@ export class AdminOperationsService {
   async globalLookup(
     adminUserId: EntityId,
     query: string,
-  ): Promise<{ type: 'venue' | 'event' | 'organization' | 'user'; id: EntityId; label: string }[]> {
+  ): Promise<
+    { type: 'venue' | 'event' | 'organization' | 'user' | 'order'; id: EntityId; label: string }[]
+  > {
     await this.authority.requireAdmin(adminUserId);
     const q = query.trim();
     if (q.length < 3) return [];
@@ -814,17 +827,21 @@ export class AdminOperationsService {
     // An email can never collide with an opaque entity id, so both lookups
     // run unconditionally rather than branching on `q`'s shape — cheap
     // (single-field-indexed) and matches v1's parallel by-id + by-email search.
-    const [venue, event, organization, userById, userByEmail] = await Promise.all([
-      this.venues.getById(q),
-      this.events.getById(q),
-      this.organizations.getById(q),
-      this.users.getById(q),
-      this.users.getByEmail(q),
-    ]);
+    const [venue, event, organization, userById, userByEmail, orderById, orderByReference] =
+      await Promise.all([
+        this.venues.getById(q),
+        this.events.getById(q),
+        this.organizations.getById(q),
+        this.users.getById(q),
+        this.users.getByEmail(q),
+        this.orders.getById(q),
+        this.orders.getByBookingReference(q),
+      ]);
     const user = userById ?? userByEmail;
+    const order = orderById ?? orderByReference;
 
     const results: {
-      type: 'venue' | 'event' | 'organization' | 'user';
+      type: 'venue' | 'event' | 'organization' | 'user' | 'order';
       id: EntityId;
       label: string;
     }[] = [];
@@ -833,6 +850,12 @@ export class AdminOperationsService {
     if (organization)
       results.push({ type: 'organization', id: organization.id, label: organization.name });
     if (user) results.push({ type: 'user', id: user.id, label: user.email });
+    if (order)
+      results.push({
+        type: 'order',
+        id: order.id,
+        label: order.bookingReference ?? bookingReferenceForOrderId(order.id),
+      });
     return results;
   }
 

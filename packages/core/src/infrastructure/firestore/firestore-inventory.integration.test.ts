@@ -9,6 +9,7 @@ import { PricingService } from '../../application/pricing/pricing-service.js';
 import { createCoreConfig } from '../../config/index.js';
 import { createTicketTier } from '../../domain/models/event-catalog.js';
 import { createEvent, transitionEvent } from '../../domain/models/event.js';
+import { MemoryOutboxStore } from '../memory/memory-outbox-store.js';
 import { MemoryEventRepository } from '../memory/memory-repositories.js';
 
 import { FirestoreCartReservationRepository } from './firestore-cart-reservation-repository.js';
@@ -87,6 +88,7 @@ describe.runIf(EMULATOR)('seat reservation (Firestore emulator)', () => {
 
     const deps = {
       config,
+      outbox: new MemoryOutboxStore(),
       pricing: new PricingService({ eventCatalog: catalog }),
       inventory: new InventoryService({
         eventCatalog: catalog,
