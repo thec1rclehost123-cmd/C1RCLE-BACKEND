@@ -1,3 +1,4 @@
+import { runGeneratedParityCases } from './cases-generated.mjs';
 import { runWireParityCases } from './cases-wire.mjs';
 
 /**
@@ -1806,4 +1807,7 @@ export async function runParityCases({
 
   /* ── money, tickets, door, sign-in, social (kept in a sibling file) ───────── */
   runWireParityCases({ agree });
+
+  /* ── every other exported schema: differential, generated from the backend ─── */
+  runGeneratedParityCases({ frontend, backend, checks, failures });
 }
