@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
 
 import { deterministicDomainEventId, domainEvent } from '../../domain/events.js';
+import { PermanentEmailDeliveryError } from '../../domain/ports/email-sender.js';
+
 import type { DomainEvent, EventPayloads } from '../../domain/events.js';
 import type { EntityId } from '../../domain/identity.js';
 import type { Order } from '../../domain/models/order.js';
-import { PermanentEmailDeliveryError } from '../../domain/ports/email-sender.js';
 import type { ServiceDeps } from '../context.js';
 
 const LEASE_MS = 60_000;
@@ -153,9 +154,10 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
     const payload = event.payload as { paymentId: string; holdId: EntityId; stateVersion: number };
     const hold = await deps.repositories.cartReservations.getById(payload.holdId);
     if (!hold) return null;
-    explicitRecipient =
-      hold.attendee?.email ||
-      (hold.userId ? await deps.userDirectory.getEmailById(hold.userId) : null);
+    explicitRecipient = hold.attendee?.email ?? null;
+    if (!explicitRecipient && hold.userId) {
+      explicitRecipient = await deps.userDirectory.getEmailById(hold.userId);
+    }
     if (!explicitRecipient || !isDeliverableRecipient(explicitRecipient)) return null;
     kind = 'payment_support_required';
     idempotencyKey = `payment-support:${payload.paymentId}:${payload.stateVersion}`;

@@ -1,8 +1,9 @@
+import { bookingReferenceForOrderId } from '../../domain/models/order.js';
+
 import { compareAndSet } from './compare-and-set.js';
 import { paginateQuery, paginateUnordered } from './pagination.js';
 
 import type { EntityId } from '../../domain/identity.js';
-import { bookingReferenceForOrderId } from '../../domain/models/order.js';
 import type { Order, OrderStatus } from '../../domain/models/order.js';
 import type {
   OrderRepository,

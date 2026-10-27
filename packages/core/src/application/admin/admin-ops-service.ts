@@ -10,12 +10,12 @@ import {
   adminResumeEvent,
   isPublicStatus,
 } from '../../domain/models/event.js';
+import { bookingReferenceForOrderId } from '../../domain/models/order.js';
 import {
   adjustPlatformFeePercent,
   reinstateOrganization,
   suspendOrganization,
 } from '../../domain/models/organization.js';
-import { bookingReferenceForOrderId } from '../../domain/models/order.js';
 import { banUser, unbanUser } from '../../domain/models/user-ban.js';
 import { reinstateVenue, suspendVenue } from '../../domain/models/venue.js';
 

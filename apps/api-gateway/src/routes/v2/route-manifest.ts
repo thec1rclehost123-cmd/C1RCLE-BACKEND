@@ -3,9 +3,9 @@ import { createV2Services } from '../../lib/v2-services.js';
 import authContextPlugin from '../../plugins/auth.js';
 
 import adminAnalyticsRoutes from './admin/analytics.js';
+import adminCommunicationRoutes from './admin/communications.js';
 import adminDirectoryRoutes from './admin/directory.js';
 import adminDisputeRoutes from './admin/disputes.js';
-import adminCommunicationRoutes from './admin/communications.js';
 import adminEventActionRoutes from './admin/event-actions.js';
 import adminRoutes from './admin/onboarding-review.js';
 import adminOrderRoutes from './admin/orders.js';

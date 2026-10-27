@@ -1,5 +1,6 @@
-import type { OrderDto } from '@c1rcle/contracts/client';
 import { bookingReferenceForOrderId } from '@c1rcle/core/domain';
+
+import type { OrderDto } from '@c1rcle/contracts/client';
 import type { Order } from '@c1rcle/core/domain';
 
 /**

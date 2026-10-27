@@ -2,14 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import { createCoreConfig } from '../../config/index.js';
 import { domainEvent } from '../../domain/events.js';
-import {
-  issueEntitlements,
-  releaseEntitlementRefundLock,
-} from '../../domain/models/entitlement.js';
+import { issueEntitlements } from '../../domain/models/entitlement.js';
 import { cancelEvent, createEvent, transitionEvent } from '../../domain/models/event.js';
 import { createRefundRequest, rejectRefundRequest } from '../../domain/models/refund-request.js';
-import { MemoryOutboxStore } from '../../infrastructure/memory/memory-outbox-store.js';
 import { MemoryAdminAuditRepository } from '../../infrastructure/memory/memory-audit-repository.js';
+import { MemoryOutboxStore } from '../../infrastructure/memory/memory-outbox-store.js';
 import { MemoryRefundRequestRepository } from '../../infrastructure/memory/memory-refund-request-repository.js';
 import {
   MemoryCartReservationRepository,
@@ -288,6 +285,9 @@ describe('EventCancellationService', () => {
     context.orders.orders.set(order.id, order);
     const entitlements = issueEntitlements({ order, now: NOW });
     const unrelatedRefundId = 'REF-other';
+    const firstEntitlement = entitlements[0];
+    const secondEntitlement = entitlements[1];
+    if (!firstEntitlement || !secondEntitlement) throw new Error('Expected two entitlements');
     context.refundRequests.requests.set(
       unrelatedRefundId,
       createRefundRequest({
@@ -300,14 +300,14 @@ describe('EventCancellationService', () => {
         hasRedeemedEntitlement: false,
         scope: 'ticket_lines',
         ticketLines: [{ tierId: 'tier_1', quantity: 1 }],
-        targetEntitlementIds: [entitlements[0]!.id],
+        targetEntitlementIds: [firstEntitlement.id],
         now: NOW,
       }),
     );
     const { freezeEntitlementForRefund } = await import('../../domain/models/entitlement.js');
     for (const entitlement of entitlements) {
       const stored =
-        entitlement.id === entitlements[0]!.id
+        entitlement.id === firstEntitlement.id
           ? freezeEntitlementForRefund(entitlement, unrelatedRefundId, NOW)
           : entitlement;
       context.entitlements.entitlements.set(stored.id, stored);
@@ -329,11 +329,11 @@ describe('EventCancellationService', () => {
 
     await context.service.handle(context.cancellation);
 
-    expect(await context.entitlements.getById(entitlements[0]!.id)).toMatchObject({
+    expect(await context.entitlements.getById(firstEntitlement.id)).toMatchObject({
       status: 'valid',
       refundLock: { refundRequestId: unrelatedRefundId },
     });
-    const other = await context.entitlements.getById(entitlements[1]!.id);
+    const other = await context.entitlements.getById(secondEntitlement.id);
     expect(other?.status).toBe('void');
   });
 });

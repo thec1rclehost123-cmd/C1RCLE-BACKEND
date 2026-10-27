@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { calculatePricing } from '../../domain/models/pricing.js';
 import { createTicketTier } from '../../domain/models/event-catalog.js';
 import { createOrder } from '../../domain/models/order.js';
+import { calculatePricing } from '../../domain/models/pricing.js';
 
 import { MemoryOrderRepository } from './memory-repositories.js';
 

@@ -158,7 +158,7 @@ export class EventCancellationService {
       (existingCancellationRefund !== null &&
         ['pending', 'approved', 'executing'].includes(existingCancellationRefund.status));
 
-    let order = markOrderEventCancelled(
+    const order = markOrderEventCancelled(
       initialOrder,
       { eventVersion, eventTitle, reason, lockForRefund: shouldRemainLocked },
       now,

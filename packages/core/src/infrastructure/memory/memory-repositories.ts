@@ -299,7 +299,13 @@ export class MemorySlotRequestRepository implements SlotRequestRepository {
       throw new Error('This Venue slot is not available to this Host');
     }
     if (this.requests.has(request.id)) throw new Error('Slot request already exists');
-    const pending = setVenueSlotRequestState(slot, 'pending', request.id, request.hostId, new Date(request.createdAt));
+    const pending = setVenueSlotRequestState(
+      slot,
+      'pending',
+      request.id,
+      request.hostId,
+      new Date(request.createdAt),
+    );
     const nextSlots = [...slots];
     nextSlots[index] = pending;
     slotRepo.slots.set(request.venueId, nextSlots);
@@ -320,11 +326,12 @@ export class MemorySlotRequestRepository implements SlotRequestRepository {
     if (!slot || slot.slotRequestId !== previous.id || slot.requestingHostId !== previous.hostId) {
       throw new Error('The Venue slot is no longer held by this request');
     }
-    const nextStatus = updated.status === 'accepted'
-      ? 'booked'
-      : updated.status === 'cancelled' && previous.status === 'accepted'
-        ? 'cancelled'
-        : 'open';
+    const nextStatus =
+      updated.status === 'accepted'
+        ? 'booked'
+        : updated.status === 'cancelled' && previous.status === 'accepted'
+          ? 'cancelled'
+          : 'open';
     const nextSlot = setVenueSlotRequestState(
       slot,
       nextStatus,
@@ -345,14 +352,22 @@ export class MemorySlotRequestRepository implements SlotRequestRepository {
   ): Promise<SlotRequest> {
     const request = this.requests.get(slotRequestId);
     if (!request || request.hostId !== hostId || request.status !== 'accepted' || !request.slotId) {
-      throw new InvalidOperationError('An accepted Host slot request is required to create this event');
+      throw new InvalidOperationError(
+        'An accepted Host slot request is required to create this event',
+      );
     }
     if (request.eventId && request.eventId !== eventId) {
       throw new InvalidOperationError('This accepted slot already has an event');
     }
-    const updated = request.eventId === eventId
-      ? request
-      : { ...request, eventId, version: request.version + 1, updatedAt: new Date().toISOString() };
+    const updated =
+      request.eventId === eventId
+        ? request
+        : {
+            ...request,
+            eventId,
+            version: request.version + 1,
+            updatedAt: new Date().toISOString(),
+          };
     this.requests.set(slotRequestId, updated);
     return updated;
   }

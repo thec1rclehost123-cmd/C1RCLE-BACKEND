@@ -1,5 +1,6 @@
-import type { Logger } from '@c1rcle/core';
 import { PermanentEmailDeliveryError } from '@c1rcle/core/domain';
+
+import type { Logger } from '@c1rcle/core';
 import type {
   EmailSender,
   StaffInvitationEmail,

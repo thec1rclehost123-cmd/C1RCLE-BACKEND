@@ -2,10 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import { createCoreConfig } from '../../config/index.js';
 import { domainEvent } from '../../domain/events.js';
+import { PermanentEmailDeliveryError } from '../../domain/ports/email-sender.js';
 import { MemoryEmailDeliveryRepository } from '../../infrastructure/memory/memory-email-delivery-repository.js';
 import { MemoryOutboxStore } from '../../infrastructure/memory/memory-outbox-store.js';
-import { PermanentEmailDeliveryError } from '../../domain/ports/email-sender.js';
 import { noopLogger } from '../../telemetry/logger.js';
+
 import { createTransactionalEmailConsumer } from './transactional-email-consumer.js';
 
 import type { ServiceDeps } from '../context.js';

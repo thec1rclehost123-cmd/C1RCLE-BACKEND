@@ -272,7 +272,7 @@ export function createVenueAvailabilitySlot(input: {
     status: 'open',
     capacityFor: null,
     timezone: input.timezone,
-    notes: input.notes?.trim() || null,
+    notes: input.notes?.trim() ? input.notes.trim() : null,
     visibleToHostIds: input.visibleToHostIds ?? null,
     slotRequestId: null,
     requestingHostId: null,

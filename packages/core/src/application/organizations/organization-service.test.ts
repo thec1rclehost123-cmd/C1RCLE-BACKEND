@@ -10,8 +10,8 @@ import {
 } from '../../domain/ports/staff-credentials.js';
 import { FormatCheckVerificationProvider } from '../../domain/ports/verification.js';
 import { MemoryAdminAuditRepository } from '../../infrastructure/memory/memory-audit-repository.js';
-import { MemoryOutboxStore } from '../../infrastructure/memory/memory-outbox-store.js';
 import { MemoryEmailDeliveryRepository } from '../../infrastructure/memory/memory-email-delivery-repository.js';
+import { MemoryOutboxStore } from '../../infrastructure/memory/memory-outbox-store.js';
 import { buildRepositories } from '../../infrastructure/utils.js';
 import { noopLogger } from '../../telemetry/logger.js';
 import { InventoryService } from '../inventory/inventory-service.js';

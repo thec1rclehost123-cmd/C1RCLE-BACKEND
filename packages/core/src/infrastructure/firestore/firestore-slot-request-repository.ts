@@ -1,11 +1,15 @@
-import { InvalidOperationError, SlotRequestNotFoundError, VersionConflictError } from '../../domain/errors.js';
+import {
+  InvalidOperationError,
+  SlotRequestNotFoundError,
+  VersionConflictError,
+} from '../../domain/errors.js';
 import { setVenueSlotRequestState } from '../../domain/models/venue.js';
 
 import { compareAndSet } from './compare-and-set.js';
 import { paginateQuery } from './pagination.js';
 
 import type { EntityId } from '../../domain/identity.js';
-import type { SlotRequest } from '../../domain/models/venue.js';
+import type { SlotRequest, VenueSlot } from '../../domain/models/venue.js';
 import type {
   SlotRequestRepository,
   Page,
@@ -127,7 +131,9 @@ export class FirestoreSlotRequestRepository implements SlotRequestRepository {
       if (!data) throw new SlotRequestNotFoundError(slotRequestId);
       const request = toSlotRequest(data);
       if (request.hostId !== hostId || request.status !== 'accepted' || !request.slotId) {
-        throw new InvalidOperationError('An accepted Host slot request is required to create this event');
+        throw new InvalidOperationError(
+          'An accepted Host slot request is required to create this event',
+        );
       }
       if (request.eventId && request.eventId !== eventId) {
         throw new InvalidOperationError('This accepted slot already has an event');
@@ -135,11 +141,24 @@ export class FirestoreSlotRequestRepository implements SlotRequestRepository {
       const slotRef = this.db.collection('v2_venue_slots').doc(request.slotId);
       const slotSnap = await tx.get(slotRef);
       const slotData = slotSnap.data();
-      if (!slotData || slotData.venueId !== request.venueId || slotData.status !== 'booked' || slotData.slotRequestId !== request.id || slotData.requestingHostId !== hostId) {
-        throw new InvalidOperationError('The accepted Venue slot is no longer reserved for this Host');
+      if (
+        !slotData ||
+        slotData.venueId !== request.venueId ||
+        slotData.status !== 'booked' ||
+        slotData.slotRequestId !== request.id ||
+        slotData.requestingHostId !== hostId
+      ) {
+        throw new InvalidOperationError(
+          'The accepted Venue slot is no longer reserved for this Host',
+        );
       }
       if (request.eventId === eventId) return request;
-      const updated = { ...request, eventId, version: request.version + 1, updatedAt: new Date().toISOString() };
+      const updated = {
+        ...request,
+        eventId,
+        version: request.version + 1,
+        updatedAt: new Date().toISOString(),
+      };
       tx.set(requestRef, toDoc(updated));
       return updated;
     });
@@ -150,11 +169,11 @@ function toDoc(request: SlotRequest): DocumentData {
   return { ...request };
 }
 
-function toVenueSlotDoc(slot: import('../../domain/models/venue.js').VenueSlot): DocumentData {
+function toVenueSlotDoc(slot: VenueSlot): DocumentData {
   return { ...slot };
 }
 
-function toVenueSlot(data: DocumentData): import('../../domain/models/venue.js').VenueSlot {
+function toVenueSlot(data: DocumentData): VenueSlot {
   return {
     id: data.id as string,
     venueId: data.venueId as string,
@@ -162,7 +181,7 @@ function toVenueSlot(data: DocumentData): import('../../domain/models/venue.js')
     startTime: data.startTime as string,
     endTime: data.endTime as string,
     recurring: data.recurring as boolean,
-    status: data.status as import('../../domain/models/venue.js').VenueSlot['status'],
+    status: data.status as VenueSlot['status'],
     capacityFor: (data.capacityFor as number | null) ?? null,
     timezone: (data.timezone as string | null) ?? null,
     notes: (data.notes as string | null) ?? null,

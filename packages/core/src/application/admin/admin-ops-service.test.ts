@@ -16,8 +16,8 @@ import {
 } from '../../domain/ports/staff-credentials.js';
 import { FormatCheckVerificationProvider } from '../../domain/ports/verification.js';
 import { MemoryAdminAuditRepository } from '../../infrastructure/memory/memory-audit-repository.js';
-import { MemoryOutboxStore } from '../../infrastructure/memory/memory-outbox-store.js';
 import { MemoryEmailDeliveryRepository } from '../../infrastructure/memory/memory-email-delivery-repository.js';
+import { MemoryOutboxStore } from '../../infrastructure/memory/memory-outbox-store.js';
 import { buildRepositories } from '../../infrastructure/utils.js';
 import { noopLogger } from '../../telemetry/logger.js';
 import { InventoryService } from '../inventory/inventory-service.js';
@@ -26,11 +26,11 @@ import { PricingService } from '../pricing/pricing-service.js';
 import { AdminAuthorityService } from './admin-authority-service.js';
 import { AdminOperationsService } from './admin-ops-service.js';
 
+import type { TicketTier } from '../../domain/models/event-catalog.js';
 import type {
   EventCatalogRepository,
   PlatformAdminRepository,
 } from '../../domain/ports/repositories.js';
-import type { TicketTier } from '../../domain/models/event-catalog.js';
 import type { MemoryUserAccountRepository } from '../../infrastructure/memory/memory-user-account-repository.js';
 import type { ServiceDeps } from '../context.js';
 
@@ -259,7 +259,8 @@ describe('AdminOperationsService — promoter & settings authority', () => {
     const authority = new AdminAuthorityService(deps);
     const ops = new AdminOperationsService(deps, authority);
 
-    await expect(ops.globalLookup('admin_ops', order.bookingReference!)).resolves.toContainEqual({
+    if (!order.bookingReference) throw new Error('Expected a booking reference');
+    await expect(ops.globalLookup('admin_ops', order.bookingReference)).resolves.toContainEqual({
       type: 'order',
       id: order.id,
       label: order.bookingReference,

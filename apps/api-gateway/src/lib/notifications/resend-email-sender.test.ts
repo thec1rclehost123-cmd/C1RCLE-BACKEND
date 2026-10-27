@@ -1,7 +1,7 @@
+import { noopLogger } from '@c1rcle/core';
+import { PermanentEmailDeliveryError } from '@c1rcle/core/domain';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { PermanentEmailDeliveryError } from '@c1rcle/core/domain';
-import { noopLogger } from '@c1rcle/core';
 import { ResendEmailSender } from './resend-email-sender.js';
 
 describe('ResendEmailSender transactional delivery', () => {
