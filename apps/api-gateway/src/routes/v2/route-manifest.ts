@@ -3,6 +3,7 @@ import { createV2Services } from '../../lib/v2-services.js';
 import authContextPlugin from '../../plugins/auth.js';
 
 import adminAnalyticsRoutes from './admin/analytics.js';
+import adminCommunicationRoutes from './admin/communications.js';
 import adminDirectoryRoutes from './admin/directory.js';
 import adminDisputeRoutes from './admin/disputes.js';
 import adminEventActionRoutes from './admin/event-actions.js';
@@ -141,6 +142,7 @@ export async function registerV2Routes(
       await adminDirectoryRoutes(v2);
       // Phase 7: support desk over the ticket aggregate.
       await adminSupportRoutes(v2);
+      await adminCommunicationRoutes(v2);
       await adminOrderRoutes(v2);
       await adminAnalyticsRoutes(v2);
       await adminTicketRoutes(v2);

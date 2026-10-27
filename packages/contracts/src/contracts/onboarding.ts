@@ -385,7 +385,7 @@ export const adminAlertsResponseSchema = z.object({
 export type AdminAlertsResponse = z.infer<typeof adminAlertsResponseSchema>;
 
 export const adminLookupResultItemSchema = z.object({
-  type: z.enum(['venue', 'event', 'organization', 'user']),
+  type: z.enum(['venue', 'event', 'organization', 'user', 'order']),
   id: opaqueIdSchema,
   label: z.string(),
 });

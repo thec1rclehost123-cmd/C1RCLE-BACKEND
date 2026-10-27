@@ -175,10 +175,10 @@ describe('FinancialPostingService', () => {
     const service = new FinancialPostingService(repository);
     await service.postTicketSale({
       ...saleInput(),
-      ticketFaceValuePaise: 7,
+      ticketFaceValuePaise: 8,
       discountPaise: 0,
       discountFundingOwner: null,
-      netTicketRevenuePaise: 7,
+      netTicketRevenuePaise: 8,
       gstPaise: 0,
       platformFeePaise: 0,
       paymentFeePaise: 0,
@@ -189,8 +189,8 @@ describe('FinancialPostingService', () => {
         hostPaise: 3,
         venueOrganizationId: 'org_venue',
         venuePaise: 3,
-        promoterOrganizationId: null,
-        promoterPaise: 0,
+        promoterOrganizationId: 'org_promoter',
+        promoterPaise: 1,
       },
     });
 
@@ -203,7 +203,7 @@ describe('FinancialPostingService', () => {
     };
     const posted = [];
     let previouslyRefundedPaise = 0;
-    for (const [index, amountPaise] of [1, 2, 1, 3].entries()) {
+    for (const [index, amountPaise] of [1, 2, 1, 4].entries()) {
       posted.push(
         ...(await service.postRefund({
           ...common,
@@ -228,6 +228,7 @@ describe('FinancialPostingService', () => {
       platform_commission_revenue: 1,
       host_payable: 3,
       venue_payable: 3,
+      promoter_payable: 1,
     });
   });
 

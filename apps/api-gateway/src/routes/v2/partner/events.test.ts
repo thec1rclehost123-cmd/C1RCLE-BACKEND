@@ -203,8 +203,33 @@ describe('V2 partners events slice — listing and update', () => {
     expect(response.statusCode).toBe(200);
     const body = response.json();
     expect(body.items.map((item: { id: string }) => item.id)).toContain(id);
-    expect(body.pageInfo).toMatchObject({ page: 1, pageSize: 10 });
+    expect(body.pageInfo).toMatchObject({ page: 1, pageSize: 10, nextCursor: null });
+    expect(body.items.find((item: { id: string }) => item.id === id)).toMatchObject({
+      capacity: null,
+      venueName: null,
+      ticketsSold: 0,
+      salesCountComplete: true,
+    });
     expect(body.pageInfo.total).toBeGreaterThanOrEqual(1);
+    await server.close();
+  });
+
+  it('returns bounded sales and capacity evidence on tenant-scoped event detail', async () => {
+    const server = await buildServer();
+    const { id } = await createEvent(server);
+    const response = await server.inject({
+      method: 'GET',
+      url: `/events/${id}`,
+      headers: VALID_HEADERS,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      id,
+      capacity: null,
+      venueName: null,
+      ticketsSold: 0,
+      salesCountComplete: true,
+    });
     await server.close();
   });
 
@@ -429,6 +454,19 @@ describe('V2 partners events slice — previews and lifecycle', () => {
     });
     expect(response.statusCode).toBe(409);
     expect(response.json()).toMatchObject({ code: 'conflict', status: 409 });
+    await server.close();
+  });
+
+  it('rejects blank cancellation reasons before starting a cancellation workflow', async () => {
+    const server = await buildServer();
+    const { id } = await createEvent(server);
+    const response = await server.inject({
+      method: 'POST',
+      url: `/events/${id}/cancel`,
+      headers: { ...VALID_HEADERS, 'idempotency-key': nextEventKey() },
+      payload: { reason: '   ' },
+    });
+    expect(response.statusCode).toBe(422);
     await server.close();
   });
 

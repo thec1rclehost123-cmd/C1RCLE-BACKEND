@@ -150,16 +150,25 @@ describe('GET /wallet/tickets', () => {
   it('lists only the caller-own paid ticket', async () => {
     const server = await buildServer();
     await seedPaidOrder(server, 'wallet-guest-tickets');
+    await seedPaidOrder(server, 'wallet-guest-other-ticket');
 
     const response = await server.inject({
       method: 'GET',
       url: '/wallet/tickets',
       headers: { 'x-user-id': 'wallet-guest-tickets' },
     });
+    const otherGuestResponse = await server.inject({
+      method: 'GET',
+      url: '/wallet/tickets',
+      headers: { 'x-user-id': 'wallet-guest-other-ticket' },
+    });
 
     expect(response.statusCode).toBe(200);
     expect(response.json().items).toHaveLength(1);
     expect(response.json().items[0]).toMatchObject({ status: 'valid' });
+    expect(otherGuestResponse.statusCode).toBe(200);
+    expect(otherGuestResponse.json().items).toHaveLength(1);
+    expect(response.json().items[0].id).not.toBe(otherGuestResponse.json().items[0].id);
     await server.close();
   });
 });
@@ -168,16 +177,25 @@ describe('GET /wallet/orders', () => {
   it('lists only the caller-own paid order', async () => {
     const server = await buildServer();
     await seedPaidOrder(server, 'wallet-guest-orders');
+    await seedPaidOrder(server, 'wallet-guest-other-order');
 
     const response = await server.inject({
       method: 'GET',
       url: '/wallet/orders',
       headers: { 'x-user-id': 'wallet-guest-orders' },
     });
+    const otherGuestResponse = await server.inject({
+      method: 'GET',
+      url: '/wallet/orders',
+      headers: { 'x-user-id': 'wallet-guest-other-order' },
+    });
 
     expect(response.statusCode).toBe(200);
     expect(response.json().items).toHaveLength(1);
     expect(response.json().items[0]).toMatchObject({ status: 'paid' });
+    expect(otherGuestResponse.statusCode).toBe(200);
+    expect(otherGuestResponse.json().items).toHaveLength(1);
+    expect(response.json().items[0].id).not.toBe(otherGuestResponse.json().items[0].id);
     await server.close();
   });
 });

@@ -6,6 +6,7 @@ import { createEvent, transitionEvent } from '../../domain/models/event.js';
 import { MemoryFinancialJournalRepository } from '../../infrastructure/memory/memory-financial-journal-repository.js';
 import { MemoryLeaderboardRepository } from '../../infrastructure/memory/memory-leaderboard-repository.js';
 import { MemoryLedgerRepository } from '../../infrastructure/memory/memory-ledger-repository.js';
+import { MemoryOutboxStore } from '../../infrastructure/memory/memory-outbox-store.js';
 import {
   MemoryCartReservationRepository,
   MemoryEntitlementRepository,
@@ -48,6 +49,7 @@ async function build(options: { eventStatus?: 'published' | 'draft' | 'cancelled
   const carts = new MemoryCartReservationRepository();
   const deps = {
     config,
+    outbox: new MemoryOutboxStore(),
     pricing: new PricingService({ eventCatalog: catalog }),
     inventory: new InventoryService({
       eventCatalog: catalog,

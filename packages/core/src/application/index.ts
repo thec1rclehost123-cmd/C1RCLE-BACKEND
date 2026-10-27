@@ -77,6 +77,11 @@ export type { IdempotentCommand, IdempotentResult } from './idempotency/idempote
 export { InProcessEventBus } from './events/event-bus.js';
 export type { EventHandler } from './events/event-bus.js';
 export { createAuditConsumer } from './events/audit-consumers.js';
+export {
+  EventCancellationService,
+  eventCancellationRefundRequestId,
+} from './events/event-cancellation-service.js';
+export { createTransactionalEmailConsumer } from './events/transactional-email-consumer.js';
 
 // Phase 4: Checkout, Inventory, Payments
 export { CheckoutService, rsvpOrderId } from './checkout/checkout-service.js';

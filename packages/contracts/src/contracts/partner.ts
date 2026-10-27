@@ -150,6 +150,19 @@ export const organizationOverviewDtoSchema = z.object({
 });
 export type OrganizationOverviewDto = z.infer<typeof organizationOverviewDtoSchema>;
 
+/** Source-backed organization sales totals. All amounts are integer paise. */
+export const organizationSalesBreakdownDtoSchema = z.object({
+  totalTicketsIssued: z.number().int().nonnegative(),
+  paidTickets: z.number().int().nonnegative(),
+  freeRsvpTickets: z.number().int().nonnegative(),
+  paidOrderCount: z.number().int().nonnegative(),
+  /** Captured grand totals, including fees and GST, before refunds. */
+  guestGrossCollectedPaise: z.number().int().nonnegative(),
+  /** Discounted ticket subtotals, excluding fees and GST, before refunds. */
+  ticketRevenuePaise: z.number().int().nonnegative(),
+});
+export type OrganizationSalesBreakdownDto = z.infer<typeof organizationSalesBreakdownDtoSchema>;
+
 /**
  * Bucket width for a trends series. A dashboard's ranges are genuinely
  * different shapes, not one range at three zooms: "today" wants hours, "this
@@ -173,16 +186,17 @@ export const trendBucketDtoSchema = z.object({
   revenuePaise: z.number().int().nonnegative(),
   tickets: z.number().int().nonnegative(),
   checkIns: z.number().int().nonnegative(),
+  totalTicketsIssued: z.number().int().nonnegative(),
+  paidTickets: z.number().int().nonnegative(),
+  freeRsvpTickets: z.number().int().nonnegative(),
+  paidOrderCount: z.number().int().nonnegative(),
+  guestGrossCollectedPaise: z.number().int().nonnegative(),
+  ticketRevenuePaise: z.number().int().nonnegative(),
 });
 export type TrendBucketDto = z.infer<typeof trendBucketDtoSchema>;
 
 /**
- * `totals` are lifetime totals for the scanned data, NOT the sum of `buckets`.
- *
- * The two differ whenever an order or scan falls outside the requested window,
- * and a dashboard showing "₹0 this week" beside "₹4,80,000 total" is a fair
- * reading of a clamped range — conflating them would make a legitimately
- * narrow range look like a data-loss bug.
+ * `totals` summarize only the requested window and equal the sum of `buckets`.
  */
 export const organizationTrendsDtoSchema = z.object({
   organizationId: opaqueIdSchema,
@@ -196,6 +210,12 @@ export const organizationTrendsDtoSchema = z.object({
     revenuePaise: z.number().int().nonnegative(),
     tickets: z.number().int().nonnegative(),
     checkIns: z.number().int().nonnegative(),
+    totalTicketsIssued: z.number().int().nonnegative(),
+    paidTickets: z.number().int().nonnegative(),
+    freeRsvpTickets: z.number().int().nonnegative(),
+    paidOrderCount: z.number().int().nonnegative(),
+    guestGrossCollectedPaise: z.number().int().nonnegative(),
+    ticketRevenuePaise: z.number().int().nonnegative(),
   }),
 });
 export type OrganizationTrendsDto = z.infer<typeof organizationTrendsDtoSchema>;
@@ -263,15 +283,16 @@ export const eventAnalyticsDtoSchema = z.object({
   totalRevenuePaise: z.number().int().nonnegative(),
   ticketsSold: z.number().int().nonnegative(),
   totalCheckIns: z.number().int().nonnegative(),
-  capacity: z.number().int().nonnegative(),
+  totalTicketInventory: z.number().int().nonnegative(),
+  capacity: z.number().int().nonnegative().nullable(),
   views: z.number().int().nonnegative(),
   guestlistSignups: z.number().int().nonnegative(),
   avgTicketPricePaise: z.number().int().nonnegative(),
-  occupancyRate: ratio(),
-  sellThroughRate: ratio(),
+  occupancyRate: ratio().nullable(),
+  sellThroughRate: ratio().nullable(),
   refundAmountPaise: z.number().int().nonnegative(),
   refundRate: ratio(),
-  noShowRate: ratio(),
+  noShowRate: ratio().nullable(),
   repeatGuests: z.number().int().nonnegative(),
   conversionRate: ratio(),
 });

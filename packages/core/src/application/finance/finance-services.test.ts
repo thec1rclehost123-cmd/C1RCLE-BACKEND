@@ -494,6 +494,48 @@ describe('createFinanceService', () => {
     expect(balance.holds.cancellationPaise).toBe(80_000);
   });
 
+  it('holds cancelled-event payables on the legacy read model without mixing journals', async () => {
+    const ledger = new MemoryLedgerRepository();
+    await ledger.createBatch([
+      createLedgerEntry({
+        id: 'legacy-cancelled-payable',
+        organizationId: ORG,
+        orderId: 'legacy-order',
+        eventId: 'legacy-cancelled-event',
+        entryType: 'host_payout',
+        amount: 60_000,
+        status: 'settled',
+        idempotencyKey: 'legacy-order:host_payout',
+        now: NOW,
+      }),
+    ]);
+    const events = new MemoryEventRepository();
+    const event = createEvent({
+      id: 'legacy-cancelled-event',
+      organizationId: ORG,
+      venueId: 'venue-1',
+      title: 'Legacy cancelled event',
+      startAt: NOW.toISOString(),
+      now: NOW,
+    });
+    events.events.set(event.id, cancelEvent(event, 'weather', NOW));
+    const service = createFinanceService({
+      ledger,
+      financialJournals: new MemoryFinancialJournalRepository(),
+      journalTransition: new MemoryJournalTransitionRepository(),
+      payouts: new MemoryPayoutRepository(),
+      events,
+      reconciliations: new MemoryReconciliationRepository(),
+      config,
+    });
+
+    const balance = await service.getBalances(ORG, actor(ORG));
+    expect(balance.readModel).toBe('legacy_ledger_v1');
+    expect(balance.availablePaise).toBe(0);
+    expect(balance.heldPaise).toBe(60_000);
+    expect(balance.holds.cancellationPaise).toBe(60_000);
+  });
+
   it('classifies only the remaining payable after a refund reversal', async () => {
     const financialJournals = new MemoryFinancialJournalRepository();
     const policy = {
