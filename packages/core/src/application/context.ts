@@ -14,6 +14,7 @@ import type { InventoryService } from './inventory/inventory-service.js';
 import type { PricingService } from './pricing/pricing-service.js';
 import type { OrganizationRole, Capability } from '../domain/models/organization.js';
 import type { AdminAuditRepository } from '../domain/ports/audit.js';
+import type { EmailDeliveryRepository } from '../domain/ports/email-delivery.js';
 import type { EmailSender } from '../domain/ports/email-sender.js';
 import type { ObjectStoragePort } from '../domain/ports/object-storage.js';
 import type { OutboxWriter } from '../domain/ports/outbox.js';
@@ -114,6 +115,8 @@ export interface ServiceDeps {
    * notifying an applicant their onboarding request needs changes).
    */
   emailSender: EmailSender;
+  /** Durable idempotency/evidence for domain-triggered transactional email. */
+  emailDeliveries: EmailDeliveryRepository;
   /**
    * Resolves a `userId` to an email, or finds a user by email.
    * `NullUserDirectory` / `MemoryStaffUserDirectory` on memory; `FirestoreUserDirectory` on firestore.

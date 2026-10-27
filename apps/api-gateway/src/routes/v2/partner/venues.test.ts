@@ -9,11 +9,23 @@ import partnerVenueRoutes from './venues.js';
 const buildServer = () =>
   buildPartnerTestServer({ routes: [partnerVenueRoutes, partnerPartnershipRoutes] });
 
-// The venue-detail test needs an event on the *host* org; the test server
-// registers the event routes too (services + repositories are memoized per
-// file, so both servers share state).
-const buildServerWithEvents = () =>
-  buildPartnerTestServer({ routes: [partnerVenueRoutes, partnerEventRoutes] });
+async function buildSlotRequestServer() {
+  const server = await buildPartnerTestServer({
+    routes: [partnerVenueRoutes, partnerPartnershipRoutes, partnerEventRoutes],
+  });
+  server.addHook('onRequest', async (request) => {
+    const organizationId = String(request.headers['x-organization-id'] ?? '');
+    const isVenue = organizationId === ORG;
+    request.actor = {
+      userId: isVenue ? 'venue_owner_test' : 'host_owner_test',
+      organizationId,
+      role: 'owner',
+      capabilities: [isVenue ? 'venue' : 'host'],
+      platformRole: 'partner',
+    };
+  });
+  return server;
+}
 
 const ORG = 'org_1';
 const READ_HEADERS = { 'x-organization-id': ORG };
@@ -67,6 +79,41 @@ async function activateHostPartnership(
     headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
   });
   expect(approved.statusCode).toBe(200);
+}
+
+async function createHostSlotRequestFixture(server: Awaited<ReturnType<typeof buildServer>>) {
+  const { id: venueId } = await createVenue(server);
+  const hostOrganizationId = `org_host_slot_test_${String(venueSeq)}`;
+  await activateHostPartnership(server, venueId, hostOrganizationId);
+  const slotResponse = await server.inject({
+    method: 'POST',
+    url: `/venues/${venueId}/calendar/availability`,
+    headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
+    payload: {
+      label: 'M3 Host slot-request test',
+      startTime: '2030-11-04T12:30:00.000Z',
+      endTime: '2030-11-04T16:30:00.000Z',
+      timezone: 'Asia/Kolkata',
+      visibleToHostIds: [hostOrganizationId],
+    },
+  });
+  expect(slotResponse.statusCode).toBe(201);
+  const requestResponse = await server.inject({
+    method: 'POST',
+    url: `/venues/${venueId}/slot-requests`,
+    headers: {
+      'x-organization-id': hostOrganizationId,
+      'idempotency-key': nextVenueKey(),
+    },
+    payload: { slotId: slotResponse.json().id, message: 'M3 slot request fixture' },
+  });
+  expect(requestResponse.statusCode).toBe(201);
+  return {
+    venueId,
+    hostOrganizationId,
+    slot: slotResponse.json(),
+    request: requestResponse.json(),
+  };
 }
 
 describe('V2 partners venues slice — validation layers', () => {
@@ -527,13 +574,29 @@ describe('V2 partners venues slice — profile, calendar, menu, availability', (
     expect(calendar.statusCode).toBe(200);
     expect(calendar.json()).toEqual([]);
 
-    // … and re-unblocking the same slot is a 400, not a silent no-op.
+    // … and re-unblocking is safe both as an idempotency replay and as a
+    // fresh retry after a client lost the original response.
     const again = await server.inject({
       method: 'DELETE',
       url: `/venues/${id}/calendar/blocks/${blockId}`,
       headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
     });
-    expect(again.statusCode).toBe(400);
+    expect(again.statusCode).toBe(200);
+    expect(again.json()).toEqual(unblocked.json());
+
+    const replay = await server.inject({
+      method: 'DELETE',
+      url: `/venues/${id}/calendar/blocks/${blockId}`,
+      headers: { ...READ_HEADERS, 'idempotency-key': 'calendar-unblock-replay' },
+    });
+    const replayed = await server.inject({
+      method: 'DELETE',
+      url: `/venues/${id}/calendar/blocks/${blockId}`,
+      headers: { ...READ_HEADERS, 'idempotency-key': 'calendar-unblock-replay' },
+    });
+    expect(replay.statusCode).toBe(200);
+    expect(replayed.statusCode).toBe(200);
+    expect(replayed.json()).toEqual(replay.json());
     await server.close();
   });
 
@@ -749,6 +812,41 @@ describe('V2 partners venues slice — profile, calendar, menu, availability', (
     await server.close();
   });
 
+  it('publishes an idempotent, typed open availability slot', async () => {
+    const server = await buildServer();
+    const { id } = await createVenue(server);
+    const headers = { ...READ_HEADERS, 'idempotency-key': 'idem-publish-availability-m3' };
+    const payload = {
+      label: 'M3-HOST-E2E window',
+      startTime: '2030-11-04T12:30:00.000Z',
+      endTime: '2030-11-04T16:30:00.000Z',
+      timezone: 'Asia/Kolkata',
+      notes: 'M3 test availability',
+      visibleToHostIds: null,
+    };
+    const first = await server.inject({
+      method: 'POST',
+      url: `/venues/${id}/calendar/availability`,
+      headers,
+      payload,
+    });
+    const replay = await server.inject({
+      method: 'POST',
+      url: `/venues/${id}/calendar/availability`,
+      headers,
+      payload,
+    });
+    expect(first.statusCode).toBe(201);
+    expect(first.json()).toMatchObject({
+      status: 'open',
+      timezone: 'Asia/Kolkata',
+      notes: 'M3 test availability',
+    });
+    expect(replay.statusCode).toBe(201);
+    expect(replay.json().id).toBe(first.json().id);
+    await server.close();
+  });
+
   it('lets an active host partner read derived availability but not the raw calendar', async () => {
     const server = await buildServer();
     const { id } = await createVenue(server);
@@ -789,104 +887,86 @@ describe('V2 partners venues slice — profile, calendar, menu, availability', (
 });
 
 describe('V2 partners venues slice — slot requests', () => {
-  it('creates a slot request for a venue', async () => {
+  it('creates a request only for an open slot through the Host organization', async () => {
+    const server = await buildSlotRequestServer();
+    const fixture = await createHostSlotRequestFixture(server);
+    expect(fixture.request).toMatchObject({
+      venueId: fixture.venueId,
+      slotId: fixture.slot.id,
+      hostId: fixture.hostOrganizationId,
+      status: 'pending',
+    });
+    expect(typeof fixture.request.id).toBe('string');
+    await server.close();
+  });
+
+  it('rejects a new slot request that omits the required published slot', async () => {
     const server = await buildServer();
     const { id } = await createVenue(server);
     const response = await server.inject({
       method: 'POST',
       url: `/venues/${id}/slot-requests`,
-      headers: { ...READ_HEADERS, 'idempotency-key': 'idem-venue-slot-req-1' },
-      payload: { message: 'Looking for a Friday night slot' },
+      headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
+      payload: { message: 'M3 request without a slot' },
     });
-    expect(response.statusCode).toBe(201);
-    expect(response.json()).toMatchObject({
-      venueId: id,
-      hostId: ORG,
-      status: 'pending',
-    });
-    expect(typeof response.json().id).toBe('string');
+    expect(response.statusCode).toBe(422);
     await server.close();
   });
 
   it('lists slot requests owned by the venue org', async () => {
-    const server = await buildServer();
-    const { id } = await createVenue(server);
-    const created = await server.inject({
-      method: 'POST',
-      url: `/venues/${id}/slot-requests`,
-      headers: { ...READ_HEADERS, 'idempotency-key': 'idem-venue-slot-req-list' },
-      payload: { message: 'Second slot please' },
-    });
-    expect(created.statusCode).toBe(201);
+    const server = await buildSlotRequestServer();
+    const fixture = await createHostSlotRequestFixture(server);
     const response = await server.inject({
       method: 'GET',
-      url: `/venues/${id}/slot-requests?limit=10`,
+      url: `/venues/${fixture.venueId}/slot-requests?limit=10`,
       headers: READ_HEADERS,
     });
     expect(response.statusCode).toBe(200);
     const body = response.json();
-    expect(body.items.map((item: { id: string }) => item.id)).toContain(created.json().id);
+    expect(body.items.map((item: { id: string }) => item.id)).toContain(fixture.request.id);
     expect(body.pageInfo).toMatchObject({ page: 1, pageSize: 10 });
     await server.close();
   });
 
   it('accepts a slot request as the venue org', async () => {
-    const server = await buildServer();
-    const { id } = await createVenue(server);
-    const created = await server.inject({
-      method: 'POST',
-      url: `/venues/${id}/slot-requests`,
-      headers: { ...READ_HEADERS, 'idempotency-key': 'idem-venue-accept-create' },
-      payload: {},
-    });
+    const server = await buildSlotRequestServer();
+    const fixture = await createHostSlotRequestFixture(server);
     const response = await server.inject({
       method: 'POST',
-      url: `/venues/slot-requests/${created.json().id}/accept`,
-      headers: { ...READ_HEADERS, 'idempotency-key': 'idem-venue-accept' },
+      url: `/venues/slot-requests/${fixture.request.id}/accept`,
+      headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
     });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ id: created.json().id, status: 'accepted' });
+    expect(response.json()).toMatchObject({ id: fixture.request.id, status: 'accepted' });
     await server.close();
   });
 
   it('rejects a slot request as the venue org', async () => {
-    const server = await buildServer();
-    const { id } = await createVenue(server);
-    const created = await server.inject({
-      method: 'POST',
-      url: `/venues/${id}/slot-requests`,
-      headers: { ...READ_HEADERS, 'idempotency-key': 'idem-venue-reject-create' },
-      payload: {},
-    });
+    const server = await buildSlotRequestServer();
+    const fixture = await createHostSlotRequestFixture(server);
     const response = await server.inject({
       method: 'POST',
-      url: `/venues/slot-requests/${created.json().id}/reject`,
-      headers: { ...READ_HEADERS, 'idempotency-key': 'idem-venue-reject' },
+      url: `/venues/slot-requests/${fixture.request.id}/reject`,
+      headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
     });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ id: created.json().id, status: 'rejected' });
+    expect(response.json()).toMatchObject({ id: fixture.request.id, status: 'rejected' });
     await server.close();
   });
 
   it('returns 400 when a slot request is accepted twice', async () => {
-    const server = await buildServer();
-    const { id } = await createVenue(server);
-    const created = await server.inject({
-      method: 'POST',
-      url: `/venues/${id}/slot-requests`,
-      headers: { ...READ_HEADERS, 'idempotency-key': 'idem-venue-accept-2-create' },
-      payload: {},
-    });
+    const server = await buildSlotRequestServer();
+    const fixture = await createHostSlotRequestFixture(server);
     const first = await server.inject({
       method: 'POST',
-      url: `/venues/slot-requests/${created.json().id}/accept`,
-      headers: { ...READ_HEADERS, 'idempotency-key': 'idem-venue-accept-2' },
+      url: `/venues/slot-requests/${fixture.request.id}/accept`,
+      headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
     });
     expect(first.statusCode).toBe(200);
     const second = await server.inject({
       method: 'POST',
-      url: `/venues/slot-requests/${created.json().id}/accept`,
-      headers: { ...READ_HEADERS, 'idempotency-key': 'idem-venue-accept-2b' },
+      url: `/venues/slot-requests/${fixture.request.id}/accept`,
+      headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
     });
     expect(second.statusCode).toBe(400);
     expect(second.json()).toMatchObject({ code: 'validation', status: 400 });
@@ -894,24 +974,19 @@ describe('V2 partners venues slice — slot requests', () => {
   });
 
   it('lists the host organization’s outgoing slot requests', async () => {
-    const server = await buildServer();
-    const { id } = await createVenue(server);
-    const created = await server.inject({
-      method: 'POST',
-      url: `/venues/${id}/slot-requests`,
-      headers: { ...READ_HEADERS, 'idempotency-key': 'idem-host-out-list-create' },
-      payload: { message: 'Host-side list please' },
-    });
-    expect(created.statusCode).toBe(201);
+    const server = await buildSlotRequestServer();
+    const fixture = await createHostSlotRequestFixture(server);
     const response = await server.inject({
       method: 'GET',
-      url: `/organizations/${ORG}/slot-requests?limit=10`,
-      headers: READ_HEADERS,
+      url: `/organizations/${fixture.hostOrganizationId}/slot-requests?limit=10`,
+      headers: { 'x-organization-id': fixture.hostOrganizationId },
     });
     expect(response.statusCode).toBe(200);
     const body = response.json();
-    expect(body.items.map((item: { id: string }) => item.id)).toContain(created.json().id);
-    expect(body.items).toContainEqual(expect.objectContaining({ hostId: ORG, status: 'pending' }));
+    expect(body.items.map((item: { id: string }) => item.id)).toContain(fixture.request.id);
+    expect(body.items).toContainEqual(
+      expect.objectContaining({ hostId: fixture.hostOrganizationId, status: 'pending' }),
+    );
     expect(body.pageInfo).toMatchObject({ page: 1, pageSize: 10 });
     await server.close();
   });
@@ -928,43 +1003,25 @@ describe('V2 partners venues slice — slot requests', () => {
   });
 
   it('returns the request + linked event + venue for a venue-owner detail view', async () => {
-    const server = await buildServerWithEvents();
-    const { id } = await createVenue(server);
-    const event = await server.inject({
-      method: 'POST',
-      url: `/organizations/${ORG}/events`,
-      headers: { ...READ_HEADERS, 'idempotency-key': 'idem-host-out-detail-event' },
-      payload: {
-        venueId: id,
-        title: 'Bass Drop Night',
-        startAt: '2026-10-01T19:30:00.000Z',
-        endAt: '2026-10-01T23:00:00.000Z',
-      },
-    });
-    expect(event.statusCode).toBe(201);
-    const created = await server.inject({
-      method: 'POST',
-      url: `/venues/${id}/slot-requests`,
-      headers: { ...READ_HEADERS, 'idempotency-key': 'idem-host-out-detail-create' },
-      payload: { eventId: event.json().id, message: 'Review this one' },
-    });
-    expect(created.statusCode).toBe(201);
+    const server = await buildSlotRequestServer();
+    const fixture = await createHostSlotRequestFixture(server);
     const response = await server.inject({
       method: 'GET',
-      url: `/venues/${id}/slot-requests/${created.json().id}`,
+      url: `/venues/${fixture.venueId}/slot-requests/${fixture.request.id}`,
       headers: READ_HEADERS,
     });
     expect(response.statusCode).toBe(200);
     const body = response.json();
     expect(body.request).toMatchObject({
-      id: created.json().id,
-      venueId: id,
-      hostId: ORG,
-      eventId: event.json().id,
+      id: fixture.request.id,
+      venueId: fixture.venueId,
+      hostId: fixture.hostOrganizationId,
+      slotId: fixture.slot.id,
+      eventId: null,
       status: 'pending',
     });
-    expect(body.event).toMatchObject({ id: event.json().id, title: 'Bass Drop Night' });
-    expect(body.venue).toEqual({ id, name: 'Aurora Hall' });
+    expect(body.event).toBeNull();
+    expect(body.venue).toEqual({ id: fixture.venueId, name: 'Aurora Hall' });
     // The memory test driver has no Organization record for the fixed dev
     // actor, so the (nullable) host resolves to null here; on Firestore the
     // requesting org exists and this is `{ id, name }`.
@@ -973,19 +1030,12 @@ describe('V2 partners venues slice — slot requests', () => {
   });
 
   it('returns 404 for a detail view that is not under the venue', async () => {
-    const server = await buildServerWithEvents();
-    const { id } = await createVenue(server);
+    const server = await buildSlotRequestServer();
+    const fixture = await createHostSlotRequestFixture(server);
     const other = await createVenue(server);
-    const created = await server.inject({
-      method: 'POST',
-      url: `/venues/${other.id}/slot-requests`,
-      headers: { ...READ_HEADERS, 'idempotency-key': 'idem-host-out-detail-404-create' },
-      payload: {},
-    });
-    expect(created.statusCode).toBe(201);
     const response = await server.inject({
       method: 'GET',
-      url: `/venues/${id}/slot-requests/${created.json().id}`,
+      url: `/venues/${other.id}/slot-requests/${fixture.request.id}`,
       headers: READ_HEADERS,
     });
     expect(response.statusCode).toBe(404);
@@ -994,45 +1044,37 @@ describe('V2 partners venues slice — slot requests', () => {
   });
 
   it('lets the host org cancel its own accepted request (domain: accepted → cancelled)', async () => {
-    const server = await buildServer();
-    const { id } = await createVenue(server);
-    const created = await server.inject({
-      method: 'POST',
-      url: `/venues/${id}/slot-requests`,
-      headers: { ...READ_HEADERS, 'idempotency-key': 'idem-host-cancel-create' },
-      payload: {},
-    });
-    expect(created.statusCode).toBe(201);
+    const server = await buildSlotRequestServer();
+    const fixture = await createHostSlotRequestFixture(server);
     const accepted = await server.inject({
       method: 'POST',
-      url: `/venues/slot-requests/${created.json().id}/accept`,
-      headers: { ...READ_HEADERS, 'idempotency-key': 'idem-host-cancel-accept' },
+      url: `/venues/slot-requests/${fixture.request.id}/accept`,
+      headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
     });
     expect(accepted.statusCode).toBe(200);
     const response = await server.inject({
       method: 'POST',
-      url: `/venues/slot-requests/${created.json().id}/cancel`,
-      headers: { ...READ_HEADERS, 'idempotency-key': 'idem-host-cancel' },
+      url: `/venues/slot-requests/${fixture.request.id}/cancel`,
+      headers: {
+        'x-organization-id': fixture.hostOrganizationId,
+        'idempotency-key': nextVenueKey(),
+      },
     });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ id: created.json().id, status: 'cancelled' });
+    expect(response.json()).toMatchObject({ id: fixture.request.id, status: 'cancelled' });
     await server.close();
   });
 
   it('rejects a cancel of a still-pending request (state machine: pending → cancelled is not legal)', async () => {
-    const server = await buildServer();
-    const { id } = await createVenue(server);
-    const created = await server.inject({
-      method: 'POST',
-      url: `/venues/${id}/slot-requests`,
-      headers: { ...READ_HEADERS, 'idempotency-key': 'idem-host-cancel-pending-create' },
-      payload: {},
-    });
-    expect(created.statusCode).toBe(201);
+    const server = await buildSlotRequestServer();
+    const fixture = await createHostSlotRequestFixture(server);
     const response = await server.inject({
       method: 'POST',
-      url: `/venues/slot-requests/${created.json().id}/cancel`,
-      headers: { ...READ_HEADERS, 'idempotency-key': 'idem-host-cancel-pending' },
+      url: `/venues/slot-requests/${fixture.request.id}/cancel`,
+      headers: {
+        'x-organization-id': fixture.hostOrganizationId,
+        'idempotency-key': nextVenueKey(),
+      },
     });
     expect(response.statusCode).toBe(409);
     expect(response.json()).toMatchObject({ code: 'conflict' });
@@ -1040,26 +1082,12 @@ describe('V2 partners venues slice — slot requests', () => {
   });
 
   it('returns 404 when a non-host org tries to cancel someone else’s request', async () => {
-    const server = await buildServer();
-    const { id } = await createVenue(server);
-    // Sent by a *different* host org — cross-org create is by design.
-    const created = await server.inject({
-      method: 'POST',
-      url: `/venues/${id}/slot-requests`,
-      headers: {
-        'x-organization-id': 'org_2',
-        'idempotency-key': 'idem-host-cancel-xtenant-create',
-      },
-      payload: {},
-    });
-    expect(created.statusCode).toBe(201);
-    expect(created.json()).toMatchObject({ hostId: 'org_2' });
+    const server = await buildSlotRequestServer();
+    const fixture = await createHostSlotRequestFixture(server);
     const response = await server.inject({
       method: 'POST',
-      url: `/venues/slot-requests/${created.json().id}/cancel`,
-      // Venue-owner org (org_1) is not the requester — service 404s it the
-      // same way it hides cross-tenant accept/reject targets.
-      headers: { ...READ_HEADERS, 'idempotency-key': 'idem-host-cancel-xtenant' },
+      url: `/venues/slot-requests/${fixture.request.id}/cancel`,
+      headers: { 'x-organization-id': 'org_other_host', 'idempotency-key': nextVenueKey() },
     });
     expect(response.statusCode).toBe(404);
     expect(response.json()).toMatchObject({ code: 'not_found' });

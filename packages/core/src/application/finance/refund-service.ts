@@ -229,6 +229,19 @@ export class RefundService {
     await this.orders.save(restored);
     await this.releaseSelectedTickets(request, now);
 
+    await emit(
+      this.deps,
+      {
+        userId: admin.id,
+        organizationId: order.organizationId,
+        role: 'owner',
+        capabilities: [],
+      },
+      request.id,
+      'finance.refund.finalized',
+      { refundRequestId: request.id, orderId: order.id, status: 'rejected' },
+    );
+
     await this.authority.record(admin, {
       action: 'FINANCIAL_REFUND.reject',
       targetType: 'refund_request',
@@ -317,6 +330,18 @@ export class RefundService {
           await this.releaseSelectedTickets(failed, now);
           const restored = restoreOrderAfterRefundFailure(order, now);
           await this.orders.save(restored);
+          await emit(
+            this.deps,
+            {
+              userId: admin.id,
+              organizationId: order.organizationId,
+              role: 'owner',
+              capabilities: [],
+            },
+            request.id,
+            'finance.refund.finalized',
+            { refundRequestId: request.id, orderId: order.id, status: 'failed' },
+          );
           return { request: failed, order: restored };
         }
         // A network/timeout error can occur after the provider accepted the
@@ -338,6 +363,18 @@ export class RefundService {
         await this.releaseSelectedTickets(failed, now);
         const restored = restoreOrderAfterRefundFailure(order, now);
         await this.orders.save(restored);
+        await emit(
+          this.deps,
+          {
+            userId: admin.id,
+            organizationId: order.organizationId,
+            role: 'owner',
+            capabilities: [],
+          },
+          request.id,
+          'finance.refund.finalized',
+          { refundRequestId: request.id, orderId: order.id, status: 'failed' },
+        );
         return { request: failed, order: restored };
       }
     }

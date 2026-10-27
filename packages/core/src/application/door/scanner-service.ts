@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
 import {
+  ConflictError,
   DeviceNotAuthorizedError,
   InvalidOperationError,
   ForbiddenError,
@@ -827,6 +828,9 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
    */
   async function scan(input: ScanInput, actor: ActorContext): Promise<ScanResult> {
     const event = await requireEvent(input.eventId, actor);
+    if (event.status === 'cancelled') {
+      throw new InvalidOperationError('Admission is closed because this event was cancelled');
+    }
     const session = await authenticateSession(input.sessionToken, input.eventId);
     // The session belongs to the code, the code to the org — re-checked here
     // so a token minted under one tenant can never be replayed under another.
@@ -975,6 +979,9 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
   /** Non-consuming preview — same rule, no write. */
   async function resolve(input: ResolveInput, actor: ActorContext): Promise<TicketResolution> {
     const event = await requireEvent(input.eventId, actor);
+    if (event.status === 'cancelled') {
+      throw new InvalidOperationError('Admission is closed because this event was cancelled');
+    }
     const session = await authenticateSession(input.sessionToken, input.eventId);
     requireOrgAccess(actor, session.organizationId);
     if (!canSessionScan(session)) {
@@ -1063,6 +1070,13 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
     const isHolder = entitlement.userId !== null && entitlement.userId === actor.userId;
     const isStaff = entitlement.organizationId === actor.organizationId;
     if (!isHolder && !isStaff) throw new NotFoundError('Ticket', ticketId);
+    if (
+      entitlement.status !== 'valid' ||
+      entitlement.refundLock ||
+      entitlement.scanCount >= entitlement.scanCountAllowed
+    ) {
+      throw new ConflictError('A ticket QR is available only while the entitlement is active.');
+    }
 
     const nowMs = Date.now();
     const windowStart = Math.floor(nowMs / 1000 / MAGIC_WINDOW_SEC) * MAGIC_WINDOW_SEC;
@@ -1405,6 +1419,11 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
     actor: ActorContext,
   ): Promise<OfflineManifest> {
     const event = await requireEvent(eventId, actor);
+    if (event.status === 'cancelled') {
+      throw new InvalidOperationError(
+        'Offline admission is closed because this event was cancelled',
+      );
+    }
     const session = await authenticateSession(sessionToken, eventId);
     requireOrgAccess(actor, session.organizationId);
     if (!canSessionScan(session)) {
@@ -1473,6 +1492,11 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
     actor: ActorContext,
   ): Promise<OfflineSyncResult> {
     const event = await requireEvent(input.eventId, actor);
+    if (event.status === 'cancelled') {
+      throw new InvalidOperationError(
+        'Offline admission is closed because this event was cancelled',
+      );
+    }
     const session = await authenticateSession(input.sessionToken, input.eventId);
     requireOrgAccess(actor, session.organizationId);
     if (!canSessionScan(session)) {

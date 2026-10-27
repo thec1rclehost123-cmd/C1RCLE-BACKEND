@@ -21,7 +21,7 @@ function fakeRequest(organizationId = 'org_1', userId = 'usr_1') {
       activeMembership: {
         organizationId,
         role: 'owner',
-        capabilities: ['host', 'venue', 'promoter'],
+        capabilities: ['venue'],
       },
     },
     headers: { 'x-organization-id': organizationId },
@@ -79,7 +79,7 @@ describe('V2 services wiring (B09) — EventPublished → audit trail end-to-end
     expect(audit.some((record) => record.eventType === 'event.created')).toBe(false);
   });
 
-  it('cancelling after publish does not disturb existing audit records', async () => {
+  it('cancelling after publish appends one cancellation audit record', async () => {
     const services = createV2Services(silentLogger());
     const actor = services.actor(fakeRequest());
 
@@ -92,11 +92,15 @@ describe('V2 services wiring (B09) — EventPublished → audit trail end-to-end
     await services.events.transitionTo(actor, event.id, 'scheduled');
     await services.events.publish(actor, event.id);
     await services.events.cancel(actor, event.id, 'weather');
+    await services.events.cancel(actor, event.id, 'duplicate retry');
 
-    // Consumers are wired for published/updated only; a publish stays exactly
-    // one record — cancel emission never corrupts the trail.
-    const types = services.audits.all().map((record) => record.eventType);
+    const records = services.audits.all();
+    const types = records.map((record) => record.eventType);
     expect(types.filter((type) => type === 'event.published')).toHaveLength(1);
-    expect(types.filter((type) => type === 'event.cancelled')).toHaveLength(0);
+    expect(types.filter((type) => type === 'event.cancelled')).toHaveLength(1);
+    expect(records.find((record) => record.eventType === 'event.cancelled')).toMatchObject({
+      aggregateId: event.id,
+      snapshot: { title: 'Rain Check', reason: 'weather' },
+    });
   });
 });

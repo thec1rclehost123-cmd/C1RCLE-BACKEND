@@ -194,6 +194,7 @@ const checkoutOrderLineDtoSchema = z.object({
  */
 export const checkoutOrderDtoSchema = z.object({
   id: opaqueIdSchema,
+  bookingReference: z.string().regex(/^C1-[A-F0-9]{5}(?:-[A-F0-9]{5}){3}$/),
   eventId: opaqueIdSchema,
   organizationId: opaqueIdSchema,
   userId: opaqueIdSchema.nullable(),
@@ -213,6 +214,14 @@ export const checkoutOrderDtoSchema = z.object({
   paidAt: z.iso.datetime().nullable(),
   reservationExpiresAt: z.iso.datetime(),
   failureReason: z.string().nullable(),
+  eventCancellation: z
+    .object({
+      eventVersion: z.number().int().positive(),
+      eventTitle: z.string().min(1),
+      reason: z.string().min(1),
+      cancelledAt: z.iso.datetime(),
+    })
+    .nullable(),
   refundedPaise: z.number().int().nonnegative(),
   version: z.number().int().positive(),
   createdAt: z.iso.datetime(),

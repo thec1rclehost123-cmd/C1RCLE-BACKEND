@@ -10,6 +10,8 @@ import {
   VenueCalendarService,
   VenueSlotRequestService,
   EventService,
+  EventCancellationService,
+  createTransactionalEmailConsumer,
   EventCatalogService,
   AnalyticsService,
   IdempotencyService,
@@ -80,6 +82,8 @@ import {
 import {
   MemoryOutboxStore,
   FirestoreOutboxStore,
+  MemoryEmailDeliveryRepository,
+  FirestoreEmailDeliveryRepository,
   MemoryAuditRepository,
   MemoryAdminAuditRepository,
   FirestoreAdminAuditRepository,
@@ -314,6 +318,10 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   });
 
   const repositories: ServiceDeps['repositories'] = buildRepositories(gw);
+  const emailDeliveries =
+    gw.STORAGE_DRIVER === 'memory'
+      ? new MemoryEmailDeliveryRepository()
+      : new FirestoreEmailDeliveryRepository(firestoreClient(gw));
 
   // Financial and domain-event intents must survive a production process
   // restart. Tests keep the deterministic memory adapter; Firestore uses the
@@ -326,6 +334,8 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   const eventBus = new InProcessEventBus(outboxStore);
   eventBus.subscribe('event.published', createAuditConsumer(audits));
   eventBus.subscribe('event.updated', createAuditConsumer(audits));
+  eventBus.subscribe('event.cancelled', createAuditConsumer(audits));
+  eventBus.subscribe('event.cancellation.order_affected', createAuditConsumer(audits));
   // B11: the analytics projection consumer is subscribed below, once `deps`
   // exists — it needs the AnalyticsService instance, which needs `deps`.
   // Phase 8 pub/sub: follow graph changes are audited, and every publish fans
@@ -446,6 +456,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
         ? new EchoObjectStorage()
         : new FirebaseObjectStorage(storageClient(gw), coreConfig.storage.kycBucket),
     emailSender,
+    emailDeliveries,
     userDirectory,
     paymentProvider,
     credentialProvisioner,
@@ -454,6 +465,22 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     inventory,
     repositories,
   };
+
+  const eventCancellation = new EventCancellationService(deps);
+  eventBus.subscribe('event.cancelled', eventCancellation.handle);
+  eventBus.subscribe('event.cancellation.batch_requested', eventCancellation.handle);
+  eventBus.subscribe('order.fulfilled', eventCancellation.handle);
+  eventBus.subscribe('finance.refund.finalized', eventCancellation.handle);
+  eventBus.subscribe('finance.refund.settled', eventCancellation.handle);
+  const transactionalEmailConsumer = createTransactionalEmailConsumer(deps);
+  eventBus.subscribe('order.fulfilled', transactionalEmailConsumer);
+  eventBus.subscribe('payment.support_required', transactionalEmailConsumer);
+  eventBus.subscribe('finance.refund.settled', transactionalEmailConsumer);
+  eventBus.subscribe('finance.payout.status_changed', transactionalEmailConsumer);
+  eventBus.subscribe('event.cancellation.order_affected', transactionalEmailConsumer);
+  eventBus.subscribe('event.updated', transactionalEmailConsumer);
+  eventBus.subscribe('event.material_change.batch_requested', transactionalEmailConsumer);
+  eventBus.subscribe('event.material_change.order_affected', transactionalEmailConsumer);
 
   // V2 partner inbox producer consumer: domain events → notification rows.
   // Subscribed to each producer event type; the handler is a named function
@@ -544,7 +571,8 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     logger: deps.logger,
   });
 
-  const checkout = new CheckoutService(deps);
+  const providerPayments = new ProviderPaymentService(deps);
+  const checkout = new CheckoutService(deps, providerPayments);
   const fulfilmentRepair = new FulfilmentRepairService(deps, checkout);
 
   // The paid walk-up sale. `settleOrder` is injected from the checkout
@@ -585,6 +613,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     reconciliations: repositories.reconciliations,
     platformSettings: repositories.platformSettings,
     config: coreConfig,
+    outbox: eventBus,
   });
 
   const bankAccount = createBankAccountService({
@@ -598,7 +627,6 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   });
 
   const refund = new RefundService(deps, adminAuthority);
-  const providerPayments = new ProviderPaymentService(deps);
   const reconciliation = new ReconciliationService(deps);
   const journalTransition = new JournalTransitionService(deps);
   const adminPayout = new AdminPayoutService(deps, adminAuthority);

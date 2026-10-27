@@ -81,6 +81,40 @@ export default async function paymentRoutes(fastify: FastifyInstance) {
     },
   );
 
+  // A refresh may lose Razorpay's client callback. This explicit command
+  // re-reads a recorded capture from the provider and converges through the
+  // normal idempotent fulfillment path; the status GET above remains read-only.
+  fastify.post(
+    '/payments/attempts/:holdId/reconcile',
+    {
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({ params: holdIdParam }),
+      ],
+    },
+    async (request, reply) => {
+      const { holdId } = request.params as z.infer<typeof holdIdParam>;
+      const actor = services.actor(request);
+      if (!actor.userId || isSystemActor(actor)) {
+        mapDomainError(
+          reply,
+          request,
+          holdId,
+          new UnauthorizedError('Authentication is required to recover a payment'),
+        );
+        return reply;
+      }
+      try {
+        const status = await services.checkout.reconcilePaymentRecovery(actor, holdId);
+        const payload = validateV2Response(reply, request, paymentRecoveryResponseSchema, status);
+        if (payload === undefined) return await reply;
+        return await reply.status(200).send(payload);
+      } catch (error) {
+        return mapDomainError(reply, request, holdId, error);
+      }
+    },
+  );
+
   // ── CREATE PAYMENT ATTEMPT ──────────────────────────────────────────────
   fastify.post(
     '/payments/attempts',

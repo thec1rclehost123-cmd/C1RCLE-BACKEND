@@ -43,6 +43,10 @@ export interface PaymentVerificationResponse {
   orderId?: string | null;
   /** ISO-4217 code the provider captured in. */
   currency?: string;
+  /** Provider's captured processing fee in paise, when returned by the provider. */
+  feePaise?: number;
+  /** Tax on the provider fee in paise, when returned by the provider. */
+  taxOnFeePaise?: number;
 }
 
 /**
@@ -189,6 +193,8 @@ export class MemoryPaymentProvider implements PaymentProvider {
       captured: true,
       orderId: existing?.orderId ?? null,
       currency: existing?.currency ?? 'INR',
+      feePaise: existing?.feePaise ?? 0,
+      taxOnFeePaise: existing?.taxOnFeePaise ?? 0,
     };
     this.payments.set(paymentId, captured);
     return captured;
@@ -220,6 +226,7 @@ export class MemoryPaymentProvider implements PaymentProvider {
     amountPaise: number,
     orderId: string | null = null,
     currency = 'INR',
+    fees: { feePaise: number; taxOnFeePaise: number } = { feePaise: 0, taxOnFeePaise: 0 },
   ): void {
     this.payments.set(paymentId, {
       verified: true,
@@ -228,6 +235,8 @@ export class MemoryPaymentProvider implements PaymentProvider {
       captured: true,
       orderId,
       currency,
+      feePaise: fees.feePaise,
+      taxOnFeePaise: fees.taxOnFeePaise,
     });
   }
 }
