@@ -79,3 +79,6 @@ overrides:
   # repo pins zod too and must stay on the same minor: the contract parity check
   # builds both sides with one zod.
   zod: '>=4.6.6'
+  # Better Auth before 1.7.7 has critical and high-severity authentication
+  # advisories. Keep all transitive consumers on the patched release line.
+  better-auth: '>=1.7.7'
