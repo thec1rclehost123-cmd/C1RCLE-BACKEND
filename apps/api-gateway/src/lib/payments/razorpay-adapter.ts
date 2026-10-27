@@ -38,6 +38,8 @@ interface RazorpayPaymentResponse {
   captured: boolean;
   /** The Razorpay order this payment was made against; null for orderless payments. */
   order_id?: string | null;
+  fee?: number;
+  tax?: number;
 }
 
 interface RazorpayRefundResponse {
@@ -67,9 +69,18 @@ function isRazorpayOrderResponse(data: unknown): data is RazorpayOrderResponse {
 }
 
 function isRazorpayPaymentResponse(data: unknown): data is RazorpayPaymentResponse {
+  if (
+    !isRazorpayOrderResponse(data) ||
+    typeof (data as unknown as Record<string, unknown>).captured !== 'boolean'
+  ) {
+    return false;
+  }
+  const payment = data as unknown as Record<string, unknown>;
   return (
-    isRazorpayOrderResponse(data) &&
-    typeof (data as unknown as Record<string, unknown>).captured === 'boolean'
+    (payment.fee === undefined || typeof payment.fee === 'number') &&
+    (payment.tax === undefined || typeof payment.tax === 'number') &&
+    (payment.status !== 'captured' ||
+      (typeof payment.fee === 'number' && typeof payment.tax === 'number'))
   );
 }
 
@@ -238,6 +249,8 @@ export class RazorpayPaymentProvider {
       captured: data.status === 'captured',
       orderId: data.order_id ?? null,
       currency: data.currency,
+      feePaise: data.fee,
+      taxOnFeePaise: data.tax,
     };
   }
 
@@ -312,6 +325,8 @@ export class RazorpayPaymentProvider {
       captured: data.status === 'captured',
       orderId: data.order_id ?? null,
       currency: data.currency,
+      feePaise: data.fee,
+      taxOnFeePaise: data.tax,
     };
   }
 

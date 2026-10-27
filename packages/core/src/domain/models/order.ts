@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { InvalidOperationError } from '../errors.js';
 import { transitionStatus } from '../fsm.js';
 import { bumpVersion, newVersionedEntity } from '../identity.js';
@@ -101,8 +103,22 @@ export interface OrderAttribution {
   promoterCommissionPaise: number;
 }
 
+/**
+ * Immutable evidence that the event was cancelled after this order was
+ * created. The order's payment/refund status remains authoritative for money;
+ * this marker is the cross-surface authority for admission and guest wording.
+ */
+export interface OrderEventCancellation {
+  eventVersion: number;
+  eventTitle: string;
+  reason: string;
+  cancelledAt: string;
+}
+
 export interface Order extends VersionedEntity {
   id: EntityId;
+  /** Stable, support-safe reference shown to guests instead of the internal id. */
+  bookingReference?: string;
   eventId: EntityId;
   organizationId: EntityId;
   /** Null for a guest checkout with no account. */
@@ -136,6 +152,9 @@ export interface Order extends VersionedEntity {
   /** Why the order ended, when it ended unhappily. */
   failureReason: string | null;
 
+  /** Present once the owning event cancellation has affected this order. */
+  eventCancellation?: OrderEventCancellation | null;
+
   /**
    * Cumulative amount refunded so far (Phase 6 admin refunds). A partial
    * refund keeps the order at `paid`; the order only reaches the terminal
@@ -162,6 +181,19 @@ export interface CreateOrderInput {
 /** v1's cart-hold TTL. Long enough to pay, short enough not to starve the event. */
 export const DEFAULT_RESERVATION_TTL_MS = 10 * 60 * 1000;
 
+/**
+ * A stable 80-bit reference derived from the full immutable order id. This is
+ * not a visible truncation of the id: the SHA-256 digest makes the value safe
+ * to communicate while retaining enough collision resistance for lookup.
+ */
+export function bookingReferenceForOrderId(orderId: EntityId): string {
+  const digest = createHash('sha256')
+    .update(`c1rcle-booking:${orderId}`)
+    .digest('hex')
+    .slice(0, 20);
+  return `C1-${digest.slice(0, 5)}-${digest.slice(5, 10)}-${digest.slice(10, 15)}-${digest.slice(15, 20)}`.toUpperCase();
+}
+
 export function createOrder(input: CreateOrderInput): Order {
   const now = input.now ?? new Date();
   const ttl = input.reservationTtlMs ?? DEFAULT_RESERVATION_TTL_MS;
@@ -169,6 +201,7 @@ export function createOrder(input: CreateOrderInput): Order {
 
   return {
     id: input.id,
+    bookingReference: bookingReferenceForOrderId(input.id),
     eventId: input.eventId,
     organizationId: input.organizationId,
     userId: input.userId ?? null,
@@ -276,6 +309,45 @@ export function cancelOrder(order: Order, reason?: string, now?: Date): Order {
     ...bumpVersion(order, at),
     status: transitionStatus(order.status, 'cancelled', ORDER_TRANSITIONS),
     failureReason: reason ?? null,
+  };
+}
+
+/**
+ * Applies event-cancellation state exactly once while preserving financial
+ * history. Paid orders may be locked for the deterministic admin-approved
+ * refund workflow; free/refunded orders retain their financial status.
+ */
+export function markOrderEventCancelled(
+  order: Order,
+  input: {
+    eventVersion: number;
+    eventTitle: string;
+    reason: string;
+    lockForRefund: boolean;
+  },
+  now?: Date,
+): Order {
+  const at = now ?? new Date();
+  const alreadyMarked =
+    order.eventCancellation?.eventVersion === input.eventVersion &&
+    order.eventCancellation.eventTitle === input.eventTitle &&
+    order.eventCancellation.reason === input.reason;
+  let status = order.status;
+  if (order.status === 'pending' || order.status === 'awaiting_payment') {
+    status = transitionStatus(order.status, 'cancelled', ORDER_TRANSITIONS);
+  } else if (order.status === 'paid' && input.lockForRefund) {
+    status = transitionStatus(order.status, 'refund_requested', ORDER_TRANSITIONS);
+  }
+  if (alreadyMarked && status === order.status) return order;
+  return {
+    ...bumpVersion(order, at),
+    status,
+    eventCancellation: {
+      eventVersion: input.eventVersion,
+      eventTitle: input.eventTitle,
+      reason: input.reason.trim(),
+      cancelledAt: at.toISOString(),
+    },
   };
 }
 

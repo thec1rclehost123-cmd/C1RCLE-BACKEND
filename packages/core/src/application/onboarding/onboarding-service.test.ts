@@ -10,6 +10,7 @@ import {
 } from '../../domain/ports/staff-credentials.js';
 import { FormatCheckVerificationProvider } from '../../domain/ports/verification.js';
 import { MemoryAdminAuditRepository } from '../../infrastructure/memory/memory-audit-repository.js';
+import { MemoryEmailDeliveryRepository } from '../../infrastructure/memory/memory-email-delivery-repository.js';
 import {
   MemoryOnboardingRepository,
   MemoryPlatformAdminRepository,
@@ -118,6 +119,7 @@ function buildDeps() {
     config,
     logger: noopLogger,
     outbox: new MemoryOutboxStore(),
+    emailDeliveries: new MemoryEmailDeliveryRepository(),
     adminAudit: new MemoryAdminAuditRepository(),
     verification: new FormatCheckVerificationProvider(),
     objectStorage: new EchoObjectStorage(),

@@ -20,6 +20,7 @@ import {
   lockOrderForRefund,
   markFailed,
   markPaid,
+  bookingReferenceForOrderId,
   refundableBalance,
   restoreOrderAfterRefundFailure,
   totalUnits,
@@ -71,6 +72,15 @@ function paidOrder(): Order {
 }
 
 describe('order lifecycle', () => {
+  it('assigns a deterministic support-safe booking reference', () => {
+    const created = order();
+
+    expect(created.bookingReference).toBe(bookingReferenceForOrderId(created.id));
+    expect(created.bookingReference).toMatch(/^C1-[A-F0-9]{5}(?:-[A-F0-9]{5}){3}$/);
+    expect(bookingReferenceForOrderId(created.id)).toBe(created.bookingReference);
+    expect(bookingReferenceForOrderId('ord_2')).not.toBe(created.bookingReference);
+  });
+
   it('freezes the pricing breakdown onto the order', () => {
     const created = order();
     expect(created.subtotalPaise).toBe(200_000);

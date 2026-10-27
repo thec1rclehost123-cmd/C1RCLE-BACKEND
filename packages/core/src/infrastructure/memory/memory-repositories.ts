@@ -1,7 +1,12 @@
-import { VersionConflictError } from '../../domain/errors.js';
+import { InvalidOperationError, VersionConflictError } from '../../domain/errors.js';
 import { admitSeats } from '../../domain/models/entitlement.js';
+import { bookingReferenceForOrderId } from '../../domain/models/order.js';
 import { DEFAULT_PLATFORM_SETTINGS } from '../../domain/models/platform-settings.js';
-import { doSlotRangesOverlap, assertSlotRangeFree } from '../../domain/models/venue.js';
+import {
+  doSlotRangesOverlap,
+  assertSlotRangeFree,
+  setVenueSlotRequestState,
+} from '../../domain/models/venue.js';
 
 /**
  * ─── In-memory repository implementations (Core domains for tests) ──────────────
@@ -262,6 +267,8 @@ export class MemoryVenueRepository implements VenueRepository {
 export class MemorySlotRequestRepository implements SlotRequestRepository {
   requests = new Map<EntityId, SlotRequest>();
 
+  constructor(private readonly venueSlots?: MemoryVenueSlotRepository) {}
+
   async getById(slotRequestId: EntityId): Promise<SlotRequest | null> {
     return this.requests.get(slotRequestId) ?? null;
   }
@@ -278,6 +285,91 @@ export class MemorySlotRequestRepository implements SlotRequestRepository {
 
   async save(request: SlotRequest, _tx?: TxContext | null): Promise<void> {
     casSet(this.requests, request);
+  }
+
+  async createForOpenSlot(request: SlotRequest): Promise<void> {
+    const slotId = request.slotId;
+    const slotRepo = this.venueSlots;
+    if (!slotId || !slotRepo) throw new Error('A Venue slot repository is required');
+    const slots = slotRepo.slots.get(request.venueId) ?? [];
+    const index = slots.findIndex((slot) => slot.id === slotId);
+    const slot = slots[index];
+    if (!slot || slot.status !== 'open') throw new Error('This Venue slot is no longer open');
+    if (slot.visibleToHostIds && !slot.visibleToHostIds.includes(request.hostId)) {
+      throw new Error('This Venue slot is not available to this Host');
+    }
+    if (this.requests.has(request.id)) throw new Error('Slot request already exists');
+    const pending = setVenueSlotRequestState(
+      slot,
+      'pending',
+      request.id,
+      request.hostId,
+      new Date(request.createdAt),
+    );
+    const nextSlots = [...slots];
+    nextSlots[index] = pending;
+    slotRepo.slots.set(request.venueId, nextSlots);
+    this.requests.set(request.id, request);
+  }
+
+  async transitionForSlot(previous: SlotRequest, updated: SlotRequest): Promise<void> {
+    const slotId = previous.slotId;
+    const slotRepo = this.venueSlots;
+    if (!slotId || !slotRepo) throw new Error('A Venue slot repository is required');
+    const stored = this.requests.get(previous.id);
+    if (!stored || stored.version !== previous.version) {
+      throw new VersionConflictError(previous.version, stored?.version ?? 0);
+    }
+    const slots = slotRepo.slots.get(previous.venueId) ?? [];
+    const index = slots.findIndex((slot) => slot.id === slotId);
+    const slot = slots[index];
+    if (!slot || slot.slotRequestId !== previous.id || slot.requestingHostId !== previous.hostId) {
+      throw new Error('The Venue slot is no longer held by this request');
+    }
+    const nextStatus =
+      updated.status === 'accepted'
+        ? 'booked'
+        : updated.status === 'cancelled' && previous.status === 'accepted'
+          ? 'cancelled'
+          : 'open';
+    const nextSlot = setVenueSlotRequestState(
+      slot,
+      nextStatus,
+      nextStatus === 'open' ? null : previous.id,
+      nextStatus === 'open' ? null : previous.hostId,
+      new Date(updated.updatedAt),
+    );
+    const nextSlots = [...slots];
+    nextSlots[index] = nextSlot;
+    slotRepo.slots.set(previous.venueId, nextSlots);
+    this.requests.set(updated.id, updated);
+  }
+
+  async claimAcceptedSlotEvent(
+    slotRequestId: EntityId,
+    hostId: EntityId,
+    eventId: EntityId,
+  ): Promise<SlotRequest> {
+    const request = this.requests.get(slotRequestId);
+    if (!request || request.hostId !== hostId || request.status !== 'accepted' || !request.slotId) {
+      throw new InvalidOperationError(
+        'An accepted Host slot request is required to create this event',
+      );
+    }
+    if (request.eventId && request.eventId !== eventId) {
+      throw new InvalidOperationError('This accepted slot already has an event');
+    }
+    const updated =
+      request.eventId === eventId
+        ? request
+        : {
+            ...request,
+            eventId,
+            version: request.version + 1,
+            updatedAt: new Date().toISOString(),
+          };
+    this.requests.set(slotRequestId, updated);
+    return updated;
   }
 }
 
@@ -325,6 +417,10 @@ export class MemoryVenueSlotRepository implements VenueSlotRepository {
     assertSlotRangeFree(existing, block.startTime, block.endTime);
     this.slots.set(block.venueId, [...existing, block]);
     return block;
+  }
+
+  async createOpenSlotIfFree(slot: VenueSlot): Promise<VenueSlot> {
+    return this.createBlockIfFree(slot);
   }
 }
 
@@ -569,6 +665,17 @@ export class MemoryOrderRepository implements OrderRepository {
     return this.orders.get(orderId) ?? null;
   }
 
+  async getByBookingReference(bookingReference: string): Promise<Order | null> {
+    const normalized = bookingReference.toUpperCase();
+    return (
+      [...this.orders.values()].find(
+        (order) =>
+          (order.bookingReference ?? bookingReferenceForOrderId(order.id)).toUpperCase() ===
+          normalized,
+      ) ?? null
+    );
+  }
+
   async getByPaymentId(paymentId: string): Promise<Order | null> {
     return this.byPaymentId.get(paymentId) ?? null;
   }
@@ -586,7 +693,9 @@ export class MemoryOrderRepository implements OrderRepository {
   }
 
   async listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Order>> {
-    const all = [...this.orders.values()].filter((o) => o.organizationId === organizationId);
+    const all = [...this.orders.values()]
+      .filter((o) => o.organizationId === organizationId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
     return serializeSlice(all, query);
   }
 

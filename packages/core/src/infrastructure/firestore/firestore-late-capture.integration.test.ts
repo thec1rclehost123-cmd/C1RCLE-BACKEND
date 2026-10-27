@@ -12,6 +12,7 @@ import { PaymentRefundedError } from '../../domain/errors.js';
 import { createTicketTier } from '../../domain/models/event-catalog.js';
 import { createEvent, transitionEvent } from '../../domain/models/event.js';
 import { MemoryPaymentProvider } from '../../domain/ports/payment-provider.js';
+import { MemoryOutboxStore } from '../memory/memory-outbox-store.js';
 import { buildRepositories } from '../utils.js';
 
 import { FirestoreCartReservationRepository } from './firestore-cart-reservation-repository.js';
@@ -93,6 +94,7 @@ describe.runIf(EMULATOR)('late payment vs a new buyer (Firestore emulator)', () 
     const refund = vi.spyOn(provider, 'refundPayment');
     const deps = {
       config,
+      outbox: new MemoryOutboxStore(),
       paymentProvider: provider,
       pricing: new PricingService({ eventCatalog: catalog }),
       inventory: new InventoryService({

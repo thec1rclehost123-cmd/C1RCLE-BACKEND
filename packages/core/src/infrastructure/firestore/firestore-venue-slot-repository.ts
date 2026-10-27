@@ -70,15 +70,19 @@ export class FirestoreVenueSlotRepository implements VenueSlotRepository {
    * to the old non-atomic path (400 `InvalidOperationError`).
    */
   async createBlockIfFree(block: VenueSlot): Promise<VenueSlot> {
+    return this.createOpenSlotIfFree(block);
+  }
+
+  async createOpenSlotIfFree(slot: VenueSlot): Promise<VenueSlot> {
     await this.db.runTransaction(async (tx) => {
       const snap = await tx.get(
-        this.collection.where('venueId', '==', block.venueId).limit(MAX_SLOTS_READ),
+        this.collection.where('venueId', '==', slot.venueId).limit(MAX_SLOTS_READ),
       );
       const existing = snap.docs.map((doc) => toVenueSlot(doc.data()));
-      assertSlotRangeFree(existing, block.startTime, block.endTime);
-      tx.set(this.collection.doc(block.id), toDoc(block));
+      assertSlotRangeFree(existing, slot.startTime, slot.endTime);
+      tx.set(this.collection.doc(slot.id), toDoc(slot));
     });
-    return block;
+    return slot;
   }
 }
 
@@ -96,6 +100,11 @@ function toVenueSlot(data: DocumentData): VenueSlot {
     recurring: data.recurring as boolean,
     status: data.status as VenueSlot['status'],
     capacityFor: (data.capacityFor as number | null) ?? null,
+    timezone: (data.timezone as string | null) ?? null,
+    notes: (data.notes as string | null) ?? null,
+    visibleToHostIds: (data.visibleToHostIds as string[] | null) ?? null,
+    slotRequestId: (data.slotRequestId as string | null) ?? null,
+    requestingHostId: (data.requestingHostId as string | null) ?? null,
     version: data.version as number,
     createdAt: data.createdAt as string,
     updatedAt: data.updatedAt as string,

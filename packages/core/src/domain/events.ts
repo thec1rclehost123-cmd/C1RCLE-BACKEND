@@ -5,6 +5,8 @@
  * aggregates, never repo handles. `occurredAt` is epoch ms (backend clock).
  */
 
+import { createHash } from 'node:crypto';
+
 import type { EntityId } from './identity.js';
 
 /** Bump when a payload shape changes in a breaking way. */
@@ -27,15 +29,84 @@ export interface EventPayloads {
   'organization.updated': { name?: string; slug?: string };
   'venue.created': { name: string; slug: string };
   'venue.updated': { name?: string; slug?: string };
+  'venue.availability.published': {
+    venueId: EntityId;
+    startTime: string;
+    endTime: string;
+    timezone: string;
+  };
+  'venue.slot_request.created': { venueId: EntityId; slotId: EntityId };
+  'venue.slot_request.accepted': { venueId: EntityId; slotId: EntityId };
+  'venue.slot_request.rejected': { venueId: EntityId; slotId: EntityId | null };
+  'venue.slot_request.cancelled': { venueId: EntityId; slotId: EntityId | null };
   'event.created': { title: string; venueId: EntityId };
-  'event.updated': { title?: string; venueId?: EntityId };
+  'event.updated': {
+    title?: string;
+    venueId?: EntityId;
+    materialChange?: {
+      eventVersion: number;
+      previousTitle: string;
+      title: string;
+      previousStartAt: string;
+      startAt: string;
+    } | null;
+  };
+  'event.material_change.batch_requested': {
+    eventId: EntityId;
+    eventVersion: number;
+    previousTitle: string;
+    title: string;
+    previousStartAt: string;
+    startAt: string;
+    cursor: string | null;
+  };
+  'event.material_change.order_affected': {
+    eventId: EntityId;
+    orderId: EntityId;
+    eventVersion: number;
+    previousTitle: string;
+    title: string;
+    previousStartAt: string;
+    startAt: string;
+  };
   'event.published': { title: string };
-  'event.cancelled': { title: string };
+  'event.cancelled': { title: string; reason: string; eventVersion: number };
+  'event.cancellation.batch_requested': {
+    eventId: EntityId;
+    reason: string;
+    eventVersion: number;
+    cursor: string | null;
+  };
+  'event.cancellation.order_affected': {
+    eventId: EntityId;
+    orderId: EntityId;
+    refundRequestId: EntityId | null;
+    reason: string;
+  };
+  'order.fulfilled': { orderId: EntityId; eventId: EntityId };
+  'payment.support_required': {
+    paymentId: string;
+    holdId: EntityId;
+    organizationId: EntityId;
+    stateVersion: number;
+  };
   'finance.refund.settled': {
     refundRequestId: EntityId;
     orderId: EntityId;
     amountPaise: number;
     providerRefundId: string;
+  };
+  'finance.refund.finalized': {
+    refundRequestId: EntityId;
+    orderId: EntityId;
+    status: 'rejected' | 'failed';
+  };
+  'finance.payout.status_changed': {
+    payoutId: EntityId;
+    organizationId: EntityId;
+    status: 'requested' | 'processing' | 'paid' | 'failed' | 'frozen';
+    version: number;
+    amountPaise: number;
   };
   // Phase 8: follow graph. Consumers: audit; follower-count projections later.
   'follow.created': { followerId: EntityId; targetType: 'venue' | 'host'; targetId: EntityId };
@@ -76,6 +147,14 @@ export interface EventPayloads {
 }
 
 export type DomainEventType = keyof EventPayloads;
+
+/** Stable outbox identity for logical events that may be ensured repeatedly. */
+export function deterministicDomainEventId(type: string, ...parts: string[]): EntityId {
+  const digest = createHash('sha256')
+    .update([type, ...parts].join(':'))
+    .digest('hex');
+  return `EVT-${digest.slice(0, 40)}`;
+}
 
 export interface DomainEventInput<TType extends DomainEventType = DomainEventType> {
   type: TType;

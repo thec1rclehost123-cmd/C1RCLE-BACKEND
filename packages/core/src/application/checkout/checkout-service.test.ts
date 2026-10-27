@@ -4,9 +4,12 @@ import { createCoreConfig } from '../../config/index.js';
 import { ConflictError, InvalidOperationError, UnauthorizedError } from '../../domain/errors.js';
 import { createTicketTier } from '../../domain/models/event-catalog.js';
 import { createEvent, transitionEvent } from '../../domain/models/event.js';
+import { createGuestProfile } from '../../domain/models/guest-profile.js';
 import { MemoryFinancialJournalRepository } from '../../infrastructure/memory/memory-financial-journal-repository.js';
+import { MemoryGuestProfileRepository } from '../../infrastructure/memory/memory-guest-profile-repository.js';
 import { MemoryLeaderboardRepository } from '../../infrastructure/memory/memory-leaderboard-repository.js';
 import { MemoryLedgerRepository } from '../../infrastructure/memory/memory-ledger-repository.js';
+import { MemoryOutboxStore } from '../../infrastructure/memory/memory-outbox-store.js';
 import {
   MemoryCartReservationRepository,
   MemoryEntitlementRepository,
@@ -52,8 +55,10 @@ function buildService() {
   const orders = new MemoryOrderRepository();
   const entitlements = new MemoryEntitlementRepository();
   const carts = new MemoryCartReservationRepository();
+  const guestProfiles = new MemoryGuestProfileRepository();
   const deps = {
     config,
+    outbox: new MemoryOutboxStore(),
     pricing: new PricingService({ eventCatalog: catalog }),
     inventory: new InventoryService({
       eventCatalog: catalog,
@@ -66,12 +71,13 @@ function buildService() {
       cartReservations: carts,
       orders,
       entitlements,
+      guestProfiles,
       ledger: new MemoryLedgerRepository(),
       financialJournals: new MemoryFinancialJournalRepository(),
       leaderboard: new MemoryLeaderboardRepository(),
     },
   } as unknown as ServiceDeps;
-  return { deps, events, catalog, orders, service: new CheckoutService(deps) };
+  return { deps, events, catalog, orders, guestProfiles, service: new CheckoutService(deps) };
 }
 
 async function seedPublishedFreeEvent(
@@ -130,6 +136,31 @@ function seedLegacyFreeTier(catalog: MemoryEventCatalogRepository): void {
 }
 
 describe('CheckoutService.createRsvp', () => {
+  it('uses the authenticated Guest profile name without storing email or phone', async () => {
+    const { events, catalog, guestProfiles, service } = buildService();
+    await seedPublishedFreeEvent(events);
+    seedTier(catalog);
+    await guestProfiles.save(
+      createGuestProfile('user_1', {
+        displayName: 'M3 RSVP Buyer',
+        dateOfBirth: '2000-01-01',
+        city: 'Pune',
+        tastes: ['Music'],
+        intents: ['Meet people'],
+        now: NOW,
+      }),
+    );
+
+    const { order, entitlements } = await service.createRsvp({
+      actor: actor('user_1'),
+      eventId: 'evt_1',
+      tierId: 'tier_1',
+    });
+
+    expect(order.contact).toEqual({ name: 'M3 RSVP Buyer', email: '', phone: '' });
+    expect(entitlements[0]?.holderName).toBe('M3 RSVP Buyer');
+  });
+
   it('fulfills a legacy tier doc without priceInPaise (production shape)', async () => {
     const { events, catalog, service } = buildService();
     await seedPublishedFreeEvent(events);

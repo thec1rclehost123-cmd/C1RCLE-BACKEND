@@ -326,7 +326,7 @@ jobs:
           java -version
           npx --yes firebase-tools@15.34.0 emulators:exec \
             --only firestore --project demo-c1rcle \
-            "pnpm --filter @c1rcle/core exec vitest run src/infrastructure/firestore"
+            "pnpm --filter @c1rcle/core exec vitest run src/infrastructure/firestore && pnpm --filter api-gateway exec vitest run src/plugins/auth-firestore.integration.test.ts"
 
   # ── The image that actually ships ──────────────────────────────────────────
   docker:

@@ -83,7 +83,11 @@ function buildRange(
   const endMs = Number.isNaN(end) ? startMs : Math.max(end, startMs);
 
   const keyOf = (instant: string): string =>
-    granularity === 'hour' ? `${dayOf(instant)}T${instant.slice(11, 13)}:00` : dayOf(instant);
+    granularity === 'hour'
+      ? `${dayOf(instant)}T${instant.slice(11, 13)}:00`
+      : granularity === 'month'
+        ? instant.slice(0, 7)
+        : dayOf(instant);
 
   const count = Math.min(Math.max(bucketCount(startMs, endMs, granularity), 1), MAX_TREND_BUCKETS);
 
@@ -171,6 +175,40 @@ export class AnalyticsService {
     return this.computeOrganizationOverview(actor.organizationId);
   }
 
+  /** Source-backed ticket and collection metrics; never inferred by the UI. */
+  async getOrganizationSalesBreakdown(actor: ActorContext): Promise<OrganizationSalesBreakdown> {
+    requireOrgAccess(actor, actor.organizationId);
+    const [orders, entitlements] = await Promise.all([
+      this.scanAll<Order>((q) =>
+        this.deps.repositories.orders.listByOrganization(actor.organizationId, q),
+      ),
+      this.scanAll<Entitlement>((q) =>
+        this.deps.repositories.entitlements.listByOrganization(actor.organizationId, q),
+      ),
+    ]);
+
+    const captured = orders.filter((order) => isCaptured(order.status));
+    const rsvpOrderIds = new Set(
+      captured.filter((order) => order.id.startsWith('RSVP-')).map((order) => order.id),
+    );
+    const paidOrders = captured.filter(
+      (order) => !rsvpOrderIds.has(order.id) && order.lines.some((line) => line.unitPricePaise > 0),
+    );
+    const paidOrderIds = new Set(paidOrders.map((order) => order.id));
+
+    return {
+      totalTicketsIssued: entitlements.length,
+      paidTickets: entitlements.filter((ticket) => paidOrderIds.has(ticket.orderId)).length,
+      freeRsvpTickets: entitlements.filter((ticket) => rsvpOrderIds.has(ticket.orderId)).length,
+      paidOrderCount: paidOrders.length,
+      // Gross captured includes platform fees and tax, and is intentionally
+      // before refunds. Ticket revenue is the discounted ticket subtotal,
+      // excluding guest fees/tax, also before refunds.
+      guestGrossCollectedPaise: paidOrders.reduce((sum, order) => sum + order.grandTotalPaise, 0),
+      ticketRevenuePaise: paidOrders.reduce((sum, order) => sum + order.discountedSubtotalPaise, 0),
+    };
+  }
+
   async getEventAnalytics(actor: ActorContext, eventId: EntityId): Promise<EventAnalytics> {
     const events = this.deps.repositories.events;
     const event = await events.getById(eventId);
@@ -179,8 +217,20 @@ export class AnalyticsService {
       throw new EventNotFoundError(eventId);
     }
     const analytics = await this.repo.getEventAnalytics(eventId);
-    if (analytics) return analytics;
-    return this.computeEventAnalytics(event);
+    // Keep source-derived values fresh even when an older/stale projection is
+    // present. In particular, legacy projections may encode an unconfigured
+    // venue as capacity=0 and mark every future ticket as a no-show. Views,
+    // guest-list signups, and conversion are projection-only, so retain those
+    // fields from the read model while recomputing the financial/attendance
+    // values from source aggregates.
+    const computed = await this.computeEventAnalytics(event);
+    if (!analytics) return computed;
+    return {
+      ...computed,
+      views: analytics.views,
+      guestlistSignups: analytics.guestlistSignups,
+      conversionRate: analytics.conversionRate,
+    };
   }
 
   /**
@@ -252,17 +302,34 @@ export class AnalyticsService {
 
     const buckets = new Map<string, TrendBucket>();
     for (const key of range.keys) {
-      buckets.set(key, { key, revenuePaise: 0, tickets: 0, checkIns: 0 });
+      buckets.set(key, {
+        key,
+        revenuePaise: 0,
+        tickets: 0,
+        checkIns: 0,
+        totalTicketsIssued: 0,
+        paidTickets: 0,
+        freeRsvpTickets: 0,
+        paidOrderCount: 0,
+        guestGrossCollectedPaise: 0,
+        ticketRevenuePaise: 0,
+      });
     }
 
+    const ordersById = new Map(orderList.map((order) => [order.id, order]));
     for (const order of orderList) {
       if (!isCaptured(order.status)) continue;
-      const bucket = buckets.get(range.keyOf(order.createdAt));
+      const bucket = buckets.get(range.keyOf(order.paidAt ?? order.createdAt));
       // An order outside the window is skipped, not clamped — clamping would
       // pile a whole month of sales onto its first or last bucket.
       if (bucket === undefined) continue;
       bucket.revenuePaise += netPaise(order);
       bucket.tickets += ticketsIn(order);
+      if (!order.id.startsWith('RSVP-') && order.lines.some((line) => line.unitPricePaise > 0)) {
+        bucket.paidOrderCount += 1;
+        bucket.guestGrossCollectedPaise += order.grandTotalPaise;
+        bucket.ticketRevenuePaise += order.discountedSubtotalPaise;
+      }
     }
 
     // `scannedAt` is a list of instants, one per scan, so a ticket admitted on
@@ -270,6 +337,16 @@ export class AnalyticsService {
     // multi-day entitlement to a single arbitrary day would make the per-day
     // check-in bars disagree with the total, which counts every scan.
     for (const entry of entitlementList) {
+      const order = ordersById.get(entry.orderId);
+      const issueBucket = buckets.get(range.keyOf(entry.createdAt));
+      if (issueBucket !== undefined) {
+        issueBucket.totalTicketsIssued += 1;
+        if (order && isCaptured(order.status)) {
+          if (order.id.startsWith('RSVP-')) issueBucket.freeRsvpTickets += 1;
+          else if (order.lines.some((line) => line.unitPricePaise > 0))
+            issueBucket.paidTickets += 1;
+        }
+      }
       for (const instant of entry.scannedAt) {
         const bucket = buckets.get(range.keyOf(instant));
         if (bucket !== undefined) bucket.checkIns += 1;
@@ -282,19 +359,31 @@ export class AnalyticsService {
       from: range.from,
       to: range.to,
       buckets: [...buckets.values()],
-      totals: {
-        revenuePaise: orderList.reduce(
-          (sum, order) => (isCaptured(order.status) ? sum + netPaise(order) : sum),
-          0,
-        ),
-        tickets: orderList.reduce(
-          (sum, order) => (isCaptured(order.status) ? sum + ticketsIn(order) : sum),
-          0,
-        ),
-        // Counts individual scans, so it matches the per-bucket sums above
-        // rather than `entry.scanCount` being trusted to equal its array length.
-        checkIns: entitlementList.reduce((sum, entry) => sum + entry.scannedAt.length, 0),
-      },
+      totals: [...buckets.values()].reduce(
+        (totals, bucket) => ({
+          revenuePaise: totals.revenuePaise + bucket.revenuePaise,
+          tickets: totals.tickets + bucket.tickets,
+          checkIns: totals.checkIns + bucket.checkIns,
+          totalTicketsIssued: totals.totalTicketsIssued + bucket.totalTicketsIssued,
+          paidTickets: totals.paidTickets + bucket.paidTickets,
+          freeRsvpTickets: totals.freeRsvpTickets + bucket.freeRsvpTickets,
+          paidOrderCount: totals.paidOrderCount + bucket.paidOrderCount,
+          guestGrossCollectedPaise:
+            totals.guestGrossCollectedPaise + bucket.guestGrossCollectedPaise,
+          ticketRevenuePaise: totals.ticketRevenuePaise + bucket.ticketRevenuePaise,
+        }),
+        {
+          revenuePaise: 0,
+          tickets: 0,
+          checkIns: 0,
+          totalTicketsIssued: 0,
+          paidTickets: 0,
+          freeRsvpTickets: 0,
+          paidOrderCount: 0,
+          guestGrossCollectedPaise: 0,
+          ticketRevenuePaise: 0,
+        },
+      ),
     };
   }
 
@@ -504,11 +593,12 @@ export class AnalyticsService {
   }
 
   private async computeEventAnalytics(event: Event): Promise<EventAnalytics> {
-    const { orders, entitlements, venues } = this.deps.repositories;
+    const { orders, entitlements } = this.deps.repositories;
 
-    const [orderList, entitlementList] = await Promise.all([
+    const [orderList, entitlementList, tiers] = await Promise.all([
       this.scanAll<Order>((q) => orders.listByEvent(event.id, q)),
       this.scanAll<Entitlement>((q) => entitlements.listByEvent(event.id, q)),
+      this.deps.repositories.catalog.listTiers(event.id),
     ]);
 
     let totalRevenuePaise = 0;
@@ -523,10 +613,10 @@ export class AnalyticsService {
 
     const totalCheckIns = entitlementList.reduce((sum, entry) => sum + entry.scanCount, 0);
 
-    const venueCapacity = event.venueId
-      ? ((await venues.getById(event.venueId))?.public.capacity ?? 0)
-      : 0;
-    const capacity = venueCapacity;
+    // Event operations and door occupancy use the event's explicitly declared
+    // legal room capacity. Ticket-tier quantities are inventory, and the
+    // venue's default capacity must not silently override an event-level null.
+    const capacity = event.capacity;
 
     // Repeat guests requires per-user purchase history; the fallback has only a
     // bounded entitlement scan, so count distinct entitled users instead.
@@ -540,21 +630,41 @@ export class AnalyticsService {
       totalRevenuePaise,
       ticketsSold,
       totalCheckIns,
+      totalTicketInventory: tiers.reduce((sum, tier) => sum + tier.quantity, 0),
       capacity,
       // Projection-only in the cached model; no source aggregate exists yet.
       views: 0,
       guestlistSignups: 0,
       avgTicketPricePaise: ticketsSold > 0 ? Math.round(totalRevenuePaise / ticketsSold) : 0,
-      occupancyRate: ratio(totalCheckIns, capacity),
-      sellThroughRate: ratio(ticketsSold, capacity),
+      occupancyRate: capacity === null ? null : ratio(totalCheckIns, capacity),
+      sellThroughRate: capacity === null ? null : ratio(ticketsSold, capacity),
       refundAmountPaise,
       refundRate: ratio(refundAmountPaise, totalRevenuePaise),
+      // A no-show is only knowable after the event's declared end. A future or
+      // in-progress event must not count every unscanned ticket as a no-show.
       noShowRate:
-        ticketsSold > 0 ? Math.min(1, Math.max(0, (ticketsSold - totalCheckIns) / ticketsSold)) : 0,
+        event.endAt && Date.parse(event.endAt) <= Date.now() && ticketsSold > 0
+          ? Math.min(1, Math.max(0, (ticketsSold - totalCheckIns) / ticketsSold))
+          : null,
       repeatGuests: repeatGuests.size,
       conversionRate: 0,
     };
   }
+}
+
+export interface OrganizationSalesBreakdown {
+  /** Historical entitlement records, including ones later voided. */
+  readonly totalTicketsIssued: number;
+  /** Issued entitlement units whose source order is a captured, paid-ticket order. */
+  readonly paidTickets: number;
+  /** Issued entitlement units from deterministic free-RSVP orders. */
+  readonly freeRsvpTickets: number;
+  /** Captured non-RSVP orders containing at least one positive-price tier. */
+  readonly paidOrderCount: number;
+  /** Captured order grand totals (fees and tax included), before refunds. */
+  readonly guestGrossCollectedPaise: number;
+  /** Discounted ticket subtotals, excluding fees and tax, before refunds. */
+  readonly ticketRevenuePaise: number;
 }
 
 function startAtFor(events: Event[], eventId: EntityId): string {

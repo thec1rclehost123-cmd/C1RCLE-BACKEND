@@ -138,6 +138,7 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
 
   if (isMemory) {
     const financialJournals = new MemoryFinancialJournalRepository();
+    const venueSlots = new MemoryVenueSlotRepository();
     return {
       organizations: new MemoryOrganizationRepository(),
       invitations: new MemoryInvitationRepository(),
@@ -145,8 +146,8 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
       referralLinks: new MemoryReferralLinkRepository(),
       promoterConnections: new MemoryPromoterConnectionRepository(),
       venues: new MemoryVenueRepository(),
-      slotRequests: new MemorySlotRequestRepository(),
-      venueSlots: new MemoryVenueSlotRepository(),
+      slotRequests: new MemorySlotRequestRepository(venueSlots),
+      venueSlots,
       events: new MemoryEventRepository(),
       catalog: new MemoryEventCatalogRepository(),
       analytics: new MemoryAnalyticsReadModelRepository(),

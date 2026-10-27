@@ -371,16 +371,42 @@ export function createFinanceService(deps: FinanceServiceDeps): FinanceService {
       paidOut += sums[entryType].paidOut;
     }
 
+    // Keep cancellation holds within the selected legacy read model. We do
+    // not combine journal totals here: settled legacy payable entries for a
+    // cancelled event are simply withheld until the controlled journal
+    // cutover (or the legacy records are resolved).
+    let cancellationHeld = 0;
+    let cursor: string | null = null;
+    const eventCache = new Map<EntityId, Awaited<ReturnType<EventRepository['getById']>>>();
+    do {
+      const page = await ledger.listByOrganization(organizationId, { cursor, limit: 250 });
+      for (const entry of page.items) {
+        if (
+          entry.status !== 'settled' ||
+          !['host_payout', 'venue_share', 'promoter_commission'].includes(entry.entryType)
+        ) {
+          continue;
+        }
+        let event = eventCache.get(entry.eventId);
+        if (event === undefined) {
+          event = await deps.events.getById(entry.eventId);
+          eventCache.set(entry.eventId, event);
+        }
+        if (event?.status === 'cancelled') cancellationHeld += entry.amount;
+      }
+      cursor = page.nextCursor;
+    } while (cursor !== null);
+
     return {
-      availablePaise: settled - paidOut - reserved - paid,
+      availablePaise: Math.max(0, settled - paidOut - reserved - paid - cancellationHeld),
       pendingPaise: pending,
       reservedPaise: reserved,
-      heldPaise: 0,
+      heldPaise: cancellationHeld,
       paidPaise: paid,
       lifetimePaise: pending + settled + paidOut,
       holds: {
         reservePaise: 0,
-        cancellationPaise: 0,
+        cancellationPaise: cancellationHeld,
         chargebackPaise: 0,
         reconciliationPaise: 0,
       },

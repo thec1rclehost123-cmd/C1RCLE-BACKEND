@@ -35,7 +35,7 @@ function fakeAuth(overrides: {
   signInEmail?: () => Promise<Response>;
   signUpEmail?: () => Promise<Response>;
   getSession?: () => Promise<{
-    user: { id: string; email: string; name: string };
+    user: { id: string; email: string; name: string; role?: string };
     session: { token: string };
   } | null>;
   changePassword?: () => Promise<unknown>;
@@ -56,9 +56,9 @@ function fakeAuth(overrides: {
   } as unknown as BetterAuthInstance;
 }
 
-function sessionFor(userId: string) {
+function sessionFor(userId: string, role = 'partner') {
   return {
-    user: { id: userId, email: 'staff@example.com', name: 'Staff' },
+    user: { id: userId, email: 'staff@example.com', name: 'Staff', role },
     session: { token: 'sess_tok', expiresAt: new Date('2026-02-01T00:00:00.000Z') },
   };
 }
@@ -272,6 +272,20 @@ describe('auth routes — first-login password rotation', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.json().user.mustChangePassword).toBe(true);
+    await app.close();
+  });
+});
+
+describe('auth routes — session role mapping', () => {
+  it('preserves the stored Guest role in the authenticated session response', async () => {
+    const app = await buildTestApp(
+      fakeAuth({ getSession: () => Promise.resolve(sessionFor('user_guest', 'guest')) }),
+    );
+
+    const res = await app.inject({ method: 'GET', url: '/api/v2/auth/session' });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().user.role).toBe('guest');
     await app.close();
   });
 });

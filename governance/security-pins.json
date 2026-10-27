@@ -126,6 +126,20 @@
       "why": "Command injection via improper file path validation in launch-editor, bundled in the vite dev server, in 8.2.0 through 8.2.3. Reached only through vitest (a devDependency), but pnpm audit and the Docker Trivy scan fail HIGH on it. Pinned EXACTLY to 8.2.4 and scoped to the 8.2 line vitest already resolves, so a newer major is not pulled in by accident.",
       "overrides": { "vite@>=8.2.0 <8.3.0": "8.2.4" },
       "resolved": ["8.2.4"]
+    },
+    {
+      "name": "zod",
+      "advisories": ["GHSA-mrhx-c7xc-m3w5", "CVE-2023-54404"],
+      "why": "Memory exhaustion while validating oversized constrained collections in zod < 4.6.6 (high; pnpm audit and the Docker Trivy scan both fail on it). zod validates every gateway request and response and is used inside better-auth. A floor rather than an exact pin so a newer patched release needs no manifest edit. The frontend repo pins zod as well and must stay on the same release line, because the contract parity check builds both sides with one zod.",
+      "overrides": { "zod": ">=4.6.6" },
+      "minResolved": "4.6.6"
+    },
+    {
+      "name": "better-auth",
+      "advisories": ["GHSA-965c-763c-88jm", "GHSA-r4xp-prcw-77qf", "GHSA-q84f-53jg-9ppm"],
+      "why": "Authentication advisories affect Better Auth releases before 1.7.7. Keep the gateway and Firestore adapter on a patched release.",
+      "overrides": { "better-auth": ">=1.7.7" },
+      "minResolved": "1.7.7"
     }
   ]
 }
