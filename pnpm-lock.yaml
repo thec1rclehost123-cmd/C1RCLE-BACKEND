@@ -100,8 +100,8 @@ importers:
         specifier: '>=1.7.7'
         version: 1.7.13(@opentelemetry/api@1.9.1)(vitest@4.1.11)
       better-auth-firestore:
-        specifier: ^1.0.0
-        version: 1.2.8(better-auth@1.7.13(@opentelemetry/api@1.9.1)(vitest@4.1.11))(firebase-admin@13.10.0(supports-color@7.2.0))(typescript@5.9.3)
+        specifier: ^1.3.3
+        version: 1.3.3(better-auth@1.7.13(@opentelemetry/api@1.9.1)(vitest@4.1.11))(firebase-admin@13.10.0(supports-color@7.2.0))(typescript@5.9.3)
       fastify:
         specifier: ^5.12.1
         version: 5.12.3
@@ -1255,13 +1255,17 @@ packages:
   base64-js@1.5.1:
     resolution: {integrity: sha512-AKpaYlHn8t4SVbOHCy+b5+KKgvR4vrsD8vbvrbiQJps7fKDTkjkDry6ji0rUJjC0kzbNePLwzxq8iypo41qeWA==}
 
-  better-auth-firestore@1.2.8:
-    resolution: {integrity: sha512-uhOwxCPEYV2MWPkW2YWjd5/N1a/mepIfpQ4Q8JFxlDu0v27B32zRi9gHyP6RtjaRlPX4mu9qDGwYMms6Z8ZVaQ==}
+  better-auth-firestore@1.3.3:
+    resolution: {integrity: sha512-HJH0q0CGFUcb+ZlSSsGkP9XTgKaEOlASsTTkSNJ0R9SnXXP6BtBvl8SXrzRWP230QLqbq4ZCkA3bBnFofKihhQ==}
     engines: {node: '>=22'}
+    hasBin: true
     peerDependencies:
       better-auth: '>=1.7.7'
       firebase-admin: '>=13'
-      typescript: ^5.0.0
+      typescript: ^5.0.0 || ^6.0.0 || ^7.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
 
   better-auth@1.7.13:
     resolution: {integrity: sha512-ncevUrVAWmYbC6Jjxadeh2QLBGMbsfenu8pwgAHJRexXJ4ifPCMbT4e4u79QKPuGpR5Wjw9yPReedVoh6m/qBg==}
@@ -4189,10 +4193,11 @@ snapshots:
 
   base64-js@1.5.1: {}
 
-  better-auth-firestore@1.2.8(better-auth@1.7.13(@opentelemetry/api@1.9.1)(vitest@4.1.11))(firebase-admin@13.10.0(supports-color@7.2.0))(typescript@5.9.3):
+  better-auth-firestore@1.3.3(better-auth@1.7.13(@opentelemetry/api@1.9.1)(vitest@4.1.11))(firebase-admin@13.10.0(supports-color@7.2.0))(typescript@5.9.3):
     dependencies:
       better-auth: 1.7.13(@opentelemetry/api@1.9.1)(vitest@4.1.11)
       firebase-admin: 13.10.0(supports-color@7.2.0)
+    optionalDependencies:
       typescript: 5.9.3
 
   better-auth@1.7.13(@opentelemetry/api@1.9.1)(vitest@4.1.11):
