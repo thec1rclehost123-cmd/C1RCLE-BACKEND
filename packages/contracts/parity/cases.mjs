@@ -1,3 +1,6 @@
+import { runGeneratedParityCases } from './cases-generated.mjs';
+import { runWireParityCases } from './cases-wire.mjs';
+
 /**
  * ─── Contract parity cases ───────────────────────────────────────────────────
  * The fixtures behind `scripts/contract-parity.mjs`: every case parses one value
@@ -1428,4 +1431,10 @@ export async function runParityCases({
       );
     }
   }
+
+  /* ── money, tickets, door, sign-in, social (kept in a sibling file) ───────── */
+  runWireParityCases({ agree });
+
+  /* ── every other exported schema: differential, generated from the backend ─── */
+  runGeneratedParityCases({ frontend, backend, checks, failures });
 }

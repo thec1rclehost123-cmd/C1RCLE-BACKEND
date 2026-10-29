@@ -71,3 +71,11 @@ overrides:
   # vitest already resolves; pinned EXACTLY and scoped to that line so a newer
   # major is not pulled in by accident.
   'vite@>=8.2.0 <8.3.0': '8.2.4'
+  # zod < 4.6.6: memory exhaustion while validating oversized constrained
+  # collections (high; pnpm audit and the Docker Trivy scan both fail on it).
+  # zod is the wire-contract validator for the gateway and for better-auth, so it
+  # reaches every request path. 4.6.6 is the first patched release. Floor, not an
+  # exact pin, so a newer patched release needs no manifest edit. The frontend
+  # repo pins zod too and must stay on the same minor: the contract parity check
+  # builds both sides with one zod.
+  zod: '>=4.6.6'
