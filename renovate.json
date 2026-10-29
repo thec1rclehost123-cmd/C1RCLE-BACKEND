@@ -1,13 +1,11 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": [
-    "config:recommended",
-    ":dependencyDashboard",
-    ":prType(chore)",
-    ":label(dependencies)",
-    ":automergeType(pr)"
-  ],
-  "baseBranches": ["staging"],
+  "extends": ["config:recommended", ":dependencyDashboard", ":label(dependencies)"],
+  "automergeType": "pr",
+  "semanticCommits": "enabled",
+  "semanticCommitType": "chore",
+  "semanticCommitScope": "deps",
+  "baseBranchPatterns": ["staging"],
   "timezone": "Asia/Kolkata",
   "schedule": ["on monday at 06:00"],
   "prHourlyLimit": 0,
@@ -21,8 +19,7 @@
       "matchUpdateTypes": ["patch", "minor"],
       "automerge": true,
       "automergeType": "pr",
-      "platformAutomerge": true,
-      "requiredStatusChecks": ["CI OK", "Security OK"]
+      "platformAutomerge": true
     },
     {
       "description": "Never auto-merge major updates — require deliberate review",
@@ -82,16 +79,14 @@
       "schedule": ["on monday at 06:00"],
       "labels": ["dependencies", "ci"],
       "groupName": "github-actions",
-      "automerge": true,
-      "requiredStatusChecks": ["CI OK", "Security OK"]
+      "automerge": true
     },
     {
       "description": "Docker base image updates — auto-merge patch tags",
       "matchManagers": ["dockerfile"],
       "schedule": ["on monday at 06:00"],
       "labels": ["dependencies", "docker"],
-      "automerge": true,
-      "requiredStatusChecks": ["CI OK", "Security OK"]
+      "automerge": true
     }
   ],
   "ignorePaths": ["**/node_modules/**", "**/.git/**", "docs/**", "task.md"]
