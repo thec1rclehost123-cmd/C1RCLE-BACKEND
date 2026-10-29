@@ -1,5 +1,6 @@
 import {
   entitlementsListResponseSchema,
+  eventCoverWalletResponseSchema,
   ordersListResponseSchema,
   paginationQuerySchema,
   walletSummaryDtoSchema,
@@ -29,6 +30,7 @@ export default async function walletRoutes(fastify: FastifyInstance) {
     '/wallet',
     { preHandler: [fastify.rateLimit('AUTH_READ')] },
     async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
       const actor = services.actor(request);
       const summary = await Promise.resolve()
         .then(async () => {
@@ -56,6 +58,7 @@ export default async function walletRoutes(fastify: FastifyInstance) {
       ],
     },
     async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
       const query = request.query as z.infer<typeof paginationQuerySchema>;
       const actor = services.actor(request);
       const page = await services.tickets
@@ -86,6 +89,7 @@ export default async function walletRoutes(fastify: FastifyInstance) {
       ],
     },
     async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
       const query = request.query as z.infer<typeof paginationQuerySchema>;
       const actor = services.actor(request);
       const page = await services.orders
@@ -102,6 +106,22 @@ export default async function walletRoutes(fastify: FastifyInstance) {
         },
       };
       const validated = validateV2Response(reply, request, ordersListResponseSchema, payload);
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  fastify.get(
+    '/wallet/event-covers',
+    { preHandler: [fastify.rateLimit('AUTH_READ')] },
+    async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
+      const actor = services.actor(request);
+      const items = await services.eventCoverWallet
+        .listForGuest(actor)
+        .catch((error: unknown) => mapDomainError(reply, request, 'self', error));
+      if (items === undefined) return reply;
+      const validated = validateV2Response(reply, request, eventCoverWalletResponseSchema, items);
       if (validated === undefined) return reply;
       return reply.send(validated);
     },

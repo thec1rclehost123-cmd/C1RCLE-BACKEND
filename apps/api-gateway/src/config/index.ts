@@ -131,9 +131,67 @@ const envSchema = z.object({
     .enum(['true', 'false'])
     .optional()
     .transform((value) => (value === undefined ? undefined : value === 'true')),
+  /** Private access activation stays off outside explicit test/config handoff. */
+  M5_PRIVATE_ACCESS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /** Restricted eligibility sales stay off until policy/legal approval and door controls are ready. */
+  M5_ELIGIBILITY_RULES_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /** Ticket transfer writes remain off unless explicitly enabled. */
+  M5_TICKET_TRANSFERS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /** Preserve the existing offline-manifest behavior unless explicitly disabled for drain. */
+  M5_OFFLINE_TICKET_MANIFESTS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  /** Operator attestation; must remain false until the documented drain window is proven. */
+  M5_OFFLINE_MANIFEST_DRAIN_COMPLETE: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /** Cover sales stay unavailable until policy, merchant and accounting gates are approved. */
+  M5_COVER_SALES_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /** Add-on sales stay off until their accounting, tax and commercial treatment is approved. */
+  M5_TICKET_ADDONS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /** Server-side approval of the participating merchant; never inferred from Venue acceptance. */
+  M5_COVER_MERCHANT_APPROVED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /** Explicitly activate newly issued balances only after business approval. */
+  M5_COVER_ACTIVATION_APPROVED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /** Reviewed cover account mapping is required before accepting any cover sale. */
+  M5_COVER_ACCOUNTING_APPROVED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
   FIRESTORE_PROJECT_ID: z.string().min(1).default('c1rcle-staging'),
+  /** Explicit emulator endpoints; used to enable non-production test fixtures. */
+  FIRESTORE_EMULATOR_HOST: z.string().min(1).optional(),
+  FIREBASE_AUTH_EMULATOR_HOST: z.string().min(1).optional(),
   /** B12: which repository adapter set `lib/v2-services.ts` wires up. */
   STORAGE_DRIVER: z.enum(['memory', 'firestore']).default('memory'),
+  /** Disable process-wide Firestore workers for scoped connected acceptance runs. */
+  BACKGROUND_WORKERS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
   /** Firestore service-account credentials (only read/used when STORAGE_DRIVER=firestore). */
   FIREBASE_CLIENT_EMAIL: z.string().optional(),
   FIREBASE_PRIVATE_KEY: z.string().optional(),

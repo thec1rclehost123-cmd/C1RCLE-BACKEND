@@ -2,6 +2,8 @@ import {
   attachPaymentIntent,
   calculatePricing,
   createOrder,
+  createLedgerEntry,
+  createPostedJournal,
   createTicketTier,
   issueEntitlements,
   markPaid,
@@ -378,6 +380,295 @@ describe('event analytics', () => {
       occupancyRate: null,
       sellThroughRate: null,
       noShowRate: null,
+    });
+    await server.close();
+  });
+
+  it('returns event-scoped Promoter metrics derived from captured attribution snapshots', async () => {
+    const server = await buildServer();
+    const org = await seedOrganization(server);
+    const venue = await server.inject({
+      method: 'POST',
+      url: `/organizations/${org}/venues`,
+      headers: { ...read(org), 'idempotency-key': `venue-${++keySeq}` },
+      payload: { name: 'Sky Bar', slug: `sky-bar-${keySeq}`, capacity: 250 },
+    });
+    const event = await server.inject({
+      method: 'POST',
+      url: `/organizations/${org}/events`,
+      headers: { ...read(org), 'idempotency-key': `event-${++keySeq}` },
+      payload: {
+        title: 'Sky Night',
+        venueId: venue.json().id,
+        startAt: '2026-09-01T18:00:00Z',
+      },
+    });
+    const eventId: string = event.json().id;
+    const now = new Date('2026-08-01T12:00:00.000Z');
+    const tier = createTicketTier({
+      id: `tier_promoter_metrics_${keySeq}`,
+      eventId,
+      organizationId: org,
+      name: 'General',
+      priceInPaise: 20_000,
+      quantity: 10,
+      now,
+    });
+    const order = {
+      ...createOrder({
+        id: `order_promoter_metrics_${keySeq}`,
+        eventId,
+        organizationId: org,
+        contact: { name: 'Guest', email: 'guest@example.test', phone: '5550100' },
+        pricing: calculatePricing({ lines: [{ tier, quantity: 2 }] }),
+        now,
+      }),
+      status: 'paid' as const,
+      attribution: {
+        referralLinkId: `link_${keySeq}`,
+        promoterId: 'org_promoter_metrics',
+        code: 'METRICS',
+        assignmentId: `assignment_${keySeq}`,
+        assignmentVersion: 1,
+        termsSnapshot: { version: 1, ratePercent: 10, flatPaise: 0 },
+        eligibleTierIds: null,
+        commissionPolicyVersion: 'commission-v1',
+        commercialPolicyVersion: 'commercial-v1',
+        attributedAt: now.toISOString(),
+        attributionSignature: 'test-signature',
+        promoterCommissionPaise: 4_000,
+      },
+    };
+    const repositories = createV2Services().repos();
+    await repositories.orders.save(order);
+    await repositories.ledger.createBatch([
+      createLedgerEntry({
+        id: `ledger_promoter_metrics_${keySeq}`,
+        organizationId: 'org_promoter_metrics',
+        orderId: order.id,
+        eventId,
+        entryType: 'promoter_commission',
+        amount: 3_000,
+        status: 'pending',
+        idempotencyKey: `promoter-metrics:${keySeq}`,
+        now,
+      }),
+    ]);
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/events/${eventId}/promoter-analytics`,
+      headers: read(org),
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      eventId,
+      complete: true,
+      capturedTicketCount: 2,
+      attributedTicketCount: 2,
+      attributedTicketValuePaise: 40_000,
+      recordedCommissionPaise: 4_000,
+      netAttributedValuePaise: 36_000,
+      commissionPayableBalancePaise: 3_000,
+      liabilityComplete: true,
+      liabilityReadModel: 'legacy_ledger_v1',
+      items: [
+        {
+          promoterOrganizationId: 'org_promoter_metrics',
+          attributedOrderCount: 1,
+          attributedTicketCount: 2,
+          attributedTicketValuePaise: 40_000,
+          recordedCommissionPaise: 4_000,
+          netAttributedValuePaise: 36_000,
+          commissionPayableBalancePaise: 3_000,
+          liabilityComplete: true,
+          liabilityReadModel: 'legacy_ledger_v1',
+        },
+      ],
+    });
+    expect(response.json()).not.toHaveProperty('contact');
+    await server.close();
+  });
+
+  it('reconciles journal-backed Promoter payable balance separately from captured attribution', async () => {
+    const server = await buildServer();
+    const org = await seedOrganization(server);
+    const venue = await server.inject({
+      method: 'POST',
+      url: `/organizations/${org}/venues`,
+      headers: { ...read(org), 'idempotency-key': `venue-${++keySeq}` },
+      payload: { name: 'Sky Bar', slug: `sky-bar-${keySeq}`, capacity: 250 },
+    });
+    const event = await server.inject({
+      method: 'POST',
+      url: `/organizations/${org}/events`,
+      headers: { ...read(org), 'idempotency-key': `event-${++keySeq}` },
+      payload: {
+        title: 'Sky Night',
+        venueId: venue.json().id,
+        startAt: '2026-09-01T18:00:00Z',
+      },
+    });
+    const eventId: string = event.json().id;
+    const now = new Date('2026-08-01T12:00:00.000Z');
+    const tier = createTicketTier({
+      id: `tier_promoter_journal_metrics_${keySeq}`,
+      eventId,
+      organizationId: org,
+      name: 'General',
+      priceInPaise: 20_000,
+      quantity: 10,
+      now,
+    });
+    const order = {
+      ...createOrder({
+        id: `order_promoter_journal_metrics_${keySeq}`,
+        eventId,
+        organizationId: org,
+        contact: { name: 'Guest', email: 'guest@example.test', phone: '5550100' },
+        pricing: calculatePricing({ lines: [{ tier, quantity: 2 }] }),
+        now,
+      }),
+      status: 'paid' as const,
+      attribution: {
+        referralLinkId: `link_${keySeq}`,
+        promoterId: 'org_promoter_journal_metrics',
+        code: 'JOURNAL',
+        assignmentId: `assignment_${keySeq}`,
+        assignmentVersion: 1,
+        termsSnapshot: { version: 1, ratePercent: 10, flatPaise: 0 },
+        eligibleTierIds: null,
+        commissionPolicyVersion: 'commission-v1',
+        commercialPolicyVersion: 'commercial-v1',
+        attributedAt: now.toISOString(),
+        attributionSignature: 'test-signature',
+        promoterCommissionPaise: 4_000,
+      },
+    };
+    const repositories = createV2Services().repos();
+    await repositories.orders.save(order);
+    const promoterOrganizationId = 'org_promoter_journal_metrics';
+    const journalSource = {
+      type: 'online_payment_capture' as const,
+      id: order.id,
+      orderId: order.id,
+      paymentId: null,
+      eventId,
+    };
+    const policy = {
+      version: 'analytics-test-v1',
+      capturedAt: now.toISOString(),
+      settlementDelayDays: 0,
+      reserveBasisPoints: 0,
+      requiresEventCompletion: false,
+      holdsOnCancellation: false,
+      holdsOnDispute: false,
+      holdsOnUnresolvedReconciliation: false,
+    };
+    await repositories.financialJournals.postBatch([
+      createPostedJournal({
+        organizationId: promoterOrganizationId,
+        currency: 'INR',
+        lines: [
+          {
+            account: 'ticket_collection_control',
+            side: 'debit',
+            amountPaise: 3_000,
+            organizationId: null,
+            component: null,
+            memo: 'test commission posting',
+          },
+          {
+            account: 'promoter_payable',
+            side: 'credit',
+            amountPaise: 3_000,
+            organizationId: promoterOrganizationId,
+            component: 'promoterAllocationPaise',
+            memo: 'test commission payable',
+          },
+        ],
+        source: journalSource,
+        idempotencyKey: `analytics-journal-posting:${keySeq}`,
+        accountingPolicy: policy,
+        postedAt: now,
+      }),
+      createPostedJournal({
+        organizationId: promoterOrganizationId,
+        currency: 'INR',
+        lines: [
+          {
+            account: 'promoter_payable',
+            side: 'debit',
+            amountPaise: 1_000,
+            organizationId: promoterOrganizationId,
+            component: 'promoterAllocationPaise',
+            memo: 'test commission reversal',
+          },
+          {
+            account: 'refund_clearing',
+            side: 'credit',
+            amountPaise: 1_000,
+            organizationId: null,
+            component: 'refundPaise',
+            memo: 'test refund counterpart',
+          },
+        ],
+        source: {
+          ...journalSource,
+          type: 'refund',
+          id: `refund_${keySeq}`,
+        },
+        idempotencyKey: `analytics-journal-reversal:${keySeq}`,
+        accountingPolicy: policy,
+        postedAt: now,
+      }),
+    ]);
+
+    const transition = await repositories.journalTransition.get();
+    await repositories.journalTransition.save({
+      ...transition,
+      phase: 'journal_reads',
+      readModel: 'financial_journal_v2',
+      version: transition.version + 1,
+    });
+    let response;
+    try {
+      response = await server.inject({
+        method: 'GET',
+        url: `/events/${eventId}/promoter-analytics`,
+        headers: read(org),
+      });
+    } finally {
+      const currentTransition = await repositories.journalTransition.get();
+      await repositories.journalTransition.save({
+        ...currentTransition,
+        phase: 'legacy_reads',
+        readModel: 'legacy_ledger_v1',
+        version: currentTransition.version + 1,
+      });
+    }
+
+    expect(response?.statusCode).toBe(200);
+    expect(response?.json()).toMatchObject({
+      eventId,
+      complete: true,
+      capturedTicketCount: 2,
+      attributedTicketCount: 2,
+      attributedTicketValuePaise: 40_000,
+      recordedCommissionPaise: 4_000,
+      netAttributedValuePaise: 36_000,
+      commissionPayableBalancePaise: 2_000,
+      liabilityComplete: true,
+      liabilityReadModel: 'financial_journal_v2',
+      items: [
+        {
+          promoterOrganizationId,
+          recordedCommissionPaise: 4_000,
+          commissionPayableBalancePaise: 2_000,
+          liabilityReadModel: 'financial_journal_v2',
+        },
+      ],
     });
     await server.close();
   });

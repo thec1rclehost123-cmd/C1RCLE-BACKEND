@@ -28,6 +28,12 @@ import {
   PricingService,
   OrderService,
   TicketService,
+  TicketAccessService,
+  ComplimentaryAllocationService,
+  WaitlistService,
+  EventCoverPolicyService,
+  EventCoverWalletService,
+  EventCoverRedemptionService,
   createScannerService,
   createDoorService,
   createCoverWalletService,
@@ -51,6 +57,8 @@ import {
   createGuestProfileService,
   SocialService,
   createFollowerFanOutConsumer,
+  createEventMaterialChangeNoticeConsumer,
+  createEventCoverFinancialConsumer,
   NotificationService,
   createNotificationConsumer,
   type ScannerService,
@@ -171,6 +179,16 @@ export interface PartnerV2Services {
   orders: OrderService;
   /** Phase 4 PR3: guest-facing ticket reads (GET /tickets/:id, /wallet/tickets). */
   tickets: TicketService;
+  /** M5 tier access codes and identity-bound grants. */
+  ticketAccess: TicketAccessService;
+  /** M5 Admin controlled comp allocation and issuance. */
+  complimentaryAllocations: ComplimentaryAllocationService;
+  /** M5 FIFO waitlist, bounded offers and checkout handoff. */
+  waitlist: WaitlistService;
+  /** M5 Host/Venue draft cover policy proposal and acceptance. */
+  eventCoverPolicies: EventCoverPolicyService;
+  eventCoverWallet: EventCoverWalletService;
+  eventCoverRedemption: EventCoverRedemptionService;
   /** T09 idempotency — durable on the firestore driver, in-memory on `memory`. */
   idempotency: IdempotencyService;
   /** Builds the service actor from the authenticated request state. */
@@ -301,9 +319,36 @@ export function actorFromRequest(gw: GatewayConfig, request: FastifyRequest): Ac
 
 function buildV2Services(logger?: Logger): PartnerV2Services {
   const gw = getGatewayConfig();
+  const promoterAgreementFixtureAllowed =
+    gw.STORAGE_DRIVER === 'memory' ||
+    (gw.NODE_ENV !== 'production' &&
+      Boolean(gw.FIRESTORE_EMULATOR_HOST) &&
+      Boolean(gw.FIREBASE_AUTH_EMULATOR_HOST));
   const coreConfig = createCoreConfig({
     redis: { url: gw.REDIS_URL },
     firestore: { projectId: gw.FIRESTORE_PROJECT_ID },
+    features: {
+      m4PromoterAgreementFixture: promoterAgreementFixtureAllowed,
+      // API route tests exercise the real grant path; all other environments
+      // require an explicit non-production M5 activation handoff.
+      m5PrivateAccess: gw.NODE_ENV === 'test' || gw.M5_PRIVATE_ACCESS_ENABLED,
+      m5EligibilityRulesEnabled: gw.NODE_ENV === 'test' || gw.M5_ELIGIBILITY_RULES_ENABLED,
+      m5TicketTransfers: gw.M5_TICKET_TRANSFERS_ENABLED,
+      m5OfflineTicketManifests: gw.M5_OFFLINE_TICKET_MANIFESTS_ENABLED,
+      m5OfflineManifestDrainComplete: gw.M5_OFFLINE_MANIFEST_DRAIN_COMPLETE,
+      m5EventCoverSales: gw.M5_COVER_SALES_ENABLED,
+      m5TicketAddonsEnabled: gw.NODE_ENV === 'test' || gw.M5_TICKET_ADDONS_ENABLED,
+      m5CoverMerchantApproved: gw.M5_COVER_MERCHANT_APPROVED,
+      m5CoverAccountingApproved: gw.M5_COVER_ACCOUNTING_APPROVED,
+      m5CoverActivationApproved: gw.M5_COVER_ACTIVATION_APPROVED,
+      // In-memory/emulator acceptance is test-fixture evidence only. A real
+      // project never records an apparent commercial approval by default.
+      m5CoverPolicyFixtures:
+        gw.STORAGE_DRIVER === 'memory' ||
+        (gw.NODE_ENV !== 'production' &&
+          Boolean(gw.FIRESTORE_EMULATOR_HOST) &&
+          Boolean(gw.FIREBASE_AUTH_EMULATOR_HOST)),
+    },
     storage: gw.FIREBASE_STORAGE_BUCKET ? { kycBucket: gw.FIREBASE_STORAGE_BUCKET } : undefined,
     emailOtpSecret: gw.EMAIL_OTP_SECRET,
     // Was never passed, so every deploy silently used the core default — a
@@ -474,6 +519,11 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   eventBus.subscribe('finance.refund.settled', eventCancellation.handle);
   const transactionalEmailConsumer = createTransactionalEmailConsumer(deps);
   eventBus.subscribe('order.fulfilled', transactionalEmailConsumer);
+  eventBus.subscribe('ticket.issued', transactionalEmailConsumer);
+  eventBus.subscribe('ticket.transfer.created', transactionalEmailConsumer);
+  eventBus.subscribe('ticket.transfer.invitation_resent', transactionalEmailConsumer);
+  eventBus.subscribe('ticket.transfer.resolved', transactionalEmailConsumer);
+  eventBus.subscribe('waitlist.offered', transactionalEmailConsumer);
   eventBus.subscribe('payment.support_required', transactionalEmailConsumer);
   eventBus.subscribe('finance.refund.settled', transactionalEmailConsumer);
   eventBus.subscribe('finance.payout.status_changed', transactionalEmailConsumer);
@@ -481,18 +531,46 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   eventBus.subscribe('event.updated', transactionalEmailConsumer);
   eventBus.subscribe('event.material_change.batch_requested', transactionalEmailConsumer);
   eventBus.subscribe('event.material_change.order_affected', transactionalEmailConsumer);
+  const eventCoverFinancialConsumer = createEventCoverFinancialConsumer({
+    eventCoverAccounts: repositories.eventCoverAccounts,
+    financialJournals: repositories.financialJournals,
+  });
+  eventBus.subscribe('event-cover.redeemed', eventCoverFinancialConsumer);
+  eventBus.subscribe('event-cover.reversed', eventCoverFinancialConsumer);
 
   // V2 partner inbox producer consumer: domain events → notification rows.
   // Subscribed to each producer event type; the handler is a named function
   // (its `handler.name` keys the bus's per-event dedupe set).
   const notificationConsumer = createNotificationConsumer({
     notifications: repositories.notifications,
+    orders: repositories.orders,
+    organizations: repositories.organizations,
     config: coreConfig,
     logger: deps.logger,
   });
+  eventBus.subscribe('order.fulfilled', notificationConsumer);
+  eventBus.subscribe('promoter.assignment.invited', notificationConsumer);
+  eventBus.subscribe('promoter.assignment.accepted', notificationConsumer);
+  eventBus.subscribe('promoter.assignment.rejected', notificationConsumer);
+  eventBus.subscribe('promoter.assignment.revoked', notificationConsumer);
+  eventBus.subscribe('promoter.campaign.activated', notificationConsumer);
+  eventBus.subscribe('promoter.campaign.revoked', notificationConsumer);
+  eventBus.subscribe('promoter.onboarding.approved', notificationConsumer);
+  eventBus.subscribe('promoter.assignments.status_changed', notificationConsumer);
+  eventBus.subscribe('finance.chargeback.updated', notificationConsumer);
+  eventBus.subscribe('finance.refund.settled', notificationConsumer);
+  eventBus.subscribe('finance.payout.status_changed', notificationConsumer);
   eventBus.subscribe('promoter_connection.requested', notificationConsumer);
   eventBus.subscribe('partnership.requested', notificationConsumer);
   eventBus.subscribe('event.published', notificationConsumer);
+
+  const eventMaterialChangeNoticeConsumer = createEventMaterialChangeNoticeConsumer({
+    orders: repositories.orders,
+    entitlements: repositories.entitlements,
+    notifications: repositories.socialNotifications,
+    config: coreConfig,
+  });
+  eventBus.subscribe('event.material_change.order_affected', eventMaterialChangeNoticeConsumer);
 
   // B11: analytics projection. Built here (not with the audit subscriptions
   // above) because the projector IS the AnalyticsService instance the returned
@@ -573,6 +651,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
 
   const providerPayments = new ProviderPaymentService(deps);
   const checkout = new CheckoutService(deps, providerPayments);
+  const waitlist = new WaitlistService(deps, checkout, adminAuthority);
   const fulfilmentRepair = new FulfilmentRepairService(deps, checkout);
 
   // The paid walk-up sale. `settleOrder` is injected from the checkout
@@ -651,7 +730,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     config: coreConfig,
   });
 
-  if (gw.STORAGE_DRIVER === 'firestore') {
+  if (gw.STORAGE_DRIVER === 'firestore' && gw.BACKGROUND_WORKERS_ENABLED) {
     const drainPersistedOutbox = () => {
       void eventBus.drain().catch((error: unknown) => {
         resolvedLogger.error('outbox.drain_failed', {
@@ -688,6 +767,12 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     paymentProvider,
     orders: new OrderService(deps),
     tickets: new TicketService(deps),
+    ticketAccess: new TicketAccessService(deps),
+    complimentaryAllocations: new ComplimentaryAllocationService(deps, adminAuthority),
+    waitlist,
+    eventCoverPolicies: new EventCoverPolicyService(deps),
+    eventCoverWallet: new EventCoverWalletService(deps),
+    eventCoverRedemption: new EventCoverRedemptionService(deps),
     // Replay protection must outlive the process: a restart mid-retry with an
     // in-memory store turns a client's retry into a second business result.
 

@@ -26,6 +26,9 @@ export function orderToDto(order: Order): OrderDto {
     paymentFeePaise: order.paymentFeePaise,
     gstPaise: order.gstPaise,
     grandTotalPaise: order.grandTotalPaise,
+    ...(order.addOnSubtotalPaise === undefined
+      ? {}
+      : { addOnSubtotalPaise: order.addOnSubtotalPaise }),
     appliedPromoCode: order.appliedPromoCode,
     paymentIntentId: order.paymentIntentId,
     paymentId: order.paymentId,

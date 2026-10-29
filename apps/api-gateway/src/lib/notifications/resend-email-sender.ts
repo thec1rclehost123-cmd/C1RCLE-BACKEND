@@ -36,7 +36,7 @@ export class ResendEmailSender implements EmailSender {
       if (this.nodeEnv === 'production') {
         throw new Error('Email provider not configured');
       }
-      this.logger.info('dev_email_otp', { recipient, code });
+      this.logger.info('dev_email_otp', { delivery: 'suppressed' });
       return;
     }
 
@@ -72,7 +72,7 @@ export class ResendEmailSender implements EmailSender {
       if (this.nodeEnv === 'production') {
         throw new Error('Email provider not configured');
       }
-      this.logger.info('dev_email_staff_invitation', { ...invitation });
+      this.logger.info('dev_email_staff_invitation', { delivery: 'suppressed' });
       return;
     }
 
@@ -131,7 +131,7 @@ export class ResendEmailSender implements EmailSender {
       if (this.nodeEnv === 'production') {
         throw new Error('Email provider not configured');
       }
-      this.logger.info('dev_email_password_reset', { recipient, resetUrl });
+      this.logger.info('dev_email_password_reset', { delivery: 'suppressed' });
       return;
     }
 

@@ -441,6 +441,7 @@ export default async function adminReconciliationRoutes(fastify: FastifyInstance
   );
 
   fastify.get('/admin/reconciliation/export.csv', async (request, reply) => {
+    reply.header('cache-control', 'private, no-store');
     const userId = requireUserId(request, reply);
     if (userId === undefined) return reply;
     await services.adminAuthority.requireAdmin(userId);

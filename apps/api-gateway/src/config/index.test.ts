@@ -28,6 +28,56 @@ function productionEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.Proces
 }
 
 describe('gateway configuration', () => {
+  it('allows an explicit local override to disable process-wide Firestore workers', () => {
+    expect(getGatewayConfig(productionEnvironment()).BACKGROUND_WORKERS_ENABLED).toBe(true);
+    expect(
+      getGatewayConfig(productionEnvironment({ BACKGROUND_WORKERS_ENABLED: 'false' }))
+        .BACKGROUND_WORKERS_ENABLED,
+    ).toBe(false);
+  });
+
+  it('keeps M5 private access disabled in production unless explicitly enabled', () => {
+    expect(getGatewayConfig(productionEnvironment()).M5_PRIVATE_ACCESS_ENABLED).toBe(false);
+    expect(
+      getGatewayConfig(productionEnvironment({ M5_PRIVATE_ACCESS_ENABLED: 'true' }))
+        .M5_PRIVATE_ACCESS_ENABLED,
+    ).toBe(true);
+  });
+
+  it('keeps restricted eligibility sales disabled until explicitly approved', () => {
+    expect(getGatewayConfig(productionEnvironment()).M5_ELIGIBILITY_RULES_ENABLED).toBe(false);
+    expect(
+      getGatewayConfig(productionEnvironment({ M5_ELIGIBILITY_RULES_ENABLED: 'true' }))
+        .M5_ELIGIBILITY_RULES_ENABLED,
+    ).toBe(true);
+  });
+
+  it('keeps ticket add-on sales disabled until accounting and tax treatment is approved', () => {
+    expect(getGatewayConfig(productionEnvironment()).M5_TICKET_ADDONS_ENABLED).toBe(false);
+    expect(
+      getGatewayConfig(productionEnvironment({ M5_TICKET_ADDONS_ENABLED: 'true' }))
+        .M5_TICKET_ADDONS_ENABLED,
+    ).toBe(true);
+  });
+
+  it('keeps ticket transfers disabled until offline issuance is disabled and drained', () => {
+    const defaults = getGatewayConfig(productionEnvironment());
+    expect(defaults.M5_TICKET_TRANSFERS_ENABLED).toBe(false);
+    expect(defaults.M5_OFFLINE_TICKET_MANIFESTS_ENABLED).toBe(true);
+    expect(defaults.M5_OFFLINE_MANIFEST_DRAIN_COMPLETE).toBe(false);
+
+    const drain = getGatewayConfig(
+      productionEnvironment({
+        M5_TICKET_TRANSFERS_ENABLED: 'true',
+        M5_OFFLINE_TICKET_MANIFESTS_ENABLED: 'false',
+        M5_OFFLINE_MANIFEST_DRAIN_COMPLETE: 'true',
+      }),
+    );
+    expect(drain.M5_TICKET_TRANSFERS_ENABLED).toBe(true);
+    expect(drain.M5_OFFLINE_TICKET_MANIFESTS_ENABLED).toBe(false);
+    expect(drain.M5_OFFLINE_MANIFEST_DRAIN_COMPLETE).toBe(true);
+  });
+
   it('uses the documented Render deploy SHA when BUILD_SHA is not explicit', () => {
     const config = getGatewayConfig(
       productionEnvironment({ BUILD_SHA: undefined, RENDER_GIT_COMMIT: 'a'.repeat(40) }),

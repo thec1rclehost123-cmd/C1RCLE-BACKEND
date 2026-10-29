@@ -4,6 +4,7 @@ import authContextPlugin from '../../plugins/auth.js';
 
 import adminAnalyticsRoutes from './admin/analytics.js';
 import adminCommunicationRoutes from './admin/communications.js';
+import adminComplimentaryAllocationRoutes from './admin/complimentary-allocations.js';
 import adminDirectoryRoutes from './admin/directory.js';
 import adminDisputeRoutes from './admin/disputes.js';
 import adminEventActionRoutes from './admin/event-actions.js';
@@ -30,6 +31,7 @@ import doorOpsRoutes from './door/door-ops-routes.js';
 import phase5DoorSaleRoutes from './door/door-sale-routes.js';
 import doorCodeRoutes from './door/event-code-routes.js';
 import phase5ScannerRoutes from './door/scanner-routes.js';
+import eventCoverRedemptionRoutes from './event-cover/event-cover-redemption-routes.js';
 import financeRoutes from './finance/finance-routes.js';
 import leaderboardRoutes from './finance/leaderboard-routes.js';
 import { internalRoutes } from './internal/index.js';
@@ -52,6 +54,7 @@ import rsvpRoutes from './rsvp/rsvp-routes.js';
 import socialRoutes from './social/social-routes.js';
 import supportIntakeRoutes from './support/intake-routes.js';
 import ticketRoutes from './tickets/ticket-routes.js';
+import waitlistRoutes from './tickets/waitlist-routes.js';
 import walletRoutes from './wallet/wallet-routes.js';
 
 import type { GatewayRuntimeState } from '../../lib/runtime-state.js';
@@ -71,10 +74,9 @@ export interface RegisterV2RoutesOptions {
  * The single registration surface for all `/api/v2` routes. Phase 4's public
  * discovery slice (PR1, unauthenticated, under `/public`), checkout/
  * payments/webhook slice (PR2), and orders/tickets/wallet reads (PR3) are
- * all LIVE. Ticket transfer/claim/cancel-transfer stay unregistered — the
- * committed `Entitlement` model has no transfer state to wire against yet
- * (see `tickets/ticket-routes.ts`'s doc comment); they 404 by absence, never
- * by a 501 stub (D-006), same as any other genuinely-blocked slice.
+ * all LIVE. Transfer/claim, waitlist, scanner, cover and controlled-admin
+ * routes are registered but remain protected by Core authorization and feature
+ * gates where policy or operational approval is still pending.
  */
 export async function registerV2Routes(
   app: FastifyInstance,
@@ -146,6 +148,7 @@ export async function registerV2Routes(
       await adminOrderRoutes(v2);
       await adminAnalyticsRoutes(v2);
       await adminTicketRoutes(v2);
+      await adminComplimentaryAllocationRoutes(v2);
       await adminPromotionsRoutes(v2);
       await adminPromotersRoutes(v2);
       await adminVenueActionRoutes(v2);
@@ -162,7 +165,9 @@ export async function registerV2Routes(
       // Phase 4 PR3: guest order/ticket reads + wallet.
       await orderRoutes(v2);
       await ticketRoutes(v2);
+      await waitlistRoutes(v2);
       await walletRoutes(v2);
+      await eventCoverRedemptionRoutes(v2);
       // Phase 5: Door / Scanner / Cover-wallet
       await doorCodeRoutes(v2);
       await doorOpsRoutes(v2);

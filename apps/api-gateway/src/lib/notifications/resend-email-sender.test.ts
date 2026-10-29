@@ -2,6 +2,8 @@ import { noopLogger } from '@c1rcle/core';
 import { PermanentEmailDeliveryError } from '@c1rcle/core/domain';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { Logger } from '@c1rcle/core';
+
 import { ResendEmailSender } from './resend-email-sender.js';
 
 describe('ResendEmailSender transactional delivery', () => {
@@ -46,5 +48,38 @@ describe('ResendEmailSender transactional delivery', () => {
         idempotencyKey: 'booking-receipt:ord_1:fulfilled',
       }),
     ).rejects.toBeInstanceOf(PermanentEmailDeliveryError);
+  });
+
+  it('does not log credentials or recipient data when development email delivery is suppressed', async () => {
+    const info = vi.fn((_message: string, _fields?: Record<string, unknown>) => {});
+    const logger: Logger = { info, warn: () => {}, error: () => {} };
+    const sender = new ResendEmailSender(undefined, 'test', logger);
+    const secretValues = {
+      otp: '123456',
+      temporaryPassword: 'temporary-password-secret',
+      resetUrl: 'https://example.test/reset?token=reset-secret',
+      recipient: 'private@example.test',
+    };
+
+    await sender.sendOtpEmail(secretValues.recipient, secretValues.otp);
+    await sender.sendStaffInvitationEmail({
+      to: secretValues.recipient,
+      orgName: 'Test Organization',
+      role: 'member',
+      capabilities: [],
+      expiresAt: '2026-11-01T00:00:00.000Z',
+      temporaryPassword: secretValues.temporaryPassword,
+    });
+    await sender.sendPasswordResetEmail(secretValues.recipient, secretValues.resetUrl);
+
+    expect(info).toHaveBeenNthCalledWith(1, 'dev_email_otp', { delivery: 'suppressed' });
+    expect(info).toHaveBeenNthCalledWith(2, 'dev_email_staff_invitation', {
+      delivery: 'suppressed',
+    });
+    expect(info).toHaveBeenNthCalledWith(3, 'dev_email_password_reset', {
+      delivery: 'suppressed',
+    });
+    const logged = JSON.stringify(info.mock.calls);
+    for (const secret of Object.values(secretValues)) expect(logged).not.toContain(secret);
   });
 });

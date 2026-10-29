@@ -78,10 +78,10 @@ async function partnershipRequest(server: Server, hostOrg: string, venueId: stri
   return response.json();
 }
 
-async function inbox(server: Server, org: string) {
+async function inbox(server: Server, org: string, query = '') {
   const response = await server.inject({
     method: 'GET',
-    url: `/organizations/${org}/notifications`,
+    url: `/organizations/${org}/notifications${query}`,
     headers: read(org),
   });
   expect(response.statusCode).toBe(200);
@@ -157,6 +157,32 @@ describe('producers', () => {
 });
 
 describe('inbox access', () => {
+  it('returns and consumes the next opaque cursor for bounded inbox pages', async () => {
+    const server = await buildServer();
+    const target = await createOrganization(server);
+    const promoterA = await createOrganization(server);
+    const promoterB = await createOrganization(server);
+    await connectionRequest(server, promoterA, target);
+    await connectionRequest(server, promoterB, target);
+
+    const first = await inbox(server, target, '?limit=1');
+    expect(first.items).toHaveLength(1);
+    expect(first.pageInfo.hasNextPage).toBe(true);
+    expect(first.nextCursor).toEqual(expect.any(String));
+
+    const second = await inbox(
+      server,
+      target,
+      `?limit=1&cursor=${encodeURIComponent(first.nextCursor)}`,
+    );
+    expect(second.items).toHaveLength(1);
+    expect(second.items[0].id).not.toBe(first.items[0].id);
+    expect(second.pageInfo.hasNextPage).toBe(false);
+    expect(second.nextCursor).toBeNull();
+    expect(second.unreadCount).toBe(2);
+    await server.close();
+  });
+
   it('only the recipient org can read the inbox', async () => {
     const server = await buildServer();
     const promoter = await createOrganization(server);

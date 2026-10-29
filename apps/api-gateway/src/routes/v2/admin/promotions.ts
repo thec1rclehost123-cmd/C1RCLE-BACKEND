@@ -91,6 +91,7 @@ export default async function adminPromotionsRoutes(fastify: FastifyInstance) {
       preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({})],
     },
     async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
       const userId = requireUserId(request, reply);
       if (userId === undefined) return reply;
 

@@ -94,6 +94,76 @@ describe('applicant onboarding', () => {
     expect(created.missingDocuments).toEqual(['id_front', 'id_back', 'selfie']);
   });
 
+  it('records versioned test-fixture agreement evidence and exposes it to Admin review', async () => {
+    const agreement = await server.inject({
+      method: 'GET',
+      url: '/onboarding/promoter-agreement',
+      headers: asUser('promoter_applicant'),
+    });
+    expect(agreement.statusCode).toBe(200);
+    expect(agreement.json()).toMatchObject({
+      activationAvailable: false,
+      agreement: {
+        version: expect.stringMatching(/^m4-test-fixture-/),
+        status: 'test_fixture',
+        text: expect.stringMatching(/TEST FIXTURE ONLY.*NOT A LEGAL AGREEMENT/),
+        textSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+    });
+
+    const application = await server.inject({
+      method: 'POST',
+      url: '/onboarding/applications',
+      headers: asUser('promoter_applicant'),
+      payload: { requestedType: 'promoter', plan: 'basic', profile: FULL_PROFILE },
+    });
+    expect(application.statusCode).toBe(201);
+    const accepted = await server.inject({
+      method: 'POST',
+      url: `/onboarding/applications/${application.json().id}/promoter-agreement/accept`,
+      headers: asUser('promoter_applicant'),
+      payload: { version: agreement.json().agreement.version },
+    });
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.json().promoterAgreementAcceptances).toHaveLength(1);
+    expect(accepted.json().promoterAgreementAcceptances[0]).toMatchObject({
+      version: agreement.json().agreement.version,
+      artifactStatus: 'test_fixture',
+      acceptedBy: 'promoter_applicant',
+      acceptedAt: expect.any(String),
+    });
+
+    const reaccepted = await server.inject({
+      method: 'POST',
+      url: `/onboarding/applications/${application.json().id}/promoter-agreement/accept`,
+      headers: asUser('promoter_applicant'),
+      payload: { version: agreement.json().agreement.version },
+    });
+    expect(reaccepted.statusCode).toBe(200);
+    expect(reaccepted.json().promoterAgreementAcceptances).toHaveLength(1);
+
+    await seedAdmin('admin_agreement_review', 'admin');
+    const adminQueue = await server.inject({
+      method: 'GET',
+      url: '/admin/onboarding/applications?status=draft',
+      headers: { 'x-user-id': 'admin_agreement_review' },
+    });
+    expect(adminQueue.statusCode).toBe(200);
+    expect(adminQueue.json().items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: application.json().id,
+          promoterAgreementAcceptances: [
+            expect.objectContaining({
+              version: agreement.json().agreement.version,
+              acceptedBy: 'promoter_applicant',
+            }),
+          ],
+        }),
+      ]),
+    );
+  });
+
   it('refuses a second live application', async () => {
     await startApplication('user_a');
     const second = await server.inject({

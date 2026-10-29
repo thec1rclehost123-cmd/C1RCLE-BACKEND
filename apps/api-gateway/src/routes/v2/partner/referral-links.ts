@@ -3,12 +3,15 @@ import {
   idempotencyKeySchema,
   paginationQuerySchema,
   referralLinkDtoSchema,
+  promoterReferralLinkListResponseSchema,
+  promoterCampaignSummaryDtoSchema,
+  promoterAttributedOrderListResponseSchema,
   createReferralLinkSchema,
   paginatedSchema,
 } from '@c1rcle/contracts/client';
 import { z } from 'zod';
 
-import type { ReferralLink } from '@c1rcle/core/domain';
+import type { Order, ReferralLink } from '@c1rcle/core/domain';
 
 import { isIdempotencyConflict, runIdempotent } from '../../../lib/v2-idempotency.js';
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
@@ -32,11 +35,22 @@ const services = createV2Services();
 const eventIdParam = z.object({ eventId: opaqueIdSchema });
 const linkIdParam = z.object({ referralLinkId: opaqueIdSchema });
 const assignmentIdParam = z.object({ assignmentId: opaqueIdSchema });
+const promoterIdParam = z.object({ promoterId: opaqueIdSchema });
+const eventPromoterParam = z.object({ eventId: opaqueIdSchema, promoterId: opaqueIdSchema });
 
 const readHeaders = z.looseObject({ 'x-organization-id': opaqueIdSchema });
 const commandHeaders = readHeaders.extend({ 'idempotency-key': idempotencyKeySchema });
 
 const linkListSchema = paginatedSchema(referralLinkDtoSchema);
+const referralLinkPaginationQuerySchema = paginationQuerySchema
+  .extend({
+    cursor: z
+      .string()
+      .regex(/^\d+$/u)
+      .refine((value) => Number.isSafeInteger(Number(value)))
+      .optional(),
+  })
+  .refine(({ cursor, limit }) => cursor === undefined || Number(cursor) % limit === 0);
 const promoterCreateLinkSchema = z
   .object({
     label: z.string().min(1).max(120).optional(),
@@ -54,8 +68,183 @@ const promoterCreateLinkSchema = z
       .optional(),
   })
   .strict();
+const eventAttributedOrdersQuerySchema = paginationQuerySchema.extend({
+  cursor: z.string().regex(/^\d+$/u).optional(),
+});
+
+function attributedOrderToDto(order: Order) {
+  const attribution = order.attribution;
+  if (!attribution) throw new Error('Promoter order query returned an unattributed order');
+  return {
+    id: order.id,
+    bookingReference: order.bookingReference ?? null,
+    eventId: order.eventId,
+    status: order.status,
+    ticketCount: order.lines.reduce((sum, line) => sum + line.quantity, 0),
+    attributedTicketValuePaise: order.discountedSubtotalPaise,
+    promoterCommissionPaise: attribution.promoterCommissionPaise,
+    attributedAt: attribution.attributedAt,
+  };
+}
 
 export default async function partnerReferralLinkRoutes(fastify: FastifyInstance) {
+  fastify.get(
+    '/events/:eventId/promoters/:promoterId/attributed-orders',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({
+          params: eventPromoterParam,
+          querystring: eventAttributedOrdersQuerySchema,
+          headers: readHeaders,
+        }),
+        fastify.requirePermission('event.read'),
+      ],
+    },
+    async (request, reply) => {
+      const { eventId, promoterId } = request.params as z.infer<typeof eventPromoterParam>;
+      const query = request.query as z.infer<typeof paginationQuerySchema>;
+      const actor = services.actor(request);
+      const page = await services.referralLinks
+        .listAttributedOrdersForEvent(actor, eventId, promoterId, {
+          limit: query.limit,
+          cursor: query.cursor ?? null,
+        })
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, eventId, error, { hideForbidden: true }),
+        );
+      if (page === undefined) return reply;
+      const validated = validateV2Response(
+        reply,
+        request,
+        promoterAttributedOrderListResponseSchema,
+        {
+          items: page.items.map(attributedOrderToDto),
+          pageInfo: {
+            page: Math.floor((Number.parseInt(query.cursor ?? '0', 10) || 0) / query.limit) + 1,
+            pageSize: query.limit,
+            total: page.total,
+            hasNextPage: page.nextCursor !== null,
+          },
+        },
+      );
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  fastify.get(
+    '/promoters/:promoterId/attributed-orders',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({
+          params: promoterIdParam,
+          querystring: paginationQuerySchema,
+          headers: readHeaders,
+        }),
+        fastify.requirePermission('event.read'),
+      ],
+    },
+    async (request, reply) => {
+      const { promoterId } = request.params as z.infer<typeof promoterIdParam>;
+      const query = request.query as z.infer<typeof paginationQuerySchema>;
+      const actor = services.actor(request);
+      const page = await services.referralLinks
+        .listAttributedOrders(actor, promoterId, {
+          limit: query.limit,
+          cursor: query.cursor ?? null,
+        })
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, promoterId, error, { hideForbidden: true }),
+        );
+      if (page === undefined) return reply;
+      const validated = validateV2Response(
+        reply,
+        request,
+        promoterAttributedOrderListResponseSchema,
+        {
+          items: page.items.map(attributedOrderToDto),
+          pageInfo: {
+            page: 1,
+            pageSize: query.limit,
+            total: page.total,
+            hasNextPage: page.nextCursor !== null,
+          },
+        },
+      );
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  fastify.get(
+    '/promoters/:promoterId/campaign-summary',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({ params: promoterIdParam, headers: readHeaders }),
+        fastify.requirePermission('event.read'),
+      ],
+    },
+    async (request, reply) => {
+      const { promoterId } = request.params as z.infer<typeof promoterIdParam>;
+      const actor = services.actor(request);
+      const summary = await services.referralLinks
+        .getCampaignSummary(actor, promoterId)
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, promoterId, error, { hideForbidden: true }),
+        );
+      if (summary === undefined) return reply;
+      const validated = validateV2Response(
+        reply,
+        request,
+        promoterCampaignSummaryDtoSchema,
+        summary,
+      );
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  fastify.get(
+    '/promoters/:promoterId/referral-links',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({
+          params: promoterIdParam,
+          querystring: referralLinkPaginationQuerySchema,
+          headers: readHeaders,
+        }),
+        fastify.requirePermission('event.read'),
+      ],
+    },
+    async (request, reply) => {
+      const { promoterId } = request.params as z.infer<typeof promoterIdParam>;
+      const query = request.query as z.infer<typeof referralLinkPaginationQuerySchema>;
+      const actor = services.actor(request);
+      const page = await services.referralLinks
+        .listForPromoter(actor, promoterId, { limit: query.limit, cursor: query.cursor ?? null })
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, promoterId, error, { hideForbidden: true }),
+        );
+      if (page === undefined) return reply;
+      const validated = validateV2Response(reply, request, promoterReferralLinkListResponseSchema, {
+        items: page.items.map(linkToDto),
+        pageInfo: {
+          page: Math.floor((Number.parseInt(query.cursor ?? '0', 10) || 0) / query.limit) + 1,
+          pageSize: query.limit,
+          total: page.total,
+          hasNextPage: page.nextCursor !== null,
+          nextCursor: page.nextCursor,
+        },
+      });
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
   fastify.post(
     '/promoter-assignments/:assignmentId/referral-links',
     {
@@ -219,14 +408,34 @@ export default async function partnerReferralLinkRoutes(fastify: FastifyInstance
     async (request, reply) => {
       const { referralLinkId } = request.params as z.infer<typeof linkIdParam>;
       const actor = services.actor(request);
-      const link = await services.referralLinks
-        .deactivate(actor, referralLinkId)
-        .catch((error: unknown) => mapDomainError(reply, request, referralLinkId, error));
-      if (link === undefined) return reply;
-
-      const validated = validateV2Response(reply, request, referralLinkDtoSchema, linkToDto(link));
-      if (validated === undefined) return reply;
-      return reply.send(validated);
+      const headers = request.v2Headers ?? {};
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: actor.userId,
+        commandName: 'referral-link.deactivate',
+        idempotencyKey: headers['idempotency-key'],
+        context: { path: { referralLinkId }, body: {} },
+        run: async () => {
+          const link = await services.referralLinks.deactivate(actor, referralLinkId);
+          const validated = validateV2Response(
+            reply,
+            request,
+            referralLinkDtoSchema,
+            linkToDto(link),
+          );
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
+        },
+      }).catch((error: unknown) =>
+        isIdempotencyConflict(error)
+          ? mapDomainError(reply, request, referralLinkId, error, {
+              conflictId: headers['idempotency-key'],
+            })
+          : mapDomainError(reply, request, referralLinkId, error),
+      );
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
     },
   );
 }
@@ -240,6 +449,9 @@ function linkToDto(link: ReferralLink) {
     assignmentId: link.assignmentId,
     assignmentVersion: link.assignmentVersion,
     termsSnapshot: link.termsSnapshot,
+    commissionPolicyVersion: link.commissionPolicyVersion,
+    commercialPolicyVersion: link.commercialPolicyVersion,
+    eligibleTierIds: link.eligibleTierIds,
     attributionSignature: link.attributionSignature,
     eventTitle: link.eventTitle,
     campaignLabel: link.campaignLabel,
@@ -249,6 +461,7 @@ function linkToDto(link: ReferralLink) {
     label: link.label,
     isActive: link.isActive,
     clicks: link.clicks,
+    lastClickedAt: link.lastClickedAt ?? null,
     conversions: link.conversions,
     revenuePaise: link.revenuePaise,
     commissionPaise: link.commissionPaise,

@@ -6,6 +6,7 @@ import {
   organizationCalendarDtoSchema,
   organizationEventCardListResponseSchema,
   eventAnalyticsDtoSchema,
+  eventPromoterAnalyticsDtoSchema,
   trendGranularitySchema,
 } from '@c1rcle/contracts/client';
 import { z } from 'zod';
@@ -248,6 +249,36 @@ export default async function partnerAnalyticsRoutes(fastify: FastifyInstance) {
       if (analytics === undefined) return reply;
 
       const validated = validateV2Response(reply, request, eventAnalyticsDtoSchema, analytics);
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  fastify.get(
+    '/events/:eventId/promoter-analytics',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({ params: eventIdParam, headers: analyticsHeaders }),
+        fastify.requirePermission('event.read'),
+      ],
+    },
+    async (request, reply) => {
+      const { eventId } = request.params as z.infer<typeof eventIdParam>;
+      const actor = services.actor(request);
+      const analytics = await services.analytics
+        .getEventPromoterAnalytics(actor, eventId)
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, eventId, error, { hideForbidden: true }),
+        );
+      if (analytics === undefined) return reply;
+
+      const validated = validateV2Response(
+        reply,
+        request,
+        eventPromoterAnalyticsDtoSchema,
+        analytics,
+      );
       if (validated === undefined) return reply;
       return reply.send(validated);
     },

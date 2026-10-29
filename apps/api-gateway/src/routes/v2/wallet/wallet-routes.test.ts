@@ -1,4 +1,4 @@
-import { MemoryPaymentProvider } from '@c1rcle/core/domain';
+import { MemoryPaymentProvider, createEventCoverAccount } from '@c1rcle/core/domain';
 import { describe, expect, it } from 'vitest';
 
 import { createV2Services } from '../../../lib/v2-services.js';
@@ -123,6 +123,7 @@ describe('GET /wallet', () => {
     });
 
     expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toContain('no-store');
     expect(response.json()).toEqual({ activeTicketCount: 1, upcomingOrderCount: 1 });
     await server.close();
   });
@@ -164,6 +165,7 @@ describe('GET /wallet/tickets', () => {
     });
 
     expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toContain('no-store');
     expect(response.json().items).toHaveLength(1);
     expect(response.json().items[0]).toMatchObject({ status: 'valid' });
     expect(otherGuestResponse.statusCode).toBe(200);
@@ -191,11 +193,68 @@ describe('GET /wallet/orders', () => {
     });
 
     expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toContain('no-store');
     expect(response.json().items).toHaveLength(1);
     expect(response.json().items[0]).toMatchObject({ status: 'paid' });
     expect(otherGuestResponse.statusCode).toBe(200);
     expect(otherGuestResponse.json().items).toHaveLength(1);
     expect(response.json().items[0].id).not.toBe(otherGuestResponse.json().items[0].id);
+    await server.close();
+  });
+});
+
+describe('GET /wallet/event-covers', () => {
+  it('returns only caller-held cover balances and redacted entry history', async () => {
+    const server = await buildServer();
+    const guestId = 'wallet-cover-guest';
+    await seedPaidOrder(server, guestId);
+    const ticketResponse = await server.inject({
+      method: 'GET',
+      url: '/wallet/tickets',
+      headers: { 'x-user-id': guestId },
+    });
+    const ticket = ticketResponse.json().items[0];
+    const account = createEventCoverAccount({
+      entitlementId: ticket.id,
+      orderId: ticket.orderId,
+      eventId: ticket.eventId,
+      guestUserId: guestId,
+      hostOrganizationId: ticket.organizationId,
+      venueOrganizationId: 'venue_private',
+      amountPaise: 15_000,
+      providerCaptureConfirmed: true,
+      merchantApproved: true,
+      policyVersion: 'venue-v1',
+      refundPolicy: 'saved_policy_review',
+      activationApproved: false,
+    });
+    await createV2Services().repos().eventCoverAccounts.createIssuedAccount(account);
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/wallet/event-covers',
+      headers: { 'x-user-id': guestId },
+    });
+    const otherGuest = await server.inject({
+      method: 'GET',
+      url: '/wallet/event-covers',
+      headers: { 'x-user-id': 'wallet-cover-other-guest' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toContain('no-store');
+    expect(response.json()).toMatchObject([
+      {
+        entitlementId: ticket.id,
+        eventId: ticket.eventId,
+        status: 'pending_activation',
+        issuedPaise: 15_000,
+        remainingPaise: 15_000,
+        history: [{ type: 'issuance', amountPaise: 15_000 }],
+      },
+    ]);
+    expect(JSON.stringify(response.json())).not.toContain('venue_private');
+    expect(otherGuest.json()).toEqual([]);
     await server.close();
   });
 });

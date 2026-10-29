@@ -229,9 +229,27 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   // depended on it (every reader filters by `expiresAt`), but the documents
   // never got swept, so this restores the hygiene v1 had. Firestore-only:
   // the memory driver (tests) never spawns a timer.
-  if (config.STORAGE_DRIVER === 'firestore') {
+  if (config.STORAGE_DRIVER === 'firestore' && config.BACKGROUND_WORKERS_ENABLED) {
     const repos = v2Services.repos();
     const sweepIntervalMs = 5 * 60 * 1000;
+    const expirePromoterAssignments = () => {
+      void v2Services.catalog
+        .expireDuePromoterAssignments()
+        .then((count) => {
+          if (count > 0) logger.info('promoter assignments expired', { count });
+        })
+        .catch((error: unknown) => {
+          logger.error('promoter assignment expiry sweep failed', { error });
+        });
+    };
+    expirePromoterAssignments();
+    const assignmentExpiryTimer = setInterval(expirePromoterAssignments, sweepIntervalMs);
+    assignmentExpiryTimer.unref();
+    app.addHook('onClose', (_instance, done) => {
+      clearInterval(assignmentExpiryTimer);
+      done();
+    });
+
     const sweepTimer = setInterval(() => {
       const now = new Date();
       void repos.cartReservations.cleanupExpired(now).catch((error: unknown) => {
@@ -240,6 +258,30 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       void repos.scannerSessions.cleanupExpired().catch((error: unknown) => {
         logger.error('scanner session sweep failed', { error });
       });
+      void repos.eventCoverAccounts
+        .cleanupExpiredRedemptionChallenges(now, 100)
+        .then((count) => {
+          if (count > 0) logger.info('event cover redemption challenges expired', { count });
+        })
+        .catch((error: unknown) => {
+          logger.error('event cover redemption expiry sweep failed', { error });
+        });
+      void v2Services.waitlist
+        .cleanupExpiredOffers(now, 100)
+        .then((count) => {
+          if (count > 0) logger.info('waitlist offers expired', { count });
+        })
+        .catch((error: unknown) => {
+          logger.error('waitlist offer expiry sweep failed', { error });
+        });
+      void v2Services.tickets
+        .cleanupExpiredTransfers(now, 100)
+        .then((count) => {
+          if (count > 0) logger.info('ticket transfers expired', { count });
+        })
+        .catch((error: unknown) => {
+          logger.error('ticket transfer expiry sweep failed', { error });
+        });
     }, sweepIntervalMs);
     sweepTimer.unref();
     app.addHook('onClose', (_instance, done) => {
