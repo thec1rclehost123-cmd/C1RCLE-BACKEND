@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   computeSettlementSplit,
+  promoterCommissionFitsDistributableValue,
   createLedgerEntry,
   platformFeeRateForTier,
 } from './models/ledger.js';
@@ -31,6 +32,15 @@ describe('computeSettlementSplit', () => {
     expect(split.platformFee + split.venueShare + split.promoterCommission + split.hostPayout).toBe(
       133_337,
     );
+  });
+});
+
+describe('promoter commission distributability guard', () => {
+  it('rejects a frozen amount that no longer fits after a high discount', () => {
+    // A ₹1,000 ticket discounted to ₹750 leaves ₹562.50 after Basic-plan and
+    // Venue allocations. A frozen ₹600 Promoter amount must fail before hold.
+    expect(promoterCommissionFitsDistributableValue(75_000, 60_000, 0.15, 0.1)).toBe(false);
+    expect(promoterCommissionFitsDistributableValue(75_000, 56_250, 0.15, 0.1)).toBe(true);
   });
 });
 

@@ -101,6 +101,59 @@ describe('admitSeats', () => {
     expect(claim.entitlement?.status).toBe('redeemed');
   });
 
+  it('requires staff eligibility verification for restricted tickets', () => {
+    const restricted = ticket({
+      eligibility: {
+        audienceType: 'WOMEN_ONLY',
+        minAge: null,
+        maxAge: null,
+        attested: true,
+        attestedAt: T0.toISOString(),
+      },
+    });
+    expect(admitSeats(restricted, 'evt_1', { now: T0 })).toMatchObject({
+      admitted: false,
+      denyReason: 'eligibility_required',
+    });
+    expect(admitSeats(restricted, 'evt_1', { now: T0, eligibilityVerified: true })).toMatchObject({
+      admitted: true,
+    });
+  });
+
+  it('uses the current tier restriction as a fallback for legacy entitlements', () => {
+    const legacy = ticket();
+    expect(admitSeats(legacy, 'evt_1', { now: T0, eligibilityRequired: true })).toMatchObject({
+      admitted: false,
+      denyReason: 'eligibility_required',
+    });
+    expect(
+      admitSeats(legacy, 'evt_1', {
+        now: T0,
+        eligibilityRequired: true,
+        eligibilityVerified: true,
+      }),
+    ).toMatchObject({ admitted: true });
+  });
+
+  it('keeps legacy and unrestricted tickets scannable without eligibility verification', () => {
+    expect(admitSeats(ticket(), 'evt_1', { now: T0 })).toMatchObject({ admitted: true });
+    expect(
+      admitSeats(
+        ticket({
+          eligibility: {
+            audienceType: 'GENERAL',
+            minAge: null,
+            maxAge: null,
+            attested: true,
+            attestedAt: T0.toISOString(),
+          },
+        }),
+        'evt_1',
+        { now: T0 },
+      ),
+    ).toMatchObject({ admitted: true });
+  });
+
   it('refuses a multi-seat claim that would overrun, spending nothing', () => {
     const original = ticket({ scanCountAllowed: 2, scanCount: 1 });
     const claim = admitSeats(original, 'evt_1', { seats: 2 });

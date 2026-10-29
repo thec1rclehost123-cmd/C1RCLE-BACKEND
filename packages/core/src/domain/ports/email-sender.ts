@@ -78,37 +78,29 @@ export class LoggingEmailSender implements EmailSender {
 
   constructor(private readonly logger: Logger) {}
 
-  async sendOtpEmail(recipient: string, code: string): Promise<void> {
-    this.logger.info('dev_email_otp', { recipient, code });
+  async sendOtpEmail(_recipient: string, _code: string): Promise<void> {
+    this.logger.info('dev_email_otp', { delivery: 'suppressed' });
   }
 
-  async sendStaffInvitationEmail(invitation: StaffInvitationEmail): Promise<void> {
-    this.logger.info('dev_email_staff_invitation', { ...invitation });
+  async sendStaffInvitationEmail(_invitation: StaffInvitationEmail): Promise<void> {
+    this.logger.info('dev_email_staff_invitation', { delivery: 'suppressed' });
   }
 
-  async sendPasswordResetEmail(recipient: string, resetUrl: string): Promise<void> {
-    this.logger.info('dev_email_password_reset', { recipient, resetUrl });
+  async sendPasswordResetEmail(_recipient: string, _resetUrl: string): Promise<void> {
+    this.logger.info('dev_email_password_reset', { delivery: 'suppressed' });
   }
 
   async sendOnboardingChangesRequestedEmail(
-    recipient: string,
-    params: OnboardingChangesRequestedEmailParams,
+    _recipient: string,
+    _params: OnboardingChangesRequestedEmailParams,
   ): Promise<void> {
-    // Note text is admin-authored review feedback: log its length, not content.
-    this.logger.info('dev_email_onboarding_changes_requested', {
-      recipient,
-      legalName: params.legalName,
-      noteLength: params.note.length,
-    });
+    this.logger.info('dev_email_onboarding_changes_requested', { delivery: 'suppressed' });
   }
 
   async sendTransactionalEmail(
     message: TransactionalEmail,
   ): Promise<{ providerMessageId: string }> {
-    this.logger.info('dev_email_transactional', {
-      idempotencyKey: message.idempotencyKey,
-      subject: message.subject,
-    });
+    this.logger.info('dev_email_transactional', { delivery: 'suppressed' });
     return { providerMessageId: `dev-${message.idempotencyKey}` };
   }
 }

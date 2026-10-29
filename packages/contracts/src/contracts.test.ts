@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   eventDtoSchema,
+  socialNotificationDtoSchema,
   guestProfileDtoSchema,
   idempotencyKeySchema,
   noContentSchema,
@@ -45,6 +46,21 @@ const VALID_USER = {
 };
 
 describe('client schemas — canonical fixtures', () => {
+  it('accepts material event-change notices in the guest notification inbox', () => {
+    expect(
+      socialNotificationDtoSchema.parse({
+        id: 'user__event.material_change__EMC-version-2',
+        type: 'event.material_change',
+        title: 'Event details changed',
+        body: 'Review the current details in your ticket wallet.',
+        link: '/tickets',
+        subjectId: 'EMC-version-2',
+        createdAt: '2026-10-28T15:00:00.000Z',
+        readAt: null,
+      }).type,
+    ).toBe('event.material_change');
+  });
+
   it('parses a user and a session', () => {
     expect(userSchema.parse(VALID_USER)).toMatchObject({ role: 'partner' });
     expect(sessionSchema.parse({ user: VALID_USER, expiresAt: 1_800_000_000_000 })).toMatchObject({

@@ -5,6 +5,7 @@ import {
   canAdmit,
   entitlementId,
   issueEntitlements,
+  redeemTicketAddonEntitlement,
   remainingAdmissions,
   scanEntitlement,
   voidEntitlement,
@@ -191,6 +192,55 @@ describe('entitlement issuance', () => {
     expect(issued[0]?.id).toMatch(/^ENT-[0-9a-f]{32}$/);
   });
 
+  it('issues deterministic add-on grants per admission and voids them with the ticket', () => {
+    const paid = paidOrder();
+    const line = paid.lines[0];
+    if (!line) throw new Error('expected a paid order line');
+    const orderWithAddons = {
+      ...paid,
+      lines: [
+        {
+          ...line,
+          quantity: 1,
+          ticketAddons: [
+            {
+              addonId: 'addon-parking',
+              name: 'Parking pass',
+              kind: 'parking' as const,
+              unitPricePaise: 5_000,
+              quantityPerEntitlement: 2,
+            },
+          ],
+        },
+      ],
+    };
+
+    const ticket = issueEntitlements({ order: orderWithAddons, now: T0 })[0];
+    if (!ticket) throw new Error('expected one admission entitlement');
+    expect(ticket?.ticketAddons).toHaveLength(2);
+    expect(new Set(ticket?.ticketAddons?.map((addon) => addon.id)).size).toBe(2);
+    expect(ticket?.ticketAddons?.every((addon) => addon.status === 'active')).toBe(true);
+    expect(issueEntitlements({ order: orderWithAddons, now: T0 })[0]?.ticketAddons).toEqual(
+      ticket?.ticketAddons,
+    );
+
+    const grant = ticket.ticketAddons?.[0];
+    if (!grant) throw new Error('expected an add-on entitlement');
+    const redeemed = redeemTicketAddonEntitlement(ticket, grant.id, T0);
+    expect(redeemed.status).toBe('valid');
+    expect(redeemed.scanCount).toBe(ticket.scanCount);
+    expect(redeemed.ticketAddons?.[0]).toMatchObject({
+      id: grant.id,
+      status: 'redeemed',
+      redeemedAt: T0.toISOString(),
+    });
+    expect(() => redeemTicketAddonEntitlement(redeemed, grant.id, T0)).toThrow(/already been used/);
+
+    const voided = voidEntitlement(redeemed, T0);
+    expect(voided.status).toBe('void');
+    expect(voided.ticketAddons?.map((addon) => addon.status)).toEqual(['redeemed', 'void']);
+  });
+
   it('id stays within the 64-char opaque-ID cap even with realistic long inputs', () => {
     // Regression: ORD-{razorpay paymentId} + a UUID tierId overflowed 64
     // chars under the old ENT-{orderId}-{tierId}-{index} scheme — surfaced
@@ -229,6 +279,37 @@ describe('entitlement issuance', () => {
     // is exactly what a couple ticket is priced not to allow.
     expect(issued).toHaveLength(1);
     expect(issued[0]?.scanCountAllowed).toBe(2);
+  });
+
+  it('issues one independently claimable entitlement per attendee for new group units', () => {
+    const paid = paidOrder();
+    const sourceLine = paid.lines[0];
+    if (!sourceLine) throw new Error('expected a paid order line');
+    const groupOrder = {
+      ...paid,
+      lines: [
+        {
+          ...sourceLine,
+          quantity: 2,
+          guestCount: 3,
+          admissionMode: 'per_person' as const,
+        },
+      ],
+    };
+
+    const issued = issueEntitlements({ order: groupOrder, now: T0 });
+
+    expect(issued).toHaveLength(6);
+    expect(issued.every((entitlement) => entitlement.scanCountAllowed === 1)).toBe(true);
+    expect(issued.map((entitlement) => entitlement.currentHolderUserId)).toEqual([
+      'user_1',
+      null,
+      null,
+      'user_1',
+      null,
+      null,
+    ]);
+    expect(new Set(issued.map((entitlement) => entitlement.id)).size).toBe(6);
   });
 });
 

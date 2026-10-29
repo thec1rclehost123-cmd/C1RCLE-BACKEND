@@ -8,10 +8,15 @@
  * it to the storage engine's own transaction primitive.
  */
 
+import type { DomainEvent } from '../events.js';
 import type { EntityId } from '../identity.js';
 import type { PlatformAdmin, ProposalStatus, ProposedAction } from '../models/admin-authority.js';
 import type { BankAccount } from '../models/bank-account.js';
 import type { CartReservation } from '../models/cart-reservation.js';
+import type {
+  ComplimentaryAllocation,
+  ComplimentaryAllocationClaim,
+} from '../models/complimentary-allocation.js';
 import type {
   CoverWalletReconciliation,
   CoverWalletReconciliationCreateInput,
@@ -47,6 +52,13 @@ import type {
   ScannerSession,
   ScannerSessionCreateInput,
 } from '../models/event-code.js';
+import type {
+  EventCoverAccount,
+  EventCoverEntry,
+  EventCoverRedemptionChallenge,
+  EventCoverPolicyAcceptance,
+  EventCoverPolicyProposal,
+} from '../models/event-cover.js';
 import type { Event } from '../models/event.js';
 import type {
   FinancialComponentBreakdown,
@@ -104,8 +116,12 @@ import type {
   SupportTicketPriority,
   SupportTicketStatus,
 } from '../models/support-ticket.js';
+import type { TicketAccessCode, TicketAccessGrant } from '../models/ticket-access.js';
+import type { TicketAddon } from '../models/ticket-addon.js';
+import type { TicketTransfer } from '../models/ticket-transfer.js';
 import type { UserBan } from '../models/user-ban.js';
 import type { Venue, VenueSlot, SlotRequest } from '../models/venue.js';
+import type { WaitlistEntry } from '../models/waitlist-entry.js';
 
 // ─── Phase 5: Scan Ledger, Event Code, Scanner Session, Door Sale, Cover Wallet ───────
 
@@ -220,7 +236,15 @@ export interface ReferralLinkRepository {
   claimVanityAlias(prefix: string, slug: string, linkId: EntityId): Promise<boolean>;
   claimGlobalCode(code: string, promoterId: EntityId): Promise<boolean>;
   getOrCreatePromoterCode(promoterId: EntityId, proposedCode: string): Promise<string | null>;
-  recordClick(linkId: EntityId): Promise<boolean>;
+  /** A stable link code per assignment, unique within its event and owned by the Promoter. */
+  getOrCreateAssignmentCode(
+    assignmentId: EntityId,
+    eventId: EntityId,
+    promoterId: EntityId,
+    proposedCode: string,
+  ): Promise<string | null>;
+  /** Deduplicates retries for one anonymous browser click token. */
+  recordClick(linkId: EntityId, clickId: string, now?: Date): Promise<boolean>;
   /** Atomic paid-order counters, idempotency is owned by the order settlement path. */
   recordSale(
     linkId: EntityId,
@@ -356,6 +380,10 @@ export interface EventRepository {
 // ─── Event catalog (tiers / promos / tables / assignments) ───────────────────
 
 export interface EventCatalogRepository {
+  // Non-cover products issued against an admission entitlement
+  getTicketAddonById(addonId: EntityId): Promise<TicketAddon | null>;
+  listTicketAddons(eventId: EntityId): Promise<TicketAddon[]>;
+  saveTicketAddon(addon: TicketAddon, tx?: TxContext | null): Promise<void>;
   // Ticket tiers
   getTierById(tierId: EntityId): Promise<TicketTier | null>;
   listTiers(eventId: EntityId): Promise<TicketTier[]>;
@@ -378,6 +406,8 @@ export interface EventCatalogRepository {
   listAssignments(eventId: EntityId): Promise<PromoterAssignment[]>;
   /** All assignments for a given promoter user (admin lifecycle queries). */
   listAssignmentsByPromoter(promoterId: EntityId): Promise<PromoterAssignment[]>;
+  /** Due invited/accepted/active assignments, bounded for the expiry worker. */
+  listExpiredAssignments(now: Date, limit: number): Promise<PromoterAssignment[]>;
   /** Platform-wide promoter-assignment listing (admin read-only dashboard). */
   listAllAssignments(query: PaginationQuery): Promise<Page<PromoterAssignment>>;
   saveAssignment(assignment: PromoterAssignment, tx?: TxContext | null): Promise<void>;
@@ -733,6 +763,8 @@ export interface CartReservationRepository {
 export interface SeatClaimLine {
   tierId: EntityId;
   quantity: number;
+  guestCount?: number;
+  admissionMode?: 'bundle' | 'per_person';
 }
 
 export interface OrderRepository {
@@ -750,6 +782,14 @@ export interface OrderRepository {
   listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Order>>;
   /** Lists orders for an event. */
   listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<Order>>;
+  /** Lists orders whose immutable attribution snapshot names this Promoter. */
+  listByPromoter(promoterId: EntityId, query: PaginationQuery): Promise<Page<Order>>;
+  /** Lists immutable Promoter attributions scoped to one organizer-owned event. */
+  listByPromoterForEvent(
+    promoterId: EntityId,
+    eventId: EntityId,
+    query: PaginationQuery,
+  ): Promise<Page<Order>>;
   /**
    * Every order of an event reduced to what inventory needs: its status and the
    * tiers and quantities it holds. One read of just those two fields instead of
@@ -787,6 +827,8 @@ export interface EntitlementRepository {
   getByOrderId(orderId: EntityId): Promise<Entitlement[]>;
   /** Fetches entitlements for a user (wallet). */
   listByUser(userId: EntityId, query: PaginationQuery): Promise<Page<Entitlement>>;
+  /** Fetches units currently held by a user, including legacy purchaser-held records. */
+  listByHolder(userId: EntityId, query: PaginationQuery): Promise<Page<Entitlement>>;
   /** Fetches entitlements for an event (door operations). */
   listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<Entitlement>>;
   /** Fetches entitlements for an organization (partner/admin). */
@@ -794,11 +836,67 @@ export interface EntitlementRepository {
   /** Lists all entitlements platform-wide (admin read-only dashboards). */
   listAll(query: PaginationQuery): Promise<Page<Entitlement>>;
   /** Saves (create or update — scan increments version). Version checked for optimistic locking. */
-  save(entitlement: Entitlement, tx?: TxContext | null): Promise<void>;
+  save(entitlement: Entitlement, tx?: TxContext | null, outboxEvent?: DomainEvent): Promise<void>;
   /** Bulk save for fulfilment (atomic with order creation). */
   saveMany(entitlements: Entitlement[], tx?: TxContext | null): Promise<void>;
+  /** Atomically redeems one ticket-bound add-on without changing admission status. */
+  redeemTicketAddon(
+    input: {
+      entitlementId: EntityId;
+      addonEntitlementId: EntityId;
+      eventId: EntityId;
+      now?: Date;
+    },
+    outboxEvent?: DomainEvent,
+  ): Promise<Entitlement>;
+  /** Atomically activates a paid replacement entitlement and retires its unused source. */
+  replaceForUpgrade(input: {
+    sourceEntitlementId: EntityId;
+    expectedSourceVersion: number;
+    replacement: Entitlement;
+    now?: Date;
+  }): Promise<{ source: Entitlement; replacement: Entitlement }>;
+  /** Atomically voids an untouched refunded upgrade and restores its source pass. */
+  restoreForUpgradeRefund(input: {
+    sourceEntitlementId: EntityId;
+    replacementEntitlementId: EntityId;
+    refundRequestId: EntityId;
+    now?: Date;
+  }): Promise<{ source: Entitlement; replacement: Entitlement }>;
   /** Counts valid entitlements for a tier (inventory/sell-through). */
   countValidByTier(tierId: EntityId): Promise<number>;
+  /** Counts active paid admission units against the original purchaser's event allowance. */
+  countActivePaidUnitsByUserAndEvent(userId: EntityId, eventId: EntityId): Promise<number>;
+  /**
+   * Atomically creates a pending transfer and locks the entitlement to it.
+   * The expected actor is either its holder or the original purchaser while
+   * the unit is explicitly unassigned and remains in purchaser custody.
+   */
+  createTicketTransfer(
+    transfer: TicketTransfer,
+    expectedCustodianUserId: EntityId,
+    outboxEvent?: DomainEvent,
+  ): Promise<TicketTransfer>;
+  /** Atomically resolves a pending transfer and, on acceptance, rotates ownership. */
+  resolveTicketTransfer(input: {
+    transferId: EntityId;
+    actorUserId: EntityId;
+    recipientEmailHash?: string;
+    action: 'accept' | 'decline' | 'cancel' | 'freeze' | 'expire';
+    holderName?: string;
+    now?: Date;
+    outboxEvent?: DomainEvent;
+  }): Promise<{ transfer: TicketTransfer; entitlement: Entitlement }>;
+  /** Releases only a matching support-frozen lock; preserves the frozen transfer record. */
+  releaseFrozenTicketTransfer(input: {
+    transferId: EntityId;
+    now?: Date;
+    outboxEvent?: DomainEvent;
+  }): Promise<{ transfer: TicketTransfer; entitlement: Entitlement }>;
+  getTicketTransfer(transferId: EntityId): Promise<TicketTransfer | null>;
+  listTicketTransfersByEntitlement(entitlementId: EntityId): Promise<TicketTransfer[]>;
+  /** Bounded oldest-first sweep candidates for pending invitations past expiry. */
+  listExpiredTicketTransfers(now: Date, limit?: number): Promise<TicketTransfer[]>;
   /**
    * Atomically admits one person against this entitlement, or refuses.
    *
@@ -838,6 +936,12 @@ export interface ClaimAdmissionOptions {
    * admit against a target that moved underneath it.
    */
   expectedScansUsed?: number;
+  /** Denies an otherwise valid QR if claim/transfer rotated its version. */
+  expectedCredentialVersion?: number;
+  /** Explicit per-holder check made by an authorized door operator. */
+  eligibilityVerified?: boolean;
+  /** Current tier-policy fallback for a legacy entitlement without a snapshot. */
+  eligibilityRequired?: boolean;
   now?: Date;
 }
 
@@ -985,6 +1089,93 @@ export interface EventCodeRepository {
   incrementDoorEntry(id: EntityId, amountPaise: number): Promise<void>;
   updateLastUsed(id: EntityId): Promise<void>;
   adjustActiveSessions(id: EntityId, delta: number): Promise<void>;
+}
+
+/** Ticket access codes are separate from scanner, discount, and referral codes. */
+export interface TicketAccessRepository {
+  createCode(code: TicketAccessCode): Promise<void>;
+  getCodeById(codeId: EntityId): Promise<TicketAccessCode | null>;
+  listCodesByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<TicketAccessCode>>;
+  revokeCode(
+    codeId: EntityId,
+    actorUserId: EntityId,
+    reason: string,
+    now: Date,
+  ): Promise<TicketAccessCode | null>;
+  getGrantById(grantId: EntityId): Promise<TicketAccessGrant | null>;
+  /** Atomically consumes one code redemption and creates/reuses one user-bound grant. */
+  redeem(input: {
+    codeId: EntityId;
+    grantId: EntityId;
+    userId: EntityId;
+    recipientEmailHash?: string | null;
+    now: Date;
+    outboxEvent?: DomainEvent;
+  }): Promise<{ code: TicketAccessCode; grant: TicketAccessGrant } | null>;
+}
+
+/** Transactional named comp quotas and idempotent one-recipient allocation claims. */
+export interface ComplimentaryAllocationRepository {
+  createAllocation(allocation: ComplimentaryAllocation): Promise<void>;
+  getAllocation(id: EntityId): Promise<ComplimentaryAllocation | null>;
+  listAllocationsByEvent(
+    eventId: EntityId,
+    query: PaginationQuery,
+  ): Promise<Page<ComplimentaryAllocation>>;
+  getClaim(id: EntityId): Promise<ComplimentaryAllocationClaim | null>;
+  issueClaim(input: {
+    allocationId: EntityId;
+    claimId: EntityId;
+    orderId: EntityId;
+    recipientUserId: EntityId;
+    holderName: string;
+    issuedBy: EntityId;
+    now: Date;
+  }): Promise<{
+    allocation: ComplimentaryAllocation;
+    claim: ComplimentaryAllocationClaim;
+    replayed: boolean;
+  }>;
+  revokeClaim(input: {
+    claimId: EntityId;
+    revokedBy: EntityId;
+    reason: string;
+    now: Date;
+  }): Promise<ComplimentaryAllocationClaim>;
+}
+
+/** FIFO waitlist with one active entry per verified user/event/tier. */
+export interface WaitlistRepository {
+  join(input: {
+    id: EntityId;
+    eventId: EntityId;
+    organizationId: EntityId;
+    tierId: EntityId;
+    userId: EntityId;
+    accessGrantId?: EntityId | null;
+    eligibilityAttested?: boolean;
+    now: Date;
+  }): Promise<{ entry: WaitlistEntry; created: boolean }>;
+  getById(id: EntityId): Promise<WaitlistEntry | null>;
+  listByUser(userId: EntityId, query: PaginationQuery): Promise<Page<WaitlistEntry>>;
+  listByEventTier(
+    eventId: EntityId,
+    tierId: EntityId,
+    query: PaginationQuery,
+  ): Promise<Page<WaitlistEntry>>;
+  getNextWaiting(eventId: EntityId, tierId: EntityId): Promise<WaitlistEntry | null>;
+  offerNext(input: {
+    eventId: EntityId;
+    tierId: EntityId;
+    actorId: EntityId;
+    reservationId: EntityId;
+    expiresAt: string;
+    now: Date;
+  }): Promise<WaitlistEntry | null>;
+  acceptOffer(input: { entryId: EntityId; userId: EntityId; now: Date }): Promise<WaitlistEntry>;
+  expireOffer(input: { entryId: EntityId; now: Date }): Promise<WaitlistEntry>;
+  listExpiredOffers(now: Date, limit?: number): Promise<WaitlistEntry[]>;
+  cancel(input: { entryId: EntityId; userId: EntityId; now: Date }): Promise<WaitlistEntry>;
 }
 
 /** Scanner Session repository — short-lived device tokens. */
@@ -1151,6 +1342,96 @@ export interface CoverWalletReconciliationRepository {
     resolvedCount: number;
     totalDiscrepancyAmount: number;
   }>;
+}
+
+/** Immutable Host proposals and exact-version Venue acceptance for M5 event cover. */
+export interface EventCoverPolicyRepository {
+  createProposal(proposal: EventCoverPolicyProposal): Promise<void>;
+  getProposal(proposalId: EntityId): Promise<EventCoverPolicyProposal | null>;
+  listProposalsByEvent(eventId: EntityId): Promise<EventCoverPolicyProposal[]>;
+  acceptProposal(acceptance: EventCoverPolicyAcceptance): Promise<EventCoverPolicyAcceptance>;
+  getAcceptance(proposalId: EntityId): Promise<EventCoverPolicyAcceptance | null>;
+}
+
+/** Transactional, append-only account/operation persistence for M5 event cover. */
+export interface EventCoverAccountRepository {
+  /** Creates one account and issuance fact, idempotent only for identical terms. */
+  createIssuedAccount(account: EventCoverAccount): Promise<EventCoverAccount>;
+  getByEntitlement(entitlementId: EntityId): Promise<EventCoverAccount | null>;
+  listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<EventCoverAccount>>;
+  transferHolder(
+    entitlementId: EntityId,
+    expectedCurrentHolderId: EntityId | null,
+    nextHolderId: EntityId,
+    now?: Date,
+  ): Promise<EventCoverAccount | null>;
+  listEntries(accountId: EntityId): Promise<EventCoverEntry[]>;
+  createRedemptionChallenge(
+    challenge: EventCoverRedemptionChallenge,
+  ): Promise<EventCoverRedemptionChallenge>;
+  getRedemptionChallenge(challengeId: EntityId): Promise<EventCoverRedemptionChallenge | null>;
+  expireRedemptionChallenge(
+    challengeId: EntityId,
+    now?: Date,
+  ): Promise<EventCoverRedemptionChallenge>;
+  cleanupExpiredRedemptionChallenges(now: Date, limit?: number): Promise<number>;
+  confirmRedemptionChallenge(
+    challengeId: EntityId,
+    guestUserId: EntityId,
+    now?: Date,
+  ): Promise<EventCoverRedemptionChallenge>;
+  consumeConfirmedRedemption(
+    challengeId: EntityId,
+    venueUserId: EntityId,
+    now?: Date,
+  ): Promise<{ account: EventCoverAccount; entry: EventCoverEntry }>;
+  reverseCapture(
+    entitlementId: EntityId,
+    operationId: EntityId,
+    actorUserId: EntityId,
+    reason: string,
+    now?: Date,
+  ): Promise<{ account: EventCoverAccount; entry: EventCoverEntry; replayed: boolean }>;
+  reserve(
+    accountId: EntityId,
+    input: {
+      amountPaise: number;
+      operationId: EntityId;
+      guestConfirmed: boolean;
+      online: boolean;
+      actorUserId: EntityId;
+      terminalId: EntityId;
+      receiptReference: string;
+      now?: Date;
+    },
+  ): Promise<{ account: EventCoverAccount; entry: EventCoverEntry; replayed: boolean }>;
+  capture(
+    accountId: EntityId,
+    operationId: EntityId,
+    now?: Date,
+  ): Promise<{ account: EventCoverAccount; entry: EventCoverEntry; replayed: boolean }>;
+  void(
+    accountId: EntityId,
+    operationId: EntityId,
+    now?: Date,
+  ): Promise<{ account: EventCoverAccount; entry: EventCoverEntry; replayed: boolean }>;
+  /** Atomically freezes every cover account linked to a full-order refund. */
+  freezeForRefund(
+    entitlementIds: readonly EntityId[],
+    refundRequestId: EntityId,
+    now?: Date,
+  ): Promise<EventCoverAccount[]>;
+  /** Releases matching freezes only after a definitive provider failure/rejection. */
+  releaseRefundFreeze(
+    entitlementIds: readonly EntityId[],
+    refundRequestId: EntityId,
+    now?: Date,
+  ): Promise<void>;
+  /** Refunds an entire unused account only when its frozen Venue policy permits it. */
+  refundUnused(
+    accountId: EntityId,
+    input: { operationId: EntityId; actorUserId: EntityId; refundRequestId: EntityId; now?: Date },
+  ): Promise<{ account: EventCoverAccount; entry: EventCoverEntry; replayed: boolean }>;
 }
 
 // ─── Phase 6: Ledger, Payout, Bank Account ────────────────────────────────────
@@ -1411,6 +1692,8 @@ export interface EmailOtpRepository {
  */
 export interface NotificationRepository {
   create(notification: Notification, tx?: TxContext | null): Promise<void>;
+  /** Creates a notification once by stable ID and preserves its read state on redelivery. */
+  createIfAbsent(notification: Notification): Promise<boolean>;
   save(notification: Notification, tx?: TxContext | null): Promise<void>;
   getById(notificationId: EntityId): Promise<Notification | null>;
   /**
@@ -1466,6 +1749,14 @@ export interface FollowRepository {
 export interface SocialNotificationRepository {
   create(notification: SocialNotification): Promise<void>;
   createIfAbsent(notification: SocialNotification): Promise<boolean>;
+  getById(notificationId: EntityId): Promise<SocialNotification | null>;
+  listEventChangesForEntitlement(entitlementId: EntityId): Promise<SocialNotification[]>;
+  respondToMaterialChange(
+    userId: EntityId,
+    notificationId: EntityId,
+    response: 'accepted' | 'refund_requested',
+    respondedAt: string,
+  ): Promise<{ notification: SocialNotification; replayed: boolean }>;
   listForUser(
     userId: EntityId,
     query: PaginationQuery & { unreadOnly?: boolean },

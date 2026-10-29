@@ -14,13 +14,18 @@ import type { DiscountFundingOwner } from './financial-journal.js';
 // ─── Ticket tiers ────────────────────────────────────────────────────────────
 
 export type TicketTierStatus = 'active' | 'paused' | 'sold_out';
+export type TicketAdmissionMode = 'bundle' | 'per_person';
+export type TicketTierAccessMode = 'public' | 'code' | 'invited';
 export type TicketAccessType = 'ENTRY' | 'VIP' | 'VVIP' | 'TABLE' | 'PACKAGE' | 'RSVP';
-export type TicketAudienceType = 'GENERAL' | 'MALE' | 'FEMALE' | 'COUPLE' | 'GROUP';
+export type TicketAudienceType =
+  'GENERAL' | 'MALE' | 'FEMALE' | 'COUPLE' | 'GROUP' | 'STUDENT' | 'MEMBER';
 
 export interface TicketPricingPhase {
   id: string;
   name: string;
   priceInPaise: number;
+  /** Separate per-admission event cover component; absent on legacy tiers. */
+  coverAmountPaise?: number;
   startsAt: string;
   endsAt: string;
   quantity: number | null;
@@ -137,6 +142,8 @@ export interface TicketTier extends VersionedEntity {
   currency: string;
   /** Price in paise. */
   priceInPaise: number;
+  /** Optional separate cover charged once per issued admission entitlement. */
+  coverAmountPaise?: number;
   /** Live sellable quantity; runs through inventory-service at sell time. */
   quantity: number;
   status: TicketTierStatus;
@@ -144,9 +151,13 @@ export interface TicketTier extends VersionedEntity {
   salesEndAt: string | null;
   /** Maximum tickets that can be purchased per order. */
   maxPerOrder: number | null;
+  /** Missing on legacy rows is public. Restricted modes require a server grant before sale. */
+  accessMode?: TicketTierAccessMode;
   accessType?: TicketAccessType;
   audienceType?: TicketAudienceType;
   guestCount?: number;
+  /** `bundle` preserves one legacy multi-admit credential; `per_person` issues each attendee separately. */
+  admissionMode?: TicketAdmissionMode;
   pricingPhases?: TicketPricingPhase[];
   doorPriceInPaise?: number | null;
   benefits?: string[];
@@ -172,13 +183,16 @@ export interface CreateTicketTierInput {
   entryType?: string;
   currency?: string;
   priceInPaise?: number;
+  coverAmountPaise?: number;
   quantity: number;
   salesStartAt?: string | null;
   salesEndAt?: string | null;
   maxPerOrder?: number | null;
+  accessMode?: TicketTierAccessMode;
   accessType?: TicketAccessType;
   audienceType?: TicketAudienceType;
   guestCount?: number;
+  admissionMode?: TicketAdmissionMode;
   pricingPhases?: CreateTicketPricingPhaseInput[];
   doorPriceInPaise?: number | null;
   benefits?: string[];
@@ -209,9 +223,23 @@ export function createTicketTier(input: CreateTicketTierInput): TicketTier {
   if (input.quantity < 0)
     throw new InvalidOperationError('Ticket tier quantity cannot be negative');
   if (priceInPaise < 0) throw new InvalidOperationError('Ticket tier price cannot be negative');
+  if (
+    input.coverAmountPaise !== undefined &&
+    (!Number.isSafeInteger(input.coverAmountPaise) || input.coverAmountPaise < 0)
+  ) {
+    throw new InvalidOperationError('Ticket cover must be a nonnegative whole paise amount');
+  }
+  if (accessType === 'RSVP' && (input.coverAmountPaise ?? 0) > 0) {
+    throw new InvalidOperationError('Free RSVPs cannot include paid event cover');
+  }
   const guestCount = input.guestCount ?? 1;
   if (!Number.isInteger(guestCount) || guestCount < 1)
     throw new InvalidOperationError('Guest count must be at least 1');
+  const admissionMode = input.admissionMode ?? 'bundle';
+  if (admissionMode === 'per_person' && guestCount < 2)
+    throw new InvalidOperationError('Per-person group admission requires at least two guests');
+  if (accessType === 'RSVP' && guestCount > 1)
+    throw new InvalidOperationError('Free RSVPs are limited to one person per ticket');
   if (input.minPerOrder !== null && input.minPerOrder !== undefined && input.minPerOrder < 1)
     throw new InvalidOperationError('Minimum tickets per order must be positive');
   if (input.maxPerUser !== null && input.maxPerUser !== undefined && input.maxPerUser < 1)
@@ -261,14 +289,17 @@ export function createTicketTier(input: CreateTicketTierInput): TicketTier {
     entryType: input.entryType ?? 'general',
     currency: input.currency ?? 'INR',
     priceInPaise,
+    ...(input.coverAmountPaise === undefined ? {} : { coverAmountPaise: input.coverAmountPaise }),
     quantity: input.quantity,
     status: 'active',
     salesStartAt: input.salesStartAt ?? null,
     salesEndAt: input.salesEndAt ?? null,
     maxPerOrder: input.maxPerOrder ?? null,
+    accessMode: input.accessMode ?? 'public',
     accessType,
     audienceType: input.audienceType ?? 'GENERAL',
     guestCount,
+    admissionMode,
     pricingPhases: accessType === 'RSVP' ? [] : phases,
     doorPriceInPaise: accessType === 'RSVP' ? null : (input.doorPriceInPaise ?? null),
     benefits: input.benefits ?? [],
@@ -293,6 +324,8 @@ export function updateTicketTier(
       | 'entryType'
       | 'currency'
       | 'priceInPaise'
+      | 'coverAmountPaise'
+      | 'accessType'
       | 'quantity'
       | 'salesStartAt'
       | 'salesEndAt'
@@ -303,6 +336,18 @@ export function updateTicketTier(
 ): TicketTier {
   if (changes.priceInPaise !== undefined && changes.priceInPaise < 0) {
     throw new InvalidOperationError('Ticket tier price cannot be negative');
+  }
+  if (
+    changes.coverAmountPaise !== undefined &&
+    (!Number.isSafeInteger(changes.coverAmountPaise) || changes.coverAmountPaise < 0)
+  ) {
+    throw new InvalidOperationError('Ticket cover amount must be non-negative whole paise');
+  }
+  if (
+    (changes.accessType ?? tier.accessType) === 'RSVP' &&
+    (changes.coverAmountPaise ?? tier.coverAmountPaise ?? 0) > 0
+  ) {
+    throw new InvalidOperationError('RSVP tiers cannot include paid event cover');
   }
   return bumpVersion({ ...tier, ...changes }, now ?? new Date());
 }
@@ -492,6 +537,10 @@ export interface CommissionTerms {
   tierRates?: Record<string, { ratePercent: number; flatPaise: number }>;
 }
 
+/** Technical identifiers for the observed M3 calculations preserved by M4. */
+export const PROMOTER_COMMISSION_POLICY_VERSION = 'm3-assignment-terms-v1';
+export const COMMERCIAL_ALLOCATION_POLICY_VERSION = 'm3-observed-v1';
+
 export interface PromoterAssignment extends VersionedEntity {
   id: EntityId;
   eventId: EntityId;
@@ -504,15 +553,70 @@ export interface PromoterAssignment extends VersionedEntity {
   endedAt: string | null;
   /** When the assignment was suspended by an admin, if ever. */
   suspendedAt: string | null;
+  suspendedFromStatus: 'invited' | 'accepted' | 'active' | null;
+  /** Invite and campaign evidence. Null values identify legacy assignments. */
+  invitedAt: string | null;
+  invitedBy: EntityId | null;
+  respondedAt: string | null;
+  respondedBy: EntityId | null;
+  acceptedAt: string | null;
+  rejectedAt: string | null;
+  revokedAt: string | null;
+  revokedBy: EntityId | null;
+  revocationReason: string | null;
+  startsAt: string | null;
+  expiresAt: string | null;
+  eligibleTierIds: EntityId[] | null;
 }
 
-export type PromoterAssignmentStatus = 'active' | 'ended' | 'suspended';
+/**
+ * 'active' and 'ended' remain readable for M3 records. New assignments use
+ * explicit invitation states and are never active until accepted.
+ */
+export type PromoterAssignmentStatus =
+  'invited' | 'accepted' | 'rejected' | 'revoked' | 'expired' | 'suspended' | 'active' | 'ended';
+
+/** Read projection for time-bounded campaign state; storage remains unchanged. */
+export function promoterAssignmentStatusAt(
+  assignment: PromoterAssignment,
+  now = new Date(),
+): PromoterAssignmentStatus {
+  if (
+    (assignment.status === 'invited' ||
+      assignment.status === 'accepted' ||
+      assignment.status === 'active') &&
+    assignment.expiresAt &&
+    Date.parse(assignment.expiresAt) <= now.getTime()
+  ) {
+    return 'expired';
+  }
+  return assignment.status;
+}
+
+/** Persists the terminal expiration state once its authored deadline has passed. */
+export function expirePromoterAssignment(
+  assignment: PromoterAssignment,
+  now = new Date(),
+): PromoterAssignment {
+  if (
+    promoterAssignmentStatusAt(assignment, now) !== 'expired' ||
+    assignment.status === 'expired'
+  ) {
+    return assignment;
+  }
+  return { ...bumpVersion(assignment, now), status: 'expired' };
+}
 
 export interface CreatePromoterAssignmentInput {
   id: EntityId;
   eventId: EntityId;
   promoterId: EntityId;
   terms: CommissionTerms;
+  status?: 'invited' | 'accepted' | 'active';
+  invitedBy?: EntityId;
+  startsAt?: string | null;
+  expiresAt?: string | null;
+  eligibleTierIds?: EntityId[];
   now?: Date;
 }
 
@@ -531,16 +635,124 @@ export function createPromoterAssignment(input: CreatePromoterAssignmentInput): 
   }
   if (input.terms.version < 1)
     throw new InvalidOperationError('Commission terms version must be >= 1');
+  const now = input.now ?? new Date();
+  if (input.startsAt && Number.isNaN(Date.parse(input.startsAt))) {
+    throw new InvalidOperationError('Campaign start must be a valid date');
+  }
+  if (input.expiresAt && Number.isNaN(Date.parse(input.expiresAt))) {
+    throw new InvalidOperationError('Campaign expiration must be a valid date');
+  }
+  if (
+    input.startsAt &&
+    input.expiresAt &&
+    Date.parse(input.expiresAt) <= Date.parse(input.startsAt)
+  ) {
+    throw new InvalidOperationError('Campaign expiration must be after its start');
+  }
+  const status = input.status ?? 'active';
   return {
     id: input.id,
     eventId: input.eventId,
     promoterId: input.promoterId,
-    status: 'active',
+    status,
     terms: input.terms,
     endedAt: null,
     suspendedAt: null,
-    ...newVersionedEntity(input.now ?? new Date()),
+    suspendedFromStatus: null,
+    invitedAt: status === 'invited' ? now.toISOString() : null,
+    invitedBy: input.invitedBy ?? null,
+    respondedAt: null,
+    respondedBy: null,
+    acceptedAt: null,
+    rejectedAt: null,
+    revokedAt: null,
+    revokedBy: null,
+    revocationReason: null,
+    startsAt: input.startsAt ?? null,
+    expiresAt: input.expiresAt ?? null,
+    eligibleTierIds:
+      input.eligibleTierIds === undefined ? null : [...new Set(input.eligibleTierIds)],
+    ...newVersionedEntity(now),
   };
+}
+
+export function acceptPromoterAssignment(
+  assignment: PromoterAssignment,
+  actorId: EntityId,
+  now?: Date,
+): PromoterAssignment {
+  const at = now ?? new Date();
+  if (assignment.status !== 'invited') {
+    throw new InvalidOperationError('Only a pending Promoter invitation can be accepted');
+  }
+  if (assignment.expiresAt && Date.parse(assignment.expiresAt) <= at.getTime()) {
+    throw new InvalidOperationError('This Promoter invitation has expired');
+  }
+  const stamped = bumpVersion(assignment, at);
+  return {
+    ...stamped,
+    status: 'accepted',
+    acceptedAt: at.toISOString(),
+    respondedAt: at.toISOString(),
+    respondedBy: actorId,
+  };
+}
+
+export function rejectPromoterAssignment(
+  assignment: PromoterAssignment,
+  actorId: EntityId,
+  now?: Date,
+): PromoterAssignment {
+  const at = now ?? new Date();
+  if (assignment.status !== 'invited') {
+    throw new InvalidOperationError('Only a pending Promoter invitation can be rejected');
+  }
+  const stamped = bumpVersion(assignment, at);
+  return {
+    ...stamped,
+    status: 'rejected',
+    rejectedAt: at.toISOString(),
+    respondedAt: at.toISOString(),
+    respondedBy: actorId,
+  };
+}
+
+export function revokePromoterAssignment(
+  assignment: PromoterAssignment,
+  actorId: EntityId,
+  reason: string,
+  now?: Date,
+): PromoterAssignment {
+  if (
+    assignment.status !== 'invited' &&
+    assignment.status !== 'accepted' &&
+    assignment.status !== 'active'
+  ) {
+    throw new InvalidOperationError('Only a pending or accepted assignment can be revoked');
+  }
+  const normalizedReason = reason.trim();
+  if (normalizedReason.length < 3 || normalizedReason.length > 500) {
+    throw new InvalidOperationError('A revocation reason between 3 and 500 characters is required');
+  }
+  const at = now ?? new Date();
+  return {
+    ...bumpVersion(assignment, at),
+    status: 'revoked',
+    endedAt: at.toISOString(),
+    revokedAt: at.toISOString(),
+    revokedBy: actorId,
+    revocationReason: normalizedReason,
+  };
+}
+
+export function isPromoterAssignmentAttributable(
+  assignment: PromoterAssignment,
+  now = new Date(),
+): boolean {
+  if (assignment.status !== 'accepted' && assignment.status !== 'active') return false;
+  if (assignment.startsAt && Date.parse(assignment.startsAt) > now.getTime()) return false;
+  if (assignment.expiresAt && Date.parse(assignment.expiresAt) <= now.getTime()) return false;
+  return true;
 }
 
 /** Ends an assignment without mutating its frozen terms. */
@@ -564,8 +776,20 @@ export function suspendPromoterAssignment(
 ): PromoterAssignment {
   if (assignment.status === 'ended') return assignment;
   if (assignment.status === 'suspended') return assignment;
+  if (
+    assignment.status !== 'invited' &&
+    assignment.status !== 'accepted' &&
+    assignment.status !== 'active'
+  ) {
+    throw new InvalidOperationError('Only a pending or accepted assignment can be suspended');
+  }
   const stamped = bumpVersion(assignment, now ?? new Date());
-  return { ...stamped, status: 'suspended', suspendedAt: (now ?? new Date()).toISOString() };
+  return {
+    ...stamped,
+    status: 'suspended',
+    suspendedAt: (now ?? new Date()).toISOString(),
+    suspendedFromStatus: assignment.status,
+  };
 }
 
 /**
@@ -578,5 +802,10 @@ export function reinstatePromoterAssignment(
 ): PromoterAssignment {
   if (assignment.status !== 'suspended') return assignment;
   const stamped = bumpVersion(assignment, now ?? new Date());
-  return { ...stamped, status: 'active', suspendedAt: null };
+  return {
+    ...stamped,
+    status: assignment.suspendedFromStatus ?? 'active',
+    suspendedAt: null,
+    suspendedFromStatus: null,
+  };
 }

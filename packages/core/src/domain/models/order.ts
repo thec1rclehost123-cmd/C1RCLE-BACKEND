@@ -8,6 +8,7 @@ import type { EntityId, VersionedEntity } from '../identity.js';
 import type { CommissionTerms } from './event-catalog.js';
 import type { DiscountFundingOwner } from './financial-journal.js';
 import type { PricingBreakdown } from './pricing.js';
+import type { TicketAddonSelection } from './ticket-addon.js';
 
 /**
  * ─── Order aggregate (Phase 4) ───────────────────────────────────────────────
@@ -77,7 +78,24 @@ export interface OrderLine {
   tierName: string;
   quantity: number;
   unitPricePaise: number;
+  /** Component snapshot; absent on legacy orders where the tier price was admission only. */
+  admissionUnitPricePaise?: number;
+  coverUnitPricePaise?: number;
+  coverPolicy?: { proposalId: EntityId; policyVersion: string; termsDigest: string };
+  /** Non-cover products purchased per resulting admission entitlement. */
+  ticketAddons?: TicketAddonSelection[];
   subtotalPaise: number;
+  /** Immutable group issuance policy captured by the hold; absent on legacy orders. */
+  guestCount?: number;
+  admissionMode?: 'bundle' | 'per_person';
+  /** Immutable eligibility policy and acknowledgement; absent on legacy orders. */
+  eligibility?: {
+    audienceType: string;
+    minAge: number | null;
+    maxAge: number | null;
+    attested: true;
+    attestedAt: string;
+  };
 }
 
 /**
@@ -99,6 +117,10 @@ export interface OrderAttribution {
   assignmentId: EntityId;
   assignmentVersion: number;
   termsSnapshot: CommissionTerms;
+  eligibleTierIds: EntityId[] | null;
+  commissionPolicyVersion: string;
+  commercialPolicyVersion: string;
+  attributedAt: string;
   attributionSignature: string;
   promoterCommissionPaise: number;
 }
@@ -137,6 +159,11 @@ export interface Order extends VersionedEntity {
   paymentFeePaise: number;
   gstPaise: number;
   grandTotalPaise: number;
+  /** Admission and cover portions; absent on legacy orders. */
+  admissionSubtotalPaise?: number;
+  coverSubtotalPaise?: number;
+  addOnSubtotalPaise?: number;
+  discountedAdmissionSubtotalPaise?: number;
   appliedPromoCode: string | null;
 
   attribution: OrderAttribution | null;
@@ -217,6 +244,11 @@ export function createOrder(input: CreateOrderInput): Order {
     paymentFeePaise: pricing.paymentFeePaise,
     gstPaise: pricing.gstPaise,
     grandTotalPaise: pricing.grandTotalPaise,
+    admissionSubtotalPaise: pricing.admissionSubtotalPaise ?? pricing.subtotalPaise,
+    coverSubtotalPaise: pricing.coverSubtotalPaise ?? 0,
+    addOnSubtotalPaise: pricing.addOnSubtotalPaise ?? 0,
+    discountedAdmissionSubtotalPaise:
+      pricing.discountedAdmissionSubtotalPaise ?? pricing.discountedSubtotalPaise,
     appliedPromoCode: pricing.appliedPromoCode,
     attribution: input.attribution ?? null,
     paymentIntentId: null,
@@ -289,6 +321,55 @@ export function markPaid(order: Order, paymentId: string, now?: Date): Order {
     status: transitionStatus(order.status, 'paid', ORDER_TRANSITIONS),
     paymentId,
     paidAt: at.toISOString(),
+  };
+}
+
+/** Settles an explicitly zero-value order without inventing provider facts. */
+export function markZeroValueOrderIssued(order: Order, now?: Date): Order {
+  if (order.status === 'paid' && order.grandTotalPaise === 0 && order.paymentId === null) {
+    return order;
+  }
+  if (
+    order.status !== 'pending' ||
+    order.grandTotalPaise !== 0 ||
+    order.subtotalPaise !== 0 ||
+    order.platformFeePaise !== 0 ||
+    order.paymentFeePaise !== 0 ||
+    order.gstPaise !== 0
+  ) {
+    throw new InvalidOperationError(
+      'Only a zero-value order can be issued without provider payment',
+    );
+  }
+  const at = now ?? new Date();
+  return {
+    ...bumpVersion(order, at),
+    status: 'paid',
+    paymentId: null,
+    paymentIntentId: null,
+    paidAt: at.toISOString(),
+  };
+}
+
+/** Releases inventory for a zero-value order without creating provider refund facts. */
+export function markZeroValueOrderVoided(order: Order, now?: Date): Order {
+  if (order.status === 'refunded' && order.grandTotalPaise === 0 && order.paymentId === null) {
+    return order;
+  }
+  if (
+    order.status !== 'paid' ||
+    order.grandTotalPaise !== 0 ||
+    order.paymentId !== null ||
+    order.paymentIntentId !== null
+  ) {
+    throw new InvalidOperationError(
+      'Only a zero-value order can be voided without provider refund',
+    );
+  }
+  return {
+    ...bumpVersion(order, now ?? new Date()),
+    status: 'refunded',
+    refundedPaise: 0,
   };
 }
 

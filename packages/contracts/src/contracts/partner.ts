@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
-import { opaqueIdSchema } from './shared.js';
+import { orderStatusSchema } from './checkout.js';
+import { cursorSchema, opaqueIdSchema, pageInfoSchema, paginatedSchema } from './shared.js';
 
 /**
  * ─── Partnerships / Promoters / Referrals / Analytics ─────────────────────────
@@ -85,6 +86,38 @@ export type SetVenueShareRequest = z.infer<typeof setVenueShareRequestSchema>;
 /* ─── Partner access context ─────────────────────────────────────────────── */
 
 export const partnerTypeSchema = z.enum(['venue', 'host', 'promoter']);
+
+/** Bounded, server-computed Promoter activity totals from referral-link read models. */
+export const promoterCampaignSummaryDtoSchema = z.object({
+  linkCount: z.number().int().nonnegative(),
+  clicks: z.number().int().nonnegative(),
+  conversions: z.number().int().nonnegative(),
+  /** Gross attributed ticket value from link counters, before refund adjustments. */
+  grossAttributedTicketRevenuePaise: z.number().int().nonnegative(),
+  hasMoreLinks: z.boolean(),
+});
+export type PromoterCampaignSummaryDto = z.infer<typeof promoterCampaignSummaryDtoSchema>;
+
+/** Privacy-minimized order projection visible only to its attributed Promoter. */
+export const promoterAttributedOrderDtoSchema = z
+  .object({
+    id: opaqueIdSchema,
+    bookingReference: z.string().nullable(),
+    eventId: opaqueIdSchema,
+    status: orderStatusSchema,
+    ticketCount: z.number().int().nonnegative(),
+    attributedTicketValuePaise: z.number().int().nonnegative(),
+    promoterCommissionPaise: z.number().int().nonnegative(),
+    attributedAt: z.iso.datetime(),
+  })
+  .strict();
+export type PromoterAttributedOrderDto = z.infer<typeof promoterAttributedOrderDtoSchema>;
+export const promoterAttributedOrderListResponseSchema = paginatedSchema(
+  promoterAttributedOrderDtoSchema,
+);
+export type PromoterAttributedOrderListResponse = z.infer<
+  typeof promoterAttributedOrderListResponseSchema
+>;
 
 export const partnerPermissionSchema = z.enum([
   'VIEW_FINANCIALS',
@@ -298,6 +331,37 @@ export const eventAnalyticsDtoSchema = z.object({
 });
 export type EventAnalyticsDto = z.infer<typeof eventAnalyticsDtoSchema>;
 
+/**
+ * Event-level Promoter attribution analytics. Values are backend-derived from
+ * captured order snapshots and are before refund adjustments.
+ */
+export const eventPromoterAnalyticsDtoSchema = z.object({
+  eventId: opaqueIdSchema,
+  complete: z.boolean(),
+  capturedTicketCount: z.number().int().nonnegative(),
+  attributedTicketCount: z.number().int().nonnegative(),
+  attributedTicketValuePaise: z.number().int().nonnegative(),
+  recordedCommissionPaise: z.number().int().nonnegative(),
+  netAttributedValuePaise: z.number().int(),
+  commissionPayableBalancePaise: z.number().int(),
+  liabilityComplete: z.boolean(),
+  liabilityReadModel: z.enum(['legacy_ledger_v1', 'financial_journal_v2']),
+  items: z.array(
+    z.object({
+      promoterOrganizationId: opaqueIdSchema,
+      attributedOrderCount: z.number().int().nonnegative(),
+      attributedTicketCount: z.number().int().nonnegative(),
+      attributedTicketValuePaise: z.number().int().nonnegative(),
+      recordedCommissionPaise: z.number().int().nonnegative(),
+      netAttributedValuePaise: z.number().int(),
+      commissionPayableBalancePaise: z.number().int(),
+      liabilityComplete: z.boolean(),
+      liabilityReadModel: z.enum(['legacy_ledger_v1', 'financial_journal_v2']),
+    }),
+  ),
+});
+export type EventPromoterAnalyticsDto = z.infer<typeof eventPromoterAnalyticsDtoSchema>;
+
 /* ─── Promoter referral links ────────────────────────────────────────────── */
 
 export const referralLinkDtoSchema = z.object({
@@ -323,6 +387,9 @@ export const referralLinkDtoSchema = z.object({
         .optional(),
     })
     .nullable(),
+  commissionPolicyVersion: z.string().nullable(),
+  commercialPolicyVersion: z.string().nullable(),
+  eligibleTierIds: z.array(opaqueIdSchema).nullable(),
   attributionSignature: z.string().nullable(),
   eventTitle: z.string(),
   campaignLabel: z.string(),
@@ -333,6 +400,7 @@ export const referralLinkDtoSchema = z.object({
   isActive: z.boolean(),
   /** Vanity counters. The authoritative attribution lives on the order. */
   clicks: z.number().int().nonnegative(),
+  lastClickedAt: z.iso.datetime().nullable(),
   conversions: z.number().int().nonnegative(),
   revenuePaise: z.number().int().nonnegative(),
   commissionPaise: z.number().int().nonnegative(),
@@ -341,6 +409,14 @@ export const referralLinkDtoSchema = z.object({
   updatedAt: z.iso.datetime(),
 });
 export type ReferralLinkDto = z.infer<typeof referralLinkDtoSchema>;
+
+export const promoterReferralLinkListResponseSchema = z.object({
+  items: z.array(referralLinkDtoSchema),
+  pageInfo: pageInfoSchema.extend({ nextCursor: cursorSchema.nullable() }),
+});
+export type PromoterReferralLinkListResponse = z.infer<
+  typeof promoterReferralLinkListResponseSchema
+>;
 
 export const createReferralLinkSchema = z
   .object({

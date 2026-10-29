@@ -69,6 +69,7 @@ export type {
   EventOperationsDto,
   OrganizationEventListResponse,
   EventPreviewDto,
+  EventEntryRulesDto,
   CreateEventInput,
   UpdateEventInput,
   CancelEventInput,
@@ -78,12 +79,18 @@ export type {
   CreateTicketTierRequest,
   PublicTicketTierDto,
   PublicTicketTierListResponse,
+  TicketAddonDto,
+  CreateTicketAddonRequest,
+  TicketAddonListResponse,
+  PublicTicketAddonDto,
+  PublicTicketAddonListResponse,
   PromoCodeDto,
   CreatePromoCodeRequest,
   TablePackageDto,
   CreateTablePackageRequest,
   PromoterAssignmentDto,
   PromoterAssignedEventDto,
+  PromoterAssignmentCandidateDto,
   AssignPromoterRequest,
 } from './contracts/event.js';
 
@@ -93,6 +100,7 @@ export {
   eventOperationsDtoSchema,
   organizationEventListResponseSchema,
   eventPreviewDtoSchema,
+  eventEntryRulesSchema,
   createEventSchema,
   updateEventSchema,
   cancelEventSchema,
@@ -103,14 +111,49 @@ export {
   createTicketTierSchema,
   publicTicketTierDtoSchema,
   publicTicketTierListResponseSchema,
+  ticketAddonDtoSchema,
+  createTicketAddonSchema,
+  ticketAddonListResponseSchema,
+  publicTicketAddonDtoSchema,
+  publicTicketAddonListResponseSchema,
   promoCodeDtoSchema,
   createPromoCodeSchema,
   tablePackageDtoSchema,
   createTablePackageSchema,
   promoterAssignmentDtoSchema,
   promoterAssignedEventDtoSchema,
+  promoterAssignmentCandidateDtoSchema,
   assignPromoterSchema,
 } from './contracts/event.js';
+
+export type { TicketAccessCodeDto, TicketAccessGrantDto } from './contracts/ticket-access.js';
+export type {
+  EventCoverPolicyTermsDto,
+  EventCoverPolicyHistoryDto,
+  EventCoverWalletItemDto,
+  EventCoverRedemptionChallengeDto,
+} from './contracts/event-cover.js';
+export {
+  eventCoverPolicyTermsSchema,
+  proposeEventCoverPolicySchema,
+  eventCoverPolicyProposalDtoSchema,
+  eventCoverPolicyAcceptanceDtoSchema,
+  eventCoverPolicyHistoryDtoSchema,
+  eventCoverWalletItemDtoSchema,
+  eventCoverWalletResponseSchema,
+  createEventCoverRedemptionChallengeSchema,
+  eventCoverRedemptionChallengeDtoSchema,
+} from './contracts/event-cover.js';
+export {
+  ticketAccessCodeStatusSchema,
+  ticketAccessCodeDtoSchema,
+  createTicketAccessCodeSchema,
+  createTicketAccessInvitationSchema,
+  ticketAccessCodeCreateResponseSchema,
+  ticketAccessCodeListResponseSchema,
+  redeemTicketAccessCodeSchema,
+  ticketAccessGrantDtoSchema,
+} from './contracts/ticket-access.js';
 
 // Partner (partnerships, promoters, referrals, analytics)
 export type {
@@ -128,6 +171,8 @@ export type {
   OrganizationEventCardDto,
   OrganizationEventCardListResponse,
   EventAnalyticsDto,
+  EventPromoterAnalyticsDto,
+  PromoterCampaignSummaryDto,
   ReferralLinkDto,
   CreateReferralLinkRequest,
   PromoterConnectionDto,
@@ -154,6 +199,8 @@ export {
   organizationEventCardDtoSchema,
   organizationEventCardListResponseSchema,
   eventAnalyticsDtoSchema,
+  eventPromoterAnalyticsDtoSchema,
+  promoterCampaignSummaryDtoSchema,
   referralLinkDtoSchema,
   createReferralLinkSchema,
   promoterConnectionDtoSchema,
@@ -167,6 +214,10 @@ export {
 export type {
   OnboardingProfileDto,
   OnboardingRequestDto,
+  PromoterAgreementAcceptanceDto,
+  PromoterAgreementDto,
+  PromoterAgreementAcceptanceRequest,
+  PromoterAgreementStatusDto,
   StartOnboardingRequest,
   SaveOnboardingProgressRequest,
   AddOnboardingDocumentRequest,
@@ -193,6 +244,10 @@ export {
   onboardingProfileSchema,
   onboardingDocumentStatusSchema,
   onboardingDocumentSchema,
+  promoterAgreementAcceptanceSchema,
+  promoterAgreementDtoSchema,
+  promoterAgreementAcceptanceRequestSchema,
+  promoterAgreementStatusDtoSchema,
   onboardingRequestDtoSchema,
   startOnboardingSchema,
   saveOnboardingProgressSchema,
@@ -313,6 +368,8 @@ export type {
   RevokeReasonBody,
   ScannerSessionTokenHeader,
   TicketLookupResponse,
+  TicketAddonRedemptionRequest,
+  TicketAddonRedemptionResponse,
   CheckInDto,
   CheckInListResponse,
   ScannerSessionCreateBody,
@@ -381,6 +438,8 @@ export {
   scannerSessionDtoSchema,
   scanRequestSchema,
   scanResponseSchema,
+  ticketAddonRedemptionRequestSchema,
+  ticketAddonRedemptionResponseSchema,
   overrideRequestSchema,
   overrideResponseSchema,
   doorStatsQuerySchema,
@@ -559,3 +618,19 @@ export {
 // Guest profile (guest-portal signup onboarding)
 export type { GuestProfileDto, UpsertGuestProfileRequest } from './contracts/guest-profile.js';
 export { guestProfileDtoSchema, upsertGuestProfileSchema } from './contracts/guest-profile.js';
+
+export type { AdminPromoterOrderInvestigation } from './contracts/admin-orders.js';
+export { adminPromoterOrderInvestigationSchema } from './contracts/admin-orders.js';
+
+export type {
+  AdminPromoterReferralLinkDto,
+  AdminPromoterReferralLinkListResponse,
+  AdminPromoterRiskFlag,
+  AdminPromoterRiskFlagsResponse,
+} from './contracts/admin-promoters.js';
+export {
+  adminPromoterReferralLinkDtoSchema,
+  adminPromoterReferralLinkListResponseSchema,
+  adminPromoterRiskFlagSchema,
+  adminPromoterRiskFlagsResponseSchema,
+} from './contracts/admin-promoters.js';

@@ -314,6 +314,7 @@ export async function runParityCases({
     plan: 'basic',
     profile: VALID_ONBOARDING_PROFILE,
     documents: [],
+    promoterAgreementAcceptances: [],
     missingDocuments: ['id_front', 'id_back', 'selfie'],
     submittedAt: null,
     reviewedBy: null,
@@ -426,6 +427,23 @@ export async function runParityCases({
     'eventPublicDetailDtoSchema',
     'rejects an invalid organizer slug',
     { ...VALID_PUBLIC_EVENT_DETAIL, organizer: { id: 'org_1', name: 'Host', slug: 'Bad Slug' } },
+    false,
+  );
+  agree(
+    'updateEventSchema',
+    'accepts a Venue-approved replacement slot reference',
+    {
+      venueId: 'ven_2',
+      slotRequestId: 'req_1',
+      startAt: '2027-01-15T18:00:00.000Z',
+      endAt: '2027-01-15T23:00:00.000Z',
+    },
+    true,
+  );
+  agree(
+    'updateEventSchema',
+    'rejects a replacement slot request without a valid Venue id',
+    { venueId: ' ', slotRequestId: 'req_1' },
     false,
   );
 
@@ -595,8 +613,19 @@ export async function runParityCases({
     status: 'active',
     ratePercent: 5,
     flatPaise: 0,
+    termsVersion: 1,
+    startsAt: null,
+    expiresAt: null,
+    eligibleTierIds: null,
     createdAt: '2026-08-01T00:00:00.000Z',
+    invitedAt: '2026-08-01T00:00:00.000Z',
+    invitedBy: 'usr_0002',
+    acceptedAt: null,
+    respondedBy: null,
     endedAt: null,
+    revokedAt: null,
+    revokedBy: null,
+    revocationReason: null,
     suspendedAt: null,
   };
   agree(
@@ -616,6 +645,136 @@ export async function runParityCases({
     'rejects when status is invalid',
     { ...VALID_ADMIN_PROMOTER_ASSIGNMENT, status: 'deleted' },
     false,
+  );
+
+  /* ── minimal admin promoter referral-link DTO ───────────────────────────── */
+  const VALID_ADMIN_PROMOTER_LINK = {
+    id: 'ref_0001',
+    eventId: 'evt_0001',
+    assignmentId: 'asgn_0001',
+    eventTitle: 'Test Event',
+    code: 'PROMO123',
+    label: 'Summer',
+    isActive: true,
+    clicks: 12,
+    lastClickedAt: '2026-08-01T00:00:00.000Z',
+    conversions: 2,
+    createdAt: '2026-08-01T00:00:00.000Z',
+    updatedAt: '2026-08-02T00:00:00.000Z',
+  };
+  agree(
+    'adminPromoterReferralLinkDtoSchema',
+    'accepts status and bounded activity counters',
+    VALID_ADMIN_PROMOTER_LINK,
+    true,
+  );
+  const VALID_PROMOTER_ATTRIBUTED_ORDER = {
+    id: 'ord_0001',
+    bookingReference: 'BK000001',
+    eventId: 'evt_0001',
+    status: 'paid',
+    ticketCount: 2,
+    attributedTicketValuePaise: 45000,
+    promoterCommissionPaise: 4500,
+    attributedAt: '2026-08-02T00:00:00.000Z',
+  };
+  agree(
+    'promoterAttributedOrderDtoSchema',
+    'accepts the privacy-minimized order projection',
+    VALID_PROMOTER_ATTRIBUTED_ORDER,
+    true,
+  );
+  agree(
+    'promoterAttributedOrderDtoSchema',
+    'rejects guest contact data',
+    { ...VALID_PROMOTER_ATTRIBUTED_ORDER, contact: { email: 'guest@example.test' } },
+    false,
+  );
+  const VALID_EVENT_PROMOTER_ANALYTICS = {
+    eventId: 'evt_0001',
+    complete: true,
+    capturedTicketCount: 10,
+    attributedTicketCount: 4,
+    attributedTicketValuePaise: 90000,
+    recordedCommissionPaise: 9000,
+    netAttributedValuePaise: 81000,
+    commissionPayableBalancePaise: 9000,
+    liabilityComplete: true,
+    liabilityReadModel: 'legacy_ledger_v1',
+    items: [
+      {
+        promoterOrganizationId: 'org_promoter_1',
+        attributedOrderCount: 2,
+        attributedTicketCount: 4,
+        attributedTicketValuePaise: 90000,
+        recordedCommissionPaise: 9000,
+        netAttributedValuePaise: 81000,
+        commissionPayableBalancePaise: 9000,
+        liabilityComplete: true,
+        liabilityReadModel: 'legacy_ledger_v1',
+      },
+    ],
+  };
+  agree(
+    'eventPromoterAnalyticsDtoSchema',
+    'accepts backend-derived event promoter metrics',
+    VALID_EVENT_PROMOTER_ANALYTICS,
+    true,
+  );
+  agree(
+    'eventPromoterAnalyticsDtoSchema',
+    'rejects negative attributed ticket values',
+    {
+      ...VALID_EVENT_PROMOTER_ANALYTICS,
+      attributedTicketValuePaise: -1,
+    },
+    false,
+  );
+  agree(
+    'adminPromoterReferralLinkDtoSchema',
+    'rejects negative counters',
+    { ...VALID_ADMIN_PROMOTER_LINK, clicks: -1 },
+    false,
+  );
+  const VALID_ADMIN_PROMOTER_RISK_FLAG = {
+    paymentId: 'pay_0001',
+    disputeId: 'disp_0001',
+    orderId: 'ord_0001',
+    bookingReference: 'BK000001',
+    eventId: 'evt_0001',
+    status: 'open',
+    amountPaise: 45000,
+    providerOccurredAt: '2026-08-02T00:00:00.000Z',
+  };
+  agree(
+    'adminPromoterRiskFlagSchema',
+    'accepts an active attributed-order dispute',
+    VALID_ADMIN_PROMOTER_RISK_FLAG,
+    true,
+  );
+  agree(
+    'adminPromoterRiskFlagSchema',
+    'rejects a resolved status',
+    { ...VALID_ADMIN_PROMOTER_RISK_FLAG, status: 'won' },
+    false,
+  );
+  agree(
+    'adminPromoterRiskFlagsResponseSchema',
+    'accepts a complete risk response',
+    { promoterId: 'org_promoter_1', complete: true, flags: [VALID_ADMIN_PROMOTER_RISK_FLAG] },
+    true,
+  );
+  agree(
+    'adminPromoterRiskFlagsResponseSchema',
+    'rejects a missing completeness marker',
+    { promoterId: 'org_promoter_1', flags: [] },
+    false,
+  );
+  agree(
+    'adminPromoterReferralLinkActionResponseSchema',
+    'accepts deactivation result',
+    { linkId: 'ref_0001', action: 'deactivated', changed: true, at: '2026-08-02T00:00:00.000Z' },
+    true,
   );
 
   /* ── admin promoter action response ─────────────────────────────────────── */

@@ -5,6 +5,7 @@ import {
   activateReferralLink,
   canAttribute,
   createReferralLink,
+  isWithinReferralAttributionWindow,
   deactivateReferralLink,
   generateReferralCode,
   normalizeReferralCode,
@@ -87,6 +88,7 @@ describe('counters', () => {
     // Clicks are high-frequency: treating each as an optimistic-lock-worthy
     // edit would make a popular link unwritable under contention.
     expect(clicked.clicks).toBe(1);
+    expect(clicked.lastClickedAt).toBe(LATER.toISOString());
     expect(clicked.version).toBe(1);
     expect(clicked.updatedAt).toBe(LATER.toISOString());
   });
@@ -103,6 +105,22 @@ describe('counters', () => {
     subject = recordConversion(subject, LATER);
 
     expect(subject).toMatchObject({ clicks: 5, conversions: 1 });
+  });
+});
+
+describe('attribution window', () => {
+  it('expires after seven days without a new valid click and rejects future timestamps', () => {
+    const created = link({ now: new Date('2026-01-01T00:00:00.000Z') });
+    expect(isWithinReferralAttributionWindow(created, new Date('2026-01-08T00:00:00.000Z'))).toBe(
+      true,
+    );
+    expect(isWithinReferralAttributionWindow(created, new Date('2026-01-08T00:00:00.001Z'))).toBe(
+      false,
+    );
+    const futureClick = { ...created, lastClickedAt: '2026-01-09T00:00:00.000Z' };
+    expect(
+      isWithinReferralAttributionWindow(futureClick, new Date('2026-01-08T00:00:00.000Z')),
+    ).toBe(false);
   });
 });
 

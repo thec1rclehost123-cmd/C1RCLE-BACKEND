@@ -5,15 +5,20 @@ export * from './models/organization.js';
 export * from './models/venue.js';
 export * from './models/event.js';
 export * from './models/event-catalog.js';
+export * from './models/ticket-addon.js';
 export * from './models/partnership.js';
 export * from './models/partner-access.js';
 export * from './models/referral-link.js';
 export * from './models/promoter-connection.js';
 export * from './models/admin-authority.js';
 export * from './models/onboarding.js';
+export * from './models/promoter-agreement.js';
 export * from './models/pricing.js';
 export * from './models/order.js';
 export * from './models/entitlement.js';
+export * from './models/ticket-transfer.js';
+export * from './models/waitlist-entry.js';
+export * from './models/ticket-access.js';
 export * from './models/cart-reservation.js';
 export * from './models/scan-ledger.js';
 export * from './models/scanner-device.js';
@@ -45,6 +50,7 @@ export type {
   Follow,
   NotificationType as SocialNotificationType,
   SocialNotification,
+  EventMaterialChangeResponse,
 } from './models/social.js';
 
 export {
@@ -54,8 +60,10 @@ export {
   NOTIFICATION_TYPES as SOCIAL_NOTIFICATION_TYPES,
   notificationId as socialNotificationId,
   createNotification as createSocialNotification,
+  eventMaterialChangeSubjectId,
 } from './models/social.js';
 export * from './models/platform-settings.js';
+export * from './models/event-cover.js';
 export type * from './models/platform-user.js';
 export * from './ports/email-sender.js';
 export type * from './ports/email-delivery.js';

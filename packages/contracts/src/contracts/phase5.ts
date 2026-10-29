@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { ticketAddonEntitlementSchema } from './checkout.js';
 import { opaqueIdSchema, paginatedSchema, idempotencyKeySchema } from './shared.js';
 
 /**
@@ -135,6 +136,7 @@ export const scanRequestSchema = z
     operatorName: z.string().max(120).optional(),
     operatorRole: z.string().max(60).optional(),
     gate: z.string().max(64).optional(),
+    eligibilityVerified: z.boolean().optional(),
   })
   .strict();
 export type ScanRequest = z.infer<typeof scanRequestSchema>;
@@ -150,6 +152,7 @@ export const scanDenyReasonSchema = z.enum([
   'wrong_gate',
   'offline_expired',
   'override_required',
+  'eligibility_required',
   'promoter_not_authorized',
 ]);
 export type ScanDenyReasonCode = z.infer<typeof scanDenyReasonSchema>;
@@ -181,6 +184,14 @@ export const scanResponseSchema = z.object({
       scansUsed: z.number().int(),
       scansAllowed: z.number().int(),
       status: z.string(),
+      ticketAddons: z.array(ticketAddonEntitlementSchema).max(100).optional(),
+      eligibilityPolicy: z
+        .object({
+          audienceType: z.string(),
+          minAge: z.number().int().nullable(),
+          maxAge: z.number().int().nullable(),
+        })
+        .optional(),
     })
     .optional(),
 });
@@ -200,6 +211,21 @@ export const ticketLookupResponseSchema = z.object({
   entitlement: scanResponseSchema.shape.entitlement,
 });
 export type TicketLookupResponse = z.infer<typeof ticketLookupResponseSchema>;
+
+export const ticketAddonRedemptionRequestSchema = z
+  .object({
+    eventId: opaqueIdSchema,
+    entitlementId: opaqueIdSchema,
+    addonEntitlementId: opaqueIdSchema,
+  })
+  .strict();
+export type TicketAddonRedemptionRequest = z.infer<typeof ticketAddonRedemptionRequestSchema>;
+
+export const ticketAddonRedemptionResponseSchema = z.object({
+  entitlementId: opaqueIdSchema,
+  addon: ticketAddonEntitlementSchema,
+});
+export type TicketAddonRedemptionResponse = z.infer<typeof ticketAddonRedemptionResponseSchema>;
 
 /** One row of the door ledger — every attempt, admitted or refused. */
 export const checkInDtoSchema = z.object({
@@ -689,6 +715,7 @@ export const doorGuestSchema = z.object({
   entryType: z.string(),
   quantity: z.number().int().positive(),
   source: z.enum(['online', 'door']),
+  ownershipStatus: z.enum(['purchaser', 'unassigned', 'assigned']).nullable().optional(),
   status: z.enum(['entered', 'not_entered']),
   enteredAt: z.string().nullable(),
   scansUsed: z.number().int().nonnegative().nullable(),
