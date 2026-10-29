@@ -1,5 +1,5 @@
-import { createTicketAccessCode, createTicketAddon } from '@c1rcle/core/domain';
-import { describe, expect, it } from 'vitest';
+import { createTicketAccessCode, createTicketAddon, UnauthorizedError } from '@c1rcle/core/domain';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createV2Services } from '../../../lib/v2-services.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
@@ -338,6 +338,34 @@ describe('V2 public/discovery routes', () => {
     expect(response.body).not.toContain('never public');
     expect(response.body).not.toContain('platformFeePercent');
     await server.close();
+  });
+
+  it('serves public event detail, tiers, and add-ons when the strict actor resolver has no session', async () => {
+    const server = await buildServer();
+    await seedPublishedEvent({
+      eventId: 'evt_public_anonymous_reads',
+      slug: 'public-anonymous-reads',
+      title: 'Public Anonymous Reads',
+      organizationId: 'org_public_anonymous_reads',
+      venueId: 'ven_public_anonymous_reads',
+    });
+    const actorSpy = vi.spyOn(createV2Services(), 'actor').mockImplementation(() => {
+      throw new UnauthorizedError();
+    });
+
+    try {
+      for (const path of [
+        '/events/public-anonymous-reads',
+        '/events/public-anonymous-reads/tiers',
+        '/events/public-anonymous-reads/ticket-addons',
+      ]) {
+        const response = await server.inject({ method: 'GET', url: path });
+        expect(response.statusCode, path).toBe(200);
+      }
+    } finally {
+      actorSpy.mockRestore();
+      await server.close();
+    }
   });
 
   it('fetches event detail by slug', async () => {

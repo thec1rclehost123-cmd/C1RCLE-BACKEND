@@ -39,6 +39,18 @@ const publicTierHeadersSchema = z.looseObject({
   'x-ticket-access-grant-id': z.string().min(1).max(64).optional(),
 });
 
+function optionalActorUserId(request: Parameters<typeof services.actor>[0]): string | undefined {
+  try {
+    return services.actor(request).userId ?? undefined;
+  } catch (error) {
+    // Public reads accept anonymous callers. On the Firestore driver, the
+    // strict actor resolver correctly rejects a missing session; for these
+    // reads, treat only that expected unauthenticated case as anonymous.
+    if (error instanceof UnauthorizedError) return undefined;
+    throw error;
+  }
+}
+
 // Event ids are opaque (≤64 chars); slugs can run up to 80
 // (`slugifyEventTitle` caps at 80) — the shared char class, wider bound.
 const idOrSlugParam = z.object({
@@ -217,9 +229,9 @@ export default async function publicDiscoveryRoutes(fastify: FastifyInstance) {
       const { idOrSlug } = request.params as z.infer<typeof idOrSlugParam>;
       const rawGrantId = request.headers['x-ticket-access-grant-id'];
       const accessGrantId = Array.isArray(rawGrantId) ? rawGrantId[0] : rawGrantId;
-      const actor = services.actor(request);
+      const userId = optionalActorUserId(request);
       const detail = await services.public
-        .getEvent(idOrSlug, actor.userId ?? undefined, accessGrantId)
+        .getEvent(idOrSlug, userId, accessGrantId)
         .catch((error: unknown) => mapDomainError(reply, request, idOrSlug, error));
       if (detail === undefined) return reply;
       const privateEvent =
@@ -402,13 +414,13 @@ export default async function publicDiscoveryRoutes(fastify: FastifyInstance) {
       const { idOrSlug } = request.params as z.infer<typeof idOrSlugParam>;
       const rawGrantId = request.headers['x-ticket-access-grant-id'];
       const accessGrantId = Array.isArray(rawGrantId) ? rawGrantId[0] : rawGrantId;
-      const actor = services.actor(request);
+      const userId = optionalActorUserId(request);
       const rows = await services.public
-        .listEventTiers(idOrSlug, actor.userId ?? undefined, accessGrantId)
+        .listEventTiers(idOrSlug, userId, accessGrantId)
         .catch((error: unknown) => mapDomainError(reply, request, idOrSlug, error));
       if (rows === undefined) return reply;
       const detail = await services.public
-        .getEvent(idOrSlug, actor.userId ?? undefined, accessGrantId)
+        .getEvent(idOrSlug, userId, accessGrantId)
         .catch((error: unknown) => mapDomainError(reply, request, idOrSlug, error));
       if (!detail) return reply;
       if (detail.event.visibilityMode === 'code' || detail.event.visibilityMode === 'invited') {
@@ -442,13 +454,13 @@ export default async function publicDiscoveryRoutes(fastify: FastifyInstance) {
       const { idOrSlug } = request.params as z.infer<typeof idOrSlugParam>;
       const rawGrantId = request.headers['x-ticket-access-grant-id'];
       const accessGrantId = Array.isArray(rawGrantId) ? rawGrantId[0] : rawGrantId;
-      const actor = services.actor(request);
+      const userId = optionalActorUserId(request);
       const rows = await services.public
-        .listEventTicketAddons(idOrSlug, actor.userId ?? undefined, accessGrantId)
+        .listEventTicketAddons(idOrSlug, userId, accessGrantId)
         .catch((error: unknown) => mapDomainError(reply, request, idOrSlug, error));
       if (rows === undefined) return reply;
       const detail = await services.public
-        .getEvent(idOrSlug, actor.userId ?? undefined, accessGrantId)
+        .getEvent(idOrSlug, userId, accessGrantId)
         .catch((error: unknown) => mapDomainError(reply, request, idOrSlug, error));
       if (!detail) return reply;
       if (detail.event.visibilityMode === 'code' || detail.event.visibilityMode === 'invited') {
