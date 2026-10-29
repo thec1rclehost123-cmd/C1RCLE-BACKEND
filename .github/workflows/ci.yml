@@ -22,6 +22,11 @@ on:
         description: Skip the Docker build and image scan
         type: boolean
         default: false
+      frontend_ref:
+        description: Frontend branch to compare contracts with
+        type: string
+        required: false
+        default: staging
 
 # Cancel superseded PR runs; never cancel a pushed run on main/staging — its
 # tail end gates, triggers and verifies the production deploy, so cancelling it
@@ -497,7 +502,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           repository: ${{ vars.FRONTEND_REPO || 'thec1rclehost123-cmd/C1RCLE-FRONTEND' }}
-          ref: ${{ vars.FRONTEND_REF || github.base_ref || 'main' }}
+          ref: ${{ vars.FRONTEND_REF || inputs.frontend_ref || github.base_ref || 'main' }}
           token: ${{ secrets.FRONTEND_REPO_TOKEN || github.token }}
           path: frontend
           persist-credentials: false
