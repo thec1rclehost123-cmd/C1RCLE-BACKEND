@@ -28,9 +28,13 @@ overrides:
   #             (host confusion via unbalanced URI brackets) — 3.1.6 is vulnerable, 3.1.7/4.1.4 are fixed,
   #             3.1.8 is the newest patched 3.x (matches origin/staging so #48 merges without downgrading it),
   #             4.1.5 additionally fixes GHSA-hrr3-gc8f-f4qj (mailto header injection) + GHSA-jvvf-x445-j334.
+  #   2026-10-29: 3.1.9 / 4.2.3 fix four further advisories (GHSA-w74x-v6f9-j3xg,
+  #             GHSA-wjr9-j795-jxcr, GHSA-xhq7-xmqj-769h, GHSA-333x-w4r6-6crp); the 3.1.8 /
+  #             4.1.5 pins above were failing pnpm audit again. Both releases are about ten
+  #             days old, an accepted exception to the two-week rule for a security fix.
   #   nanoid   -> 3.3.18          fixes CVE-2026-67213 (DoS via infinite loop)
-  'fast-uri@^3.0.0': '3.1.8'
-  'fast-uri@^4.0.0': '4.1.5'
+  'fast-uri@^3.0.0': '3.1.9'
+  'fast-uri@^4.0.0': '4.2.3'
   'nanoid@^3.0.0': '3.3.18'
   # brace-expansion: THIRD advisory family GHSA-q2hr-2g5m-vwhr (quadratic-time
   # CPU DoS on `{a},b}` rewrites) on top of GHSA-qhr7-859c-m2p7 +

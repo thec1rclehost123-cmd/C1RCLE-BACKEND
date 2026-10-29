@@ -319,6 +319,12 @@ jobs:
       - uses: ./.github/actions/setup
       # The emulator needs Java 21+; the runner image has it installed but not
       # selected by default.
+      #
+      # Two suites run against the one emulator: the core Firestore repositories, and
+      # the real Better Auth instance (apps/api-gateway/src/plugins/auth.firestore
+      # .integration.test.ts). The second exists because every other auth test injects a
+      # fake `auth`, so a better-auth or adapter upgrade that broke sign-in or password
+      # reset would otherwise pass CI. Both must pass.
       - name: Run the Firestore emulator tests
         run: |
           export JAVA_HOME="$JAVA_HOME_21_X64"
@@ -326,7 +332,7 @@ jobs:
           java -version
           npx --yes firebase-tools@15.34.0 emulators:exec \
             --only firestore --project demo-c1rcle \
-            "pnpm --filter @c1rcle/core exec vitest run src/infrastructure/firestore"
+            "pnpm --filter @c1rcle/core exec vitest run src/infrastructure/firestore && pnpm --filter api-gateway exec vitest run src/plugins/auth.firestore.integration.test.ts"
 
   # ── The image that actually ships ──────────────────────────────────────────
   docker:
