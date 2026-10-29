@@ -15,11 +15,17 @@ services:
   - type: web
     name: circle-v2-backend
     runtime: docker
-    dockerfilePath: ./Dockerfile
+    # The live service builds the SIDECAR image: nginx is the public edge and the
+    # gateway listens on 127.0.0.1 behind it (deploy/docker/sidecar-entrypoint.sh).
+    dockerfilePath: ./deploy/docker/Dockerfile.sidecar
     dockerContext: .
-    plan: starter
+    # The live service is on the free plan, which spins down when idle (the first
+    # request after a pause takes ~40 s). Use `starter` or above before real
+    # customers pay. Changing the plan here only takes effect once this Blueprint
+    # is adopted.
+    plan: free
     region: singapore
-    branch: main
+    branch: staging
     # Deploys are CI-GATED: Render does NOT build or deploy on push
     # (autoDeploy is false). The ci.yml `deploy` job triggers Render only after
     # CI OK and the Security pipeline (`Security OK`) both pass for the pushed
@@ -34,10 +40,10 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      - key: PORT
-        value: '8080'
-      - key: HOST
-        value: 0.0.0.0
+      # PORT is injected by Render (10000) and read by the sidecar entrypoint, which
+      # starts the gateway on SIDECAR_FASTIFY_PORT behind nginx. Do not set PORT here.
+      - key: SIDECAR_FASTIFY_PORT
+        value: '8081'
       - key: LOG_LEVEL
         value: info
 
@@ -63,14 +69,31 @@ services:
       - key: BETTER_AUTH_URL
         value: https://circle-v2-backend.onrender.com
 
-      # Browser origins allowed to call this API cross-origin (CORS) and trusted
-      # by Better Auth. Comma-separated exact origins, https only, no wildcards,
-      # e.g. https://c1rcle-v2-admin-console.vercel.app plus the partner
-      # dashboard and guest portal production origins. Not a secret, but kept
-      # in the dashboard because the list changes with frontend domains. When
-      # unset in production, NO browser origin is allowed and every direct
-      # frontend -> gateway call fails its CORS preflight.
-      - key: CORS_ALLOWED_ORIGINS
+      # Browser origins allowed to call this API cross-origin (CORS) and trusted by
+      # Better Auth. Comma-separated exact https origins, no wildcards. Currently:
+      # the guest portal, partner dashboard and admin console on Vercel. Not secret,
+      # but kept in the dashboard because it changes with frontend domains.
+      # BETTER_AUTH_TRUSTED_ORIGINS defaults to this list when unset; the live
+      # service sets both to the same value.
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: BETTER_AUTH_TRUSTED_ORIGINS
+        sync: false
+      - key: PUBLIC_API_URL
+        value: https://circle-v2-backend.onrender.com
+      # nginx (the sidecar's public edge) is the only trusted proxy hop.
+      - key: TRUSTED_PROXY_CIDRS
+        value: 127.0.0.1/32
+      - key: NGINX_PROFILE
+        value: staging
+      - key: NGINX_SERVER_NAME
+        value: circle-v2-backend.onrender.com
+      - key: NGINX_FORWARDED_PROTO
+        value: https
+      - key: NGINX_READINESS_ALLOWLIST_LINES
+        value: 127.0.0.1/32 1;
+      # Token CI presents to read /api/v2/internal/version. Also a GitHub secret.
+      - key: NGINX_READINESS_TOKEN
         sync: false
 
       # Phase 5 door scanning. The HMAC key behind rotating ticket QRs and
@@ -80,11 +103,28 @@ services:
       - key: MAGIC_TICKET_SECRET
         sync: false
 
-      # Validated but currently unused: rate limiting is an in-memory sliding
-      # window (apps/api-gateway/src/plugins/rate-limit.ts). Keep the value
-      # accurate anyway so wiring Redis is a one-line change.
+      # At-rest key for bank-account numbers (AES-256-GCM). Production refuses
+      # to boot without a real 32+ character value. Set it BEFORE the deploy
+      # that ships this requirement. Older records stay readable (they fall
+      # back to the legacy key), but new writes are sealed with this one — keep
+      # it stable and backed up, since losing it makes those records unreadable.
+      - key: ENCRYPTION_KEY
+        sync: false
+
+      # Rate limiting defaults to an in-memory sliding window (per instance,
+      # resets on restart). To share it across instances, provision a Redis,
+      # set REDIS_URL to its rediss:// address and RATE_LIMIT_STORE=redis;
+      # if Redis is unreachable the gateway falls back to memory and readiness
+      # reports `redis: down`. Production rejects a localhost REDIS_URL then.
       - key: REDIS_URL
         sync: false
+      - key: RATE_LIMIT_STORE
+        value: memory
+
+      # Payout release gate: off until the funds flow, provider and tax approvals are on
+      # file (see docs/operations/payments-release-gate.md). Change only with sign-off.
+      - key: PAYOUTS_ENABLED
+        value: 'false'
 
       # Phase 4 payments. Optional in the schema; required once the checkout
       # and webhook routes are registered.

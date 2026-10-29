@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { createV2Services } from '../../../lib/v2-services.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 import partnerEventCatalogRoutes from '../partner/event-catalog.js';
 import partnerEventRoutes from '../partner/events.js';
@@ -28,6 +29,25 @@ const buildServer = () =>
       rsvpRoutes,
     ],
   });
+
+function seedVerifiedTestAccounts(): void {
+  const users = createV2Services().repos().users;
+  if (!('save' in users) || typeof users.save !== 'function') {
+    throw new Error('RSVP route tests require the in-memory user-account repository');
+  }
+  for (const id of ['user_1', 'user_2']) {
+    users.save({
+      id,
+      email: `${id}@example.test`,
+      name: id,
+      image: null,
+      emailVerified: true,
+      role: 'guest',
+      createdAt: 0,
+      updatedAt: 0,
+    });
+  }
+}
 
 type Server = Awaited<ReturnType<typeof buildServer>>;
 
@@ -122,6 +142,7 @@ const rsvp = (
 
 describe('POST /rsvp', () => {
   it('fulfills a free RSVP with zero totals and one valid entitlement', async () => {
+    seedVerifiedTestAccounts();
     const server = await buildServer();
     const { eventId, tierId } = await seed(server);
 
@@ -142,6 +163,7 @@ describe('POST /rsvp', () => {
     expect(body.order.lines).toHaveLength(1);
     expect(body.order.lines[0]).toMatchObject({ tierId, quantity: 1, unitPricePaise: 0 });
     expect(body.entitlements).toHaveLength(1);
+    expect(body).not.toHaveProperty('referralAttributionStatus');
     expect(body.entitlements[0]).toMatchObject({
       eventId,
       tierId,
@@ -154,7 +176,25 @@ describe('POST /rsvp', () => {
     await server.close();
   });
 
+  it('fulfills the RSVP without exposing whether its referral code is available', async () => {
+    seedVerifiedTestAccounts();
+    const server = await buildServer();
+    const { eventId, tierId } = await seed(server);
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/rsvp',
+      headers: { 'idempotency-key': `rsvp-invalid-ref-${++keySeq}` },
+      payload: { eventId, tierId, referralCode: 'REVOKED-CODE' },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).not.toHaveProperty('referralAttributionStatus');
+    await server.close();
+  });
+
   it('rejects a second RSVP from the same account with 409', async () => {
+    seedVerifiedTestAccounts();
     const server = await buildServer();
     const { eventId, tierId } = await seed(server);
 
@@ -168,6 +208,7 @@ describe('POST /rsvp', () => {
   });
 
   it('lets a different account RSVP the same event (1 per account, not per event)', async () => {
+    seedVerifiedTestAccounts();
     const server = await buildServer();
     const { eventId, tierId } = await seed(server);
 
@@ -178,7 +219,32 @@ describe('POST /rsvp', () => {
     await server.close();
   });
 
+  it('denies RSVP for an unverified account and an account missing from the directory', async () => {
+    seedVerifiedTestAccounts();
+    const users = createV2Services().repos().users;
+    if (!('save' in users) || typeof users.save !== 'function') {
+      throw new Error('RSVP route tests require the in-memory user-account repository');
+    }
+    users.save({
+      id: 'rsvp-unverified',
+      email: 'unverified@example.test',
+      name: 'Unverified',
+      image: null,
+      emailVerified: false,
+      role: 'guest',
+      createdAt: 0,
+      updatedAt: 0,
+    });
+    const server = await buildServer();
+    const { eventId, tierId } = await seed(server);
+
+    expect((await rsvp(server, { eventId, tierId }, 'rsvp-unverified')).statusCode).toBe(403);
+    expect((await rsvp(server, { eventId, tierId }, 'rsvp-missing')).statusCode).toBe(403);
+    await server.close();
+  });
+
   it('rejects a non-zero tier on a free event with 400', async () => {
+    seedVerifiedTestAccounts();
     const server = await buildServer();
     const { eventId, tierId } = await seed(server, { priceInPaise: 50_000 });
 
@@ -189,6 +255,7 @@ describe('POST /rsvp', () => {
   });
 
   it('rejects a free tier on a paid event with 400', async () => {
+    seedVerifiedTestAccounts();
     const server = await buildServer();
     const { eventId, tierId } = await seed(server, { isFree: false });
 
@@ -199,6 +266,7 @@ describe('POST /rsvp', () => {
   });
 
   it('rejects an RSVP for an unpublished event with 400', async () => {
+    seedVerifiedTestAccounts();
     const server = await buildServer();
     // Seed without publishing: org → venue → event (draft) → tier.
     const created = await server.inject({
@@ -239,6 +307,7 @@ describe('POST /rsvp', () => {
   });
 
   it('404s unknown event and unknown tier (no existence oracle beyond 404)', async () => {
+    seedVerifiedTestAccounts();
     const server = await buildServer();
     const { eventId, tierId } = await seed(server);
 
@@ -251,6 +320,7 @@ describe('POST /rsvp', () => {
   });
 
   it('exhausts inventory: the last ticket goes to exactly one account', async () => {
+    seedVerifiedTestAccounts();
     const server = await buildServer();
     const { eventId, tierId } = await seed(server, { quantity: 1 });
 

@@ -1,4 +1,10 @@
-import { adminOrderListResponseSchema, paginationQuerySchema } from '@c1rcle/contracts/client';
+import { buildV2ErrorResponse } from '@c1rcle/contracts';
+import {
+  adminOrderListResponseSchema,
+  adminPromoterOrderInvestigationSchema,
+  paginationQuerySchema,
+} from '@c1rcle/contracts/client';
+import { z } from 'zod';
 
 import type { Order } from '@c1rcle/core/domain';
 
@@ -9,7 +15,6 @@ import { requireUserId } from '../onboarding.js';
 import { mapDomainError } from '../partner/events.js';
 
 import type { FastifyInstance } from 'fastify';
-import type { z } from 'zod';
 
 /**
  * ─── Admin orders desk (Phase 7 admin) ───────────────────────────────────────
@@ -58,6 +63,69 @@ function orderToDto(order: Order) {
 
 export default async function adminOrdersRoutes(fastify: FastifyInstance) {
   fastify.get(
+    '/admin/orders/by-booking-reference/:bookingReference',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({
+          params: z.object({ bookingReference: z.string().trim().min(6).max(64) }),
+        }),
+      ],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+      const { bookingReference } = request.params as { bookingReference: string };
+      const investigation = await services.adminOps
+        .getPromoterOrderInvestigation(userId, bookingReference)
+        .catch((error: unknown) => mapDomainError(reply, request, bookingReference, error));
+      if (investigation === undefined) return reply;
+      if (investigation === null) {
+        return reply.status(404).send(
+          buildV2ErrorResponse({
+            status: 404,
+            code: 'not_found',
+            message: 'Order not found',
+            requestId: request.id,
+          }),
+        );
+      }
+      const validated = validateV2Response(reply, request, adminPromoterOrderInvestigationSchema, {
+        bookingReference: investigation.order.bookingReference ?? null,
+        order: orderToDto(investigation.order),
+        attribution: investigation.order.attribution
+          ? {
+              promoterId: investigation.order.attribution.promoterId,
+              assignmentId: investigation.order.attribution.assignmentId,
+              assignmentVersion: investigation.order.attribution.assignmentVersion,
+              referralLinkId: investigation.order.attribution.referralLinkId,
+              code: investigation.order.attribution.code,
+              termsVersion: investigation.order.attribution.termsSnapshot.version,
+              attributedAt: investigation.order.attribution.attributedAt,
+              promoterCommissionPaise: investigation.order.attribution.promoterCommissionPaise,
+              commissionPolicyVersion: investigation.order.attribution.commissionPolicyVersion,
+              commercialPolicyVersion: investigation.order.attribution.commercialPolicyVersion,
+            }
+          : null,
+        journals: investigation.journals.map((journal) => ({
+          id: journal.id,
+          sourceType: journal.source.type,
+          sourceId: journal.source.id,
+          assignmentId: journal.source.assignmentId ?? null,
+          commissionPolicyVersion: journal.source.commissionPolicyVersion ?? null,
+          commercialPolicyVersion: journal.source.commercialPolicyVersion ?? null,
+          componentPromoterCommissionPaise: journal.components?.promoterAllocationPaise ?? null,
+          reversalOfJournalId: journal.reversalOfJournalId,
+          status: journal.status,
+          postedAt: journal.postedAt,
+        })),
+      });
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  fastify.get(
     '/admin/orders',
     {
       preHandler: [
@@ -92,6 +160,7 @@ export default async function adminOrdersRoutes(fastify: FastifyInstance) {
       preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({})],
     },
     async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
       const userId = requireUserId(request, reply);
       if (userId === undefined) return reply;
 

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { opaqueIdSchema } from './shared.js';
+import { opaqueIdSchema, pageInfoSchema } from './shared.js';
 
 /**
  * ─── Event + Catalog Contracts ────────────────────────────────────────────────
@@ -19,6 +19,12 @@ export const eventStatusSchema = z.enum([
 ]);
 export type EventStatusDto = z.infer<typeof eventStatusSchema>;
 
+/** Unlisted events remain direct-link accessible but are omitted from discovery. */
+export const eventVisibilityModeValueSchema = z.enum(['public', 'unlisted', 'code', 'invited']);
+export const eventAddressDisclosureSchema = z.enum(['public', 'after_grant', 'hidden']);
+export const eventVisibilityModeSchema = eventVisibilityModeValueSchema.default('public');
+export type EventVisibilityModeDto = z.infer<typeof eventVisibilityModeValueSchema>;
+
 export const compensationModelSchema = z.enum(['standard', 'custom', 'salary']);
 export const salaryPeriodSchema = z.enum(['per_event', 'per_day', 'per_month']);
 export const eventCompensationSchema = z.object({
@@ -30,6 +36,23 @@ export const eventCompensationSchema = z.object({
   salaryNotes: z.string().max(2000).nullable(),
 });
 export type EventCompensation = z.infer<typeof eventCompensationSchema>;
+
+/** Structured, event-owner supplied entry facts. Null means the venue has not specified a value. */
+export const eventEntryRulesSchema = z
+  .object({
+    doorsOpenAt: z.iso.datetime().nullable(),
+    lastEntryAt: z.iso.datetime().nullable(),
+    reentryAllowed: z.boolean().nullable(),
+    minimumAge: z.number().int().min(0).max(100).nullable(),
+    idRequired: z.boolean().nullable(),
+    accessibilityNotes: z.string().max(2000).nullable(),
+    dressCode: z.string().max(500).nullable(),
+    alcoholPolicy: z.string().max(1000).nullable(),
+    prohibitedItems: z.array(z.string().trim().min(1).max(100)).max(50),
+    supportDetails: z.string().max(500).nullable(),
+  })
+  .strict();
+export type EventEntryRulesDto = z.infer<typeof eventEntryRulesSchema>;
 
 export const eventDtoSchema = z.object({
   id: opaqueIdSchema,
@@ -47,17 +70,35 @@ export const eventDtoSchema = z.object({
   startAt: z.iso.datetime(),
   endAt: z.iso.datetime().nullable(),
   status: eventStatusSchema,
+  visibilityMode: eventVisibilityModeSchema,
+  addressDisclosure: eventAddressDisclosureSchema.default('public'),
   isPublic: z.boolean(),
   tags: z.array(z.string().min(1)).max(50).default([]),
   startingPricePaise: z.number().int().nonnegative().nullable(),
   isFree: z.boolean(),
   cancellationReason: z.string().max(1000).nullable(),
   compensation: eventCompensationSchema.nullable().optional(),
+  entryRules: eventEntryRulesSchema.optional(),
   version: z.number().int().positive(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
 });
 export type EventDto = z.infer<typeof eventDtoSchema>;
+
+/** Partner event list includes the cursor needed to continue tenant pagination. */
+export const eventOperationsDtoSchema = eventDtoSchema.extend({
+  capacity: z.number().int().positive().nullable(),
+  venueName: z.string().nullable(),
+  ticketsSold: z.number().int().nonnegative(),
+  salesCountComplete: z.boolean(),
+});
+export type EventOperationsDto = z.infer<typeof eventOperationsDtoSchema>;
+
+export const organizationEventListResponseSchema = z.object({
+  items: z.array(eventOperationsDtoSchema),
+  pageInfo: pageInfoSchema.extend({ nextCursor: opaqueIdSchema.nullable() }),
+});
+export type OrganizationEventListResponse = z.infer<typeof organizationEventListResponseSchema>;
 
 export const eventPreviewDtoSchema = z.object({
   event: eventDtoSchema,
@@ -67,14 +108,18 @@ export type EventPreviewDto = z.infer<typeof eventPreviewDtoSchema>;
 
 export const createEventSchema = z.object({
   venueId: opaqueIdSchema,
+  slotRequestId: opaqueIdSchema.optional(),
   title: z.string().min(1).max(200),
   summary: z.string().max(1000).optional(),
   description: z.string().max(20_000).optional(),
   imageUrl: z.url().nullable().optional(),
   startAt: z.iso.datetime(),
-  endAt: z.iso.datetime().nullable(),
-  tags: z.array(z.string().min(1)).max(50).default([]),
+  endAt: z.iso.datetime().nullable().optional(),
+  tags: z.array(z.string().min(1).max(40)).max(50).default([]),
   compensation: eventCompensationSchema.nullable().optional(),
+  visibilityMode: eventVisibilityModeValueSchema.optional(),
+  addressDisclosure: eventAddressDisclosureSchema.optional(),
+  entryRules: eventEntryRulesSchema.optional(),
 });
 export type CreateEventInput = z.infer<typeof createEventSchema>;
 
@@ -115,6 +160,8 @@ export type PosterUploadUrlDto = z.infer<typeof posterUploadUrlDtoSchema>;
 
 export const updateEventSchema = z
   .object({
+    venueId: opaqueIdSchema.optional(),
+    slotRequestId: opaqueIdSchema.optional(),
     title: z.string().min(1).max(200).optional(),
     summary: z.string().max(1000).optional(),
     description: z.string().max(20_000).optional(),
@@ -125,13 +172,16 @@ export const updateEventSchema = z
     startingPricePaise: z.number().int().nonnegative().optional(),
     isFree: z.boolean().optional(),
     compensation: eventCompensationSchema.nullable().optional(),
+    visibilityMode: eventVisibilityModeValueSchema.optional(),
+    addressDisclosure: eventAddressDisclosureSchema.optional(),
+    entryRules: eventEntryRulesSchema.optional(),
   })
   .strict();
 export type UpdateEventInput = z.infer<typeof updateEventSchema>;
 
 export const cancelEventSchema = z
   .object({
-    reason: z.string().min(1).max(1000),
+    reason: z.string().trim().min(1).max(1000),
   })
   .strict();
 export type CancelEventInput = z.infer<typeof cancelEventSchema>;
@@ -140,7 +190,16 @@ export type CancelEventInput = z.infer<typeof cancelEventSchema>;
 
 export const ticketTierStatusSchema = z.enum(['active', 'paused', 'sold_out']);
 export const ticketAccessTypeSchema = z.enum(['ENTRY', 'VIP', 'VVIP', 'TABLE', 'PACKAGE', 'RSVP']);
-export const ticketAudienceTypeSchema = z.enum(['GENERAL', 'MALE', 'FEMALE', 'COUPLE', 'GROUP']);
+export const ticketAudienceTypeSchema = z.enum([
+  'GENERAL',
+  'MALE',
+  'FEMALE',
+  'COUPLE',
+  'GROUP',
+  'STUDENT',
+  'MEMBER',
+]);
+export const ticketTierAccessModeSchema = z.enum(['public', 'code', 'invited']);
 export const ticketPricingPhaseSchema = z.object({
   id: z.string().min(1).max(64),
   name: z.string().min(1).max(80),
@@ -186,14 +245,17 @@ export const ticketTierDtoSchema = z.object({
   currency: z.string().length(3),
   /** Money is always integer paise on the wire. */
   priceInPaise: z.number().int().nonnegative(),
+  coverAmountPaise: z.number().int().nonnegative().optional(),
   quantity: z.number().int().nonnegative(),
   status: ticketTierStatusSchema,
   salesStartAt: z.iso.datetime().nullable(),
   salesEndAt: z.iso.datetime().nullable(),
   maxPerOrder: z.number().int().positive().nullable(),
+  accessMode: ticketTierAccessModeSchema.optional(),
   accessType: ticketAccessTypeSchema.optional(),
   audienceType: ticketAudienceTypeSchema.optional(),
   guestCount: z.number().int().positive().optional(),
+  admissionMode: z.enum(['bundle', 'per_person']).optional(),
   pricingPhases: z.array(ticketPricingPhaseSchema).max(20).optional(),
   doorPriceInPaise: z.number().int().nonnegative().nullable().optional(),
   benefits: z.array(z.string().min(1).max(200)).max(20).optional(),
@@ -212,6 +274,7 @@ export const ticketTierDtoSchema = z.object({
     .optional(),
   commissionEligible: z.boolean().optional(),
   version: z.number().int().positive(),
+
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
 });
@@ -224,13 +287,16 @@ const createTicketTierBaseSchema = z
     entryType: z.string().min(1).max(40).optional(),
     currency: z.string().length(3).optional(),
     priceInPaise: z.number().int().nonnegative().optional(),
+    coverAmountPaise: z.number().int().nonnegative().optional(),
     quantity: z.number().int().nonnegative(),
     salesStartAt: z.iso.datetime().nullable().optional(),
     salesEndAt: z.iso.datetime().nullable().optional(),
     maxPerOrder: z.number().int().positive().nullable().optional(),
+    accessMode: ticketTierAccessModeSchema.optional(),
     accessType: ticketAccessTypeSchema.optional(),
     audienceType: ticketAudienceTypeSchema.optional(),
     guestCount: z.number().int().positive().optional(),
+    admissionMode: z.enum(['bundle', 'per_person']).optional(),
     pricingPhases: z.array(createTicketPricingPhaseSchema).max(20).optional(),
     doorPriceInPaise: z.number().int().nonnegative().nullable().optional(),
     benefits: z.array(z.string().min(1).max(200)).max(20).optional(),
@@ -278,8 +344,54 @@ export const createTicketTierSchema = createTicketTierBaseSchema.superRefine((ti
 });
 export type CreateTicketTierRequest = z.infer<typeof createTicketTierSchema>;
 
+export const ticketAddonDtoSchema = z.object({
+  id: opaqueIdSchema,
+  eventId: opaqueIdSchema,
+  organizationId: opaqueIdSchema,
+  name: z.string().trim().min(1).max(120),
+  description: z.string().max(1000),
+  kind: z.enum(['parking', 'cloakroom', 'merchandise']),
+  currency: z.literal('INR'),
+  priceInPaise: z.number().int().positive(),
+  quantity: z.number().int().nonnegative(),
+  maxPerEntitlement: z.number().int().min(1).max(10),
+  salesStartAt: z.iso.datetime().nullable(),
+  salesEndAt: z.iso.datetime().nullable(),
+  status: z.enum(['active', 'paused']),
+  version: z.number().int().positive(),
+  createdAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+});
+export type TicketAddonDto = z.infer<typeof ticketAddonDtoSchema>;
+
+export const createTicketAddonSchema = z
+  .object({
+    name: z.string().trim().min(1).max(120),
+    description: z.string().trim().max(1000).optional(),
+    kind: z.enum(['parking', 'cloakroom', 'merchandise']),
+    priceInPaise: z.number().int().positive(),
+    quantity: z.number().int().nonnegative(),
+    maxPerEntitlement: z.number().int().min(1).max(10).optional(),
+    salesStartAt: z.iso.datetime().nullable().optional(),
+    salesEndAt: z.iso.datetime().nullable().optional(),
+  })
+  .strict();
+export type CreateTicketAddonRequest = z.infer<typeof createTicketAddonSchema>;
+
+export const ticketAddonListResponseSchema = z.object({
+  items: z.array(ticketAddonDtoSchema).max(100),
+});
+export type TicketAddonListResponse = z.infer<typeof ticketAddonListResponseSchema>;
+
 export const promoTypeSchema = z.enum(['public', 'private', 'single_use', 'multi_use']);
 export const promoDiscountTypeSchema = z.enum(['percent', 'fixed']);
+export const discountFundingOwnerSchema = z.enum([
+  'platform',
+  'venue',
+  'host',
+  'promoter',
+  'shared',
+]);
 
 export const promoCodeDtoSchema = z.object({
   id: opaqueIdSchema,
@@ -291,6 +403,7 @@ export const promoCodeDtoSchema = z.object({
   discountType: promoDiscountTypeSchema,
   /** Percent 0–100 when `percent`; paise when `fixed`. */
   discountValue: z.number().int().nonnegative(),
+  discountFundingOwner: discountFundingOwnerSchema,
   tierIds: z.array(opaqueIdSchema),
   maxRedemptions: z.number().int().positive().nullable(),
   maxPerUser: z.number().int().positive().nullable(),
@@ -311,6 +424,7 @@ export const createPromoCodeSchema = z
     type: promoTypeSchema.optional(),
     discountType: promoDiscountTypeSchema,
     discountValue: z.number().int().nonnegative(),
+    discountFundingOwner: discountFundingOwnerSchema,
     /** Empty/omitted = every tier, matching v1 semantics. */
     tierIds: z.array(opaqueIdSchema).max(100).optional(),
     maxRedemptions: z.number().int().positive().nullable().optional(),
@@ -362,10 +476,31 @@ export const promoterAssignmentDtoSchema = z.object({
   id: opaqueIdSchema,
   eventId: opaqueIdSchema,
   promoterId: opaqueIdSchema,
-  status: z.enum(['active', 'ended']),
+  status: z.enum([
+    'invited',
+    'accepted',
+    'rejected',
+    'revoked',
+    'expired',
+    'suspended',
+    'active',
+    'ended',
+  ]),
   /** Frozen at assignment time — later term changes never rewrite history. */
   terms: commissionTermsSchema,
   endedAt: z.iso.datetime().nullable(),
+  invitedAt: z.iso.datetime().nullable(),
+  invitedBy: opaqueIdSchema.nullable(),
+  respondedAt: z.iso.datetime().nullable(),
+  respondedBy: opaqueIdSchema.nullable(),
+  acceptedAt: z.iso.datetime().nullable(),
+  rejectedAt: z.iso.datetime().nullable(),
+  revokedAt: z.iso.datetime().nullable(),
+  revokedBy: opaqueIdSchema.nullable(),
+  revocationReason: z.string().max(500).nullable(),
+  startsAt: z.iso.datetime().nullable(),
+  expiresAt: z.iso.datetime().nullable(),
+  eligibleTierIds: z.array(opaqueIdSchema).nullable(),
   version: z.number().int().positive(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
@@ -385,9 +520,36 @@ export const assignPromoterSchema = z
     ratePercent: z.number().int().min(0).max(100).optional(),
     flatPaise: z.number().int().nonnegative().optional(),
     tierRates: z.record(z.string(), commissionRateSchema).optional(),
+    startsAt: z.iso.datetime().nullable().optional(),
+    expiresAt: z.iso.datetime().nullable().optional(),
+    eligibleTierIds: z.array(opaqueIdSchema).max(100).optional(),
   })
   .strict();
 export type AssignPromoterRequest = z.infer<typeof assignPromoterSchema>;
+
+/** Approved, actively connected Promoter orgs that an event owner may invite. */
+export const promoterAssignmentCandidateDtoSchema = z.object({
+  id: opaqueIdSchema,
+  name: z.string().min(1).max(200),
+  slug: z.string().min(1).max(60),
+});
+export type PromoterAssignmentCandidateDto = z.infer<typeof promoterAssignmentCandidateDtoSchema>;
+
+export const promoterAssignmentActionSchema = z
+  .object({
+    expectedVersion: z.number().int().positive(),
+    decision: z.enum(['accept', 'reject']),
+  })
+  .strict();
+export type PromoterAssignmentActionRequest = z.infer<typeof promoterAssignmentActionSchema>;
+
+export const promoterAssignmentRevokeSchema = z
+  .object({
+    expectedVersion: z.number().int().positive(),
+    reason: z.string().trim().min(3).max(500),
+  })
+  .strict();
+export type PromoterAssignmentRevokeRequest = z.infer<typeof promoterAssignmentRevokeSchema>;
 
 /* ─── Public ticket-tier reads (guest checkout) ──────────────────────────── */
 
@@ -403,8 +565,14 @@ export const publicTicketTierDtoSchema = z.object({
   name: z.string(),
   description: z.string(),
   priceInPaise: z.number().int().nonnegative(),
+  coverAmountPaise: z.number().int().nonnegative().optional(),
   currency: z.string().length(3),
   availableQuantity: z.number().int().nonnegative(),
+  guestCount: z.number().int().positive().optional(),
+  admissionMode: z.enum(['bundle', 'per_person']).optional(),
+  audienceType: ticketAudienceTypeSchema.optional(),
+  minAge: z.number().int().min(0).max(100).nullable().optional(),
+  maxAge: z.number().int().min(0).max(100).nullable().optional(),
 });
 export type PublicTicketTierDto = z.infer<typeof publicTicketTierDtoSchema>;
 
@@ -413,3 +581,21 @@ export const publicTicketTierListResponseSchema = z.object({
   items: z.array(publicTicketTierDtoSchema),
 });
 export type PublicTicketTierListResponse = z.infer<typeof publicTicketTierListResponseSchema>;
+
+export const publicTicketAddonDtoSchema = z.object({
+  id: opaqueIdSchema,
+  eventId: opaqueIdSchema,
+  name: z.string().min(1).max(120),
+  description: z.string().max(1000),
+  kind: z.enum(['parking', 'cloakroom', 'merchandise']),
+  priceInPaise: z.number().int().positive(),
+  currency: z.literal('INR'),
+  availableQuantity: z.number().int().nonnegative(),
+  maxPerEntitlement: z.number().int().min(1).max(10),
+});
+export type PublicTicketAddonDto = z.infer<typeof publicTicketAddonDtoSchema>;
+
+export const publicTicketAddonListResponseSchema = z.object({
+  items: z.array(publicTicketAddonDtoSchema).max(100),
+});
+export type PublicTicketAddonListResponse = z.infer<typeof publicTicketAddonListResponseSchema>;

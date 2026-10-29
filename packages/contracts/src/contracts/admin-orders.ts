@@ -38,3 +38,37 @@ export type AdminOrderDto = z.infer<typeof adminOrderDtoSchema>;
 
 export const adminOrderListResponseSchema = paginatedSchema(adminOrderDtoSchema);
 export type AdminOrderListResponse = z.infer<typeof adminOrderListResponseSchema>;
+
+export const adminPromoterOrderInvestigationSchema = z.object({
+  bookingReference: z.string().nullable(),
+  order: adminOrderDtoSchema,
+  attribution: z
+    .object({
+      promoterId: opaqueIdSchema,
+      assignmentId: opaqueIdSchema,
+      assignmentVersion: z.number().int().positive(),
+      referralLinkId: opaqueIdSchema,
+      code: z.string(),
+      termsVersion: z.number().int().positive(),
+      attributedAt: z.iso.datetime(),
+      promoterCommissionPaise: z.number().int().nonnegative(),
+      commissionPolicyVersion: z.string().nullable(),
+      commercialPolicyVersion: z.string().nullable(),
+    })
+    .nullable(),
+  journals: z.array(
+    z.object({
+      id: opaqueIdSchema,
+      sourceType: z.string(),
+      sourceId: opaqueIdSchema,
+      assignmentId: opaqueIdSchema.nullable(),
+      commissionPolicyVersion: z.string().nullable(),
+      commercialPolicyVersion: z.string().nullable(),
+      componentPromoterCommissionPaise: z.number().int().nonnegative().nullable(),
+      reversalOfJournalId: opaqueIdSchema.nullable(),
+      status: z.literal('posted'),
+      postedAt: z.iso.datetime(),
+    }),
+  ),
+});
+export type AdminPromoterOrderInvestigation = z.infer<typeof adminPromoterOrderInvestigationSchema>;

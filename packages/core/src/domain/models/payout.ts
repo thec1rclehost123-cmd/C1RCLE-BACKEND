@@ -22,6 +22,11 @@ export interface Payout extends VersionedEntity {
   failureReason: string | null;
   requestedBy: EntityId;
   processedAt: string | null;
+  transferReference: string | null;
+  transferredAt: string | null;
+  transferMethod: string | null;
+  transferProof: PayoutTransferProof | null;
+  approvedBy: EntityId | null;
   /**
    * The status this payout held before an admin froze it. Set only while
    * `status === 'frozen'`. `releasePayout` restores exactly this value —
@@ -31,9 +36,25 @@ export interface Payout extends VersionedEntity {
   previousStatus: PayoutStatus | null;
 }
 
+export interface PayoutTransferProof {
+  /** SHA-256 of the immutable proof object; the proof body is kept out of the payout row. */
+  sha256: string;
+  contentType: string;
+  sizeBytes: number;
+}
+
+export interface PayoutTransferEvidence {
+  transferReference: string;
+  transferredAt: string;
+  transferMethod: string;
+  proof: PayoutTransferProof;
+  approvedBy: EntityId;
+}
+
 export const MINIMUM_PAYOUT_PAISE = 10_000; // ₹100
 
 export interface PayoutCreateInput {
+  id?: EntityId;
   organizationId: EntityId;
   bankAccountId: EntityId;
   amount: number;
@@ -49,7 +70,7 @@ export function createPayout(input: PayoutCreateInput): Payout {
   }
   const now = input.now ?? new Date();
   return {
-    id: `payout-${input.organizationId}-${Date.now()}`,
+    id: input.id ?? `payout-${input.organizationId}-${Date.now()}`,
     organizationId: input.organizationId,
     bankAccountId: input.bankAccountId,
     amount: input.amount,
@@ -57,6 +78,11 @@ export function createPayout(input: PayoutCreateInput): Payout {
     failureReason: null,
     requestedBy: input.requestedBy,
     processedAt: null,
+    transferReference: null,
+    transferredAt: null,
+    transferMethod: null,
+    transferProof: null,
+    approvedBy: null,
     previousStatus: null,
     ...newVersionedEntity(now),
   };
@@ -71,13 +97,48 @@ export function beginProcessing(payout: Payout, now: Date = new Date()): Payout 
   return { ...bumpVersion(payout, now), status: 'processing' };
 }
 
-export function markPayoutPaid(payout: Payout, now: Date = new Date()): Payout {
+export function markPayoutPaid(
+  payout: Payout,
+  evidence: PayoutTransferEvidence,
+  now: Date = new Date(),
+): Payout {
   if (payout.status !== 'processing') {
     throw new InvalidOperationError(
       `Cannot mark paid a payout that is ${payout.status}, not processing`,
     );
   }
-  return { ...bumpVersion(payout, now), status: 'paid', processedAt: now.toISOString() };
+  if (!evidence.transferReference.trim()) {
+    throw new InvalidOperationError('A paid payout requires a transfer reference');
+  }
+  if (!evidence.transferMethod.trim()) {
+    throw new InvalidOperationError('A paid payout requires a transfer method');
+  }
+  if (Number.isNaN(Date.parse(evidence.transferredAt))) {
+    throw new InvalidOperationError('A paid payout requires a valid transfer timestamp');
+  }
+  if (!/^[a-f0-9]{64}$/i.test(evidence.proof.sha256)) {
+    throw new InvalidOperationError('A paid payout requires a SHA-256 transfer proof hash');
+  }
+  if (
+    !evidence.proof.contentType.trim() ||
+    !Number.isSafeInteger(evidence.proof.sizeBytes) ||
+    evidence.proof.sizeBytes <= 0
+  ) {
+    throw new InvalidOperationError('A paid payout requires immutable transfer proof metadata');
+  }
+  if (!evidence.approvedBy.trim() || evidence.approvedBy === payout.requestedBy) {
+    throw new InvalidOperationError('Payout requester cannot approve the same payout transfer');
+  }
+  return {
+    ...bumpVersion(payout, now),
+    status: 'paid',
+    processedAt: now.toISOString(),
+    transferReference: evidence.transferReference.trim(),
+    transferredAt: new Date(evidence.transferredAt).toISOString(),
+    transferMethod: evidence.transferMethod.trim(),
+    transferProof: { ...evidence.proof, sha256: evidence.proof.sha256.toLowerCase() },
+    approvedBy: evidence.approvedBy,
+  };
 }
 
 export function markPayoutFailed(payout: Payout, reason: string, now: Date = new Date()): Payout {

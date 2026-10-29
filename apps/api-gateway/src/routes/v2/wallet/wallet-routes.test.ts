@@ -1,8 +1,9 @@
-import { MemoryPaymentProvider } from '@c1rcle/core/domain';
+import { MemoryPaymentProvider, createEventCoverAccount } from '@c1rcle/core/domain';
 import { describe, expect, it } from 'vitest';
 
 import { createV2Services } from '../../../lib/v2-services.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
+import { publishEventForTest } from '../../../test-utils/publish-event.js';
 import checkoutRoutes from '../checkout/checkout-routes.js';
 import paymentRoutes from '../checkout/payment-routes.js';
 import partnerEventCatalogRoutes from '../partner/event-catalog.js';
@@ -75,6 +76,7 @@ async function seedPaidOrder(server: Server, guestUserId: string): Promise<void>
     payload: { title: 'Sky Night', venueId, startAt: '2026-09-01T18:00:00Z' },
   });
   const eventId: string = event.json().id;
+  await publishEventForTest(eventId);
   const tier = await server.inject({
     method: 'POST',
     url: `/events/${eventId}/ticket-tiers`,
@@ -99,7 +101,7 @@ async function seedPaidOrder(server: Server, guestUserId: string): Promise<void>
   const paymentIntentId: string = attempt.json().paymentIntentId;
   const paymentId = `pay_wallet_test_${++keySeq}`;
   const provider = memoryProvider();
-  provider.simulateCapture(paymentId, grandTotalPaise);
+  provider.simulateCapture(paymentId, grandTotalPaise, paymentIntentId);
   const signature = provider.generateSignature({ paymentId, orderId: paymentIntentId });
   await server.inject({
     method: 'POST',
@@ -121,6 +123,7 @@ describe('GET /wallet', () => {
     });
 
     expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toContain('no-store');
     expect(response.json()).toEqual({ activeTicketCount: 1, upcomingOrderCount: 1 });
     await server.close();
   });
@@ -148,16 +151,26 @@ describe('GET /wallet/tickets', () => {
   it('lists only the caller-own paid ticket', async () => {
     const server = await buildServer();
     await seedPaidOrder(server, 'wallet-guest-tickets');
+    await seedPaidOrder(server, 'wallet-guest-other-ticket');
 
     const response = await server.inject({
       method: 'GET',
       url: '/wallet/tickets',
       headers: { 'x-user-id': 'wallet-guest-tickets' },
     });
+    const otherGuestResponse = await server.inject({
+      method: 'GET',
+      url: '/wallet/tickets',
+      headers: { 'x-user-id': 'wallet-guest-other-ticket' },
+    });
 
     expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toContain('no-store');
     expect(response.json().items).toHaveLength(1);
     expect(response.json().items[0]).toMatchObject({ status: 'valid' });
+    expect(otherGuestResponse.statusCode).toBe(200);
+    expect(otherGuestResponse.json().items).toHaveLength(1);
+    expect(response.json().items[0].id).not.toBe(otherGuestResponse.json().items[0].id);
     await server.close();
   });
 });
@@ -166,16 +179,82 @@ describe('GET /wallet/orders', () => {
   it('lists only the caller-own paid order', async () => {
     const server = await buildServer();
     await seedPaidOrder(server, 'wallet-guest-orders');
+    await seedPaidOrder(server, 'wallet-guest-other-order');
 
     const response = await server.inject({
       method: 'GET',
       url: '/wallet/orders',
       headers: { 'x-user-id': 'wallet-guest-orders' },
     });
+    const otherGuestResponse = await server.inject({
+      method: 'GET',
+      url: '/wallet/orders',
+      headers: { 'x-user-id': 'wallet-guest-other-order' },
+    });
 
     expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toContain('no-store');
     expect(response.json().items).toHaveLength(1);
     expect(response.json().items[0]).toMatchObject({ status: 'paid' });
+    expect(otherGuestResponse.statusCode).toBe(200);
+    expect(otherGuestResponse.json().items).toHaveLength(1);
+    expect(response.json().items[0].id).not.toBe(otherGuestResponse.json().items[0].id);
+    await server.close();
+  });
+});
+
+describe('GET /wallet/event-covers', () => {
+  it('returns only caller-held cover balances and redacted entry history', async () => {
+    const server = await buildServer();
+    const guestId = 'wallet-cover-guest';
+    await seedPaidOrder(server, guestId);
+    const ticketResponse = await server.inject({
+      method: 'GET',
+      url: '/wallet/tickets',
+      headers: { 'x-user-id': guestId },
+    });
+    const ticket = ticketResponse.json().items[0];
+    const account = createEventCoverAccount({
+      entitlementId: ticket.id,
+      orderId: ticket.orderId,
+      eventId: ticket.eventId,
+      guestUserId: guestId,
+      hostOrganizationId: ticket.organizationId,
+      venueOrganizationId: 'venue_private',
+      amountPaise: 15_000,
+      providerCaptureConfirmed: true,
+      merchantApproved: true,
+      policyVersion: 'venue-v1',
+      refundPolicy: 'saved_policy_review',
+      activationApproved: false,
+    });
+    await createV2Services().repos().eventCoverAccounts.createIssuedAccount(account);
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/wallet/event-covers',
+      headers: { 'x-user-id': guestId },
+    });
+    const otherGuest = await server.inject({
+      method: 'GET',
+      url: '/wallet/event-covers',
+      headers: { 'x-user-id': 'wallet-cover-other-guest' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toContain('no-store');
+    expect(response.json()).toMatchObject([
+      {
+        entitlementId: ticket.id,
+        eventId: ticket.eventId,
+        status: 'pending_activation',
+        issuedPaise: 15_000,
+        remainingPaise: 15_000,
+        history: [{ type: 'issuance', amountPaise: 15_000 }],
+      },
+    ]);
+    expect(JSON.stringify(response.json())).not.toContain('venue_private');
+    expect(otherGuest.json()).toEqual([]);
     await server.close();
   });
 });

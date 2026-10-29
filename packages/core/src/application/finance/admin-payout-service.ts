@@ -1,9 +1,17 @@
 import { InvalidOperationError, NotFoundError } from '../../domain/errors.js';
 import { isExecutable } from '../../domain/models/admin-authority.js';
-import { beginProcessing, freezePayout, releasePayout } from '../../domain/models/payout.js';
+import {
+  beginProcessing,
+  freezePayout,
+  markPayoutPaid,
+  releasePayout,
+} from '../../domain/models/payout.js';
+
+import { FinancialPostingService } from './financial-posting-service.js';
+import { appendPayoutStatusEvent } from './payout-events.js';
 
 import type { EntityId } from '../../domain/identity.js';
-import type { Payout } from '../../domain/models/payout.js';
+import type { Payout, PayoutTransferEvidence } from '../../domain/models/payout.js';
 import type { AuditRequestMeta } from '../../domain/ports/audit.js';
 import type { PaginationQuery } from '../../domain/ports/repositories.js';
 import type { AdminAuthorityService } from '../admin/admin-authority-service.js';
@@ -26,10 +34,14 @@ import type { ServiceDeps } from '../context.js';
  * so a retried batch call is safe.
  */
 export class AdminPayoutService {
+  private readonly posting: FinancialPostingService;
+
   constructor(
     private deps: ServiceDeps,
     private authority: AdminAuthorityService,
-  ) {}
+  ) {
+    this.posting = new FinancialPostingService(deps.repositories.financialJournals);
+  }
 
   private get payouts() {
     return this.deps.repositories.payouts;
@@ -53,6 +65,7 @@ export class AdminPayoutService {
     const now = this.deps.config.clock.now();
     const frozen = freezePayout(payout, now);
     await this.payouts.save(frozen);
+    await appendPayoutStatusEvent(this.deps.outbox, frozen, adminUserId, now);
     await this.authority.record(admin, {
       action: 'PAYOUT_FREEZE',
       targetType: 'payout',
@@ -84,6 +97,7 @@ export class AdminPayoutService {
     const now = this.deps.config.clock.now();
     const released = releasePayout(payout, now);
     await this.payouts.save(released);
+    await appendPayoutStatusEvent(this.deps.outbox, released, adminUserId, now);
     await this.authority.record(admin, {
       action: 'PAYOUT_RELEASE',
       targetType: 'payout',
@@ -118,8 +132,17 @@ export class AdminPayoutService {
         skipped.push({ id, reason: `not eligible — status is ${payout.status}` });
         continue;
       }
+      const reservation = await this.deps.repositories.financialJournals.findBySource(
+        'payout_reservation',
+        payout.id,
+      );
+      if (reservation.length === 0) {
+        skipped.push({ id, reason: 'reservation journal is missing' });
+        continue;
+      }
       const started = beginProcessing(payout, now);
       await this.payouts.save(started);
+      await appendPayoutStatusEvent(this.deps.outbox, started, adminUserId, now);
       processed.push(started);
     }
 
@@ -134,6 +157,52 @@ export class AdminPayoutService {
       userAgent: meta?.userAgent,
     });
     return { processed, skipped };
+  }
+
+  async completeManualPayout(
+    adminUserId: EntityId,
+    payoutId: EntityId,
+    evidence: Omit<PayoutTransferEvidence, 'approvedBy'>,
+    meta?: AuditRequestMeta,
+  ): Promise<Payout> {
+    const admin = await this.authority.authorize(adminUserId, 'PAYOUT_COMPLETE');
+    const payout = await this.requirePayout(payoutId);
+    const paid = markPayoutPaid(
+      payout,
+      { ...evidence, approvedBy: adminUserId },
+      this.deps.config.clock.now(),
+    );
+    await this.posting.postPayoutCompletion({
+      organizationId: payout.organizationId,
+      payoutId: payout.id,
+      amountPaise: payout.amount,
+      transferReference: paid.transferReference ?? evidence.transferReference,
+      postedAt: this.deps.config.clock.now(),
+    });
+    await this.payouts.save(paid);
+    await appendPayoutStatusEvent(
+      this.deps.outbox,
+      paid,
+      adminUserId,
+      this.deps.config.clock.now(),
+    );
+    await this.authority.record(admin, {
+      action: 'PAYOUT_COMPLETE',
+      targetType: 'payout',
+      targetId: payout.id,
+      before: { status: payout.status },
+      after: {
+        status: paid.status,
+        transferReference: paid.transferReference,
+        transferredAt: paid.transferredAt,
+        transferMethod: paid.transferMethod,
+        transferProofSha256: paid.transferProof?.sha256 ?? null,
+      },
+      reason: 'Manual bank transfer evidence recorded',
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
+    });
+    return paid;
   }
 
   async listByStatus(

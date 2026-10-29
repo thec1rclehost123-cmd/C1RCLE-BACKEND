@@ -488,6 +488,54 @@ describe('GET /door/guests', () => {
     expect(items.every((g) => g.source === 'online')).toBe(true);
   });
 
+  it('shows current ticket custody without exposing purchaser or holder account IDs', async () => {
+    await seedEntitlement('ENT-custody-purchaser', {
+      currentHolderUserId: 'guest_1',
+      holderName: 'Purchaser Guest',
+    });
+    await seedEntitlement('ENT-custody-assigned', {
+      currentHolderUserId: 'attendee_2',
+      holderName: 'Assigned Guest',
+    });
+    await seedEntitlement('ENT-custody-unassigned', {
+      currentHolderUserId: null,
+      holderName: '',
+    });
+    await seedEntitlement('ENT-custody-legacy', { holderName: 'Legacy Purchaser' });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/door/guests?eventId=${EVENT_ID}`,
+      headers: HEADERS,
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.headers['cache-control']).toContain('no-store');
+    const items = response.json().items as {
+      id: string;
+      name: string;
+      ownershipStatus?: string | null;
+    }[];
+    expect(items.find((guest) => guest.id === 'ENT-custody-purchaser')).toMatchObject({
+      name: 'Purchaser Guest',
+      ownershipStatus: 'purchaser',
+    });
+    expect(items.find((guest) => guest.id === 'ENT-custody-assigned')).toMatchObject({
+      name: 'Assigned Guest',
+      ownershipStatus: 'assigned',
+    });
+    expect(items.find((guest) => guest.id === 'ENT-custody-unassigned')).toMatchObject({
+      name: '',
+      ownershipStatus: 'unassigned',
+    });
+    expect(items.find((guest) => guest.id === 'ENT-custody-legacy')).toMatchObject({
+      name: 'Legacy Purchaser',
+      ownershipStatus: 'purchaser',
+    });
+    expect(response.body).not.toContain('attendee_2');
+    expect(response.body).not.toContain('guest_1');
+  });
+
   it('refuses another organization’s roster', async () => {
     const response = await server.inject({
       method: 'GET',
@@ -495,6 +543,21 @@ describe('GET /door/guests', () => {
       headers: HEADERS,
     });
     expect(response.statusCode).toBe(404);
+  });
+
+  it('marks a bounded roster as truncated when matching records remain', async () => {
+    await seedEntitlement('ENT-truncated-a', { holderName: 'First Guest' });
+    await seedEntitlement('ENT-truncated-b', { holderName: 'Second Guest' });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/door/guests?eventId=${EVENT_ID}&limit=1`,
+      headers: HEADERS,
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({ truncated: true });
+    expect(response.json().items).toHaveLength(1);
   });
 });
 
@@ -774,5 +837,29 @@ describe('production-shaped ids survive the round trip', () => {
     });
     expect(response.statusCode, response.body).toBe(200);
     expect(response.json().items[0].deviceId).toBe(MAX_DEVICE);
+  });
+});
+
+describe('V2 door-ops RBAC', () => {
+  it('denies a read-only member device binding (door.manage) with 403', async () => {
+    currentActor = { ...currentActor, role: 'member' };
+    const response = await server.inject({
+      method: 'POST',
+      url: '/door/devices',
+      headers: { 'x-organization-id': ORG_ID },
+      payload: { deviceId: DEVICE_ID, deviceName: 'Blocked iPad' },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ code: 'forbidden', status: 403 });
+  });
+
+  it("still lets a read-only member list tonight's events (venue.read)", async () => {
+    currentActor = { ...currentActor, role: 'member' };
+    const response = await server.inject({
+      method: 'GET',
+      url: '/door/events?date=2026-09-01',
+      headers: { 'x-organization-id': ORG_ID },
+    });
+    expect(response.statusCode).toBe(200);
   });
 });

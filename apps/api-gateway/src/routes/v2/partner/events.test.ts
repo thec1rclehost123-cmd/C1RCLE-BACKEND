@@ -1,8 +1,9 @@
+import { createEvent as makeEvent } from '@c1rcle/core/domain';
 import { describe, expect, it } from 'vitest';
 
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 
-import partnerEventRoutes from './events.js';
+import partnerEventRoutes, { eventToDto } from './events.js';
 
 const buildServer = () => buildPartnerTestServer({ routes: [partnerEventRoutes] });
 
@@ -10,6 +11,22 @@ const VALID_HEADERS = { 'x-organization-id': 'org_1' };
 const CREATE_HEADERS = { 'x-organization-id': 'org_1', 'idempotency-key': 'idem-event-1' };
 
 const CREATE_BODY = { title: 'Sky Night', venueId: 'ven_1', startAt: '2026-08-01T18:00:00Z' };
+
+describe('restricted event projection privacy', () => {
+  it.each(['code', 'invited'] as const)('omits historical poster URLs for %s events', (mode) => {
+    const event = makeEvent({
+      id: 'evt_private',
+      organizationId: 'org_1',
+      venueId: 'ven_1',
+      title: 'Private',
+      startAt: '2026-08-01T18:00:00Z',
+      visibilityMode: mode,
+      imageUrl: 'https://storage.example.test/legacy-public-poster.jpg',
+    });
+
+    expect(eventToDto(event).imageUrl).toBeNull();
+  });
+});
 
 // The services (and their idempotency store) are memoized per test file, so
 // every test needs a unique idempotency-key — reusing one replays a previous
@@ -109,8 +126,24 @@ describe('V2 partners events slice — validation layers', () => {
     const response = await server.inject({
       method: 'POST',
       url: '/organizations/org_1/events',
-      headers: CREATE_HEADERS,
-      payload: { title: 'Sky Night', venueId: 'ven_1', startAt: '2026-08-01T18:00:00Z' },
+      headers: { 'x-organization-id': 'org_1', 'idempotency-key': nextEventKey() },
+      payload: {
+        title: 'Sky Night',
+        venueId: 'ven_1',
+        startAt: '2026-08-01T18:00:00Z',
+        entryRules: {
+          doorsOpenAt: '2026-08-01T17:00:00.000Z',
+          lastEntryAt: null,
+          reentryAllowed: false,
+          minimumAge: 21,
+          idRequired: true,
+          accessibilityNotes: null,
+          dressCode: null,
+          alcoholPolicy: null,
+          prohibitedItems: [],
+          supportDetails: null,
+        },
+      },
     });
     expect(response.statusCode).toBe(201);
     const body = response.json();
@@ -120,6 +153,7 @@ describe('V2 partners events slice — validation layers', () => {
       status: 'draft',
       isPublic: false,
       version: 1,
+      entryRules: { reentryAllowed: false, minimumAge: 21, idRequired: true },
     });
     expect(typeof body.id).toBe('string');
     await server.close();
@@ -203,8 +237,33 @@ describe('V2 partners events slice — listing and update', () => {
     expect(response.statusCode).toBe(200);
     const body = response.json();
     expect(body.items.map((item: { id: string }) => item.id)).toContain(id);
-    expect(body.pageInfo).toMatchObject({ page: 1, pageSize: 10 });
+    expect(body.pageInfo).toMatchObject({ page: 1, pageSize: 10, nextCursor: null });
+    expect(body.items.find((item: { id: string }) => item.id === id)).toMatchObject({
+      capacity: null,
+      venueName: null,
+      ticketsSold: 0,
+      salesCountComplete: true,
+    });
     expect(body.pageInfo.total).toBeGreaterThanOrEqual(1);
+    await server.close();
+  });
+
+  it('returns bounded sales and capacity evidence on tenant-scoped event detail', async () => {
+    const server = await buildServer();
+    const { id } = await createEvent(server);
+    const response = await server.inject({
+      method: 'GET',
+      url: `/events/${id}`,
+      headers: VALID_HEADERS,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      id,
+      capacity: null,
+      venueName: null,
+      ticketsSold: 0,
+      salesCountComplete: true,
+    });
     await server.close();
   });
 
@@ -231,7 +290,23 @@ describe('V2 partners events slice — listing and update', () => {
         'idempotency-key': nextEventKey(),
         'if-match': '1',
       },
-      payload: { title: 'Sky Night Reloaded', tags: ['party'], startingPricePaise: 19900 },
+      payload: {
+        title: 'Sky Night Reloaded',
+        tags: ['party'],
+        startingPricePaise: 19900,
+        entryRules: {
+          doorsOpenAt: null,
+          lastEntryAt: null,
+          reentryAllowed: false,
+          minimumAge: 21,
+          idRequired: true,
+          accessibilityNotes: 'Step-free entrance',
+          dressCode: null,
+          alcoholPolicy: null,
+          prohibitedItems: [],
+          supportDetails: null,
+        },
+      },
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
@@ -240,6 +315,11 @@ describe('V2 partners events slice — listing and update', () => {
       tags: ['party'],
       startingPricePaise: 19900,
       version: 2,
+      entryRules: {
+        reentryAllowed: false,
+        minimumAge: 21,
+        accessibilityNotes: 'Step-free entrance',
+      },
     });
     await server.close();
   });
@@ -350,12 +430,26 @@ describe('V2 partners events slice — previews and lifecycle', () => {
     const response = await server.inject({
       method: 'GET',
       url: `/events/${id}/previews`,
+      headers: VALID_HEADERS,
     });
     expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toContain('no-store');
     expect(response.json()).toMatchObject({
       event: { id, status: 'draft' },
       isPublic: false,
     });
+    await server.close();
+  });
+
+  it('hides a draft preview from another organization (no cross-tenant IDOR)', async () => {
+    const server = await buildServer();
+    const { id } = await createEvent(server);
+    const response = await server.inject({
+      method: 'GET',
+      url: `/events/${id}/previews`,
+      headers: { 'x-organization-id': 'org_2' },
+    });
+    expect(response.statusCode).toBe(404);
     await server.close();
   });
 
@@ -419,6 +513,19 @@ describe('V2 partners events slice — previews and lifecycle', () => {
     await server.close();
   });
 
+  it('rejects blank cancellation reasons before starting a cancellation workflow', async () => {
+    const server = await buildServer();
+    const { id } = await createEvent(server);
+    const response = await server.inject({
+      method: 'POST',
+      url: `/events/${id}/cancel`,
+      headers: { ...VALID_HEADERS, 'idempotency-key': nextEventKey() },
+      payload: { reason: '   ' },
+    });
+    expect(response.statusCode).toBe(422);
+    await server.close();
+  });
+
   it('duplicates a source event and returns a fresh draft', async () => {
     const server = await buildServer();
     const { id } = await createEvent(server);
@@ -434,6 +541,39 @@ describe('V2 partners events slice — previews and lifecycle', () => {
       status: 'draft',
     });
     expect(response.json().id).not.toBe(id);
+    await server.close();
+  });
+
+  it('carries the commission terms through duplicate', async () => {
+    const server = await buildServer();
+    const created = await server.inject({
+      method: 'POST',
+      url: '/organizations/org_1/events',
+      headers: { 'x-organization-id': 'org_1', 'idempotency-key': nextEventKey() },
+      payload: {
+        ...CREATE_BODY,
+        compensation: {
+          model: 'standard',
+          globalRatePercent: 12,
+          tierRates: {},
+          salaryAmountPaise: null,
+          salaryPeriod: null,
+          salaryNotes: null,
+        },
+      },
+    });
+    expect(created.statusCode).toBe(201);
+
+    const response = await server.inject({
+      method: 'POST',
+      url: `/events/${created.json().id}/duplicate`,
+      headers: { ...VALID_HEADERS, 'idempotency-key': nextEventKey() },
+    });
+    expect(response.statusCode).toBe(201);
+    expect(response.json().compensation).toMatchObject({
+      model: 'standard',
+      globalRatePercent: 12,
+    });
     await server.close();
   });
 });

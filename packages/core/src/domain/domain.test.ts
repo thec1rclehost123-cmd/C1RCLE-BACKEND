@@ -161,6 +161,40 @@ describe('event — status machine', () => {
     expect(updated.status).toBe('draft');
     expect(updated.version).toBe(2);
   });
+
+  it('preserves a legacy hidden published event until visibility is explicitly changed', () => {
+    const published = transitionEvent(
+      transitionEvent(transitionEvent(event, 'review', LATER), 'scheduled', LATER),
+      'published',
+      LATER,
+    );
+    const legacyHidden = { ...published, visibilityMode: undefined, isPublic: false };
+
+    expect(updateEvent(legacyHidden, { title: 'Renamed' }, LATER).isPublic).toBe(false);
+    expect(updateEvent(legacyHidden, { visibilityMode: 'public' }, LATER).isPublic).toBe(true);
+    expect(updateEvent(legacyHidden, { visibilityMode: 'unlisted' }, LATER).isPublic).toBe(false);
+  });
+
+  it('refuses attribute updates once the event is terminal', () => {
+    const cancelled = cancelEvent(event, 'venue flooded', LATER);
+    expect(() => updateEvent(cancelled, { title: 'Renamed' }, LATER)).toThrow(
+      InvalidOperationError,
+    );
+
+    let archived = event;
+    for (const next of [
+      'review',
+      'scheduled',
+      'published',
+      'started',
+      'ended',
+      'archived',
+    ] as const) {
+      archived = transitionEvent(archived, next, LATER);
+    }
+    expect(archived.status).toBe('archived');
+    expect(() => updateEvent(archived, { title: 'Renamed' }, LATER)).toThrow(InvalidOperationError);
+  });
 });
 
 describe('organization — membership rules', () => {

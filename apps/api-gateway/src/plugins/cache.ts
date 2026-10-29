@@ -75,6 +75,19 @@ export default fp<CacheOptions>(
     });
 
     fastify.addHook('onSend', async (request, reply, payload) => {
+      // Organization-scoped read models can change for both sides of a
+      // partnership or after an event write. The in-memory cache has no shared
+      // invalidation bus, so flush this class after any authenticated success
+      // rather than leave another tenant's relationship view stale.
+      if (request.method !== 'GET') {
+        if (reply.statusCode >= 200 && reply.statusCode < 300 && request.actor) {
+          for (const key of entries.keys()) {
+            if (key.startsWith('ORGANIZATION|')) entries.delete(key);
+          }
+        }
+        return payload;
+      }
+
       const pending = request.cacheKey;
       if (pending === undefined) return payload;
       request.cacheKey = undefined;

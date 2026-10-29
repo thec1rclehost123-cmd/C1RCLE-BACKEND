@@ -63,19 +63,47 @@ export type {
   ReviewCommand,
 } from './onboarding/onboarding-service.js';
 export { AnalyticsService } from './analytics/analytics-service.js';
+export {
+  ANALYTICS_PROJECTION_EVENT_TYPES,
+  createAnalyticsProjectionConsumer,
+  refreshAnalyticsReadModel,
+} from './analytics/analytics-projection.js';
+export type {
+  AnalyticsRefreshDeps,
+  AnalyticsRefreshResult,
+} from './analytics/analytics-projection.js';
 export { IdempotencyService } from './idempotency/idempotency-service.js';
 export type { IdempotentCommand, IdempotentResult } from './idempotency/idempotency-service.js';
 export { InProcessEventBus } from './events/event-bus.js';
 export type { EventHandler } from './events/event-bus.js';
-export { createAuditConsumer, createProjectionConsumer } from './events/audit-consumers.js';
+export { createAuditConsumer } from './events/audit-consumers.js';
+export {
+  EventCancellationService,
+  eventCancellationRefundRequestId,
+} from './events/event-cancellation-service.js';
+export { createTransactionalEmailConsumer } from './events/transactional-email-consumer.js';
 
 // Phase 4: Checkout, Inventory, Payments
 export { CheckoutService, rsvpOrderId } from './checkout/checkout-service.js';
+export { EventCoverWalletService } from './event-cover/event-cover-wallet-service.js';
+export type { EventCoverWalletItem } from './event-cover/event-cover-wallet-service.js';
+export { EventCoverRedemptionService } from './event-cover/event-cover-redemption-service.js';
+export type { FulfilmentGap, FulfilmentGaps } from './checkout/checkout-service.js';
+export { FulfilmentRepairService } from './checkout/fulfilment-repair-service.js';
+export type {
+  FulfilmentRepairFinding,
+  FulfilmentRepairOptions,
+  FulfilmentRepairReport,
+} from './checkout/fulfilment-repair-service.js';
 export { InventoryService } from './inventory/inventory-service.js';
 export { PricingService } from './pricing/pricing-service.js';
 export { OrderService } from './orders/order-service.js';
 export type { FinanceOrderRow } from './orders/order-service.js';
 export { TicketService } from './tickets/ticket-service.js';
+export { TicketAccessService } from './tickets/ticket-access-service.js';
+export { ComplimentaryAllocationService } from './tickets/complimentary-allocation-service.js';
+export { WaitlistService } from './tickets/waitlist-service.js';
+export { EventCoverPolicyService } from './event-cover/event-cover-policy-service.js';
 
 // Phase 5: Scanner, Door, Cover Wallet
 export type {
@@ -99,6 +127,18 @@ export type {
   OfflineSyncResult,
 } from './door/scanner-service.js';
 export { createScannerService } from './door/scanner-service.js';
+export {
+  MAGIC_WINDOW_SEC,
+  buildRotatingQr,
+  checkRotatingQr,
+  deriveManifestSigningKey,
+  deriveTicketKey,
+  manifestSigningBytes,
+  parseRotatingQr,
+  signManifest,
+  verifyManifest,
+} from './door/offline-ticket-crypto.js';
+export type { ManifestSigningInput, ManifestSigningKey } from './door/offline-ticket-crypto.js';
 export type {
   DoorOpsService,
   DoorOpsServiceDeps,
@@ -161,6 +201,10 @@ export type {
   BalanceSummary,
 } from './finance/finance-service.js';
 export { createFinanceService } from './finance/finance-service.js';
+export * from './finance/financial-posting-service.js';
+export * from './finance/event-cover-financial-consumer.js';
+export { JournalTransitionService } from './finance/journal-transition-service.js';
+export type { JournalBackfillPreview } from './finance/journal-transition-service.js';
 export type {
   PayoutService,
   PayoutServiceDeps,
@@ -182,7 +226,9 @@ export type {
 export { createDisputeService } from './finance/dispute-service.js';
 export { AdminDisputeService } from './finance/admin-dispute-service.js';
 export type { RequestRefundCommand } from './finance/refund-service.js';
+export { ProviderPaymentService } from './finance/provider-payment-service.js';
 export { RefundService } from './finance/refund-service.js';
+export { ReconciliationService } from './finance/reconciliation-service.js';
 export { SupportService } from './support/support-service.js';
 export type { SubmitTicketCommand } from './support/support-service.js';
 export { AdminSupportService } from './support/admin-support-service.js';
@@ -199,8 +245,14 @@ export { createGuestProfileService } from './guest-profile/guest-profile-service
 // Phase 8: follow graph + notifications (publisher service + bus subscribers)
 export { SocialService } from './social/social-service.js';
 export type { FollowStatus } from './social/social-service.js';
-export { createFollowerFanOutConsumer } from './social/notification-consumers.js';
-export type { FollowerFanOutDeps } from './social/notification-consumers.js';
+export {
+  createEventMaterialChangeNoticeConsumer,
+  createFollowerFanOutConsumer,
+} from './social/notification-consumers.js';
+export type {
+  EventMaterialChangeNoticeDeps,
+  FollowerFanOutDeps,
+} from './social/notification-consumers.js';
 
 // V2 partner-dashboard inbox (org-tenant recipient)
 export { NotificationService } from './notifications/notification-service.js';

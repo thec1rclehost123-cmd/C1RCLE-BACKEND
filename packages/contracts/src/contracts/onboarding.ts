@@ -51,6 +51,38 @@ export const onboardingDocumentSchema = z.object({
   rejectionReason: z.string().nullable(),
 });
 
+export const promoterAgreementAcceptanceSchema = z.object({
+  version: z.string().min(1).max(120),
+  artifactStatus: z.enum(['test_fixture', 'approved']),
+  textSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  acceptedBy: opaqueIdSchema,
+  acceptedAt: z.iso.datetime(),
+});
+
+export const promoterAgreementDtoSchema = z.object({
+  version: z.string().min(1).max(120),
+  status: z.enum(['test_fixture', 'approved']),
+  text: z.string().min(1).max(10000),
+  textSha256: z.string().regex(/^[a-f0-9]{64}$/),
+});
+
+export const promoterAgreementAcceptanceRequestSchema = z
+  .object({
+    requestId: opaqueIdSchema,
+    version: z.string().min(1).max(120),
+  })
+  .strict();
+export const promoterAgreementStatusDtoSchema = z.object({
+  agreement: promoterAgreementDtoSchema.nullable(),
+  activationAvailable: z.boolean(),
+});
+export type PromoterAgreementAcceptanceDto = z.infer<typeof promoterAgreementAcceptanceSchema>;
+export type PromoterAgreementDto = z.infer<typeof promoterAgreementDtoSchema>;
+export type PromoterAgreementAcceptanceRequest = z.infer<
+  typeof promoterAgreementAcceptanceRequestSchema
+>;
+export type PromoterAgreementStatusDto = z.infer<typeof promoterAgreementStatusDtoSchema>;
+
 export const onboardingRequestDtoSchema = z.object({
   id: opaqueIdSchema,
   userId: opaqueIdSchema,
@@ -59,6 +91,7 @@ export const onboardingRequestDtoSchema = z.object({
   plan: onboardingPlanSchema,
   profile: onboardingProfileSchema,
   documents: z.array(onboardingDocumentSchema),
+  promoterAgreementAcceptances: z.array(promoterAgreementAcceptanceSchema),
   /** Labels still missing before the applicant may submit. */
   missingDocuments: z.array(z.string()),
   submittedAt: z.iso.datetime().nullable(),
@@ -280,16 +313,19 @@ export const adminActionSchema = z.enum([
   'ORGANIZATION_REINSTATE',
   'FINANCIAL_REFUND',
   'PAYOUT_BATCH_RUN',
+  'PAYOUT_COMPLETE',
   'DISPUTE_RESOLVE',
   'USER_BAN',
   'USER_UNBAN',
   'ADMIN_PROVISION',
   'ADMIN_ROLE_UPDATE',
   'COMMISSION_ADJUST',
+  'FINANCIAL_ADJUSTMENT',
   'PAYOUT_FREEZE',
   'PAYOUT_RELEASE',
   'PROMOTER_SUSPEND',
   'PROMOTER_REINSTATE',
+  'PROMOTER_LINK_DEACTIVATE',
 ]);
 
 export const proposalStatusSchema = z.enum(['pending', 'approved', 'rejected', 'cancelled']);
@@ -383,7 +419,7 @@ export const adminAlertsResponseSchema = z.object({
 export type AdminAlertsResponse = z.infer<typeof adminAlertsResponseSchema>;
 
 export const adminLookupResultItemSchema = z.object({
-  type: z.enum(['venue', 'event', 'organization', 'user']),
+  type: z.enum(['venue', 'event', 'organization', 'user', 'order']),
   id: opaqueIdSchema,
   label: z.string(),
 });

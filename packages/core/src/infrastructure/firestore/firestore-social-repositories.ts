@@ -1,3 +1,5 @@
+import { ConflictError, NotFoundError } from '../../domain/errors.js';
+
 import { paginateQuery } from './pagination.js';
 
 import type { EntityId } from '../../domain/identity.js';
@@ -91,6 +93,10 @@ export class FirestoreSocialNotificationRepository implements SocialNotification
     return this.db.collection(NOTIFICATION_COLLECTION);
   }
 
+  async create(notification: Notification): Promise<void> {
+    await this.collection.doc(notification.id).set({ ...notification });
+  }
+
   async createIfAbsent(notification: Notification): Promise<boolean> {
     try {
       await this.collection.doc(notification.id).create({ ...notification });
@@ -99,6 +105,56 @@ export class FirestoreSocialNotificationRepository implements SocialNotification
       if (isAlreadyExists(error)) return false;
       throw error;
     }
+  }
+
+  async getById(notificationId: EntityId): Promise<Notification | null> {
+    const snapshot = await this.collection.doc(notificationId).get();
+    return snapshot.exists ? toNotification(snapshot.data() ?? {}) : null;
+  }
+
+  async listEventChangesForEntitlement(entitlementId: EntityId): Promise<Notification[]> {
+    const snapshot = await this.collection
+      .where('eventChange.entitlementId', '==', entitlementId)
+      .orderBy('eventChange.eventVersion', 'desc')
+      .limit(100)
+      .get();
+    return snapshot.docs.map((document) => toNotification(document.data()));
+  }
+
+  async respondToMaterialChange(
+    userId: EntityId,
+    notificationId: EntityId,
+    response: 'accepted' | 'refund_requested',
+    respondedAt: string,
+  ): Promise<{ notification: Notification; replayed: boolean }> {
+    const ref = this.collection.doc(notificationId);
+    return this.db.runTransaction(async (tx) => {
+      const snapshot = await tx.get(ref);
+      const notification = snapshot.exists ? toNotification(snapshot.data() ?? {}) : null;
+      if (
+        !notification ||
+        notification.userId !== userId ||
+        notification.type !== 'event.material_change' ||
+        !notification.eventChange
+      ) {
+        throw new NotFoundError('Event change notice', notificationId);
+      }
+      if (notification.eventChangeResponse) {
+        if (
+          notification.eventChangeResponse.respondedBy !== userId ||
+          notification.eventChangeResponse.response !== response
+        ) {
+          throw new ConflictError('A different response is already recorded for this event change');
+        }
+        return { notification, replayed: true };
+      }
+      const updated: Notification = {
+        ...notification,
+        eventChangeResponse: { response, respondedAt, respondedBy: userId },
+      };
+      tx.set(ref, { ...updated });
+      return { notification: updated, replayed: false };
+    });
   }
 
   listForUser(
@@ -176,5 +232,9 @@ function toNotification(data: DocumentData): Notification {
     subjectId: data.subjectId as string,
     createdAt: data.createdAt as string,
     readAt: (data.readAt as string | null) ?? null,
+    ...(data.eventChange ? { eventChange: data.eventChange as Notification['eventChange'] } : {}),
+    ...(data.eventChangeResponse !== undefined
+      ? { eventChangeResponse: data.eventChangeResponse as Notification['eventChangeResponse'] }
+      : {}),
   };
 }

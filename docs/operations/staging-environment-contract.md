@@ -12,6 +12,9 @@ none are hardcoded in the repository. Run
 | `NGINX_PROFILE` | yes | Must be `staging`. |
 | `NGINX_TLS_MODE` | yes | `external` when a verified CDN/WAF/LB owns TLS; `nginx` when this Nginx process owns TLS. |
 | `NGINX_SERVER_NAME` | yes | Real staging API hostname; no localhost, example, `.test`, or guessed value. |
+| `NGINX_ORIGIN_VERIFY_SECRET` | no | Shared secret Cloudflare stamps in `X-Origin-Verify`; when it matches, `X-C1-Client-IP` is trusted as the visitor address (rate limits, logs, `X-Forwarded-For`). 32 to 256 characters of letters, digits and `. _ ~ -`. See `cloudflare-edge.md`. |
+| `NGINX_ORIGIN_LOCKED_SERVER_NAMES` | no | Hostnames refused (403) without a valid `X-Origin-Verify`, so they cannot be reached around Cloudflare. Requires the secret; must be served hosts. |
+| `NGINX_ADDITIONAL_SERVER_NAMES` | no | Extra hostnames the edge also accepts (comma or space separated), for serving a new custom domain while the old one keeps working. Plain hostnames only (letters, digits, dots, hyphens; no wildcards), validated before they reach nginx config; anything malformed fails closed. Every other `Host` is still refused with `444`. `NGINX_SERVER_NAME` stays the canonical name and must keep matching `PUBLIC_API_URL`. `api-only` topology only. |
 | `FASTIFY_UPSTREAM` | yes | One private, resolvable `hostname:port` or `[IPv6]:port`; it must not be a public client endpoint. |
 | `FASTIFY_PORT` | Render split preflight | Private Fastify listen port; must match `FASTIFY_UPSTREAM`. Use `8080` on Render because private-network port `10000` is reserved. |
 | `PORT` | Render-provided for the public edge | Nginx Web Service listener. Do not hardcode Render's default. |
@@ -78,9 +81,10 @@ in staging so development defaults cannot silently activate:
 | `PUBLIC_API_URL` | Verified HTTPS API base URL; hostname must match `NGINX_SERVER_NAME`. |
 | `BETTER_AUTH_URL` | Verified HTTPS Better Auth base URL. |
 | `BETTER_AUTH_SECRET` | Secret-manager value at least 32 characters; never the development default. |
-| `EMAIL_OTP_SECRET` | Required in production (config fails boot without it). HMAC key for hashing email-OTP codes at rest. |
+| `EMAIL_OTP_SECRET` | Required in production, at least 32 characters (config fails boot otherwise). HMAC key for hashing email-OTP codes at rest. |
 | `RESEND_API_KEY` | Email OTP delivery; without it the OTP routes fail in production. |
 | `MAGIC_TICKET_SECRET` | Required in production, at least 32 characters (boot fails otherwise). Signs rotating door QRs and offline admission manifests; a leak or a shared default lets anyone mint a valid ticket QR. |
+| `ENCRYPTION_KEY` | Required in production, at least 32 characters (boot fails otherwise). At-rest key for bank-account numbers. Records written before it was wired stay readable via a legacy fallback; keep this value stable and backed up. |
 | `TRUSTED_PROXY_CIDRS` | Exact proxy peer list from the edge section. |
 | `APP_VERSION` | Semantic version returned by `/api/v2/internal/version`. |
 | `BUILD_SHA` | Optional explicit immutable commit SHA. On Render, the gateway and preflight fall back to documented `RENDER_GIT_COMMIT`. |

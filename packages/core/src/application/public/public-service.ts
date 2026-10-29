@@ -4,11 +4,13 @@ import {
   OrganizationNotFoundError,
 } from '../../domain/errors.js';
 import { isPublicStatus } from '../../domain/models/event.js';
+import { TicketAccessService } from '../tickets/ticket-access-service.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type { TicketTier } from '../../domain/models/event-catalog.js';
 import type { Event } from '../../domain/models/event.js';
 import type { Organization } from '../../domain/models/organization.js';
+import type { TicketAddon } from '../../domain/models/ticket-addon.js';
 import type { Venue } from '../../domain/models/venue.js';
 import type {
   EventRepository,
@@ -23,6 +25,16 @@ export interface PublicEventDetail {
   event: Event;
   venue: Venue | null;
   organizer: Organization | null;
+}
+
+function isManagedPosterKeyForOrganization(key: string, organizationId: EntityId): boolean {
+  const [root, owner, filename, ...extra] = key.split('/');
+  return (
+    root === 'posters' &&
+    owner === organizationId &&
+    extra.length === 0 &&
+    /^[A-Za-z0-9_-]+\.(?:jpg|png|webp)$/.test(filename ?? '')
+  );
 }
 
 /**
@@ -68,31 +80,101 @@ export class PublicService {
    */
   async listEventTiers(
     idOrSlug: EntityId,
+    userId?: EntityId,
+    accessGrantId?: EntityId,
   ): Promise<{ tier: TicketTier; availableQuantity: number }[]> {
-    const { event } = await this.getEvent(idOrSlug);
+    const { event } = await this.getEvent(idOrSlug, userId, accessGrantId);
+    const eventGrant = Boolean(
+      userId &&
+      accessGrantId &&
+      (await new TicketAccessService(this.deps).hasGrantForEvent(
+        accessGrantId,
+        userId,
+        event.id,
+        event.visibilityMode === 'invited' ? 'invitation' : 'code',
+      )),
+    );
     const tiers = await this.deps.repositories.catalog.listTiers(event.id);
     const rows: { tier: TicketTier; availableQuantity: number }[] = [];
     for (const tier of tiers) {
       if (tier.status !== 'active') continue;
+      const accessMode = tier.accessMode ?? 'public';
+      if (accessGrantId && !eventGrant && accessMode === 'public') continue;
+      if (accessMode !== 'public') {
+        if (
+          !userId ||
+          !accessGrantId ||
+          !(await new TicketAccessService(this.deps).hasGrantForTier(
+            accessGrantId,
+            userId,
+            event.id,
+            tier.id,
+          ))
+        )
+          continue;
+      }
+      const availableAdmissions = await this.deps.inventory.getAvailableQuantity(event.id, tier.id);
       rows.push({
         tier,
-        availableQuantity: await this.deps.inventory.getAvailableQuantity(event.id, tier.id),
+        // Inventory is attendee capacity. The public sell surface presents
+        // purchasable bundles, so per-person group tiers divide capacity by
+        // the server-owned attendee count.
+        availableQuantity: availableTicketQuantity(tier, availableAdmissions),
       });
+    }
+    return rows;
+  }
+
+  async listEventTicketAddons(
+    idOrSlug: EntityId,
+    userId?: EntityId,
+    accessGrantId?: EntityId,
+  ): Promise<{ addon: TicketAddon; availableQuantity: number }[]> {
+    const { event } = await this.getEvent(idOrSlug, userId, accessGrantId);
+    if (this.deps.config.features.m5TicketAddonsEnabled !== true) return [];
+    const addons = await this.deps.repositories.catalog.listTicketAddons(event.id);
+    const rows: { addon: TicketAddon; availableQuantity: number }[] = [];
+    for (const addon of addons) {
+      if (addon.status !== 'active') continue;
+      const availableQuantity = await this.deps.inventory.getAvailableTicketAddonQuantity(addon.id);
+      rows.push({ addon, availableQuantity });
     }
     return rows;
   }
 
   /**
    * `idOrSlug`: tries the id first (cheap point read), falls back to a slug
-   * lookup. Only a currently-public event is ever returned — a real but
-   * non-public event (draft, review, cancelled, …) reports the same
-   * `event_not_found` as a truly missing id, so this is never an existence
-   * oracle for unpublished work.
+   * lookup. Public events and explicitly unlisted direct links are returned;
+   * other unpublished/private-status events report the same `event_not_found`
+   * as a truly missing id, so this is never an existence oracle for drafts.
    */
-  async getEvent(idOrSlug: EntityId): Promise<PublicEventDetail> {
+  async getEvent(
+    idOrSlug: EntityId,
+    userId?: EntityId,
+    accessGrantId?: EntityId,
+  ): Promise<PublicEventDetail> {
     const byId = await this.events.getById(idOrSlug);
     const event = byId ?? (await this.events.getBySlug(idOrSlug));
-    if (!event || !event.isPublic || !isPublicStatus(event.status)) {
+    const unlistedDirectLink = event?.visibilityMode === 'unlisted';
+    const privateVisibility =
+      event?.visibilityMode === 'code' || event?.visibilityMode === 'invited';
+    const authorizedPrivate = Boolean(
+      event &&
+      privateVisibility &&
+      userId &&
+      accessGrantId &&
+      (await new TicketAccessService(this.deps).hasGrantForEvent(
+        accessGrantId,
+        userId,
+        event.id,
+        event.visibilityMode === 'invited' ? 'invitation' : 'code',
+      )),
+    );
+    if (
+      !event ||
+      !isPublicStatus(event.status) ||
+      (!event.isPublic && !unlistedDirectLink && !authorizedPrivate)
+    ) {
       throw new EventNotFoundError(idOrSlug);
     }
 
@@ -101,19 +183,27 @@ export class PublicService {
       this.organizations.getById(event.organizationId),
     ]);
 
+    let publicProjectionEvent = event;
+    if (authorizedPrivate) {
+      let imageUrl: string | null = null;
+      const privatePath = event.privateImageStoragePath;
+      if (privatePath && isManagedPosterKeyForOrganization(privatePath, event.organizationId)) {
+        const grant = await this.deps.objectStorage.issueReadUrl({
+          key: privatePath,
+          expiresAt: this.deps.config.clock.now().getTime() + 5 * 60 * 1000,
+        });
+        imageUrl = grant.readUrl;
+      }
+      publicProjectionEvent = { ...event, imageUrl };
+    } else if (privateVisibility) {
+      publicProjectionEvent = { ...event, imageUrl: null };
+    }
+
     return {
-      event,
+      event: publicProjectionEvent,
       venue: venue?.status === 'active' ? venue : null,
       organizer: organizer?.status === 'active' ? organizer : null,
     };
-  }
-
-  /** Public, currently sellable tiers for a published event page. */
-  async getEventTicketTiers(idOrSlug: EntityId) {
-    const detail = await this.getEvent(idOrSlug);
-    return (await this.deps.repositories.catalog.listTiers(detail.event.id)).filter(
-      (tier) => tier.status === 'active',
-    );
   }
 
   /** Venue public profile by slug. A suspended venue is not discoverable. */
@@ -191,6 +281,12 @@ export class PublicService {
       nextCursor: end < matches.length && last ? last.id : null,
     };
   }
+}
+
+export function availableTicketQuantity(tier: TicketTier, availableAdmissions: number): number {
+  if (tier.admissionMode !== 'per_person') return availableAdmissions;
+  const guestCount = tier.guestCount ?? 1;
+  return guestCount > 0 ? Math.floor(availableAdmissions / guestCount) : 0;
 }
 
 function matchesQuery(event: Event, needle: string): boolean {

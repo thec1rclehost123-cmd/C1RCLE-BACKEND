@@ -122,6 +122,9 @@ function createDoorServiceImpl(deps: DoorServiceDeps): DoorService {
     const event = await events.findById(input.eventId);
     if (!event) throw new NotFoundError('Event', input.eventId);
     requireOrgAccess(actor, event.organizationId);
+    if (event.status === 'cancelled') {
+      throw new InvalidOperationError('Door sales are closed because this event was cancelled');
+    }
 
     // Check idempotency
     const existing = await doorSales.findByIdempotencyKey(input.idempotencyKey);
@@ -189,6 +192,9 @@ function createDoorServiceImpl(deps: DoorServiceDeps): DoorService {
     const event = await events.findById(input.eventId);
     if (!event) throw new NotFoundError('Event', input.eventId);
     requireOrgAccess(actor, event.organizationId);
+    if (event.status === 'cancelled') {
+      throw new InvalidOperationError('Door sales are closed because this event was cancelled');
+    }
 
     // Check idempotency
     const existing = await doorSales.findByIdempotencyKey(input.idempotencyKey);
@@ -374,8 +380,12 @@ function createDoorServiceImpl(deps: DoorServiceDeps): DoorService {
     if (!event) throw new NotFoundError('Event', eventId);
     requireOrgAccess(actor, event.organizationId);
 
-    // Use repository to find with filters
-    // For now, return all and filter in memory (repository should support this)
+    // Filtering stays in memory for now — documented, tracked gap (task.md
+    // D4). Pushing these predicates down would need a Firestore composite
+    // index per (filter, createdAt) combination on top of the existing
+    // `eventId ==` + `orderBy createdAt` query, which is an operational cost
+    // not justified for a door log that already snapshots < 1000 rows per
+    // event. Revisit when the door list becomes paginated server-side.
     const allSales = await doorSales.findByEvent(eventId, { limit: 1000, cursor: null });
 
     let filtered = allSales.items;

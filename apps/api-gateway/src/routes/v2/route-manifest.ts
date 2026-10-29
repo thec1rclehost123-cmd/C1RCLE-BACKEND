@@ -1,10 +1,10 @@
-import { getFirestoreClient } from '@c1rcle/core/infrastructure';
-
-import { getGatewayConfig, GatewayConfigError, type GatewayConfig } from '../../config/index.js';
+import { getGatewayConfig, type GatewayConfig } from '../../config/index.js';
 import { createV2Services } from '../../lib/v2-services.js';
-import authContextPlugin, { buildBetterAuth } from '../../plugins/auth.js';
+import authContextPlugin from '../../plugins/auth.js';
 
 import adminAnalyticsRoutes from './admin/analytics.js';
+import adminCommunicationRoutes from './admin/communications.js';
+import adminComplimentaryAllocationRoutes from './admin/complimentary-allocations.js';
 import adminDirectoryRoutes from './admin/directory.js';
 import adminDisputeRoutes from './admin/disputes.js';
 import adminEventActionRoutes from './admin/event-actions.js';
@@ -14,6 +14,7 @@ import adminOrganizationActionRoutes from './admin/organization-actions.js';
 import adminPayoutRoutes from './admin/payouts.js';
 import adminPromotersRoutes from './admin/promoters.js';
 import adminPromotionsRoutes from './admin/promotions.js';
+import adminReconciliationRoutes from './admin/reconciliation.js';
 import adminRefundRoutes from './admin/refunds.js';
 import adminSettingsRoutes from './admin/settings.js';
 import adminSupportRoutes from './admin/support.js';
@@ -30,6 +31,7 @@ import doorOpsRoutes from './door/door-ops-routes.js';
 import phase5DoorSaleRoutes from './door/door-sale-routes.js';
 import doorCodeRoutes from './door/event-code-routes.js';
 import phase5ScannerRoutes from './door/scanner-routes.js';
+import eventCoverRedemptionRoutes from './event-cover/event-cover-redemption-routes.js';
 import financeRoutes from './finance/finance-routes.js';
 import leaderboardRoutes from './finance/leaderboard-routes.js';
 import { internalRoutes } from './internal/index.js';
@@ -52,10 +54,10 @@ import rsvpRoutes from './rsvp/rsvp-routes.js';
 import socialRoutes from './social/social-routes.js';
 import supportIntakeRoutes from './support/intake-routes.js';
 import ticketRoutes from './tickets/ticket-routes.js';
+import waitlistRoutes from './tickets/waitlist-routes.js';
 import walletRoutes from './wallet/wallet-routes.js';
 
 import type { GatewayRuntimeState } from '../../lib/runtime-state.js';
-import type { BetterAuthInstance } from '../../plugins/auth.js';
 import type { FastifyInstance } from 'fastify';
 
 export type ReadinessCheck = () => boolean | Promise<boolean>;
@@ -72,10 +74,9 @@ export interface RegisterV2RoutesOptions {
  * The single registration surface for all `/api/v2` routes. Phase 4's public
  * discovery slice (PR1, unauthenticated, under `/public`), checkout/
  * payments/webhook slice (PR2), and orders/tickets/wallet reads (PR3) are
- * all LIVE. Ticket transfer/claim/cancel-transfer stay unregistered — the
- * committed `Entitlement` model has no transfer state to wire against yet
- * (see `tickets/ticket-routes.ts`'s doc comment); they 404 by absence, never
- * by a 501 stub (D-006), same as any other genuinely-blocked slice.
+ * all LIVE. Transfer/claim, waitlist, scanner, cover and controlled-admin
+ * routes are registered but remain protected by Core authorization and feature
+ * gates where policy or operational approval is still pending.
  */
 export async function registerV2Routes(
   app: FastifyInstance,
@@ -83,30 +84,15 @@ export async function registerV2Routes(
 ): Promise<void> {
   const gw = options.config ?? getGatewayConfig();
   const services = createV2Services();
-
-  // B10: auth is only real on the firestore driver — see plugins/auth.ts and
-  // docs/roadmap/phase-00-foundation.md for why the memory driver skips it.
-  let auth: BetterAuthInstance | null = null;
-  if (gw.STORAGE_DRIVER === 'firestore') {
-    if (!gw.FIREBASE_CLIENT_EMAIL || !gw.FIREBASE_PRIVATE_KEY) {
-      throw new GatewayConfigError(
-        'STORAGE_DRIVER=firestore requires FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY',
-      );
-    }
-    auth = buildBetterAuth(
-      gw,
-      getFirestoreClient({
-        projectId: gw.FIRESTORE_PROJECT_ID,
-        clientEmail: gw.FIREBASE_CLIENT_EMAIL,
-        privateKey: gw.FIREBASE_PRIVATE_KEY,
-      }),
-      services.emailSender,
-    );
-  }
+  // B10: auth is only real on the firestore driver — built inside
+  // `createV2Services` (which throws `GatewayConfigError` when the firestore
+  // driver lacks credentials), so the staff credential provisioner shares it.
+  const auth = services.auth;
 
   await app.register(authContextPlugin, {
     auth,
     organizations: services.repos().organizations,
+    rotationStore: services.rotationStore,
   });
 
   // Path shape: nested org-scoped routes directly under `/api/v2` — no
@@ -123,7 +109,15 @@ export async function registerV2Routes(
         runtimeState: options.runtimeState,
         readinessChecks: options.readinessChecks,
       });
-      await v2.register(async (a) => authRoutes(a, { auth }), { prefix: '/auth' });
+      await v2.register(
+        async (a) =>
+          authRoutes(a, {
+            auth,
+            rotationStore: services.rotationStore,
+            organizations: services.organizations,
+          }),
+        { prefix: '/auth' },
+      );
       await v2.register(otpRoutes, { prefix: '/auth' });
       // Phase 4 PR1: unauthenticated guest-facing discovery reads — never
       // nested under the org-scoped/authenticated route group above.
@@ -144,14 +138,17 @@ export async function registerV2Routes(
       await guestProfileRoutes(v2);
       await adminRoutes(v2);
       await adminRefundRoutes(v2);
+      await adminReconciliationRoutes(v2);
       await adminPayoutRoutes(v2);
       await adminDisputeRoutes(v2);
       await adminDirectoryRoutes(v2);
       // Phase 7: support desk over the ticket aggregate.
       await adminSupportRoutes(v2);
+      await adminCommunicationRoutes(v2);
       await adminOrderRoutes(v2);
       await adminAnalyticsRoutes(v2);
       await adminTicketRoutes(v2);
+      await adminComplimentaryAllocationRoutes(v2);
       await adminPromotionsRoutes(v2);
       await adminPromotersRoutes(v2);
       await adminVenueActionRoutes(v2);
@@ -168,7 +165,9 @@ export async function registerV2Routes(
       // Phase 4 PR3: guest order/ticket reads + wallet.
       await orderRoutes(v2);
       await ticketRoutes(v2);
+      await waitlistRoutes(v2);
       await walletRoutes(v2);
+      await eventCoverRedemptionRoutes(v2);
       // Phase 5: Door / Scanner / Cover-wallet
       await doorCodeRoutes(v2);
       await doorOpsRoutes(v2);

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { createV2Services } from '../../../lib/v2-services.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
+import { publishEventForTest } from '../../../test-utils/publish-event.js';
 import checkoutRoutes from '../checkout/checkout-routes.js';
 import paymentRoutes from '../checkout/payment-routes.js';
 import partnerEventCatalogRoutes from '../partner/event-catalog.js';
@@ -66,7 +67,21 @@ describe('GET /organizations/:organizationId/finance/balance', () => {
       headers: { 'x-organization-id': org },
     });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ availablePaise: 0, pendingPaise: 0, lifetimePaise: 0 });
+    expect(res.json()).toEqual({
+      availablePaise: 0,
+      pendingPaise: 0,
+      reservedPaise: 0,
+      heldPaise: 0,
+      paidPaise: 0,
+      lifetimePaise: 0,
+      holds: {
+        reservePaise: 0,
+        cancellationPaise: 0,
+        chargebackPaise: 0,
+        reconciliationPaise: 0,
+      },
+      readModel: 'legacy_ledger_v1',
+    });
   });
 
   it('reflects a recorded ticket sale split correctly', async () => {
@@ -349,6 +364,41 @@ describe('GET /organizations/:organizationId/payouts', () => {
     expect(body.items[0].id).toBe(payoutId);
     expect(body.items[0].amountPaise).toBe(30_000);
     expect(body.items[0].status).toBe('requested');
+  });
+
+  it('replays one payout request without creating a second reservation', async () => {
+    const server = await buildServer();
+    const org = await seedOrganization(server);
+    await seedSettledFundsAndBank(server, org);
+    const idempotencyKey = `replay-payout-${++keySeq}`;
+    const payload = { amountPaise: 30_000, idempotencyKey };
+
+    const first = await server.inject({
+      method: 'POST',
+      url: `/organizations/${org}/payouts`,
+      headers: write(org),
+      payload,
+    });
+    const replay = await server.inject({
+      method: 'POST',
+      url: `/organizations/${org}/payouts`,
+      headers: write(org),
+      payload,
+    });
+
+    expect(first.statusCode).toBe(201);
+    expect(replay.statusCode).toBe(201);
+    expect(replay.json().id).toBe(first.json().id);
+    const listed = await server.inject({
+      method: 'GET',
+      url: `/organizations/${org}/payouts`,
+      headers: { 'x-organization-id': org },
+    });
+    expect(listed.json().items).toHaveLength(1);
+    const journals = await createV2Services()
+      .repos()
+      .financialJournals.findBySource('payout_reservation', first.json().id as string);
+    expect(journals).toHaveLength(1);
   });
 
   it('returns a single payout by id', async () => {
@@ -651,6 +701,7 @@ async function seedPaidOrder(server: Server): Promise<{ org: string; orderId: st
     payload: { title: 'Sky Night', venueId: venue.json().id, startAt: '2026-09-01T18:00:00Z' },
   });
   const eventId: string = event.json().id;
+  await publishEventForTest(eventId);
   const tier = await server.inject({
     method: 'POST',
     url: `/events/${eventId}/ticket-tiers`,
@@ -672,7 +723,7 @@ async function seedPaidOrder(server: Server): Promise<{ org: string; orderId: st
   });
   const paymentId = `pay_finance_${++keySeq}`;
   const provider = memoryProvider();
-  provider.simulateCapture(paymentId, grandTotalPaise);
+  provider.simulateCapture(paymentId, grandTotalPaise, attempt.json().paymentIntentId);
   const verify = await server.inject({
     method: 'POST',
     url: `/payments/${paymentId}/verify`,

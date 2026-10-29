@@ -41,7 +41,13 @@ import {
   FirestoreCoverWalletRepository,
   FirestoreCoverWalletTxnRepository,
   FirestoreCoverWalletReconciliationRepository,
+  FirestoreEventCoverPolicyRepository,
+  FirestoreEventCoverAccountRepository,
+  FirestoreComplimentaryAllocationRepository,
+  FirestoreWaitlistRepository,
   FirestoreLedgerRepository,
+  FirestoreFinancialJournalRepository,
+  FirestoreJournalTransitionRepository,
   FirestorePayoutRepository,
   FirestoreBankAccountRepository,
   FirestoreDisputeRepository,
@@ -50,6 +56,9 @@ import {
   FirestoreGuestProfileRepository,
   FirestoreFollowRepository,
   FirestoreSocialNotificationRepository,
+  FirestoreProviderPaymentRepository,
+  FirestoreProviderFinancialEventRepository,
+  FirestoreReconciliationRepository,
   FirestoreRefundRequestRepository,
   FirestoreSafetyReportRepository,
   FirestoreSupportTicketRepository,
@@ -57,6 +66,7 @@ import {
   FirestoreUserBanRepository,
   FirestorePlatformSettingsRepository,
   FirestoreNotificationRepository,
+  FirestoreTicketAccessRepository,
 } from './firestore/index.js';
 import {
   MemoryOrganizationRepository,
@@ -86,7 +96,13 @@ import {
   MemoryCoverWalletRepository,
   MemoryCoverWalletTxnRepository,
   MemoryCoverWalletReconciliationRepository,
+  MemoryEventCoverPolicyRepository,
+  MemoryEventCoverAccountRepository,
+  MemoryComplimentaryAllocationRepository,
+  MemoryWaitlistRepository,
   MemoryLedgerRepository,
+  MemoryFinancialJournalRepository,
+  MemoryJournalTransitionRepository,
   MemoryPayoutRepository,
   MemoryBankAccountRepository,
   MemoryDisputeRepository,
@@ -95,6 +111,9 @@ import {
   MemoryGuestProfileRepository,
   MemoryFollowRepository,
   MemorySocialNotificationRepository,
+  MemoryProviderPaymentRepository,
+  MemoryProviderFinancialEventRepository,
+  MemoryReconciliationRepository,
   MemoryRefundRequestRepository,
   MemorySafetyReportRepository,
   MemorySupportTicketRepository,
@@ -102,6 +121,7 @@ import {
   MemoryUserBanRepository,
   MemoryPlatformSettingsRepository,
   MemoryNotificationRepository,
+  MemoryTicketAccessRepository,
 } from './memory/index.js';
 import { MemoryIdempotencyStore } from './memory/memory-idempotency-store.js';
 
@@ -127,6 +147,8 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
   const isMemory = gw.STORAGE_DRIVER === 'memory';
 
   if (isMemory) {
+    const financialJournals = new MemoryFinancialJournalRepository();
+    const venueSlots = new MemoryVenueSlotRepository();
     return {
       organizations: new MemoryOrganizationRepository(),
       invitations: new MemoryInvitationRepository(),
@@ -134,8 +156,8 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
       referralLinks: new MemoryReferralLinkRepository(),
       promoterConnections: new MemoryPromoterConnectionRepository(),
       venues: new MemoryVenueRepository(),
-      slotRequests: new MemorySlotRequestRepository(),
-      venueSlots: new MemoryVenueSlotRepository(),
+      slotRequests: new MemorySlotRequestRepository(venueSlots),
+      venueSlots,
       events: new MemoryEventRepository(),
       catalog: new MemoryEventCatalogRepository(),
       analytics: new MemoryAnalyticsReadModelRepository(),
@@ -150,15 +172,22 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
       // Phase 5 repositories
       scanLedger: new MemoryScanLedgerRepository(),
       eventCodes: new MemoryEventCodeRepository(),
+      ticketAccess: new MemoryTicketAccessRepository(),
       scannerSessions: new MemoryScannerSessionRepository(),
       scannerDevices: new MemoryScannerDeviceRepository(),
       doorSales: new MemoryDoorSaleRepository(),
       coverWallets: new MemoryCoverWalletRepository(),
       coverWalletTxns: new MemoryCoverWalletTxnRepository(),
       coverWalletReconciliations: new MemoryCoverWalletReconciliationRepository(),
+      eventCoverPolicies: new MemoryEventCoverPolicyRepository(),
+      eventCoverAccounts: new MemoryEventCoverAccountRepository(),
+      complimentaryAllocations: new MemoryComplimentaryAllocationRepository(),
+      waitlist: new MemoryWaitlistRepository(),
       // Phase 6
       ledger: new MemoryLedgerRepository(),
-      payouts: new MemoryPayoutRepository(),
+      financialJournals,
+      journalTransition: new MemoryJournalTransitionRepository(),
+      payouts: new MemoryPayoutRepository(financialJournals),
       bankAccounts: new MemoryBankAccountRepository(),
       disputes: new MemoryDisputeRepository(),
       leaderboard: new MemoryLeaderboardRepository(),
@@ -168,6 +197,9 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
       follows: new MemoryFollowRepository(),
       socialNotifications: new MemorySocialNotificationRepository(),
       refundRequests: new MemoryRefundRequestRepository(),
+      providerPayments: new MemoryProviderPaymentRepository(),
+      providerFinancialEvents: new MemoryProviderFinancialEventRepository(),
+      reconciliations: new MemoryReconciliationRepository(),
       supportTickets: new MemorySupportTicketRepository(),
       safetyReports: new MemorySafetyReportRepository(),
       users: new MemoryUserAccountRepository(),
@@ -211,14 +243,21 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
     // Phase 5 repositories
     scanLedger: new FirestoreScanLedgerRepository(db),
     eventCodes: new FirestoreEventCodeRepository(db),
+    ticketAccess: new FirestoreTicketAccessRepository(db),
     scannerSessions: new FirestoreScannerSessionRepository(db),
     scannerDevices: new FirestoreScannerDeviceRepository(db),
     doorSales: new FirestoreDoorSaleRepository(db),
     coverWallets: new FirestoreCoverWalletRepository(db),
     coverWalletTxns: new FirestoreCoverWalletTxnRepository(db),
     coverWalletReconciliations: new FirestoreCoverWalletReconciliationRepository(db),
+    eventCoverPolicies: new FirestoreEventCoverPolicyRepository(db),
+    eventCoverAccounts: new FirestoreEventCoverAccountRepository(db),
+    complimentaryAllocations: new FirestoreComplimentaryAllocationRepository(db),
+    waitlist: new FirestoreWaitlistRepository(db),
     // Phase 6
     ledger: new FirestoreLedgerRepository(db),
+    financialJournals: new FirestoreFinancialJournalRepository(db),
+    journalTransition: new FirestoreJournalTransitionRepository(db),
     payouts: new FirestorePayoutRepository(db),
     bankAccounts: new FirestoreBankAccountRepository(db),
     disputes: new FirestoreDisputeRepository(db),
@@ -229,6 +268,9 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
     follows: new FirestoreFollowRepository(db),
     socialNotifications: new FirestoreSocialNotificationRepository(db),
     refundRequests: new FirestoreRefundRequestRepository(db),
+    providerPayments: new FirestoreProviderPaymentRepository(db),
+    providerFinancialEvents: new FirestoreProviderFinancialEventRepository(db),
+    reconciliations: new FirestoreReconciliationRepository(db),
     supportTickets: new FirestoreSupportTicketRepository(db),
     safetyReports: new FirestoreSafetyReportRepository(db),
     users: new FirestoreUserAccountRepository(db),
@@ -256,7 +298,7 @@ export function buildIdempotencyStore() {
  */
 export function buildActorContext(request: { actor?: ActorContext }): ActorContext {
   if (!request.actor) {
-    throw new UnauthorizedError('No authenticated actor on request.');
+    throw new UnauthorizedError();
   }
   return request.actor;
 }

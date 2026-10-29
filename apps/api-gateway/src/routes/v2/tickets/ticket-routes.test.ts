@@ -1,8 +1,13 @@
-import { MemoryPaymentProvider } from '@c1rcle/core/domain';
+import {
+  createSocialNotification,
+  eventMaterialChangeSubjectId,
+  MemoryPaymentProvider,
+} from '@c1rcle/core/domain';
 import { describe, expect, it } from 'vitest';
 
 import { createV2Services } from '../../../lib/v2-services.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
+import { publishEventForTest } from '../../../test-utils/publish-event.js';
 import checkoutRoutes from '../checkout/checkout-routes.js';
 import paymentRoutes from '../checkout/payment-routes.js';
 import partnerEventCatalogRoutes from '../partner/event-catalog.js';
@@ -61,9 +66,10 @@ async function seedTicket(server: Server): Promise<string> {
     method: 'POST',
     url: `/organizations/${org}/events`,
     headers: write(org),
-    payload: { title: 'Sky Night', venueId, startAt: '2026-09-01T18:00:00Z' },
+    payload: { title: 'Sky Night', venueId, startAt: '2026-12-01T18:00:00Z' },
   });
   const eventId: string = event.json().id;
+  await publishEventForTest(eventId);
   const tier = await server.inject({
     method: 'POST',
     url: `/events/${eventId}/ticket-tiers`,
@@ -88,7 +94,7 @@ async function seedTicket(server: Server): Promise<string> {
   const paymentIntentId: string = attempt.json().paymentIntentId;
   const paymentId = `pay_ticket_test_${++keySeq}`;
   const provider = memoryProvider();
-  provider.simulateCapture(paymentId, grandTotalPaise);
+  provider.simulateCapture(paymentId, grandTotalPaise, paymentIntentId);
   const signature = provider.generateSignature({ paymentId, orderId: paymentIntentId });
   const verify = await server.inject({
     method: 'POST',
@@ -107,6 +113,7 @@ describe('GET /tickets/:id', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ id: ticketId, status: 'valid', scanCount: 0 });
+    expect(response.headers['cache-control']).toContain('no-store');
     await server.close();
   });
 
@@ -135,6 +142,104 @@ describe('GET /tickets/:id', () => {
 
     expect(response.statusCode).toBe(404);
     expect(response.json()).toMatchObject({ code: 'not_found' });
+    await server.close();
+  });
+});
+
+describe('ticket transfer HTTP surface', () => {
+  it('keeps transfer mutations disabled by default', async () => {
+    const server = await buildServer();
+    const ticketId = await seedTicket(server);
+
+    const response = await server.inject({
+      method: 'POST',
+      url: `/tickets/${ticketId}/transfers`,
+      payload: { recipientEmail: 'recipient@example.test' },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({ code: 'server' });
+    await server.close();
+  });
+
+  it('accepts only a recipient email and rejects opaque account-id input', async () => {
+    const server = await buildServer();
+    const ticketId = await seedTicket(server);
+
+    const opaqueId = await server.inject({
+      method: 'POST',
+      url: `/tickets/${ticketId}/transfers`,
+      payload: { recipientUserId: 'USR-recipient' },
+    });
+    const malformedEmail = await server.inject({
+      method: 'POST',
+      url: `/tickets/${ticketId}/transfers`,
+      payload: { recipientEmail: 'not-an-email' },
+    });
+
+    expect(opaqueId.statusCode).toBe(422);
+    expect(malformedEmail.statusCode).toBe(422);
+    await server.close();
+  });
+});
+
+describe('material event-change response HTTP surface', () => {
+  it('records a ticket-holder response through the authenticated route', async () => {
+    const server = await buildServer();
+    const ticketId = await seedTicket(server);
+    const services = createV2Services();
+    const entitlement = await services.tickets.getById(ticketId, {
+      userId: 'user_1',
+      organizationId: '',
+      role: 'owner',
+      capabilities: [],
+    });
+    const eventVersion = 2;
+    const subjectId = eventMaterialChangeSubjectId(
+      entitlement.eventId,
+      eventVersion,
+      entitlement.orderId,
+      entitlement.id,
+    );
+    await services.socialNotifications.create(
+      createSocialNotification({
+        userId: 'user_1',
+        type: 'event.material_change',
+        title: 'Event details changed',
+        body: 'Review the current event details.',
+        link: '/tickets',
+        subjectId,
+        eventChange: {
+          eventVersion,
+          entitlementId: entitlement.id,
+          canAccept: true,
+          canRequestRefund: true,
+        },
+        now: new Date('2026-10-28T12:00:00.000Z'),
+      }),
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: `/tickets/${ticketId}/event-changes/${eventVersion}/respond`,
+      payload: { response: 'accepted' },
+    });
+    const replay = await server.inject({
+      method: 'POST',
+      url: `/tickets/${ticketId}/event-changes/${eventVersion}/respond`,
+      payload: { response: 'accepted' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      entitlementId: ticketId,
+      eventVersion,
+      response: 'accepted',
+      refundCreated: false,
+      replayed: false,
+    });
+    expect(replay.json()).toMatchObject({ replayed: true });
+    expect(response.headers['cache-control']).toContain('no-store');
     await server.close();
   });
 });

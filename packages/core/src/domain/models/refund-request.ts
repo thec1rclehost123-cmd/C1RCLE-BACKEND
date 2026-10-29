@@ -22,12 +22,10 @@ import type { EntityId, VersionedEntity } from '../identity.js';
  * rather than looked up here; this model stays pure and has no repository
  * access.
  *
- * `approved` is NOT `settled`: nothing in this codebase currently moves a
- * request from `approved` to `settled` — `RefundService` deliberately does
- * not call the payment provider. Settlement is unbuilt, pending a future
- * product decision on that flow; `settled`/`failed` and their transition
- * functions (`markRefundSettled`/`markRefundFailed`) exist here as the
- * target shape for that future step, not as something reachable today.
+ * `approved` is NOT `settled`: approval only satisfies the human-control
+ * threshold. `RefundService.executeRefund` is the separate money-moving
+ * action that claims execution, records the provider result, and then applies
+ * the internal journal, order, and entitlement effects.
  *
  * This is deliberately its own entity, not routed through
  * `admin-authority`'s propose→resolve — that mechanism is a fixed
@@ -35,11 +33,19 @@ import type { EntityId, VersionedEntity } from '../identity.js';
  * accumulator (0, 1, or 2 depending on amount), not a binary approve/reject.
  */
 
-export type AdminRefundRequestStatus = 'pending' | 'approved' | 'rejected' | 'settled' | 'failed';
+export type AdminRefundRequestStatus =
+  'pending' | 'approved' | 'executing' | 'rejected' | 'settled' | 'failed';
 
 export interface AdminRefundApproval {
   adminId: EntityId;
   approvedAt: string;
+}
+
+export type RefundScope = 'amount_only' | 'ticket_lines';
+
+export interface RefundTicketLine {
+  tierId: EntityId;
+  quantity: number;
 }
 
 export interface AdminRefundRequest extends VersionedEntity {
@@ -50,6 +56,15 @@ export interface AdminRefundRequest extends VersionedEntity {
   amountPaise: number;
   requestedBy: EntityId;
   reason: string;
+  /**
+   * `amount_only` adjusts money without selectively revoking admission rights.
+   * A full refund still voids every entitlement. `ticket_lines` freezes the
+   * exact entitlement ids at request time so retries cannot choose a different
+   * ticket or revoke more than once.
+   */
+  scope: RefundScope;
+  ticketLines: RefundTicketLine[];
+  targetEntitlementIds: EntityId[];
   /** 0 (auto), 1, or 2 — fixed at creation from the amount tier. */
   approversRequired: number;
   approvals: AdminRefundApproval[];
@@ -58,6 +73,9 @@ export interface AdminRefundRequest extends VersionedEntity {
   rejectionReason: string | null;
   /** The payment provider's refund id, set once settlement succeeds. */
   providerRefundId: string | null;
+  providerStatus: string | null;
+  executionIdempotencyKey: string;
+  executionAttempts: number;
   /** Why settlement failed, if it did — surfaced for a human to retry or escalate. */
   failureReason: string | null;
 }
@@ -69,6 +87,9 @@ export interface CreateAdminRefundRequestInput {
   amountPaise: number;
   requestedBy: EntityId;
   reason: string;
+  scope?: RefundScope;
+  ticketLines?: RefundTicketLine[];
+  targetEntitlementIds?: EntityId[];
   /** Whether any entitlement on this order has already been scanned. */
   hasRedeemedEntitlement: boolean;
   /** Platform-wide refund thresholds (fetched from PlatformSettings). */
@@ -107,6 +128,29 @@ export function createRefundRequest(input: CreateAdminRefundRequestInput): Admin
   if (input.reason.trim().length === 0) {
     throw new InvalidOperationError('A refund request requires a reason');
   }
+  const scope = input.scope ?? 'amount_only';
+  const ticketLines = input.ticketLines ?? [];
+  const targetEntitlementIds = input.targetEntitlementIds ?? [];
+  if (scope === 'amount_only' && (ticketLines.length > 0 || targetEntitlementIds.length > 0)) {
+    throw new InvalidOperationError('Amount-only refunds cannot select tickets');
+  }
+  if (scope === 'ticket_lines') {
+    if (ticketLines.length === 0 || targetEntitlementIds.length === 0) {
+      throw new InvalidOperationError('Ticket-line refunds require selected tickets');
+    }
+    const quantity = ticketLines.reduce((sum, line) => {
+      if (!Number.isSafeInteger(line.quantity) || line.quantity <= 0) {
+        throw new InvalidOperationError('Refund ticket quantities must be positive integers');
+      }
+      return sum + line.quantity;
+    }, 0);
+    if (quantity !== targetEntitlementIds.length) {
+      throw new InvalidOperationError('Selected entitlement count does not match ticket quantity');
+    }
+    if (new Set(targetEntitlementIds).size !== targetEntitlementIds.length) {
+      throw new InvalidOperationError('A ticket cannot be selected twice');
+    }
+  }
   const approversRequired = approversRequiredFor(
     input.amountPaise,
     input.hasRedeemedEntitlement,
@@ -120,15 +164,21 @@ export function createRefundRequest(input: CreateAdminRefundRequestInput): Admin
     amountPaise: input.amountPaise,
     requestedBy: input.requestedBy,
     reason: input.reason.trim(),
+    scope,
+    ticketLines,
+    targetEntitlementIds,
     approversRequired,
     approvals: [],
     // Zero approvers required means no human sign-off is waited on —
     // `pending` would be misleading (nothing is actually pending). This is
-    // NOT a settlement signal; see the module doc comment.
+    // NOT a settlement signal; execution remains an explicit later action.
     status: approversRequired === 0 ? 'approved' : 'pending',
     rejectedBy: null,
     rejectionReason: null,
     providerRefundId: null,
+    providerStatus: null,
+    executionIdempotencyKey: `refund:${input.id}`,
+    executionAttempts: 0,
     failureReason: null,
     ...newVersionedEntity(input.now ?? new Date()),
   };
@@ -193,13 +243,15 @@ export function markRefundSettled(
   providerRefundId: string,
   now?: Date,
 ): AdminRefundRequest {
-  if (!isFullyApproved(request)) {
-    throw new InvalidOperationError('This refund request has not been approved yet');
+  if (request.status !== 'executing') {
+    throw new InvalidOperationError('This refund request is not executing');
   }
   return {
     ...bumpVersion(request, now ?? new Date()),
     status: 'settled',
     providerRefundId,
+    providerStatus: 'processed',
+    failureReason: null,
   };
 }
 
@@ -209,12 +261,60 @@ export function markRefundFailed(
   reason: string,
   now?: Date,
 ): AdminRefundRequest {
-  if (!isFullyApproved(request)) {
-    throw new InvalidOperationError('This refund request has not been approved yet');
+  if (request.status !== 'executing') {
+    throw new InvalidOperationError('This refund request is not executing');
   }
   return {
     ...bumpVersion(request, now ?? new Date()),
     status: 'failed',
     failureReason: reason,
+  };
+}
+
+/** Keeps an ambiguous provider outcome locked for webhook/reconciliation. */
+export function markRefundExecutionUncertain(
+  request: AdminRefundRequest,
+  reason: string,
+  now?: Date,
+): AdminRefundRequest {
+  if (request.status !== 'executing') {
+    throw new InvalidOperationError('This refund request is not executing');
+  }
+  return {
+    ...bumpVersion(request, now ?? new Date()),
+    failureReason: reason.trim().slice(0, 500),
+  };
+}
+
+/** Claims provider execution. Optimistic repository save makes this single-winner. */
+export function beginRefundExecution(request: AdminRefundRequest, now?: Date): AdminRefundRequest {
+  if (request.status !== 'approved' && request.status !== 'failed') {
+    throw new InvalidOperationError(`This refund request is ${request.status}, not executable`);
+  }
+  return {
+    ...bumpVersion(request, now ?? new Date()),
+    status: 'executing',
+    executionAttempts: request.executionAttempts + 1,
+    failureReason: null,
+  };
+}
+
+/** Persists the authoritative provider response before internal side effects. */
+export function recordRefundProviderFact(
+  request: AdminRefundRequest,
+  providerRefundId: string,
+  providerStatus: string,
+  now?: Date,
+): AdminRefundRequest {
+  if (request.status !== 'executing') {
+    throw new InvalidOperationError('This refund request is not executing');
+  }
+  if (!providerRefundId.trim() || !providerStatus.trim()) {
+    throw new InvalidOperationError('Provider refund id and status are required');
+  }
+  return {
+    ...bumpVersion(request, now ?? new Date()),
+    providerRefundId,
+    providerStatus,
   };
 }

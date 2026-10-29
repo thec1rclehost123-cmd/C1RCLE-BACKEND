@@ -1,14 +1,31 @@
 import { describe, expect, it } from 'vitest';
 
 import { createCoreConfig } from '../../config/index.js';
-import { ForbiddenError, InvalidOperationError, NotFoundError } from '../../domain/errors.js';
+import {
+  ForbiddenError,
+  IdempotencyConflictError,
+  InvalidOperationError,
+  NotFoundError,
+} from '../../domain/errors.js';
+import { cancelEvent, createEvent } from '../../domain/models/event.js';
+import { createPostedJournal } from '../../domain/models/financial-journal.js';
+import { DEFAULT_JOURNAL_TRANSITION_STATE } from '../../domain/models/journal-transition.js';
 import { createLedgerEntry } from '../../domain/models/ledger.js';
+import { createPayout } from '../../domain/models/payout.js';
 import { MemoryBankAccountRepository } from '../../infrastructure/memory/memory-bank-account-repository.js';
+import { MemoryFinancialJournalRepository } from '../../infrastructure/memory/memory-financial-journal-repository.js';
+import { MemoryJournalTransitionRepository } from '../../infrastructure/memory/memory-journal-transition-repository.js';
 import { MemoryLedgerRepository } from '../../infrastructure/memory/memory-ledger-repository.js';
 import { MemoryPayoutRepository } from '../../infrastructure/memory/memory-payout-repository.js';
+import { MemoryReconciliationRepository } from '../../infrastructure/memory/memory-reconciliation-repository.js';
+import {
+  MemoryEventRepository,
+  MemoryPlatformSettingsRepository,
+} from '../../infrastructure/memory/memory-repositories.js';
 
 import { createBankAccountService } from './bank-account-service.js';
 import { createFinanceService } from './finance-service.js';
+import { FinancialPostingService } from './financial-posting-service.js';
 import { createPayoutService } from './payout-service.js';
 
 import type { ActorContext } from '../context.js';
@@ -33,12 +50,31 @@ const config = createCoreConfig({
   clock: { now: () => NOW },
 });
 
-const actor = (organizationId: string): ActorContext => ({
-  userId: 'user_1',
+const actor = (organizationId: string, userId = 'user_1'): ActorContext => ({
+  userId,
   organizationId,
   role: 'owner',
   capabilities: [],
 });
+
+const transferEvidence = {
+  transferReference: 'UTR-TEST-1',
+  transferredAt: NOW.toISOString(),
+  transferMethod: 'bank_transfer',
+  proof: { sha256: 'a'.repeat(64), contentType: 'application/pdf', sizeBytes: 128 },
+};
+
+function financeService(ledger: MemoryLedgerRepository) {
+  return createFinanceService({
+    ledger,
+    financialJournals: new MemoryFinancialJournalRepository(),
+    journalTransition: new MemoryJournalTransitionRepository(),
+    payouts: new MemoryPayoutRepository(),
+    events: new MemoryEventRepository(),
+    reconciliations: new MemoryReconciliationRepository(),
+    config,
+  });
+}
 
 function seedLedger(repo: MemoryLedgerRepository, organizationId: string) {
   return repo.createBatch([
@@ -91,7 +127,7 @@ function seedLedger(repo: MemoryLedgerRepository, organizationId: string) {
 
 describe('createFinanceService', () => {
   it('rejects a cross-tenant recordTicketSale', async () => {
-    const service = createFinanceService({ ledger: new MemoryLedgerRepository(), config });
+    const service = financeService(new MemoryLedgerRepository());
     await expect(
       service.recordTicketSale(
         {
@@ -113,7 +149,7 @@ describe('createFinanceService', () => {
 
   it('records a full split (host/venue/promoter) and sums to gross', async () => {
     const repo = new MemoryLedgerRepository();
-    const service = createFinanceService({ ledger: repo, config });
+    const service = financeService(repo);
     const entries = await service.recordTicketSale(
       {
         organizationId: ORG,
@@ -150,7 +186,7 @@ describe('createFinanceService', () => {
 
   it('is idempotent: a replayed orderId returns the existing entries untouched', async () => {
     const repo = new MemoryLedgerRepository();
-    const service = createFinanceService({ ledger: repo, config });
+    const service = financeService(repo);
     const input = {
       organizationId: ORG,
       orderId: 'order_1',
@@ -171,7 +207,7 @@ describe('createFinanceService', () => {
 
   it('keeps ledger entry ids within the 64-char opaque-id cap for long order/org ids', async () => {
     const repo = new MemoryLedgerRepository();
-    const service = createFinanceService({ ledger: repo, config });
+    const service = financeService(repo);
     // Razorpay-style long order id + UUID orgs — reproduces the scenario-suite
     // bug where `led-{orderId}-{entryType}-{orgId}` exceeded 64 chars and the
     // frozen wire contract's opaqueIdSchema (max 64) rejected the ledger DTO.
@@ -202,14 +238,148 @@ describe('createFinanceService', () => {
   it('getBalances buckets pending/settled/paid_out per the ledger', async () => {
     const repo = new MemoryLedgerRepository();
     await seedLedger(repo, ORG);
-    const service = createFinanceService({ ledger: repo, config });
+    const service = financeService(repo);
 
     const balances = await service.getBalances(ORG, actor(ORG));
     // host_payout 70k pending; venue_share 10k settled minus 10k paid out.
     expect(balances).toEqual({
       availablePaise: 0,
       pendingPaise: 70_000,
+      reservedPaise: 0,
+      heldPaise: 0,
+      paidPaise: 0,
       lifetimePaise: 90_000,
+      holds: {
+        reservePaise: 0,
+        cancellationPaise: 0,
+        chargebackPaise: 0,
+        reconciliationPaise: 0,
+      },
+      readModel: 'legacy_ledger_v1',
+    });
+  });
+
+  it('uses only journal payables after cutover and applies reserves and reconciliation holds', async () => {
+    const ledger = new MemoryLedgerRepository();
+    await ledger.createBatch([
+      createLedgerEntry({
+        id: 'legacy-only',
+        organizationId: ORG,
+        orderId: 'legacy-order',
+        eventId: 'legacy-event',
+        entryType: 'host_payout',
+        amount: 999_000,
+        status: 'settled',
+        idempotencyKey: 'legacy-only',
+        now: NOW,
+      }),
+    ]);
+    const financialJournals = new MemoryFinancialJournalRepository();
+    const posting = new FinancialPostingService(financialJournals);
+    const policy = {
+      version: 'test-v1',
+      capturedAt: NOW.toISOString(),
+      settlementDelayDays: 0,
+      reserveBasisPoints: 1_000,
+      requiresEventCompletion: false,
+      holdsOnCancellation: true,
+      holdsOnDispute: true,
+      holdsOnUnresolvedReconciliation: true,
+    };
+    await posting.postTicketSale({
+      organizationId: ORG,
+      orderId: 'journal-order',
+      eventId: 'event_1',
+      paymentId: 'pay_1',
+      sourceType: 'online_payment_capture',
+      providerConfirmed: true,
+      currency: 'INR',
+      ticketFaceValuePaise: 100_000,
+      discountPaise: 0,
+      discountFundingOwner: null,
+      netTicketRevenuePaise: 100_000,
+      gstPaise: 0,
+      platformFeePaise: 0,
+      paymentFeePaise: 0,
+      allocation: {
+        platformPaise: 20_000,
+        hostOrganizationId: ORG,
+        hostPaise: 80_000,
+        venueOrganizationId: null,
+        venuePaise: 0,
+        promoterOrganizationId: null,
+        promoterPaise: 0,
+      },
+      policy,
+      postedAt: NOW,
+    });
+    const payouts = new MemoryPayoutRepository();
+    const payout = createPayout({
+      organizationId: ORG,
+      bankAccountId: 'bank_1',
+      amount: 30_000,
+      requestedBy: 'user_1',
+      now: NOW,
+    });
+    await payouts.create(payout);
+    await posting.postPayoutReservation({
+      organizationId: ORG,
+      payoutId: payout.id,
+      amountPaise: payout.amount,
+      policy,
+      postedAt: NOW,
+    });
+    const journalTransition = new MemoryJournalTransitionRepository();
+    journalTransition.state = {
+      ...DEFAULT_JOURNAL_TRANSITION_STATE,
+      phase: 'journal_reads',
+      readModel: 'financial_journal_v2',
+    };
+    const reconciliations = new MemoryReconciliationRepository();
+    reconciliations.discrepancies.set('rec-1', {
+      id: 'rec-1',
+      runId: 'run-1',
+      kind: 'amount_mismatch',
+      state: 'finance_review',
+      organizationId: ORG,
+      orderId: 'journal-order',
+      paymentId: 'pay_1',
+      payoutId: null,
+      amountPaise: 20_000,
+      currency: 'INR',
+      evidence: {},
+      repair: null,
+      resolutionReason: null,
+      resolvedBy: null,
+      resolvedAt: null,
+      version: 1,
+      createdAt: NOW.toISOString(),
+      updatedAt: NOW.toISOString(),
+    });
+    const service = createFinanceService({
+      ledger,
+      financialJournals,
+      journalTransition,
+      payouts,
+      events: new MemoryEventRepository(),
+      reconciliations,
+      config,
+    });
+
+    expect(await service.getBalances(ORG, actor(ORG))).toEqual({
+      availablePaise: 22_000,
+      pendingPaise: 0,
+      reservedPaise: 30_000,
+      heldPaise: 28_000,
+      paidPaise: 0,
+      lifetimePaise: 80_000,
+      holds: {
+        reservePaise: 8_000,
+        cancellationPaise: 0,
+        chargebackPaise: 0,
+        reconciliationPaise: 20_000,
+      },
+      readModel: 'financial_journal_v2',
     });
   });
 
@@ -239,17 +409,247 @@ describe('createFinanceService', () => {
         now: NOW,
       }),
     ]);
-    const service = createFinanceService({ ledger: repo, config });
+    const service = financeService(repo);
     const balances = await service.getBalances(ORG, actor(ORG));
     expect(balances.availablePaise).toBe(30_000);
     expect(balances.pendingPaise).toBe(0);
     expect(balances.lifetimePaise).toBe(70_000);
   });
 
+  it('holds a cancelled event payable when the posting policy requires it', async () => {
+    const financialJournals = new MemoryFinancialJournalRepository();
+    const policy = {
+      version: 'test-cancellation-v1',
+      capturedAt: NOW.toISOString(),
+      settlementDelayDays: 0,
+      reserveBasisPoints: 0,
+      requiresEventCompletion: false,
+      holdsOnCancellation: true,
+      holdsOnDispute: true,
+      holdsOnUnresolvedReconciliation: true,
+    };
+    await financialJournals.postBatch([
+      createPostedJournal({
+        organizationId: ORG,
+        currency: 'INR',
+        source: {
+          type: 'online_payment_capture',
+          id: 'cancelled-order',
+          orderId: 'cancelled-order',
+          paymentId: 'pay-cancelled',
+          eventId: 'event-cancelled',
+        },
+        idempotencyKey: 'test:cancelled-order:allocation',
+        accountingPolicy: policy,
+        postedAt: NOW,
+        lines: [
+          {
+            account: 'ticket_collection_control',
+            side: 'debit',
+            amountPaise: 80_000,
+            organizationId: ORG,
+            component: 'netTicketRevenuePaise',
+            memo: 'allocate',
+          },
+          {
+            account: 'host_payable',
+            side: 'credit',
+            amountPaise: 80_000,
+            organizationId: ORG,
+            component: 'hostAllocationPaise',
+            memo: 'host payable',
+          },
+        ],
+      }),
+    ]);
+    const events = new MemoryEventRepository();
+    const event = createEvent({
+      id: 'event-cancelled',
+      organizationId: ORG,
+      venueId: 'venue-1',
+      title: 'Cancelled event',
+      startAt: NOW.toISOString(),
+      now: NOW,
+    });
+    events.events.set(event.id, cancelEvent(event, 'test cancellation', NOW));
+    const journalTransition = new MemoryJournalTransitionRepository();
+    journalTransition.state = {
+      ...DEFAULT_JOURNAL_TRANSITION_STATE,
+      phase: 'journal_reads',
+      readModel: 'financial_journal_v2',
+    };
+    const service = createFinanceService({
+      ledger: new MemoryLedgerRepository(),
+      financialJournals,
+      journalTransition,
+      payouts: new MemoryPayoutRepository(),
+      events,
+      reconciliations: new MemoryReconciliationRepository(),
+      config,
+    });
+
+    const balance = await service.getBalances(ORG, actor(ORG));
+    expect(balance.availablePaise).toBe(0);
+    expect(balance.heldPaise).toBe(80_000);
+    expect(balance.holds.cancellationPaise).toBe(80_000);
+  });
+
+  it('holds cancelled-event payables on the legacy read model without mixing journals', async () => {
+    const ledger = new MemoryLedgerRepository();
+    await ledger.createBatch([
+      createLedgerEntry({
+        id: 'legacy-cancelled-payable',
+        organizationId: ORG,
+        orderId: 'legacy-order',
+        eventId: 'legacy-cancelled-event',
+        entryType: 'host_payout',
+        amount: 60_000,
+        status: 'settled',
+        idempotencyKey: 'legacy-order:host_payout',
+        now: NOW,
+      }),
+    ]);
+    const events = new MemoryEventRepository();
+    const event = createEvent({
+      id: 'legacy-cancelled-event',
+      organizationId: ORG,
+      venueId: 'venue-1',
+      title: 'Legacy cancelled event',
+      startAt: NOW.toISOString(),
+      now: NOW,
+    });
+    events.events.set(event.id, cancelEvent(event, 'weather', NOW));
+    const service = createFinanceService({
+      ledger,
+      financialJournals: new MemoryFinancialJournalRepository(),
+      journalTransition: new MemoryJournalTransitionRepository(),
+      payouts: new MemoryPayoutRepository(),
+      events,
+      reconciliations: new MemoryReconciliationRepository(),
+      config,
+    });
+
+    const balance = await service.getBalances(ORG, actor(ORG));
+    expect(balance.readModel).toBe('legacy_ledger_v1');
+    expect(balance.availablePaise).toBe(0);
+    expect(balance.heldPaise).toBe(60_000);
+    expect(balance.holds.cancellationPaise).toBe(60_000);
+  });
+
+  it('classifies only the remaining payable after a refund reversal', async () => {
+    const financialJournals = new MemoryFinancialJournalRepository();
+    const policy = {
+      version: 'test-net-hold-v1',
+      capturedAt: NOW.toISOString(),
+      settlementDelayDays: 0,
+      reserveBasisPoints: 0,
+      requiresEventCompletion: false,
+      holdsOnCancellation: true,
+      holdsOnDispute: true,
+      holdsOnUnresolvedReconciliation: true,
+    };
+    await financialJournals.postBatch([
+      createPostedJournal({
+        organizationId: ORG,
+        currency: 'INR',
+        source: {
+          type: 'online_payment_capture',
+          id: 'partially-refunded-order',
+          orderId: 'partially-refunded-order',
+          paymentId: 'pay-partial',
+          eventId: 'event-partial',
+        },
+        idempotencyKey: 'test:partial:allocation',
+        accountingPolicy: policy,
+        postedAt: NOW,
+        lines: [
+          {
+            account: 'ticket_collection_control',
+            side: 'debit',
+            amountPaise: 80_000,
+            organizationId: ORG,
+            component: 'netTicketRevenuePaise',
+            memo: 'allocate',
+          },
+          {
+            account: 'host_payable',
+            side: 'credit',
+            amountPaise: 80_000,
+            organizationId: ORG,
+            component: 'hostAllocationPaise',
+            memo: 'host payable',
+          },
+        ],
+      }),
+      createPostedJournal({
+        organizationId: ORG,
+        currency: 'INR',
+        source: {
+          type: 'refund',
+          id: 'refund-partial',
+          orderId: 'partially-refunded-order',
+          paymentId: 'pay-partial',
+          eventId: 'event-partial',
+        },
+        idempotencyKey: 'test:partial:refund-reversal',
+        accountingPolicy: policy,
+        postedAt: NOW,
+        lines: [
+          {
+            account: 'host_payable',
+            side: 'debit',
+            amountPaise: 30_000,
+            organizationId: ORG,
+            component: 'refundPaise',
+            memo: 'partial refund payable reversal',
+          },
+          {
+            account: 'ticket_collection_control',
+            side: 'credit',
+            amountPaise: 30_000,
+            organizationId: ORG,
+            component: 'refundPaise',
+            memo: 'partial refund control',
+          },
+        ],
+      }),
+    ]);
+    const events = new MemoryEventRepository();
+    const event = createEvent({
+      id: 'event-partial',
+      organizationId: ORG,
+      venueId: 'venue-1',
+      title: 'Partially refunded cancelled event',
+      startAt: NOW.toISOString(),
+      now: NOW,
+    });
+    events.events.set(event.id, cancelEvent(event, 'test cancellation', NOW));
+    const journalTransition = new MemoryJournalTransitionRepository();
+    journalTransition.state = {
+      ...DEFAULT_JOURNAL_TRANSITION_STATE,
+      phase: 'journal_reads',
+      readModel: 'financial_journal_v2',
+    };
+    const service = createFinanceService({
+      ledger: new MemoryLedgerRepository(),
+      financialJournals,
+      journalTransition,
+      payouts: new MemoryPayoutRepository(),
+      events,
+      reconciliations: new MemoryReconciliationRepository(),
+      config,
+    });
+
+    const balance = await service.getBalances(ORG, actor(ORG));
+    expect(balance.availablePaise).toBe(0);
+    expect(balance.heldPaise).toBe(50_000);
+    expect(balance.holds.cancellationPaise).toBe(50_000);
+  });
+
   it('listLedgerEntries pages in reverse-chronological order', async () => {
     const repo = new MemoryLedgerRepository();
     await seedLedger(repo, ORG);
-    const service = createFinanceService({ ledger: repo, config });
+    const service = financeService(repo);
 
     const page1 = await service.listLedgerEntries(ORG, actor(ORG), { limit: 2 });
     expect(page1.items).toHaveLength(2);
@@ -265,7 +665,7 @@ describe('createFinanceService', () => {
   });
 
   it('listLedgerEntries rejects cross-tenant access', async () => {
-    const service = createFinanceService({ ledger: new MemoryLedgerRepository(), config });
+    const service = financeService(new MemoryLedgerRepository());
     await expect(
       service.listLedgerEntries('org_other', actor(ORG), { limit: 10 }),
     ).rejects.toBeInstanceOf(ForbiddenError);
@@ -274,11 +674,26 @@ describe('createFinanceService', () => {
 
 describe('createPayoutService', () => {
   function makeDeps() {
-    const payouts = new MemoryPayoutRepository();
     const bankAccounts = new MemoryBankAccountRepository();
     const ledger = new MemoryLedgerRepository();
-    const service = createPayoutService({ payouts, bankAccounts, ledger, config });
-    return { payouts, bankAccounts, ledger, service };
+    const financialJournals = new MemoryFinancialJournalRepository();
+    const payouts = new MemoryPayoutRepository(financialJournals);
+    const platformSettings = new MemoryPlatformSettingsRepository();
+    const journalTransition = new MemoryJournalTransitionRepository();
+    const events = new MemoryEventRepository();
+    const reconciliations = new MemoryReconciliationRepository();
+    const service = createPayoutService({
+      payouts,
+      bankAccounts,
+      ledger,
+      financialJournals,
+      journalTransition,
+      events,
+      reconciliations,
+      platformSettings,
+      config,
+    });
+    return { payouts, bankAccounts, ledger, financialJournals, service };
   }
 
   async function seedDefaults(deps: ReturnType<typeof makeDeps>) {
@@ -328,12 +743,34 @@ describe('createPayoutService', () => {
     const deps = makeDeps();
     await seedDefaults(deps);
     const payout = await deps.service.requestPayout(
-      { organizationId: ORG, amount: 50_000 },
+      { organizationId: ORG, amount: 50_000, idempotencyKey: 'payout-default' },
       actor(ORG),
     );
     expect(payout.status).toBe('requested');
     expect(payout.bankAccountId).toBe('bank_1');
     expect(payout.requestedBy).toBe('user_1');
+  });
+
+  it('replays the same payout intent once and rejects changed facts', async () => {
+    const deps = makeDeps();
+    await seedDefaults(deps);
+    const input = {
+      organizationId: ORG,
+      amount: 50_000,
+      idempotencyKey: 'payout-replay',
+    };
+
+    const first = await deps.service.requestPayout(input, actor(ORG));
+    const replay = await deps.service.requestPayout(input, actor(ORG));
+
+    expect(replay).toEqual(first);
+    expect([...deps.payouts.payouts.values()]).toEqual([first]);
+    expect(await deps.financialJournals.findBySource('payout_reservation', first.id)).toHaveLength(
+      1,
+    );
+    await expect(
+      deps.service.requestPayout({ ...input, amount: 60_000 }, actor(ORG)),
+    ).rejects.toBeInstanceOf(IdempotencyConflictError);
   });
 
   it('requestPayout honors an explicit bankAccountId', async () => {
@@ -355,7 +792,12 @@ describe('createPayoutService', () => {
     await bankAccounts.create(createBankAccountFixture('bank_a', ORG, true));
     await bankAccounts.create(createBankAccountFixture('bank_b', ORG, false));
     const payout = await deps.service.requestPayout(
-      { organizationId: ORG, amount: 25_000, bankAccountId: 'bank_b' },
+      {
+        organizationId: ORG,
+        amount: 25_000,
+        bankAccountId: 'bank_b',
+        idempotencyKey: 'payout-bank-b',
+      },
       actor(ORG),
     );
     expect(payout.bankAccountId).toBe('bank_b');
@@ -366,7 +808,12 @@ describe('createPayoutService', () => {
     await seedDefaults(deps);
     await expect(
       deps.service.requestPayout(
-        { organizationId: ORG, amount: 50_000, bankAccountId: 'bank_nope' },
+        {
+          organizationId: ORG,
+          amount: 50_000,
+          bankAccountId: 'bank_nope',
+          idempotencyKey: 'payout-missing-bank',
+        },
         actor(ORG),
       ),
     ).rejects.toBeInstanceOf(NotFoundError);
@@ -391,7 +838,12 @@ describe('createPayoutService', () => {
     await bankAccounts.create(createBankAccountFixture('bank_other', 'org_other', true));
     await expect(
       deps.service.requestPayout(
-        { organizationId: ORG, amount: 50_000, bankAccountId: 'bank_other' },
+        {
+          organizationId: ORG,
+          amount: 50_000,
+          bankAccountId: 'bank_other',
+          idempotencyKey: 'payout-other-bank',
+        },
         actor(ORG),
       ),
     ).rejects.toBeInstanceOf(ForbiddenError);
@@ -401,21 +853,45 @@ describe('createPayoutService', () => {
     const deps = makeDeps();
     await seedDefaults(deps);
     await expect(
-      deps.service.requestPayout({ organizationId: ORG, amount: 200_000 }, actor(ORG)),
+      deps.service.requestPayout(
+        { organizationId: ORG, amount: 200_000, idempotencyKey: 'payout-too-large' },
+        actor(ORG),
+      ),
     ).rejects.toBeInstanceOf(InvalidOperationError);
+  });
+
+  it('atomically prevents concurrent payout reservations from overdrawing', async () => {
+    const deps = makeDeps();
+    await seedDefaults(deps);
+    const attempts = await Promise.allSettled([
+      deps.service.requestPayout(
+        { organizationId: ORG, amount: 75_000, idempotencyKey: 'payout-race-a' },
+        actor(ORG),
+      ),
+      deps.service.requestPayout(
+        { organizationId: ORG, amount: 75_000, idempotencyKey: 'payout-race-b' },
+        actor(ORG),
+      ),
+    ]);
+    expect(attempts.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(attempts.filter((result) => result.status === 'rejected')).toHaveLength(1);
   });
 
   it('beginProcessing → complete moves a payout to paid with a processedAt', async () => {
     const deps = makeDeps();
     await seedDefaults(deps);
     const payout = await deps.service.requestPayout(
-      { organizationId: ORG, amount: 50_000 },
+      { organizationId: ORG, amount: 50_000, idempotencyKey: 'payout-complete' },
       actor(ORG),
     );
     const processing = await deps.service.beginProcessingPayout(payout.id, actor(ORG));
     expect(processing.status).toBe('processing');
     expect(processing.version).toBe(2);
-    const paid = await deps.service.completePayout(payout.id, actor(ORG));
+    const paid = await deps.service.completePayout(
+      payout.id,
+      transferEvidence,
+      actor(ORG, 'finance_approver'),
+    );
     expect(paid.status).toBe('paid');
     expect(paid.processedAt).toBe(NOW.toISOString());
     expect(paid.version).toBe(3);
@@ -425,13 +901,31 @@ describe('createPayoutService', () => {
     const deps = makeDeps();
     await seedDefaults(deps);
     const payout = await deps.service.requestPayout(
-      { organizationId: ORG, amount: 50_000 },
+      { organizationId: ORG, amount: 50_000, idempotencyKey: 'payout-fail' },
       actor(ORG),
     );
     const failed = await deps.service.failPayout(payout.id, 'insufficient funds', actor(ORG));
     expect(failed.status).toBe('failed');
     expect(failed.failureReason).toBe('insufficient funds');
     expect(failed.processedAt).toBe(NOW.toISOString());
+  });
+
+  it('does not reverse a reservation when failing an ineligible payout', async () => {
+    const deps = makeDeps();
+    await seedDefaults(deps);
+    const payout = await deps.service.requestPayout(
+      { organizationId: ORG, amount: 50_000, idempotencyKey: 'payout-invalid-fail' },
+      actor(ORG),
+    );
+    await deps.service.beginProcessingPayout(payout.id, actor(ORG));
+    await deps.service.completePayout(payout.id, transferEvidence, actor(ORG, 'finance_approver'));
+
+    await expect(deps.service.failPayout(payout.id, 'too late', actor(ORG))).rejects.toBeInstanceOf(
+      InvalidOperationError,
+    );
+    expect(await deps.financialJournals.findBySource('payout_failure_reversal', payout.id)).toEqual(
+      [],
+    );
   });
 
   it('beginProcessingPayout throws NotFoundError for an unknown payout', async () => {
@@ -445,12 +939,12 @@ describe('createPayoutService', () => {
     const deps = makeDeps();
     await seedDefaults(deps);
     const payout = await deps.service.requestPayout(
-      { organizationId: ORG, amount: 50_000 },
+      { organizationId: ORG, amount: 50_000, idempotencyKey: 'payout-cross-tenant' },
       actor(ORG),
     );
-    await expect(deps.service.completePayout(payout.id, actor('org_other'))).rejects.toBeInstanceOf(
-      ForbiddenError,
-    );
+    await expect(
+      deps.service.completePayout(payout.id, transferEvidence, actor('org_other')),
+    ).rejects.toBeInstanceOf(ForbiddenError);
   });
 
   it('listPayouts returns only this org payouts', async () => {
@@ -467,6 +961,11 @@ describe('createPayoutService', () => {
         failureReason: null,
         requestedBy: 'user_1',
         processedAt: null,
+        transferReference: null,
+        transferredAt: null,
+        transferMethod: null,
+        transferProof: null,
+        approvedBy: null,
         previousStatus: null,
         version: 1,
         createdAt: NOW.toISOString(),
@@ -482,6 +981,11 @@ describe('createPayoutService', () => {
       failureReason: null,
       requestedBy: 'user_1',
       processedAt: null,
+      transferReference: null,
+      transferredAt: null,
+      transferMethod: null,
+      transferProof: null,
+      approvedBy: null,
       previousStatus: null,
       version: 1,
       createdAt: NOW.toISOString(),
@@ -497,7 +1001,7 @@ describe('createPayoutService', () => {
     await seedDefaults(deps);
     expect(await deps.service.getPayout('payout_nope', actor(ORG))).toBeNull();
     const payout = await deps.service.requestPayout(
-      { organizationId: ORG, amount: 50_000 },
+      { organizationId: ORG, amount: 50_000, idempotencyKey: 'payout-get' },
       actor(ORG),
     );
     expect((await deps.service.getPayout(payout.id, actor(ORG)))?.id).toBe(payout.id);
@@ -667,6 +1171,59 @@ describe('createBankAccountService', () => {
       actor(ORG),
     );
     expect(await service.getFullAccountNumber(account.id, actor(ORG))).toBe('00001234567890');
+  });
+
+  describe('encryption key rotation', () => {
+    const rotatedConfig = createCoreConfig({
+      redis: { url: 'redis://localhost:6379' },
+      firestore: { projectId: 'test-project' },
+      clock: { now: () => NOW },
+      bankEncryptionSecret: 'a-real-secret-that-is-not-the-published-default-0123456789',
+      bankEncryptionSalt: 'a-real-salt',
+    });
+    const newAccount = {
+      organizationId: ORG,
+      bankName: 'HDFC',
+      accountHolder: 'A',
+      accountNumber: '00001234567890',
+      ifscCode: 'HDFC0001234',
+    };
+
+    it('reads records sealed under the legacy default key after the key is configured', async () => {
+      const bankAccounts = new MemoryBankAccountRepository();
+      // Written by a deployment that never wired ENCRYPTION_KEY (legacy defaults).
+      const legacy = createBankAccountService({ bankAccounts, config });
+      const account = await legacy.addBankAccount(newAccount, actor(ORG));
+
+      const rotated = createBankAccountService({ bankAccounts, config: rotatedConfig });
+      expect(await rotated.getFullAccountNumber(account.id, actor(ORG))).toBe('00001234567890');
+    });
+
+    it('seals new records with the configured key, not the legacy default', async () => {
+      const bankAccounts = new MemoryBankAccountRepository();
+      const rotated = createBankAccountService({ bankAccounts, config: rotatedConfig });
+      const account = await rotated.addBankAccount(newAccount, actor(ORG));
+
+      // A deployment still on the legacy defaults must NOT be able to open it.
+      const legacy = createBankAccountService({ bankAccounts, config });
+      await expect(legacy.getFullAccountNumber(account.id, actor(ORG))).rejects.toThrow();
+      expect(await rotated.getFullAccountNumber(account.id, actor(ORG))).toBe('00001234567890');
+    });
+
+    it('fails when a record opens under neither the configured nor the legacy key', async () => {
+      const bankAccounts = new MemoryBankAccountRepository();
+      const otherConfig = createCoreConfig({
+        redis: { url: 'redis://localhost:6379' },
+        firestore: { projectId: 'test-project' },
+        clock: { now: () => NOW },
+        bankEncryptionSecret: 'some-other-secret-entirely-0123456789-abcdefghij',
+      });
+      const other = createBankAccountService({ bankAccounts, config: otherConfig });
+      const account = await other.addBankAccount(newAccount, actor(ORG));
+
+      const rotated = createBankAccountService({ bankAccounts, config: rotatedConfig });
+      await expect(rotated.getFullAccountNumber(account.id, actor(ORG))).rejects.toThrow();
+    });
   });
 
   it('getFullAccountNumber throws InvalidOperationError when the field is unset', async () => {

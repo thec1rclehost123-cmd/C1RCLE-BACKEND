@@ -3,15 +3,18 @@ import {
   SlotRequestNotFoundError,
   NotFoundError,
   VersionConflictError,
+  InvalidOperationError,
 } from '../../domain/errors.js';
 import {
   createVenue,
   updateVenue,
   createSlotRequest,
   createVenueBlock,
+  createVenueAvailabilitySlot,
   cancelVenueBlock,
   transitionSlotRequest,
   computeVenueAvailability,
+  doSlotRangesOverlap,
   updateVenueMenu,
 } from '../../domain/models/venue.js';
 import { requireOrgAccess, emit } from '../context.js';
@@ -52,8 +55,8 @@ export interface UpdateVenueCommand {
 
 export interface CreateSlotRequestCommand {
   venueId: EntityId;
+  slotId: EntityId;
   eventId: EntityId | null;
-  hostId: EntityId;
   message?: string;
 }
 
@@ -70,6 +73,17 @@ export interface CreateVenueBlockCommand {
   label: string;
   startTime: string;
   endTime: string;
+}
+
+export interface PublishVenueAvailabilityCommand {
+  venueId: EntityId;
+  label: string;
+  startTime: string;
+  endTime: string;
+  timezone: string;
+  notes?: string | null;
+  /** null/omitted means all active Host partners. */
+  visibleToHostIds?: EntityId[] | null;
 }
 
 export class VenueService {
@@ -108,7 +122,44 @@ export class VenueService {
   }
 
   async list(actor: ActorContext, query: PaginationQuery) {
-    return this.repo.listByOrganization(actor.organizationId, query);
+    const page = await this.repo.listByOrganization(actor.organizationId, query);
+    if (page.items.length === 0 && (!query.cursor || query.cursor === null)) {
+      const org = await this.deps.repositories.organizations.getById(actor.organizationId);
+      const actorHasVenueCapability = actor.capabilities?.includes('venue') ?? false;
+      const orgHasVenueCapability =
+        (org?.members?.some((m) => m.capabilities?.includes('venue')) ?? false) ||
+        ((org as unknown as { capabilities?: string[] })?.capabilities?.includes('venue') ?? false);
+      if (org && (actorHasVenueCapability || orgHasVenueCapability)) {
+        const now = this.deps.config.clock.now();
+        const rawBase =
+          (org.slug || org.name.toLowerCase().replace(/[^a-z0-9]+/g, '-'))
+            .replace(/^-|-$/g, '')
+            .slice(0, 32) || 'venue';
+        const suffix = org.id
+          .replace(/[^a-z0-9]/gi, '')
+          .slice(-6)
+          .toLowerCase();
+        const slug = `${rawBase}-${suffix}`;
+        const venue = createVenue({
+          id: this.deps.config.ids(),
+          organizationId: org.id,
+          ownerId: actor.userId,
+          name: org.name,
+          slug,
+          description: '',
+          capacity: null,
+          city: null,
+          now,
+        });
+        await this.repo.save(venue);
+        await emit(this.deps, actor, venue.id, 'venue.created', {
+          name: venue.public.name,
+          slug: venue.public.slug,
+        });
+        return { items: [venue], total: 1, nextCursor: null };
+      }
+    }
+    return page;
   }
 
   async update(actor: ActorContext, command: UpdateVenueCommand): Promise<Venue> {
@@ -216,6 +267,60 @@ export class VenueCalendarService {
     return this.deps.repositories.venueSlots.createBlockIfFree(block);
   }
 
+  async publishAvailability(actor: ActorContext, command: PublishVenueAvailabilityCommand) {
+    const venue = await this.deps.repositories.venues.getById(command.venueId);
+    if (!venue || venue.organizationId !== actor.organizationId || venue.status !== 'active') {
+      throw new VenueNotFoundError(command.venueId);
+    }
+    for (const hostId of command.visibleToHostIds ?? []) {
+      const partnership = await this.deps.repositories.partnerships.findByPair(hostId, venue.id);
+      if (partnership?.status !== 'active') {
+        throw new InvalidOperationError(
+          'Availability can only be shared with an active Host partner',
+        );
+      }
+    }
+    const now = this.deps.config.clock.now();
+    const slot = createVenueAvailabilitySlot({
+      id: this.deps.config.ids(),
+      venueId: venue.id,
+      label: command.label,
+      startTime: command.startTime,
+      endTime: command.endTime,
+      timezone: command.timezone,
+      notes: command.notes,
+      visibleToHostIds: command.visibleToHostIds,
+      now,
+    });
+    const events = await this.deps.repositories.events.listByVenue(venue.id, {
+      cursor: null,
+      limit: 1000,
+    });
+    if (
+      events.items.some(
+        (event) =>
+          event.status !== 'cancelled' &&
+          event.status !== 'archived' &&
+          doSlotRangesOverlap(
+            event.startAt,
+            event.endAt ?? event.startAt,
+            slot.startTime,
+            slot.endTime,
+          ),
+      )
+    ) {
+      throw new InvalidOperationError('Availability overlaps a scheduled event');
+    }
+    const saved = await this.deps.repositories.venueSlots.createOpenSlotIfFree(slot);
+    await emit(this.deps, actor, saved.id, 'venue.availability.published', {
+      venueId: saved.venueId,
+      startTime: saved.startTime,
+      endTime: saved.endTime,
+      timezone: saved.timezone ?? 'UTC',
+    });
+    return saved;
+  }
+
   async unblock(actor: ActorContext, venueId: EntityId, blockId: EntityId) {
     const venues = this.deps.repositories.venues;
     const venue = await venues.getById(venueId);
@@ -228,6 +333,7 @@ export class VenueCalendarService {
     if (!slot || slot.venueId !== venueId) {
       throw new NotFoundError('Venue slot', blockId);
     }
+    if (slot.status === 'cancelled') return slot;
     const cancelled = cancelVenueBlock(slot, this.deps.config.clock.now());
     await this.deps.repositories.venueSlots.saveSlots([cancelled]);
     return cancelled;
@@ -246,8 +352,14 @@ export class VenueCalendarService {
   ): Promise<VenueAvailability> {
     const venue = await fetchVenueReadableByOwnerOrPartner(this.deps, actor, venueId);
     const slots = await this.deps.repositories.venueSlots.listSlots(venueId, from, to);
-    const availability = computeVenueAvailability({ venueId, from, to, slots });
-    if (venue.organizationId === actor.organizationId) return availability;
+    if (venue.organizationId === actor.organizationId) {
+      return computeVenueAvailability({ venueId, from, to, slots });
+    }
+
+    const visibleSlots = slots.filter(
+      (slot) => !slot.visibleToHostIds || slot.visibleToHostIds.includes(actor.organizationId),
+    );
+    const availability = computeVenueAvailability({ venueId, from, to, slots: visibleSlots });
 
     return {
       ...availability,
@@ -305,15 +417,97 @@ export class VenueSlotRequestService {
   }
 
   async create(actor: ActorContext, command: CreateSlotRequestCommand): Promise<SlotRequest> {
+    requireOrgAccess(actor, actor.organizationId);
+    if (!actor.capabilities.includes('host')) {
+      throw new InvalidOperationError('Only an authorized Host organization can request a slot');
+    }
+    const venue = await this.deps.repositories.venues.getById(command.venueId);
+    if (!venue || venue.status !== 'active') throw new VenueNotFoundError(command.venueId);
+    const partnership = await this.deps.repositories.partnerships.findByPair(
+      actor.organizationId,
+      command.venueId,
+    );
+    if (partnership?.status !== 'active') {
+      throw new InvalidOperationError('An active Host/Venue partnership is required');
+    }
+    const slot = await this.deps.repositories.venueSlots.getSlotById(command.slotId);
+    if (!slot || slot.venueId !== command.venueId) {
+      throw new InvalidOperationError('The requested Venue slot is unavailable');
+    }
+    if (slot.visibleToHostIds && !slot.visibleToHostIds.includes(actor.organizationId)) {
+      throw new InvalidOperationError('This Venue slot is not available to this Host');
+    }
+    const events = await this.deps.repositories.events.listByOrganization(actor.organizationId, {
+      cursor: null,
+      limit: 1000,
+    });
+    let linkedEvent: Event | null = null;
+    if (command.eventId) {
+      linkedEvent = await this.deps.repositories.events.getById(command.eventId);
+      if (!linkedEvent || linkedEvent.organizationId !== actor.organizationId) {
+        throw new NotFoundError('event', command.eventId);
+      }
+      if (linkedEvent.status === 'cancelled' || linkedEvent.status === 'archived') {
+        throw new InvalidOperationError(
+          'A cancelled or archived event cannot request a new Venue slot',
+        );
+      }
+    }
+    if (
+      events.items.some(
+        (event) =>
+          event.id !== linkedEvent?.id &&
+          event.status !== 'cancelled' &&
+          event.status !== 'archived' &&
+          doSlotRangesOverlap(
+            event.startAt,
+            event.endAt ?? event.startAt,
+            slot.startTime,
+            slot.endTime,
+          ),
+      )
+    ) {
+      throw new InvalidOperationError('This Host already has an event during the requested time');
+    }
+    const existingRequests = await this.repo.listByHost(actor.organizationId, {
+      cursor: null,
+      limit: 1000,
+    });
+    const activeRequests = existingRequests.items.filter(
+      (item) => item.status === 'pending' || item.status === 'accepted',
+    );
+    for (const existing of activeRequests) {
+      if (!existing.slotId) continue;
+      const existingSlot = await this.deps.repositories.venueSlots.getSlotById(existing.slotId);
+      if (
+        existingSlot &&
+        doSlotRangesOverlap(
+          existingSlot.startTime,
+          existingSlot.endTime,
+          slot.startTime,
+          slot.endTime,
+        )
+      ) {
+        throw new InvalidOperationError('This Host already has a request during the selected time');
+      }
+    }
     const request = createSlotRequest({
       id: this.deps.config.ids(),
       venueId: command.venueId,
+      slotId: command.slotId,
+      slotStartTime: slot.startTime,
+      slotEndTime: slot.endTime,
+      timezone: slot.timezone ?? 'UTC',
       eventId: command.eventId,
-      hostId: command.hostId,
+      hostId: actor.organizationId,
       message: command.message,
       now: this.deps.config.clock.now(),
     });
-    await this.repo.save(request);
+    await this.repo.createForOpenSlot(request);
+    await emit(this.deps, actor, request.id, 'venue.slot_request.created', {
+      venueId: request.venueId,
+      slotId: request.slotId ?? '',
+    });
     return request;
   }
 
@@ -371,14 +565,28 @@ export class VenueSlotRequestService {
   async accept(actor: ActorContext, slotRequestId: EntityId): Promise<SlotRequest> {
     const request = await this.assertOwnedRequest(actor, slotRequestId);
     const updated = transitionSlotRequest(request, 'accepted', this.deps.config.clock.now());
-    await this.repo.save(updated);
+    if (request.slotId) await this.repo.transitionForSlot(request, updated);
+    else await this.repo.save(updated);
+    if (request.slotId) {
+      await emit(this.deps, actor, updated.id, 'venue.slot_request.accepted', {
+        venueId: updated.venueId,
+        slotId: updated.slotId ?? '',
+      });
+    }
     return updated;
   }
 
   async reject(actor: ActorContext, slotRequestId: EntityId): Promise<SlotRequest> {
     const request = await this.assertOwnedRequest(actor, slotRequestId);
     const updated = transitionSlotRequest(request, 'rejected', this.deps.config.clock.now());
-    await this.repo.save(updated);
+    if (request.slotId) await this.repo.transitionForSlot(request, updated);
+    else await this.repo.save(updated);
+    if (request.slotId) {
+      await emit(this.deps, actor, updated.id, 'venue.slot_request.rejected', {
+        venueId: updated.venueId,
+        slotId: updated.slotId ?? '',
+      });
+    }
     return updated;
   }
 
@@ -396,7 +604,14 @@ export class VenueSlotRequestService {
       throw new SlotRequestNotFoundError(slotRequestId);
     }
     const updated = transitionSlotRequest(request, 'cancelled', this.deps.config.clock.now());
-    await this.repo.save(updated);
+    if (request.slotId) await this.repo.transitionForSlot(request, updated);
+    else await this.repo.save(updated);
+    if (request.slotId) {
+      await emit(this.deps, actor, updated.id, 'venue.slot_request.cancelled', {
+        venueId: updated.venueId,
+        slotId: updated.slotId ?? null,
+      });
+    }
     return updated;
   }
 }

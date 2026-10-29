@@ -1,12 +1,13 @@
 import {
   paymentAttemptRequestSchema,
   paymentAttemptResponseSchema,
+  paymentRecoveryResponseSchema,
   paymentConfirmRequestSchema,
   paymentConfirmResponseSchema,
   idempotencyKeySchema,
 } from '@c1rcle/contracts/client';
 import { isSystemActor } from '@c1rcle/core/application';
-import { InvalidOperationError, UnauthorizedError } from '@c1rcle/core/domain';
+import { UnauthorizedError } from '@c1rcle/core/domain';
 import { z } from 'zod';
 
 import { getGatewayConfig } from '../../../config/index.js';
@@ -34,6 +35,7 @@ const paymentAttemptHeaders = z.looseObject({
 });
 
 const paymentIdParam = z.object({ id: z.string().min(3).max(64) });
+const holdIdParam = z.object({ holdId: z.string().min(3).max(128) });
 
 const paymentVerifyHeaders = z.looseObject({
   'idempotency-key': idempotencyKeySchema.optional(),
@@ -50,6 +52,69 @@ function requiredIdempotencyKey(v2Headers: Record<string, string> | undefined): 
 }
 
 export default async function paymentRoutes(fastify: FastifyInstance) {
+  // ── RECOVER IN-FLIGHT CHECKOUT ─────────────────────────────────────────
+  fastify.get(
+    '/payments/attempts/:holdId/status',
+    {
+      preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({ params: holdIdParam })],
+    },
+    async (request, reply) => {
+      const { holdId } = request.params as z.infer<typeof holdIdParam>;
+      const actor = services.actor(request);
+      if (!actor.userId || isSystemActor(actor)) {
+        mapDomainError(
+          reply,
+          request,
+          holdId,
+          new UnauthorizedError('Authentication is required to recover a payment'),
+        );
+        return reply;
+      }
+      try {
+        const status = await services.checkout.getPaymentRecoveryStatus(actor, holdId);
+        const payload = validateV2Response(reply, request, paymentRecoveryResponseSchema, status);
+        if (payload === undefined) return await reply;
+        return await reply.status(200).send(payload);
+      } catch (error) {
+        return mapDomainError(reply, request, holdId, error);
+      }
+    },
+  );
+
+  // A refresh may lose Razorpay's client callback. This explicit command
+  // re-reads a recorded capture from the provider and converges through the
+  // normal idempotent fulfillment path; the status GET above remains read-only.
+  fastify.post(
+    '/payments/attempts/:holdId/reconcile',
+    {
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({ params: holdIdParam }),
+      ],
+    },
+    async (request, reply) => {
+      const { holdId } = request.params as z.infer<typeof holdIdParam>;
+      const actor = services.actor(request);
+      if (!actor.userId || isSystemActor(actor)) {
+        mapDomainError(
+          reply,
+          request,
+          holdId,
+          new UnauthorizedError('Authentication is required to recover a payment'),
+        );
+        return reply;
+      }
+      try {
+        const status = await services.checkout.reconcilePaymentRecovery(actor, holdId);
+        const payload = validateV2Response(reply, request, paymentRecoveryResponseSchema, status);
+        if (payload === undefined) return await reply;
+        return await reply.status(200).send(payload);
+      } catch (error) {
+        return mapDomainError(reply, request, holdId, error);
+      }
+    },
+  );
+
   // ── CREATE PAYMENT ATTEMPT ──────────────────────────────────────────────
   fastify.post(
     '/payments/attempts',
@@ -158,23 +223,16 @@ export default async function paymentRoutes(fastify: FastifyInstance) {
         idempotencyKey,
         context: { path: { id: paymentId }, body },
         run: async () => {
-          // Signature verification happens BEFORE confirmPayment is ever
-          // called — an invalid/forged signature never reaches fulfillment.
-          const verification = await services.paymentProvider.verifyPayment({
-            paymentId,
-            orderId: body.paymentIntentId,
-            signature: body.signature,
-          });
-          if (!verification.captured) {
-            throw new InvalidOperationError(`Payment ${paymentId} has not been captured`);
-          }
-
-          const { order, entitlements } = await services.checkout.confirmPayment({
+          // The service verifies the callback signature against the provider
+          // order ID stored on the hold (never the browser's), and only then
+          // confirms the payment — a forged signature never reaches fulfilment.
+          const { order, entitlements } = await services.checkout.verifyCheckoutCallback({
             actor,
-            paymentId,
-            paymentIntentId: body.paymentIntentId,
             holdId: body.holdId,
-            _idempotencyKey: idempotencyKey ?? paymentId,
+            paymentId,
+            signature: body.signature,
+            clientOrderId: body.paymentIntentId,
+            idempotencyKey,
           });
 
           const payload = { order: orderToDto(order), entitlements };

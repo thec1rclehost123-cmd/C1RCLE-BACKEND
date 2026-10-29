@@ -4,8 +4,13 @@ import { createCoreConfig } from '../../config/index.js';
 import { InvalidOperationError, NotFoundError } from '../../domain/errors.js';
 import { createPlatformAdmin } from '../../domain/models/admin-authority.js';
 import { EchoObjectStorage } from '../../domain/ports/object-storage.js';
+import {
+  MemoryStaffCredentialProvisioner,
+  MemoryStaffRotationStore,
+} from '../../domain/ports/staff-credentials.js';
 import { FormatCheckVerificationProvider } from '../../domain/ports/verification.js';
 import { MemoryAdminAuditRepository } from '../../infrastructure/memory/memory-audit-repository.js';
+import { MemoryEmailDeliveryRepository } from '../../infrastructure/memory/memory-email-delivery-repository.js';
 import {
   MemoryOnboardingRepository,
   MemoryPlatformAdminRepository,
@@ -19,6 +24,7 @@ import {
   MemoryEventCatalogRepository,
   MemoryOrderRepository,
   MemoryOrganizationRepository,
+  MemoryVenueRepository,
 } from '../../infrastructure/memory/memory-repositories.js';
 import { noopLogger } from '../../telemetry/logger.js';
 import { AdminAuthorityService } from '../admin/admin-authority-service.js';
@@ -53,6 +59,10 @@ class FakeEmailSender implements EmailSender {
     // unused by these tests
   }
 
+  async sendStaffInvitationEmail(): Promise<void> {
+    // unused by these tests
+  }
+
   async sendPasswordResetEmail(): Promise<void> {
     // unused by these tests
   }
@@ -73,6 +83,13 @@ class FakeUserDirectory implements UserDirectoryPort {
   async getEmailById(userId: string): Promise<string | null> {
     return this.emails.get(userId) ?? null;
   }
+
+  async findUserIdByEmail(email: string): Promise<string | null> {
+    for (const [id, e] of this.emails) {
+      if (e === email) return id;
+    }
+    return null;
+  }
 }
 
 function buildDeps() {
@@ -92,15 +109,18 @@ function buildDeps() {
     cartReservations: new MemoryCartReservationRepository(),
     orders: new MemoryOrderRepository(),
     entitlements: new MemoryEntitlementRepository(),
+    venues: new MemoryVenueRepository(),
   } as unknown as ServiceDeps['repositories'];
 
   const emailSender = new FakeEmailSender();
   const userDirectory = new FakeUserDirectory();
+  const outbox = new MemoryOutboxStore();
 
-  const deps = {
+  const deps: ServiceDeps = {
     config,
     logger: noopLogger,
-    outbox: new MemoryOutboxStore(),
+    outbox,
+    emailDeliveries: new MemoryEmailDeliveryRepository(),
     adminAudit: new MemoryAdminAuditRepository(),
     verification: new FormatCheckVerificationProvider(),
     objectStorage: new EchoObjectStorage(),
@@ -114,11 +134,13 @@ function buildDeps() {
       order: repositories.orders,
     }),
     repositories,
-  } as unknown as ServiceDeps;
+    credentialProvisioner: new MemoryStaffCredentialProvisioner(),
+    rotationStore: new MemoryStaffRotationStore(),
+  };
 
   const authority = new AdminAuthorityService(deps);
   const service = new OnboardingService(deps, authority);
-  return { deps, authority, service, repositories, emailSender, userDirectory };
+  return { deps, authority, service, repositories, emailSender, userDirectory, outbox };
 }
 
 const PROFILE = {
@@ -266,6 +288,37 @@ describe('OnboardingService — KYC document desk', () => {
     expect(emailSender.sent[0]).toMatchObject({
       recipient: 'applicant@example.com',
       params: { legalName: 'Blue Room Hospitality', note: 'Selfie is unreadable' },
+    });
+  });
+
+  it('emits authoritative outbox events when a Promoter application is submitted and rejected', async () => {
+    const { service, repositories, outbox } = ctx;
+    const created = await service.start('user_a', {
+      requestedType: 'promoter',
+      plan: 'basic',
+      profile: PROFILE,
+    });
+    for (const label of ['id_front', 'id_back', 'selfie']) {
+      await service.addDocument('user_a', {
+        requestId: created.id,
+        label,
+        storagePath: `kyc/${label}.jpg`,
+      });
+    }
+    const request = await service.submit('user_a', created.id);
+    const submitted = await outbox.listPending();
+    expect(submitted.map((row) => row.type)).toContain('promoter.onboarding.submitted');
+
+    await seedAdmin(repositories, 'admin_a');
+    await service.reject('admin_a', { requestId: request.id, note: 'Not eligible' });
+    const rejected = await outbox.listPending();
+    expect(rejected.map((row) => row.type)).toContain('promoter.onboarding.rejected');
+    expect(
+      rejected.find((row) => row.type === 'promoter.onboarding.rejected')?.payload,
+    ).toMatchObject({
+      organizationId: 'user_a',
+      actorId: 'admin_a',
+      payload: { requestId: request.id },
     });
   });
 

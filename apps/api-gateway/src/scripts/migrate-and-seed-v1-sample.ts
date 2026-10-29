@@ -235,6 +235,7 @@ async function main(): Promise<void> {
         code: `EARLY${index + 1}`,
         discountType: index % 2 === 0 ? 'percent' : 'fixed',
         discountValue: index % 2 === 0 ? 15 : 10000,
+        discountFundingOwner: 'host',
         maxRedemptions: 100,
         now,
       });

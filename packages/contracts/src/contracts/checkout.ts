@@ -2,6 +2,15 @@ import { z } from 'zod';
 
 import { opaqueIdSchema, paginatedSchema, idempotencyKeySchema } from './shared.js';
 
+export const ticketAddonSelectionSchema = z.object({
+  addonId: opaqueIdSchema,
+  name: z.string().min(1).max(120),
+  kind: z.enum(['parking', 'cloakroom', 'merchandise']),
+  unitPricePaise: z.number().int().positive(),
+  quantityPerEntitlement: z.number().int().min(1).max(10),
+});
+export type TicketAddonSelectionDto = z.infer<typeof ticketAddonSelectionSchema>;
+
 /**
  * ─── Checkout + Orders + Payments Contracts ──────────────────────────────────
  */
@@ -12,6 +21,20 @@ import { opaqueIdSchema, paginatedSchema, idempotencyKeySchema } from './shared.
 const checkoutLineRequestSchema = z.object({
   tierId: opaqueIdSchema,
   quantity: z.number().int().positive().max(100),
+  /** Server-issued, account-bound grant; never an authorization boolean. */
+  accessGrantId: opaqueIdSchema.optional(),
+  /** Confirms the buyer and all attendees meet the ticket's displayed policy. */
+  eligibilityAttested: z.boolean().optional(),
+  /** Non-cover event products applied to each resulting admission ticket. */
+  ticketAddons: z
+    .array(
+      z.object({
+        addonId: opaqueIdSchema,
+        quantityPerEntitlement: z.number().int().min(1).max(10),
+      }),
+    )
+    .max(10)
+    .optional(),
 });
 
 /** One priced line, as `CheckoutService.quote`/`createHold` actually return it. */
@@ -20,6 +43,21 @@ export const pricingLineDtoSchema = z.object({
   tierName: z.string(),
   quantity: z.number().int().positive(),
   unitPricePaise: z.number().int().nonnegative(),
+  admissionUnitPricePaise: z.number().int().nonnegative().optional(),
+  coverUnitPricePaise: z.number().int().nonnegative().optional(),
+  coverEntitlementsPerUnit: z.number().int().positive().optional(),
+  admissionSubtotalPaise: z.number().int().nonnegative().optional(),
+  coverSubtotalPaise: z.number().int().nonnegative().optional(),
+  ticketAddons: z.array(ticketAddonSelectionSchema).max(10).optional(),
+  addOnSubtotalPaise: z.number().int().nonnegative().optional(),
+  discountedAdmissionSubtotalPaise: z.number().int().nonnegative().optional(),
+  coverPolicy: z
+    .object({
+      proposalId: opaqueIdSchema,
+      policyVersion: z.string().min(1),
+      termsDigest: z.string().regex(/^[a-f0-9]{64}$/),
+    })
+    .optional(),
   subtotalPaise: z.number().int().nonnegative(),
 });
 export type PricingLineDto = z.infer<typeof pricingLineDtoSchema>;
@@ -32,6 +70,10 @@ export type PricingLineDto = z.infer<typeof pricingLineDtoSchema>;
 export const pricingBreakdownDtoSchema = z.object({
   lines: z.array(pricingLineDtoSchema),
   subtotalPaise: z.number().int().nonnegative(),
+  admissionSubtotalPaise: z.number().int().nonnegative().optional(),
+  coverSubtotalPaise: z.number().int().nonnegative().optional(),
+  addOnSubtotalPaise: z.number().int().nonnegative().optional(),
+  discountedAdmissionSubtotalPaise: z.number().int().nonnegative().optional(),
   discountPaise: z.number().int().nonnegative(),
   discountedSubtotalPaise: z.number().int().nonnegative(),
   platformFeePaise: z.number().int().nonnegative(),
@@ -55,11 +97,13 @@ export const checkoutQuoteRequestSchema = z
     lines: z.array(checkoutLineRequestSchema).min(1),
     promoCode: z.string().optional().nullable(),
     referralCode: z.string().optional().nullable(),
+    /** Source entitlement when quoting a bounded one-ticket upgrade. */
+    upgradeFromEntitlementId: opaqueIdSchema.optional(),
   })
   .strict();
 export type CheckoutQuoteRequest = z.infer<typeof checkoutQuoteRequestSchema>;
 
-/** Bare pricing breakdown — `checkout.quote()` creates no hold and no order. */
+/** Pricing response deliberately omits referral-code validity. */
 export const checkoutQuoteResponseSchema = pricingBreakdownDtoSchema;
 export type CheckoutQuoteResponse = z.infer<typeof checkoutQuoteResponseSchema>;
 
@@ -72,12 +116,30 @@ export const cartReservationStatusSchema = z.enum(['active', 'converted', 'relea
  * mirrors; the previous body-level `idempotencyKey` here did not match how
  * every other V2 write route carries it).
  */
+export const checkoutAttendeeSchema = z
+  .object({
+    name: z.string().trim().min(1).max(120),
+    email: z.email().max(254),
+    /** Optional: not every venue needs a phone number for entry. */
+    phone: z.string().trim().max(24).optional().default(''),
+  })
+  .strict();
+export type CheckoutAttendee = z.infer<typeof checkoutAttendeeSchema>;
+
 export const checkoutHoldRequestSchema = z
   .object({
     eventId: opaqueIdSchema,
     lines: z.array(checkoutLineRequestSchema).min(1),
     promoCode: z.string().optional().nullable(),
     referralCode: z.string().optional().nullable(),
+    /** Source entitlement when reserving a bounded one-ticket upgrade. */
+    upgradeFromEntitlementId: opaqueIdSchema.optional(),
+    /**
+     * Who the tickets are for. Optional so existing clients keep working;
+     * when absent the order falls back to a placeholder contact, which is what
+     * every paid order used to get.
+     */
+    attendee: checkoutAttendeeSchema.optional(),
   })
   .strict();
 export type CheckoutHoldRequest = z.infer<typeof checkoutHoldRequestSchema>;
@@ -114,6 +176,26 @@ export const paymentAttemptResponseSchema = z.object({
 });
 export type PaymentAttemptResponse = z.infer<typeof paymentAttemptResponseSchema>;
 
+/** Authoritative state used to recover an in-flight checkout after reload. */
+export const paymentRecoveryResponseSchema = z.object({
+  holdId: opaqueIdSchema,
+  eventId: opaqueIdSchema,
+  status: z.enum([
+    'pending',
+    'processing',
+    'fulfilled',
+    'failed',
+    'cancelled',
+    'expired',
+    'refunded',
+    'requires_support',
+  ]),
+  orderId: opaqueIdSchema.nullable(),
+  expiresAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+});
+export type PaymentRecoveryResponse = z.infer<typeof paymentRecoveryResponseSchema>;
+
 /**
  * `POST /payments/:id/verify` — client-redirect confirmation. `:id` is the
  * provider payment id; the body carries the rest of what the provider's
@@ -145,7 +227,19 @@ const checkoutOrderLineDtoSchema = z.object({
   tierName: z.string(),
   quantity: z.number().int().positive(),
   unitPricePaise: z.number().int().nonnegative(),
+  admissionUnitPricePaise: z.number().int().nonnegative().optional(),
+  coverUnitPricePaise: z.number().int().nonnegative().optional(),
+  coverPolicy: z
+    .object({
+      proposalId: opaqueIdSchema,
+      policyVersion: z.string().min(1),
+      termsDigest: z.string().regex(/^[a-f0-9]{64}$/),
+    })
+    .optional(),
+  ticketAddons: z.array(ticketAddonSelectionSchema).max(10).optional(),
   subtotalPaise: z.number().int().nonnegative(),
+  guestCount: z.number().int().positive().optional(),
+  admissionMode: z.enum(['bundle', 'per_person']).optional(),
 });
 
 /**
@@ -158,6 +252,7 @@ const checkoutOrderLineDtoSchema = z.object({
  */
 export const checkoutOrderDtoSchema = z.object({
   id: opaqueIdSchema,
+  bookingReference: z.string().regex(/^C1-[A-F0-9]{5}(?:-[A-F0-9]{5}){3}$/),
   eventId: opaqueIdSchema,
   organizationId: opaqueIdSchema,
   userId: opaqueIdSchema.nullable(),
@@ -171,12 +266,21 @@ export const checkoutOrderDtoSchema = z.object({
   paymentFeePaise: z.number().int().nonnegative(),
   gstPaise: z.number().int().nonnegative(),
   grandTotalPaise: z.number().int().nonnegative(),
+  addOnSubtotalPaise: z.number().int().nonnegative().optional(),
   appliedPromoCode: z.string().nullable(),
   paymentIntentId: z.string().nullable(),
   paymentId: z.string().nullable(),
   paidAt: z.iso.datetime().nullable(),
   reservationExpiresAt: z.iso.datetime(),
   failureReason: z.string().nullable(),
+  eventCancellation: z
+    .object({
+      eventVersion: z.number().int().positive(),
+      eventTitle: z.string().min(1),
+      reason: z.string().min(1),
+      cancelledAt: z.iso.datetime(),
+    })
+    .nullable(),
   refundedPaise: z.number().int().nonnegative(),
   version: z.number().int().positive(),
   createdAt: z.iso.datetime(),
@@ -211,6 +315,18 @@ export type OrderStatusResponse = z.infer<typeof orderStatusResponseSchema>;
 
 export const entitlementStatusSchema = z.enum(['valid', 'redeemed', 'void']);
 
+export const ticketAddonEntitlementSchema = z.object({
+  id: opaqueIdSchema,
+  addonId: opaqueIdSchema,
+  name: z.string().min(1).max(120),
+  kind: z.enum(['parking', 'cloakroom', 'merchandise']),
+  unitPricePaise: z.number().int().positive(),
+  status: z.enum(['active', 'redeemed', 'void']),
+  createdAt: z.iso.datetime(),
+  redeemedAt: z.iso.datetime().nullable(),
+});
+export type TicketAddonEntitlementDto = z.infer<typeof ticketAddonEntitlementSchema>;
+
 export const entitlementDtoSchema = z.object({
   id: opaqueIdSchema,
   orderId: opaqueIdSchema,
@@ -219,7 +335,12 @@ export const entitlementDtoSchema = z.object({
   tierId: opaqueIdSchema,
   tierName: z.string(),
   userId: opaqueIdSchema.nullable(),
+  unitKind: z.enum(['paid', 'free_rsvp', 'complimentary']).optional(),
+  currentHolderUserId: opaqueIdSchema.nullable().optional(),
+  credentialVersion: z.number().int().positive().optional(),
+  pendingTransferId: opaqueIdSchema.nullable().optional(),
   holderName: z.string(),
+  ticketAddons: z.array(ticketAddonEntitlementSchema).max(100).optional(),
   status: entitlementStatusSchema,
   scanCountAllowed: z.number().int().positive(),
   scanCount: z.number().int().nonnegative(),
@@ -315,6 +436,9 @@ export const rsvpRequestSchema = z
   .object({
     eventId: opaqueIdSchema,
     tierId: opaqueIdSchema,
+    accessGrantId: opaqueIdSchema.optional(),
+    eligibilityAttested: z.boolean().optional(),
+    referralCode: z.string().trim().min(1).max(64).optional(),
   })
   .strict();
 export type RsvpRequest = z.infer<typeof rsvpRequestSchema>;

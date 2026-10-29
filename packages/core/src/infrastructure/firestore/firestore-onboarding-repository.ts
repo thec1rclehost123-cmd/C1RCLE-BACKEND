@@ -216,6 +216,9 @@ function toRequest(data: DocumentData): OnboardingRequest {
     reviewedAt: (data.reviewedAt ?? null) as string | null,
     reviewNote: (data.reviewNote ?? null) as string | null,
     provisionedOrganizationId: (data.provisionedOrganizationId ?? null) as string | null,
+    promoterAgreementAcceptances: Array.isArray(data.promoterAgreementAcceptances)
+      ? data.promoterAgreementAcceptances
+      : [],
     version: data.version as number,
     createdAt: data.createdAt as string,
     updatedAt: data.updatedAt as string,

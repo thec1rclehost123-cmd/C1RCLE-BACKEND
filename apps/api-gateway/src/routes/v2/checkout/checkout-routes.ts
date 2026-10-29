@@ -74,6 +74,7 @@ export default async function checkoutRoutes(fastify: FastifyInstance) {
           lines: body.lines,
           promoCode: body.promoCode ?? null,
           referralCode: body.referralCode ?? null,
+          upgradeFromEntitlementId: body.upgradeFromEntitlementId,
         })
         .catch((error: unknown) => mapDomainError(reply, request, body.eventId, error));
       if (result === undefined) return reply;
@@ -124,12 +125,13 @@ export default async function checkoutRoutes(fastify: FastifyInstance) {
           const event = await services.repos().events.getById(body.eventId);
           if (!event) throw new EventNotFoundError(body.eventId);
 
-          const { pricing, attribution } = await services.checkout.quote({
+          const { pricing, attribution, upgrade } = await services.checkout.quote({
             actor,
             eventId: body.eventId,
             lines: body.lines,
             promoCode: body.promoCode ?? null,
             referralCode: body.referralCode ?? null,
+            upgradeFromEntitlementId: body.upgradeFromEntitlementId,
           });
 
           const hold = await services.checkout.createHold({
@@ -141,10 +143,30 @@ export default async function checkoutRoutes(fastify: FastifyInstance) {
               tierName: line.tierName,
               quantity: line.quantity,
               unitPricePaise: line.unitPricePaise,
+              ...(line.admissionUnitPricePaise === undefined
+                ? {}
+                : { admissionUnitPricePaise: line.admissionUnitPricePaise }),
+              ...(line.coverUnitPricePaise === undefined
+                ? {}
+                : { coverUnitPricePaise: line.coverUnitPricePaise }),
+              ...(line.coverPolicy === undefined ? {} : { coverPolicy: line.coverPolicy }),
+              ...(line.ticketAddons === undefined ? {} : { ticketAddons: line.ticketAddons }),
+              ...(body.lines.find((requested) => requested.tierId === line.tierId)
+                ?.eligibilityAttested === true
+                ? { eligibilityAttested: true }
+                : {}),
+              ...(body.lines.find((requested) => requested.tierId === line.tierId)?.accessGrantId
+                ? {
+                    accessGrantId: body.lines.find((requested) => requested.tierId === line.tierId)
+                      ?.accessGrantId,
+                  }
+                : {}),
             })),
             pricing,
             appliedPromoCode: pricing.appliedPromoCode,
             attribution,
+            upgrade,
+            attendee: body.attendee ?? null,
             idempotencyKey,
           });
 

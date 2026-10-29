@@ -7,13 +7,13 @@ import { attachPaymentIntent, createOrder, markPaid } from '../../domain/models/
 import { assertReconciles } from '../../domain/models/pricing.js';
 import { requireOrgAccess } from '../context.js';
 
+import type { ScannerService } from './scanner-service.js';
 import type { EntityId } from '../../domain/identity.js';
 import type { Entitlement } from '../../domain/models/entitlement.js';
 import type { TicketTier } from '../../domain/models/event-catalog.js';
 import type { Order } from '../../domain/models/order.js';
 import type { PricingBreakdown } from '../../domain/models/pricing.js';
 import type { ServiceDeps, ActorContext } from '../context.js';
-import type { ScannerService } from './scanner-service.js';
 
 /**
  * ─── Paid walk-up ticket sale (Phase 5) ─────────────────────────────────────
@@ -113,6 +113,7 @@ function doorPricing(tier: TicketTier, quantity: number): PricingBreakdown {
     ],
     subtotalPaise,
     discountPaise: 0,
+    discountFundingOwner: null,
     discountedSubtotalPaise: subtotalPaise,
     platformFeePaise: 0,
     paymentFeePaise: 0,
@@ -134,9 +135,17 @@ export function createDoorTicketSaleService(
     command: DoorTicketSaleCommand,
     actor: ActorContext,
   ): Promise<DoorTicketSaleResult> {
+    if (command.paymentMode !== 'cash') {
+      throw new InvalidOperationError(
+        'Electronic door sales require provider or terminal confirmation and are not enabled',
+      );
+    }
     const event = await deps.events.findById(command.eventId);
     if (!event) throw new NotFoundError('Event', command.eventId);
     requireOrgAccess(actor, event.organizationId);
+    if (event.status === 'cancelled') {
+      throw new InvalidOperationError('Door sales are closed because this event was cancelled');
+    }
 
     // Selling entry is a stronger right than scanning it: a `scan_only`
     // handset at the entrance must not be able to take money.
@@ -167,6 +176,11 @@ export function createDoorTicketSaleService(
     }
     if (tier.status !== 'active') {
       throw new InvalidOperationError('That ticket type is not on sale');
+    }
+    if (tier.admissionMode === 'per_person') {
+      throw new InvalidOperationError(
+        'Per-person group tickets must be completed through the guest checkout flow',
+      );
     }
 
     // The door is the last place that should oversell a room.

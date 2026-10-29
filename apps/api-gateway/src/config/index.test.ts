@@ -17,6 +17,7 @@ function productionEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.Proces
     BETTER_AUTH_SECRET: 'a'.repeat(64),
     EMAIL_OTP_SECRET: 'b'.repeat(64),
     MAGIC_TICKET_SECRET: 'c'.repeat(64),
+    ENCRYPTION_KEY: 'd'.repeat(64),
     PUBLIC_API_URL: 'https://api.example.test',
     BETTER_AUTH_URL: 'https://api.example.test',
     ALLOWED_ORIGINS: 'https://app.example.test',
@@ -27,12 +28,80 @@ function productionEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.Proces
 }
 
 describe('gateway configuration', () => {
+  it('allows an explicit local override to disable process-wide Firestore workers', () => {
+    expect(getGatewayConfig(productionEnvironment()).BACKGROUND_WORKERS_ENABLED).toBe(true);
+    expect(
+      getGatewayConfig(productionEnvironment({ BACKGROUND_WORKERS_ENABLED: 'false' }))
+        .BACKGROUND_WORKERS_ENABLED,
+    ).toBe(false);
+  });
+
+  it('keeps M5 private access disabled in production unless explicitly enabled', () => {
+    expect(getGatewayConfig(productionEnvironment()).M5_PRIVATE_ACCESS_ENABLED).toBe(false);
+    expect(
+      getGatewayConfig(productionEnvironment({ M5_PRIVATE_ACCESS_ENABLED: 'true' }))
+        .M5_PRIVATE_ACCESS_ENABLED,
+    ).toBe(true);
+  });
+
+  it('keeps restricted eligibility sales disabled until explicitly approved', () => {
+    expect(getGatewayConfig(productionEnvironment()).M5_ELIGIBILITY_RULES_ENABLED).toBe(false);
+    expect(
+      getGatewayConfig(productionEnvironment({ M5_ELIGIBILITY_RULES_ENABLED: 'true' }))
+        .M5_ELIGIBILITY_RULES_ENABLED,
+    ).toBe(true);
+  });
+
+  it('keeps ticket add-on sales disabled until accounting and tax treatment is approved', () => {
+    expect(getGatewayConfig(productionEnvironment()).M5_TICKET_ADDONS_ENABLED).toBe(false);
+    expect(
+      getGatewayConfig(productionEnvironment({ M5_TICKET_ADDONS_ENABLED: 'true' }))
+        .M5_TICKET_ADDONS_ENABLED,
+    ).toBe(true);
+  });
+
+  it('keeps ticket transfers disabled until offline issuance is disabled and drained', () => {
+    const defaults = getGatewayConfig(productionEnvironment());
+    expect(defaults.M5_TICKET_TRANSFERS_ENABLED).toBe(false);
+    expect(defaults.M5_OFFLINE_TICKET_MANIFESTS_ENABLED).toBe(true);
+    expect(defaults.M5_OFFLINE_MANIFEST_DRAIN_COMPLETE).toBe(false);
+
+    const drain = getGatewayConfig(
+      productionEnvironment({
+        M5_TICKET_TRANSFERS_ENABLED: 'true',
+        M5_OFFLINE_TICKET_MANIFESTS_ENABLED: 'false',
+        M5_OFFLINE_MANIFEST_DRAIN_COMPLETE: 'true',
+      }),
+    );
+    expect(drain.M5_TICKET_TRANSFERS_ENABLED).toBe(true);
+    expect(drain.M5_OFFLINE_TICKET_MANIFESTS_ENABLED).toBe(false);
+    expect(drain.M5_OFFLINE_MANIFEST_DRAIN_COMPLETE).toBe(true);
+  });
+
   it('uses the documented Render deploy SHA when BUILD_SHA is not explicit', () => {
     const config = getGatewayConfig(
       productionEnvironment({ BUILD_SHA: undefined, RENDER_GIT_COMMIT: 'a'.repeat(40) }),
     );
 
     expect(config.BUILD_SHA).toBe('a'.repeat(40));
+  });
+
+  it('requires a real bank-encryption key in production', () => {
+    // Without it the core seals bank-account numbers with a secret published in
+    // the repo, so production must refuse to boot rather than fall back.
+    expect(() => getGatewayConfig(productionEnvironment({ ENCRYPTION_KEY: undefined }))).toThrow(
+      /ENCRYPTION_KEY/,
+    );
+    expect(() => getGatewayConfig(productionEnvironment({ ENCRYPTION_KEY: 'short' }))).toThrow(
+      /ENCRYPTION_KEY/,
+    );
+    expect(getGatewayConfig(productionEnvironment()).ENCRYPTION_KEY).toHaveLength(64);
+  });
+
+  it('requires a long email OTP secret in production, not just a present one', () => {
+    expect(() => getGatewayConfig(productionEnvironment({ EMAIL_OTP_SECRET: 'short' }))).toThrow(
+      /EMAIL_OTP_SECRET/,
+    );
   });
 
   it('requires an email OTP secret in production', () => {

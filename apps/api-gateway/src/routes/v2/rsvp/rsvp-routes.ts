@@ -61,8 +61,14 @@ export default async function rsvpRoutes(fastify: FastifyInstance) {
             actor,
             eventId: body.eventId,
             tierId: body.tierId,
+            accessGrantId: body.accessGrantId,
+            eligibilityAttested: body.eligibilityAttested,
+            referralCode: body.referralCode ?? null,
           });
-          const payload = { order: orderToDto(order), entitlements };
+          const payload = {
+            order: orderToDto(order),
+            entitlements,
+          };
           const validated = validateV2Response(reply, request, rsvpResponseSchema, payload);
           if (validated === undefined) throw new Error('v2 response validation failed');
           return { statusCode: 201, body: validated };

@@ -1,20 +1,24 @@
-import { InvalidOperationError, NotFoundError } from '../../domain/errors.js';
+import { ConflictError, InvalidOperationError, NotFoundError } from '../../domain/errors.js';
+import { deterministicDomainEventId, domainEvent } from '../../domain/events.js';
 import { isExecutable } from '../../domain/models/admin-authority.js';
 import {
   reinstatePromoterAssignment,
   suspendPromoterAssignment,
 } from '../../domain/models/event-catalog.js';
+import { reconcileEventCoverAccount } from '../../domain/models/event-cover.js';
 import {
   adminForceCompleteEvent,
   adminPauseEvent,
   adminResumeEvent,
   isPublicStatus,
 } from '../../domain/models/event.js';
+import { bookingReferenceForOrderId } from '../../domain/models/order.js';
 import {
   adjustPlatformFeePercent,
   reinstateOrganization,
   suspendOrganization,
 } from '../../domain/models/organization.js';
+import { deactivateReferralLink } from '../../domain/models/referral-link.js';
 import { banUser, unbanUser } from '../../domain/models/user-ban.js';
 import { reinstateVenue, suspendVenue } from '../../domain/models/venue.js';
 
@@ -30,8 +34,11 @@ import type {
   PlatformSettingsInput,
 } from '../../domain/models/platform-settings.js';
 import type { PlatformUser } from '../../domain/models/platform-user.js';
+import type { ReferralLink } from '../../domain/models/referral-link.js';
+import type { TicketTransfer } from '../../domain/models/ticket-transfer.js';
 import type { Venue } from '../../domain/models/venue.js';
 import type { AuditRequestMeta } from '../../domain/ports/audit.js';
+import type { EmailDelivery } from '../../domain/ports/email-delivery.js';
 import type { Page, PaginationQuery } from '../../domain/ports/repositories.js';
 import type { ServiceDeps } from '../context.js';
 
@@ -141,6 +148,24 @@ export class AdminOperationsService {
     return this.orders.listAll(query);
   }
 
+  /** Exact booking-reference lookup for an Admin attribution/journal investigation. */
+  async getPromoterOrderInvestigation(adminUserId: EntityId, bookingReference: string) {
+    await this.authority.requireAdmin(adminUserId);
+    const order = await this.orders.getByBookingReference(bookingReference);
+    if (!order) return null;
+    const journals = await this.deps.repositories.financialJournals.findByOrderId(order.id);
+    return { order, journals };
+  }
+
+  /** Safe communications evidence for support/admin investigations. */
+  async listEmailDeliveries(
+    adminUserId: EntityId,
+    aggregateId: EntityId,
+  ): Promise<EmailDelivery[]> {
+    await this.authority.requireAdmin(adminUserId);
+    return this.deps.emailDeliveries.listForAggregate(aggregateId, 50);
+  }
+
   /**
    * Platform-wide ticket (entitlement) ledger for the admin tickets desk.
    * Read-only, any admin. Distinct from the support-ticket desk — this is
@@ -149,6 +174,323 @@ export class AdminOperationsService {
   async listTickets(adminUserId: EntityId, query: PaginationQuery): Promise<Page<Entitlement>> {
     await this.authority.requireAdmin(adminUserId);
     return this.entitlements.listAll(query);
+  }
+
+  /** Read-only transfer history for one ticket; callers must redact invitation bindings. */
+  async listTicketTransfersForAdmin(adminUserId: EntityId, entitlementId: EntityId) {
+    await this.authority.requireAdmin(adminUserId);
+    const entitlement = await this.entitlements.getById(entitlementId);
+    if (!entitlement) throw new NotFoundError('Ticket', entitlementId);
+    return this.entitlements.listTicketTransfersByEntitlement(entitlementId);
+  }
+
+  /** Read-only purchaser refund-review responses for this ticket; never creates a refund. */
+  async listTicketEventChangeRefundReviews(adminUserId: EntityId, entitlementId: EntityId) {
+    await this.authority.requireAdmin(adminUserId);
+    const entitlement = await this.entitlements.getById(entitlementId);
+    if (!entitlement) throw new NotFoundError('Ticket', entitlementId);
+    const notices =
+      await this.deps.repositories.socialNotifications.listEventChangesForEntitlement(
+        entitlementId,
+      );
+    return notices
+      .filter((notice) => notice.eventChangeResponse?.response === 'refund_requested')
+      .map((notice) => ({
+        eventVersion: notice.eventChange?.eventVersion ?? 0,
+        response: 'refund_requested' as const,
+        respondedAt: notice.eventChangeResponse?.respondedAt ?? notice.createdAt,
+      }));
+  }
+
+  /** Bounded read-only cover ledger aggregation; settlement remains held and ineligible. */
+  async getEventCoverReconciliation(adminUserId: EntityId, eventId: EntityId) {
+    await this.authority.requireAdmin(adminUserId);
+    const accounts = this.deps.repositories.eventCoverAccounts;
+    const scanLimit = 1000;
+    let cursor: string | null = null;
+    let total = 0;
+    const reconciled: ReturnType<typeof reconcileEventCoverAccount>[] = [];
+    let scannedAccounts = 0;
+
+    do {
+      const page = await accounts.listByEvent(eventId, {
+        limit: Math.min(100, scanLimit - scannedAccounts),
+        cursor,
+      });
+      total = page.total;
+      const pageResults = await Promise.all(
+        page.items.map(async (account) => {
+          const entries = await accounts.listEntries(account.id);
+          return reconcileEventCoverAccount(account, entries);
+        }),
+      );
+      reconciled.push(...pageResults);
+      scannedAccounts += page.items.length;
+      cursor = scannedAccounts < scanLimit ? page.nextCursor : null;
+    } while (cursor !== null);
+
+    const balanced = reconciled.filter((result) => result.balanced);
+    const allBalanced = scannedAccounts === total && balanced.length === total;
+    return {
+      eventId,
+      currency: 'INR' as const,
+      accountCount: total,
+      scannedAccountCount: scannedAccounts,
+      truncated: scannedAccounts < total,
+      balancedAccountCount: balanced.length,
+      unbalancedAccountCount: scannedAccounts - balanced.length,
+      issuedPaise: reconciled.reduce((sum, result) => sum + result.issuedPaise, 0),
+      remainingPaise: reconciled.reduce((sum, result) => sum + result.actualRemainingPaise, 0),
+      reservedPaise: reconciled.reduce((sum, result) => sum + result.actualReservedPaise, 0),
+      redeemedPaise: reconciled.reduce((sum, result) => sum + result.actualRedeemedPaise, 0),
+      refundedPaise: reconciled.reduce((sum, result) => sum + result.actualRefundedPaise, 0),
+      heldRedemptionPaise: allBalanced
+        ? balanced.reduce((sum, result) => sum + result.expectedRedeemedPaise, 0)
+        : null,
+      settlementStatus: 'held' as const,
+      settlementEligible: false as const,
+      balanced: allBalanced,
+      discrepancies: reconciled.flatMap((result) =>
+        result.discrepancies.map((detail) => `${result.accountId}: ${detail}`),
+      ),
+    };
+  }
+
+  /** Reconciles persisted cover account facts for one ticket; never repairs balances. */
+  async getTicketCoverReconciliation(adminUserId: EntityId, entitlementId: EntityId) {
+    await this.authority.requireAdmin(adminUserId);
+    const entitlement = await this.entitlements.getById(entitlementId);
+    if (!entitlement) throw new NotFoundError('Ticket', entitlementId);
+    const account = await this.deps.repositories.eventCoverAccounts.getByEntitlement(entitlementId);
+    if (!account) throw new NotFoundError('Event cover account', entitlementId);
+    if (
+      account.entitlementId !== entitlement.id ||
+      account.orderId !== entitlement.orderId ||
+      account.eventId !== entitlement.eventId
+    ) {
+      throw new ConflictError('Cover account provenance does not match the ticket');
+    }
+    const entries = await this.deps.repositories.eventCoverAccounts.listEntries(account.id);
+    const reconciliation = reconcileEventCoverAccount(account, entries);
+    return {
+      currency: account.currency,
+      status: account.status,
+      policyVersion: account.policyVersion,
+      remainingPaise: account.remainingPaise,
+      reservedPaise: account.reservedPaise,
+      redeemedPaise: account.redeemedPaise,
+      refundedPaise: account.refundedPaise,
+      settlementStatus: 'held' as const,
+      settlementEligible: false as const,
+      heldRedemptionPaise: reconciliation.balanced ? reconciliation.expectedRedeemedPaise : null,
+      reversalEnabled: this.deps.config.features.m5CoverAccountingApproved === true,
+      reversibleCaptureEntryIds:
+        reconciliation.balanced && this.deps.config.features.m5CoverAccountingApproved === true
+          ? entries
+              .filter(
+                (entry) =>
+                  entry.type === 'capture' &&
+                  !entries.some(
+                    (candidate) =>
+                      candidate.type === 'reversal' && candidate.reversesEntryId === entry.id,
+                  ),
+              )
+              .map((entry) => entry.id)
+          : [],
+      ...reconciliation,
+    };
+  }
+
+  /** Reasoned Tier 2 correction of one balanced, captured cover redemption. */
+  async reverseTicketCoverRedemption(
+    adminUserId: EntityId,
+    entitlementId: EntityId,
+    captureEntryId: EntityId,
+    reason: string,
+    meta?: AdminRequestMeta,
+  ) {
+    const admin = await this.authority.authorize(adminUserId, 'EVENT_COVER_REDEMPTION_REVERSE');
+    if (this.deps.config.features.m5CoverAccountingApproved !== true) {
+      throw new ConflictError('Cover accounting approval is required for redemption reversals');
+    }
+    const normalizedReason = reason.trim();
+    if (normalizedReason.length < 8 || normalizedReason.length > 500) {
+      throw new InvalidOperationError('A reversal reason between 8 and 500 characters is required');
+    }
+    const entitlement = await this.entitlements.getById(entitlementId);
+    if (!entitlement) throw new NotFoundError('Ticket', entitlementId);
+    const account = await this.deps.repositories.eventCoverAccounts.getByEntitlement(entitlementId);
+    if (!account) throw new NotFoundError('Event cover account', entitlementId);
+    if (
+      account.entitlementId !== entitlement.id ||
+      account.orderId !== entitlement.orderId ||
+      account.eventId !== entitlement.eventId
+    ) {
+      throw new ConflictError('Cover account provenance does not match the ticket');
+    }
+    const entries = await this.deps.repositories.eventCoverAccounts.listEntries(account.id);
+    const reconciliation = reconcileEventCoverAccount(account, entries);
+    if (!reconciliation.balanced) {
+      throw new ConflictError('Cover ledger must reconcile before a redemption can be reversed');
+    }
+    const capture = entries.find(
+      (entry) => entry.id === captureEntryId && entry.type === 'capture',
+    );
+    if (!capture) throw new NotFoundError('Event cover capture', captureEntryId);
+    const result = await this.deps.repositories.eventCoverAccounts.reverseCapture(
+      entitlementId,
+      capture.operationId,
+      adminUserId,
+      normalizedReason,
+      this.deps.config.clock.now(),
+    );
+    if (!result.replayed) {
+      await this.authority.record(admin, {
+        action: 'EVENT_COVER_REDEMPTION_REVERSE',
+        targetType: 'event-cover-account',
+        targetId: account.id,
+        before: {
+          captureOperationId: capture.operationId,
+          remainingPaise: account.remainingPaise,
+          redeemedPaise: account.redeemedPaise,
+        },
+        after: {
+          captureOperationId: capture.operationId,
+          reversalEntryId: result.entry.id,
+          amountPaise: result.entry.amountPaise,
+          remainingPaise: result.account.remainingPaise,
+          redeemedPaise: result.account.redeemedPaise,
+        },
+        reason: normalizedReason,
+        ipAddress: meta?.ipAddress,
+        userAgent: meta?.userAgent,
+      });
+    }
+    return { ...result, accountId: account.id, entitlementId };
+  }
+
+  /** Freezes a pending transfer without changing the ticket's current holder. */
+  async freezeTicketTransfer(
+    adminUserId: EntityId,
+    transferId: EntityId,
+    reason: string,
+    meta?: AdminRequestMeta,
+  ): Promise<TicketTransfer> {
+    const admin = await this.authority.authorize(adminUserId, 'TICKET_TRANSFER_FREEZE');
+    const normalizedReason = reason.trim();
+    if (normalizedReason.length < 5 || normalizedReason.length > 500) {
+      throw new InvalidOperationError('A freeze reason between 5 and 500 characters is required');
+    }
+    const existing = await this.entitlements.getTicketTransfer(transferId);
+    if (!existing) throw new NotFoundError('Ticket transfer', transferId);
+    if (existing.status === 'frozen') return existing;
+    if (existing.status !== 'pending') {
+      throw new ConflictError('Only a pending ticket transfer can be frozen');
+    }
+    const entitlement = await this.entitlements.getById(existing.entitlementId);
+    if (!entitlement) throw new NotFoundError('Ticket', existing.entitlementId);
+    const now = this.deps.config.clock.now();
+    const status = Date.parse(existing.expiresAt) <= now.getTime() ? 'expired' : 'frozen';
+    const outboxEvent = domainEvent({
+      id: deterministicDomainEventId('ticket.transfer.resolved', existing.id, status),
+      type: 'ticket.transfer.resolved',
+      aggregateId: entitlement.id,
+      organizationId: entitlement.organizationId,
+      actorId: adminUserId,
+      payload: {
+        transferId: existing.id,
+        entitlementId: entitlement.id,
+        eventId: entitlement.eventId,
+        status,
+        credentialVersion: entitlement.credentialVersion ?? 1,
+      },
+      occurredAt: now.getTime(),
+    });
+    const resolved = await this.entitlements.resolveTicketTransfer({
+      transferId,
+      actorUserId: adminUserId,
+      action: 'freeze',
+      now,
+      outboxEvent,
+    });
+    await this.deps.outbox.append(outboxEvent);
+    await this.authority.record(admin, {
+      action: 'TICKET_TRANSFER_FREEZE',
+      targetType: 'ticket_transfer',
+      targetId: transferId,
+      before: { status: existing.status, entitlementId: existing.entitlementId },
+      after: {
+        status: resolved.transfer.status,
+        entitlementId: resolved.entitlement.id,
+        currentHolderUserId:
+          resolved.entitlement.currentHolderUserId ?? resolved.entitlement.userId,
+        credentialVersion: resolved.entitlement.credentialVersion ?? 1,
+      },
+      reason: normalizedReason,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
+    });
+    return resolved.transfer;
+  }
+
+  /** Audited recovery path that unlocks a frozen ticket without rewriting transfer history. */
+  async releaseFrozenTicketTransfer(
+    adminUserId: EntityId,
+    transferId: EntityId,
+    reason: string,
+    meta?: AdminRequestMeta,
+  ): Promise<TicketTransfer> {
+    const admin = await this.authority.authorize(adminUserId, 'TICKET_TRANSFER_RELEASE');
+    const normalizedReason = reason.trim();
+    if (normalizedReason.length < 5 || normalizedReason.length > 500) {
+      throw new InvalidOperationError('A release reason between 5 and 500 characters is required');
+    }
+    const existing = await this.entitlements.getTicketTransfer(transferId);
+    if (!existing) throw new NotFoundError('Ticket transfer', transferId);
+    const entitlement = await this.entitlements.getById(existing.entitlementId);
+    if (!entitlement) throw new NotFoundError('Ticket', existing.entitlementId);
+    const now = this.deps.config.clock.now();
+    const outboxEvent = domainEvent({
+      id: deterministicDomainEventId('ticket.transfer.freeze_released', transferId),
+      type: 'ticket.transfer.freeze_released',
+      aggregateId: entitlement.id,
+      organizationId: entitlement.organizationId,
+      actorId: adminUserId,
+      payload: {
+        transferId,
+        entitlementId: entitlement.id,
+        eventId: entitlement.eventId,
+        credentialVersion: entitlement.credentialVersion ?? 1,
+      },
+      occurredAt: now.getTime(),
+    });
+    const result = await this.entitlements.releaseFrozenTicketTransfer({
+      transferId,
+      now,
+      outboxEvent,
+    });
+    await this.deps.outbox.append(outboxEvent);
+    await this.authority.record(admin, {
+      action: 'TICKET_TRANSFER_RELEASE',
+      targetType: 'ticket_transfer',
+      targetId: transferId,
+      before: {
+        status: result.transfer.status,
+        entitlementId: result.entitlement.id,
+        pendingTransferId: transferId,
+      },
+      after: {
+        status: result.transfer.status,
+        entitlementId: result.entitlement.id,
+        pendingTransferId: null,
+        currentHolderUserId: result.entitlement.currentHolderUserId ?? result.entitlement.userId,
+        credentialVersion: result.entitlement.credentialVersion ?? 1,
+      },
+      reason: normalizedReason,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
+    });
+    return result.transfer;
   }
 
   /**
@@ -175,6 +517,120 @@ export class AdminOperationsService {
     return this.catalog.listAllAssignments(query);
   }
 
+  /** Admin-only, read-only promoter link status and bounded activity listing. */
+  async listPromoterReferralLinks(
+    adminUserId: EntityId,
+    promoterId: EntityId,
+    query: PaginationQuery,
+  ): Promise<Page<ReferralLink>> {
+    await this.authority.requireAdmin(adminUserId);
+    return this.deps.repositories.referralLinks.listByPromoter(promoterId, query);
+  }
+
+  /**
+   * Read-only risk evidence derived from provider disputes on immutable
+   * attributed orders. Only active provider states are flagged; this does not
+   * change a commission balance or infer fraud from a heuristic.
+   */
+  async listPromoterRiskFlags(adminUserId: EntityId, promoterId: EntityId) {
+    await this.authority.requireAdmin(adminUserId);
+    const flags: {
+      paymentId: EntityId;
+      disputeId: string;
+      orderId: EntityId;
+      bookingReference: string | null;
+      eventId: EntityId;
+      status: 'open' | 'under_review';
+      amountPaise: number;
+      providerOccurredAt: string | null;
+    }[] = [];
+    const scanLimit = 1_000;
+    let cursor: string | null = null;
+    let scanned = 0;
+    let complete = true;
+    do {
+      const page = await this.deps.repositories.providerPayments.listAll({
+        limit: Math.min(100, scanLimit - scanned),
+        cursor,
+      });
+      const candidates = page.items.flatMap((payment) =>
+        Object.entries(payment.disputes)
+          .filter(([, dispute]) => dispute.status === 'open' || dispute.status === 'under_review')
+          .map(([disputeId, dispute]) => ({ payment, disputeId, dispute })),
+      );
+      const attributed = await Promise.all(
+        candidates.map(async ({ payment, disputeId, dispute }) => {
+          if (!payment.orderId) return null;
+          const order = await this.orders.getById(payment.orderId);
+          if (order?.attribution?.promoterId !== promoterId) return null;
+          return {
+            paymentId: payment.id,
+            disputeId,
+            orderId: order.id,
+            bookingReference: order.bookingReference ?? null,
+            eventId: order.eventId,
+            status: dispute.status as 'open' | 'under_review',
+            amountPaise: dispute.amountPaise,
+            providerOccurredAt: dispute.providerOccurredAt,
+          };
+        }),
+      );
+      flags.push(...attributed.filter((item): item is NonNullable<typeof item> => item !== null));
+      scanned += page.items.length;
+      cursor = page.nextCursor;
+      if (cursor !== null && scanned >= scanLimit) complete = false;
+    } while (cursor !== null && scanned < scanLimit);
+    flags.sort((left, right) =>
+      (right.providerOccurredAt ?? '').localeCompare(left.providerOccurredAt ?? ''),
+    );
+    return { promoterId, complete, flags };
+  }
+
+  /** Admin-only, reasoned link deactivation; existing order attribution is unchanged. */
+  async deactivatePromoterReferralLink(
+    adminUserId: EntityId,
+    linkId: EntityId,
+    reason: string,
+    meta?: AdminRequestMeta,
+  ): Promise<{ link: ReferralLink; changed: boolean; at: Date }> {
+    const admin = await this.authority.authorize(adminUserId, 'PROMOTER_LINK_DEACTIVATE');
+    const before = await this.deps.repositories.referralLinks.getById(linkId);
+    if (!before) throw new NotFoundError('Referral link', linkId);
+    const at = this.deps.config.clock.now();
+    const after = deactivateReferralLink(before, at);
+    const changed = before.isActive && !after.isActive;
+    if (changed) {
+      await this.deps.repositories.referralLinks.save(after);
+      await this.authority.record(admin, {
+        action: 'PROMOTER_LINK_DEACTIVATE',
+        targetType: 'referral-link',
+        targetId: linkId,
+        before: { isActive: before.isActive, version: before.version },
+        after: { isActive: after.isActive, version: after.version },
+        reason,
+        ipAddress: meta?.ipAddress,
+        userAgent: meta?.userAgent,
+      });
+      await this.deps.outbox.append(
+        domainEvent({
+          id: this.deps.config.ids(),
+          type: 'promoter.campaign.revoked',
+          aggregateId: after.id,
+          organizationId: after.organizationId,
+          actorId: adminUserId,
+          payload: {
+            referralLinkId: after.id,
+            eventId: after.eventId,
+            promoterId: after.promoterId,
+            eventTitle: after.eventTitle,
+          },
+          occurredAt: at.getTime(),
+        }),
+      );
+    }
+    return { link: after, changed, at };
+  }
+
   /**
    * Admin: bulk-suspend all active promoter assignments for the given
    * promoter user. Returns the number of assignments actually transitioned
@@ -183,12 +639,21 @@ export class AdminOperationsService {
   async suspendPromoter(
     adminUserId: EntityId,
     promoterId: EntityId,
+    reason: string,
     meta?: AdminRequestMeta,
   ): Promise<{ affected: number; at: Date }> {
     const admin = await this.authority.authorize(adminUserId, 'PROMOTER_SUSPEND');
     const now = this.deps.config.clock.now();
     const all = await this.catalog.listAssignmentsByPromoter(promoterId);
-    const before = all.map((a) => ({ id: a.id, status: a.status }));
+    const before = all.map((a) => ({
+      id: a.id,
+      status: a.status,
+      version: a.version,
+      terms: a.terms,
+      eligibleTierIds: a.eligibleTierIds,
+      startsAt: a.startsAt,
+      expiresAt: a.expiresAt,
+    }));
     let affected = 0;
     for (const assignment of all) {
       if (assignment.status === 'active') {
@@ -200,6 +665,11 @@ export class AdminOperationsService {
       const after = (await this.catalog.listAssignmentsByPromoter(promoterId)).map((a) => ({
         id: a.id,
         status: a.status,
+        version: a.version,
+        terms: a.terms,
+        eligibleTierIds: a.eligibleTierIds,
+        startsAt: a.startsAt,
+        expiresAt: a.expiresAt,
       }));
       await this.authority.record(admin, {
         action: 'PROMOTER_SUSPEND',
@@ -207,10 +677,21 @@ export class AdminOperationsService {
         targetId: promoterId,
         before: { assignments: before },
         after: { assignments: after },
-        reason: null,
+        reason,
         ipAddress: meta?.ipAddress,
         userAgent: meta?.userAgent,
       });
+      await this.deps.outbox.append(
+        domainEvent({
+          id: this.deps.config.ids(),
+          type: 'promoter.assignments.status_changed',
+          aggregateId: promoterId,
+          organizationId: promoterId,
+          actorId: adminUserId,
+          payload: { promoterId, status: 'suspended', affectedAssignments: affected },
+          occurredAt: now.getTime(),
+        }),
+      );
     }
     return { affected, at: now };
   }
@@ -223,12 +704,21 @@ export class AdminOperationsService {
   async reinstatePromoter(
     adminUserId: EntityId,
     promoterId: EntityId,
+    reason: string,
     meta?: AdminRequestMeta,
   ): Promise<{ affected: number; at: Date }> {
     const admin = await this.authority.authorize(adminUserId, 'PROMOTER_REINSTATE');
     const now = this.deps.config.clock.now();
     const all = await this.catalog.listAssignmentsByPromoter(promoterId);
-    const before = all.map((a) => ({ id: a.id, status: a.status }));
+    const before = all.map((a) => ({
+      id: a.id,
+      status: a.status,
+      version: a.version,
+      terms: a.terms,
+      eligibleTierIds: a.eligibleTierIds,
+      startsAt: a.startsAt,
+      expiresAt: a.expiresAt,
+    }));
     let affected = 0;
     for (const assignment of all) {
       if (assignment.status === 'suspended') {
@@ -240,6 +730,11 @@ export class AdminOperationsService {
       const after = (await this.catalog.listAssignmentsByPromoter(promoterId)).map((a) => ({
         id: a.id,
         status: a.status,
+        version: a.version,
+        terms: a.terms,
+        eligibleTierIds: a.eligibleTierIds,
+        startsAt: a.startsAt,
+        expiresAt: a.expiresAt,
       }));
       await this.authority.record(admin, {
         action: 'PROMOTER_REINSTATE',
@@ -247,10 +742,21 @@ export class AdminOperationsService {
         targetId: promoterId,
         before: { assignments: before },
         after: { assignments: after },
-        reason: null,
+        reason,
         ipAddress: meta?.ipAddress,
         userAgent: meta?.userAgent,
       });
+      await this.deps.outbox.append(
+        domainEvent({
+          id: this.deps.config.ids(),
+          type: 'promoter.assignments.status_changed',
+          aggregateId: promoterId,
+          organizationId: promoterId,
+          actorId: adminUserId,
+          payload: { promoterId, status: 'active', affectedAssignments: affected },
+          occurredAt: now.getTime(),
+        }),
+      );
     }
     return { affected, at: now };
   }
@@ -279,6 +785,7 @@ export class AdminOperationsService {
       ...current,
       ...patch,
       featureFlags: patch.featureFlags ?? current.featureFlags,
+      accountingPolicy: patch.accountingPolicy ?? current.accountingPolicy,
       updatedAt: this.deps.config.clock.now().toISOString(),
     };
     await this.deps.repositories.platformSettings.save(updated);
@@ -291,12 +798,14 @@ export class AdminOperationsService {
         refundSingleApproverThresholdPaise: current.refundSingleApproverThresholdPaise,
         refundDualApproverThresholdPaise: current.refundDualApproverThresholdPaise,
         maintenanceMode: current.maintenanceMode,
+        accountingPolicyVersion: current.accountingPolicy.version,
       },
       after: {
         platformFeeRate: updated.platformFeeRate,
         refundSingleApproverThresholdPaise: updated.refundSingleApproverThresholdPaise,
         refundDualApproverThresholdPaise: updated.refundDualApproverThresholdPaise,
         maintenanceMode: updated.maintenanceMode,
+        accountingPolicyVersion: updated.accountingPolicy.version,
       },
       reason: null,
       ipAddress: meta?.ipAddress,
@@ -803,7 +1312,9 @@ export class AdminOperationsService {
   async globalLookup(
     adminUserId: EntityId,
     query: string,
-  ): Promise<{ type: 'venue' | 'event' | 'organization' | 'user'; id: EntityId; label: string }[]> {
+  ): Promise<
+    { type: 'venue' | 'event' | 'organization' | 'user' | 'order'; id: EntityId; label: string }[]
+  > {
     await this.authority.requireAdmin(adminUserId);
     const q = query.trim();
     if (q.length < 3) return [];
@@ -811,17 +1322,21 @@ export class AdminOperationsService {
     // An email can never collide with an opaque entity id, so both lookups
     // run unconditionally rather than branching on `q`'s shape — cheap
     // (single-field-indexed) and matches v1's parallel by-id + by-email search.
-    const [venue, event, organization, userById, userByEmail] = await Promise.all([
-      this.venues.getById(q),
-      this.events.getById(q),
-      this.organizations.getById(q),
-      this.users.getById(q),
-      this.users.getByEmail(q),
-    ]);
+    const [venue, event, organization, userById, userByEmail, orderById, orderByReference] =
+      await Promise.all([
+        this.venues.getById(q),
+        this.events.getById(q),
+        this.organizations.getById(q),
+        this.users.getById(q),
+        this.users.getByEmail(q),
+        this.orders.getById(q),
+        this.orders.getByBookingReference(q),
+      ]);
     const user = userById ?? userByEmail;
+    const order = orderById ?? orderByReference;
 
     const results: {
-      type: 'venue' | 'event' | 'organization' | 'user';
+      type: 'venue' | 'event' | 'organization' | 'user' | 'order';
       id: EntityId;
       label: string;
     }[] = [];
@@ -830,6 +1345,12 @@ export class AdminOperationsService {
     if (organization)
       results.push({ type: 'organization', id: organization.id, label: organization.name });
     if (user) results.push({ type: 'user', id: user.id, label: user.email });
+    if (order)
+      results.push({
+        type: 'order',
+        id: order.id,
+        label: order.bookingReference ?? bookingReferenceForOrderId(order.id),
+      });
     return results;
   }
 

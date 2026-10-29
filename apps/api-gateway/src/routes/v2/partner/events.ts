@@ -5,14 +5,18 @@ import {
   paginationQuerySchema,
   versionHeaderSchema,
   eventDtoSchema,
+  eventOperationsDtoSchema,
+  organizationEventListResponseSchema,
   promoterAssignedEventDtoSchema,
+  promoterAssignmentDtoSchema,
   updateEventSchema,
   cancelEventSchema,
   posterUploadUrlRequestSchema,
   posterUploadUrlDtoSchema,
   eventPreviewDtoSchema,
-  paginatedSchema,
+  createEventSchema,
 } from '@c1rcle/contracts/client';
+import { promoterAssignmentStatusAt } from '@c1rcle/core/domain';
 import { z } from 'zod';
 
 import type { ActorContext } from '@c1rcle/core/application';
@@ -57,29 +61,11 @@ function requirePathOrg(
   return undefined;
 }
 
-const createEventBody = z
-  .object({
-    title: z.string().min(1).max(200),
-    summary: z.string().max(1000).optional(),
-    description: z.string().max(20000).optional(),
-    imageUrl: z.url().nullable().optional(),
-    venueId: opaqueIdSchema,
-    startAt: z.iso.datetime(),
-    endAt: z.iso.datetime().nullable().optional(),
-    tags: z.array(z.string().min(1).max(40)).max(50).optional(),
-    compensation: z
-      .object({
-        model: z.enum(['standard', 'custom', 'salary']),
-        globalRatePercent: z.number().int().min(0).max(100).nullable(),
-        tierRates: z.record(z.string(), z.number().int().min(0).max(100)),
-        salaryAmountPaise: z.number().int().positive().nullable(),
-        salaryPeriod: z.enum(['per_event', 'per_day', 'per_month']).nullable(),
-        salaryNotes: z.string().max(2000).nullable(),
-      })
-      .nullable()
-      .optional(),
-  })
-  .strict();
+// Single source of truth for the create wire shape: the shared
+// `createEventSchema` contract (what the client validates against). The
+// gateway adds `.strict()` so unknown keys are rejected at the edge rather
+// than silently dropped — the two schemas must never drift again.
+const createEventBody = createEventSchema.strict();
 
 const createEventHeaders = z.looseObject({
   'x-organization-id': opaqueIdSchema,
@@ -92,8 +78,9 @@ const readHeaders = z.looseObject({
   'x-organization-id': opaqueIdSchema,
 });
 
-const eventListSchema = paginatedSchema(eventDtoSchema);
+const eventListSchema = organizationEventListResponseSchema;
 const assignedEventListSchema = z.array(promoterAssignedEventDtoSchema);
+const promoterInvitationListSchema = z.array(promoterAssignmentDtoSchema);
 
 export default async function partnerEventRoutes(fastify: FastifyInstance) {
   // Promoters see only events with an active assignment to their own org.
@@ -111,6 +98,7 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
       ],
     },
     async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
       const { promoterId } = request.params as { promoterId: string };
       const actor = services.actor(request);
       const events = await services.catalog
@@ -129,13 +117,80 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
             id: assignment.id,
             eventId: assignment.eventId,
             promoterId: assignment.promoterId,
-            status: assignment.status,
+            status: promoterAssignmentStatusAt(assignment, services.config().clock.now()),
             terms: assignment.terms,
             endedAt: assignment.endedAt,
+            invitedAt: assignment.invitedAt,
+            invitedBy: assignment.invitedBy,
+            respondedAt: assignment.respondedAt,
+            respondedBy: assignment.respondedBy,
+            acceptedAt: assignment.acceptedAt,
+            rejectedAt: assignment.rejectedAt,
+            revokedAt: assignment.revokedAt,
+            revokedBy: assignment.revokedBy,
+            revocationReason: assignment.revocationReason,
+            startsAt: assignment.startsAt,
+            expiresAt: assignment.expiresAt,
+            eligibleTierIds: assignment.eligibleTierIds,
             version: assignment.version,
             createdAt: assignment.createdAt,
             updatedAt: assignment.updatedAt,
           },
+        })),
+      );
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  fastify.get(
+    '/promoters/:promoterId/assignment-invitations',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({
+          params: z.object({ promoterId: opaqueIdSchema }),
+          headers: readHeaders,
+        }),
+        fastify.requirePermission('event.read'),
+      ],
+    },
+    async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
+      const { promoterId } = request.params as { promoterId: string };
+      const actor = services.actor(request);
+      const invitations = await services.catalog
+        .listPromoterInvitations(actor, promoterId)
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, promoterId, error, { hideForbidden: true }),
+        );
+      if (invitations === undefined) return reply;
+      const validated = validateV2Response(
+        reply,
+        request,
+        promoterInvitationListSchema,
+        invitations.map((assignment) => ({
+          id: assignment.id,
+          eventId: assignment.eventId,
+          promoterId: assignment.promoterId,
+          status: promoterAssignmentStatusAt(assignment, services.config().clock.now()),
+          terms: assignment.terms,
+          endedAt: assignment.endedAt,
+          invitedAt: assignment.invitedAt,
+          invitedBy: assignment.invitedBy,
+          respondedAt: assignment.respondedAt,
+          respondedBy: assignment.respondedBy,
+          acceptedAt: assignment.acceptedAt,
+          rejectedAt: assignment.rejectedAt,
+          revokedAt: assignment.revokedAt,
+          revokedBy: assignment.revokedBy,
+          revocationReason: assignment.revocationReason,
+          startsAt: assignment.startsAt,
+          expiresAt: assignment.expiresAt,
+          eligibleTierIds: assignment.eligibleTierIds,
+          version: assignment.version,
+          createdAt: assignment.createdAt,
+          updatedAt: assignment.updatedAt,
         })),
       );
       if (validated === undefined) return reply;
@@ -158,15 +213,19 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
       ],
     },
     async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
       const { organizationId } = request.params as z.infer<typeof orgIdParam>;
       const query = request.query as z.infer<typeof paginationQuerySchema>;
       const actor = services.actor(request);
       if (requirePathOrg(reply, request, actor, organizationId) === undefined) return reply;
-      const page = await services.events.list(actor, {
+      const page = await services.events.listWithOperations(actor, {
         limit: query.limit,
         cursor: query.cursor ?? null,
       });
-      const items = page.items.map(eventToDto);
+      const items = page.items.map(({ event, ...operations }) => ({
+        ...eventToDto(event),
+        ...operations,
+      }));
       const payload = {
         items,
         pageInfo: {
@@ -174,6 +233,7 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
           pageSize: query.limit,
           total: page.total,
           hasNextPage: page.nextCursor !== null,
+          nextCursor: page.nextCursor,
         },
       };
       const validated = validateV2Response(reply, request, eventListSchema, payload);
@@ -196,13 +256,22 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
       ],
     },
     async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
       const { eventId } = request.params as z.infer<typeof eventIdParam>;
       const actor = services.actor(request);
-      const event = await services.events.get(actor, eventId).catch((error: unknown) => {
-        return mapDomainError(reply, request, eventId, error, { hideForbidden: true });
-      });
+      const event = await services.events
+        .getWithOperations(actor, eventId)
+        .catch((error: unknown) => {
+          return mapDomainError(reply, request, eventId, error, { hideForbidden: true });
+        });
       if (event === undefined) return reply;
-      const validated = validateV2Response(reply, request, eventDtoSchema, eventToDto(event));
+      const validated = validateV2Response(reply, request, eventOperationsDtoSchema, {
+        ...eventToDto(event.event),
+        capacity: event.capacity,
+        venueName: event.venueName,
+        ticketsSold: event.ticketsSold,
+        salesCountComplete: event.salesCountComplete,
+      });
       if (validated === undefined) return reply;
       return reply.send(validated);
     },
@@ -238,6 +307,7 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
         run: async () => {
           const event = await services.events.create(actor, {
             venueId: body.venueId,
+            slotRequestId: body.slotRequestId ?? null,
             title: body.title,
             summary: body.summary,
             description: body.description,
@@ -246,6 +316,7 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
             endAt: body.endAt ?? null,
             tags: body.tags,
             compensation: body.compensation ?? null,
+            entryRules: body.entryRules,
           });
           const validated = validateV2Response(reply, request, eventDtoSchema, eventToDto(event));
           if (validated === undefined) throw new Error('v2 response validation failed');
@@ -309,6 +380,7 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
       ],
     },
     async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
       const { eventId } = request.params as z.infer<typeof eventIdParam>;
       const body = request.body as z.infer<typeof updateEventSchema>;
       const actor = services.actor(request);
@@ -347,14 +419,27 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
   );
 
   // ── PREVIEWS ──────────────────────────────────────────────────────────────
+  // Tenant-scoped read, mirroring GET /events/:eventId: a preview of an
+  // unpublished event leaks the full DTO, so it needs `event.read` and the
+  // service's ownership check (cross-tenant → 404, never a cross-org 200).
   fastify.get(
     '/events/:eventId/previews',
-    { preHandler: fastify.validateV2({ params: eventIdParam }) },
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({ params: eventIdParam, headers: readHeaders }),
+        fastify.requirePermission('event.read'),
+      ],
+    },
     async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
       const { eventId } = request.params as z.infer<typeof eventIdParam>;
+      const actor = services.actor(request);
       const preview = await services.events
-        .getPreview(eventId)
-        .catch((error: unknown) => mapDomainError(reply, request, eventId, error));
+        .getPreview(actor, eventId)
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, eventId, error, { hideForbidden: true }),
+        );
       if (preview === undefined) return reply;
       const validated = validateV2Response(reply, request, eventPreviewDtoSchema, {
         event: eventToDto(preview.event),
@@ -365,9 +450,11 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
     },
   );
 
-  // ── LIFECYCLE ACTIONS (idempotent + If-Match; each maps 1:1 to an
-  // `EventService` method — the FSM validation lives in the domain model,
-  // never here) ──────────────────────────────────────────────────────────────
+  // ── LIFECYCLE ACTIONS (idempotent; each maps 1:1 to an `EventService`
+  // method — the FSM validation lives in the domain model, never here) ───────
+  // These accept an optional `If-Match` header but do NOT enforce it: the
+  // transition is guarded by the FSM and the repository's compare-and-set,
+  // which return a 409 `version_conflict` on a stale/racy write.
   /**
    * Each lifecycle action carries its own authority: publishing is a
    * different decision from pausing sales, and duplicating creates a new
@@ -485,6 +572,8 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
 
 /** Converts the core domain Event to the canonical wire DTO. */
 export function eventToDto(event: Event) {
+  const visibilityMode = event.visibilityMode ?? 'public';
+  const privateEvent = visibilityMode === 'code' || visibilityMode === 'invited';
   return {
     id: event.id,
     organizationId: event.organizationId,
@@ -493,16 +582,24 @@ export function eventToDto(event: Event) {
     title: event.title,
     summary: event.summary,
     description: event.description,
-    imageUrl: event.imageUrl,
+    // Never serialize a public object URL for restricted events. Older private
+    // records may predate managed poster ACL revocation, and promoter/partner
+    // projections must not re-expose those historical URLs.
+    imageUrl: privateEvent ? null : event.imageUrl,
     startAt: event.startAt,
     endAt: event.endAt,
     status: event.status,
+    visibilityMode,
+    addressDisclosure:
+      event.addressDisclosure ??
+      (event.visibilityMode === 'code' || event.visibilityMode === 'invited' ? 'hidden' : 'public'),
     isPublic: event.isPublic,
     tags: event.tags,
     startingPricePaise: event.startingPricePaise,
     isFree: event.isFree,
     cancellationReason: event.cancellationReason,
     compensation: event.compensation ?? null,
+    ...(event.entryRules === undefined ? {} : { entryRules: event.entryRules }),
     version: event.version,
     createdAt: event.createdAt,
     updatedAt: event.updatedAt,
@@ -623,7 +720,28 @@ export function mapDomainError(
     );
     return undefined;
   }
-  if (known?.code === 'idempotency_conflict' || known?.code === 'idempotency_in_flight') {
+  // A captured payment that could not be honoured and was refunded. 409 with the
+  // server's message: the buyer must be told they were refunded, not to retry.
+  if (known?.code === 'payment_refunded') {
+    reply.status(409).send(
+      buildV2ErrorResponse({
+        status: 409,
+        message: known.message ?? 'Your payment has been refunded',
+        code: 'conflict',
+        requestId: request.id,
+        details: { outcome: 'refunded' },
+      }),
+    );
+    return undefined;
+  }
+  if (
+    known?.code === 'idempotency_conflict' ||
+    known?.code === 'idempotency_in_flight' ||
+    // B1: a prior attempt failed at an unknown point (possibly after the
+    // durable write). The claim is kept so a retry can NOT re-run; the client
+    // gets the distinct message and inspects instead of retrying.
+    known?.code === 'idempotency_failed'
+  ) {
     reply.status(409).send(
       buildV2ErrorResponse({
         status: 409,
@@ -656,6 +774,17 @@ export function mapDomainError(
         status: 400,
         message: known.message ?? 'Invalid operation',
         code: 'validation',
+        requestId: request.id,
+      }),
+    );
+    return undefined;
+  }
+  if (known?.code === 'service_unavailable') {
+    reply.status(503).send(
+      buildV2ErrorResponse({
+        status: 503,
+        message: known.message ?? 'This feature is not enabled',
+        code: 'server',
         requestId: request.id,
       }),
     );

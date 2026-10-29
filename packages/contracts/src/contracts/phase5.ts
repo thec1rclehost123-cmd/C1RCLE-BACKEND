@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { ticketAddonEntitlementSchema } from './checkout.js';
 import { opaqueIdSchema, paginatedSchema, idempotencyKeySchema } from './shared.js';
 
 /**
@@ -135,6 +136,7 @@ export const scanRequestSchema = z
     operatorName: z.string().max(120).optional(),
     operatorRole: z.string().max(60).optional(),
     gate: z.string().max(64).optional(),
+    eligibilityVerified: z.boolean().optional(),
   })
   .strict();
 export type ScanRequest = z.infer<typeof scanRequestSchema>;
@@ -150,6 +152,7 @@ export const scanDenyReasonSchema = z.enum([
   'wrong_gate',
   'offline_expired',
   'override_required',
+  'eligibility_required',
   'promoter_not_authorized',
 ]);
 export type ScanDenyReasonCode = z.infer<typeof scanDenyReasonSchema>;
@@ -181,6 +184,14 @@ export const scanResponseSchema = z.object({
       scansUsed: z.number().int(),
       scansAllowed: z.number().int(),
       status: z.string(),
+      ticketAddons: z.array(ticketAddonEntitlementSchema).max(100).optional(),
+      eligibilityPolicy: z
+        .object({
+          audienceType: z.string(),
+          minAge: z.number().int().nullable(),
+          maxAge: z.number().int().nullable(),
+        })
+        .optional(),
     })
     .optional(),
 });
@@ -200,6 +211,21 @@ export const ticketLookupResponseSchema = z.object({
   entitlement: scanResponseSchema.shape.entitlement,
 });
 export type TicketLookupResponse = z.infer<typeof ticketLookupResponseSchema>;
+
+export const ticketAddonRedemptionRequestSchema = z
+  .object({
+    eventId: opaqueIdSchema,
+    entitlementId: opaqueIdSchema,
+    addonEntitlementId: opaqueIdSchema,
+  })
+  .strict();
+export type TicketAddonRedemptionRequest = z.infer<typeof ticketAddonRedemptionRequestSchema>;
+
+export const ticketAddonRedemptionResponseSchema = z.object({
+  entitlementId: opaqueIdSchema,
+  addon: ticketAddonEntitlementSchema,
+});
+export type TicketAddonRedemptionResponse = z.infer<typeof ticketAddonRedemptionResponseSchema>;
 
 /** One row of the door ledger — every attempt, admitted or refused. */
 export const checkInDtoSchema = z.object({
@@ -313,16 +339,31 @@ export const offlineManifestRequestSchema = z.object({ eventId: opaqueIdSchema }
 export type OfflineManifestRequest = z.infer<typeof offlineManifestRequestSchema>;
 
 export const offlineManifestResponseSchema = z.object({
+  /** Format version; a device must refuse a version it does not understand. */
+  version: z.literal(1),
+  eventId: opaqueIdSchema,
   manifest: z.array(
     z.object({
       entitlementId: opaqueIdSchema,
       validFrom: z.iso.datetime(),
       validTo: z.iso.datetime(),
-      signature: z.string(),
+      /** Seats still admissible when signed (a couple ticket is 2). */
+      seatsRemaining: z.number().int().positive(),
+      /**
+       * Per-ticket key (hex) for verifying this ticket's rotating QR offline.
+       * Scoped to one ticket, useless after `expiresAt`; keep in secure storage.
+       */
+      ticketKey: z.string().regex(/^[0-9a-f]{64}$/),
     }),
   ),
   signedAt: z.iso.datetime(),
   expiresAt: z.iso.datetime(),
+  /** Identifies `publicKey` so a rotated key is recognisable. */
+  keyId: z.string().min(1),
+  /** Raw 32-byte Ed25519 public key, base64. */
+  publicKey: z.string().min(1),
+  /** Ed25519 signature (base64) over the canonical manifest bytes. */
+  manifestSignature: z.string().min(1),
 });
 export type OfflineManifestResponse = z.infer<typeof offlineManifestResponseSchema>;
 
@@ -674,6 +715,7 @@ export const doorGuestSchema = z.object({
   entryType: z.string(),
   quantity: z.number().int().positive(),
   source: z.enum(['online', 'door']),
+  ownershipStatus: z.enum(['purchaser', 'unassigned', 'assigned']).nullable().optional(),
   status: z.enum(['entered', 'not_entered']),
   enteredAt: z.string().nullable(),
   scansUsed: z.number().int().nonnegative().nullable(),

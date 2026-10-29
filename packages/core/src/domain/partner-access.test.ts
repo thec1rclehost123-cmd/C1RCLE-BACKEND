@@ -7,6 +7,7 @@ import {
   partnerAccessContext,
   permissionsFor,
   tabVisibilityFor,
+  tenancyRoleToPartnerRole,
 } from './models/partner-access.js';
 
 /**
@@ -38,6 +39,44 @@ describe('normalization', () => {
   it('keeps v1’s club→venue alias so migrated data still maps', () => {
     expect(normalizePartnerType('club')).toBe('venue');
     expect(permissionsFor('club', 'OWNER')).toEqual(permissionsFor('venue', 'OWNER'));
+  });
+});
+
+describe('A6: tenancy role → partner matrix (no admin≡manager or member≡manager collapse)', () => {
+  it('maps every tenancy role to a defined matrix role — none falls back to STAFF by accident', () => {
+    expect(tenancyRoleToPartnerRole('owner')).toBe('OWNER');
+    expect(tenancyRoleToPartnerRole('admin')).toBe('OWNER');
+    expect(tenancyRoleToPartnerRole('manager')).toBe('MANAGER');
+    expect(tenancyRoleToPartnerRole('member')).toBe('STAFF');
+    expect(tenancyRoleToPartnerRole(undefined)).toBe('STAFF');
+  });
+
+  it('treats admin as owner-equivalent, not a manager — RBAC already gives admin the owner authority minus organization.create', () => {
+    // The old mapping collapsed admin ≡ manager, under-reporting an org admin
+    // who the API lets run staff, doors, payouts-reads and organization.update.
+    const admin = partnerAccessContext('venue', tenancyRoleToPartnerRole('admin'));
+    expect(admin.role).toBe('OWNER');
+    expect(admin.tabVisibility).toBeNull(); // full dashboard, like owner
+    expect(hasPartnerPermission('venue', admin.role, 'MANAGE_PAYOUTS')).toBe(true);
+    expect(hasPartnerPermission('venue', admin.role, 'MANAGE_STAFF')).toBe(true);
+  });
+
+  it('covers owner/admin/manager/member distinctly through the matrix', () => {
+    const admin = tenancyRoleToPartnerRole('admin');
+    const manager = tenancyRoleToPartnerRole('manager');
+    const member = tenancyRoleToPartnerRole('member');
+
+    // Distinctness: admin ≠ manager, member ≠ manager, manager ≠ staff.
+    expect(admin).not.toBe(manager);
+    expect(member).not.toBe(manager);
+    expect(manager).not.toBe(member);
+
+    // Sanity: the whole-org gate passes through rather than collapsing.
+    for (const tenancy of ['owner', 'admin', 'manager', 'member'] as const) {
+      expect(partnerAccessContext('venue', tenancyRoleToPartnerRole(tenancy)).role).toBeTypeOf(
+        'string',
+      );
+    }
   });
 });
 
@@ -106,9 +145,9 @@ describe('tab visibility', () => {
     expect(tabVisibilityFor('promoter', 'TEAM_LEAD')).toBeNull();
   });
 
-  it('hides finance and settings from a venue manager', () => {
+  it('keeps settings hidden from a venue manager but shows finance (API allows the reads)', () => {
     const tabs = tabVisibilityFor('venue', 'MANAGER');
-    expect(tabs).toMatchObject({ finance: false, settings: false, events: true, door: true });
+    expect(tabs).toMatchObject({ finance: true, settings: false, events: true, door: true });
   });
 
   it('leaves floor roles with door-side tabs only', () => {
@@ -136,6 +175,34 @@ describe('tab visibility', () => {
   it('never shows finance to a host below owner', () => {
     for (const role of ['COHOST', 'MANAGER', 'STAFF']) {
       expect(tabVisibilityFor('host', role)?.finance).toBe(false);
+    }
+  });
+
+  it('A5: a role granted VIEW_FINANCIALS never has the finance tab withheld', () => {
+    // Invariant: permissions ⊆ visible tabs for finance. A role must not be
+    // granted the money reads while the dashboard hides the finance tab.
+    const roles = [
+      'OWNER',
+      'MANAGER',
+      'FINANCE_ADMIN',
+      'STAFF',
+      'SECURITY',
+      'DOOR',
+      'COHOST',
+      'PROMOTER',
+      'TEAM_LEAD',
+    ] as const;
+    for (const type of ['venue', 'host', 'promoter'] as const) {
+      for (const role of roles) {
+        const visibility = tabVisibilityFor(type, role);
+        if (visibility === null) continue; // top role: no restriction, tab is shown
+        if (hasPartnerPermission(type, role, 'VIEW_FINANCIALS')) {
+          expect(
+            visibility.finance,
+            `${type} ${role} is granted VIEW_FINANCIALS but the finance tab is withheld`,
+          ).toBe(true);
+        }
+      }
     }
   });
 

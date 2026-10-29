@@ -1,7 +1,26 @@
-import { VersionConflictError } from '../../domain/errors.js';
-import { admitSeats } from '../../domain/models/entitlement.js';
+import {
+  ConflictError,
+  InvalidOperationError,
+  NotFoundError,
+  VersionConflictError,
+} from '../../domain/errors.js';
+import { bumpVersion } from '../../domain/identity.js';
+import {
+  admitSeats,
+  changeEntitlementHolder,
+  currentEntitlementHolderId,
+  redeemTicketAddonEntitlement,
+  restoreEntitlementAfterUpgradeRefund,
+  supersedeEntitlementForUpgrade,
+} from '../../domain/models/entitlement.js';
+import { bookingReferenceForOrderId } from '../../domain/models/order.js';
 import { DEFAULT_PLATFORM_SETTINGS } from '../../domain/models/platform-settings.js';
-import { doSlotRangesOverlap, assertSlotRangeFree } from '../../domain/models/venue.js';
+import { resolveTicketTransfer } from '../../domain/models/ticket-transfer.js';
+import {
+  doSlotRangesOverlap,
+  assertSlotRangeFree,
+  setVenueSlotRequestState,
+} from '../../domain/models/venue.js';
 
 /**
  * ─── In-memory repository implementations (Core domains for tests) ──────────────
@@ -9,6 +28,7 @@ import { doSlotRangesOverlap, assertSlotRangeFree } from '../../domain/models/ve
  * storage driver (`buildRepositories` in `infrastructure/utils.ts`).
  */
 
+import type { DomainEvent } from '../../domain/events.js';
 import type { EntityId } from '../../domain/identity.js';
 import type { CartReservation } from '../../domain/models/cart-reservation.js';
 import type { Entitlement } from '../../domain/models/entitlement.js';
@@ -22,6 +42,8 @@ import type { Event } from '../../domain/models/event.js';
 import type { Order } from '../../domain/models/order.js';
 import type { Organization, OrganizationMember } from '../../domain/models/organization.js';
 import type { PlatformSettings } from '../../domain/models/platform-settings.js';
+import type { TicketAddon } from '../../domain/models/ticket-addon.js';
+import type { TicketTransfer } from '../../domain/models/ticket-transfer.js';
 import type { Venue, VenueSlot, SlotRequest } from '../../domain/models/venue.js';
 import type {
   AdmissionClaim,
@@ -151,8 +173,8 @@ export class MemoryOrganizationRepository implements OrganizationRepository {
   }
 
   async getByIds(organizationIds: EntityId[]): Promise<Organization[]> {
-    return organizationIds
-      .filter((id, index, all) => all.indexOf(id) === index) // dedupe
+    const unique = [...new Set(organizationIds)];
+    return unique
       .map((id) => this.organizations.get(id))
       .filter((org): org is Organization => org !== undefined);
   }
@@ -221,8 +243,8 @@ export class MemoryVenueRepository implements VenueRepository {
   }
 
   async getByIds(venueIds: EntityId[]): Promise<Venue[]> {
-    return venueIds
-      .filter((id, index, all) => all.indexOf(id) === index) // dedupe
+    const unique = [...new Set(venueIds)];
+    return unique
       .map((id) => this.venues.get(id))
       .filter((venue): venue is Venue => venue !== undefined);
   }
@@ -262,6 +284,8 @@ export class MemoryVenueRepository implements VenueRepository {
 export class MemorySlotRequestRepository implements SlotRequestRepository {
   requests = new Map<EntityId, SlotRequest>();
 
+  constructor(private readonly venueSlots?: MemoryVenueSlotRepository) {}
+
   async getById(slotRequestId: EntityId): Promise<SlotRequest | null> {
     return this.requests.get(slotRequestId) ?? null;
   }
@@ -278,6 +302,91 @@ export class MemorySlotRequestRepository implements SlotRequestRepository {
 
   async save(request: SlotRequest, _tx?: TxContext | null): Promise<void> {
     casSet(this.requests, request);
+  }
+
+  async createForOpenSlot(request: SlotRequest): Promise<void> {
+    const slotId = request.slotId;
+    const slotRepo = this.venueSlots;
+    if (!slotId || !slotRepo) throw new Error('A Venue slot repository is required');
+    const slots = slotRepo.slots.get(request.venueId) ?? [];
+    const index = slots.findIndex((slot) => slot.id === slotId);
+    const slot = slots[index];
+    if (!slot || slot.status !== 'open') throw new Error('This Venue slot is no longer open');
+    if (slot.visibleToHostIds && !slot.visibleToHostIds.includes(request.hostId)) {
+      throw new Error('This Venue slot is not available to this Host');
+    }
+    if (this.requests.has(request.id)) throw new Error('Slot request already exists');
+    const pending = setVenueSlotRequestState(
+      slot,
+      'pending',
+      request.id,
+      request.hostId,
+      new Date(request.createdAt),
+    );
+    const nextSlots = [...slots];
+    nextSlots[index] = pending;
+    slotRepo.slots.set(request.venueId, nextSlots);
+    this.requests.set(request.id, request);
+  }
+
+  async transitionForSlot(previous: SlotRequest, updated: SlotRequest): Promise<void> {
+    const slotId = previous.slotId;
+    const slotRepo = this.venueSlots;
+    if (!slotId || !slotRepo) throw new Error('A Venue slot repository is required');
+    const stored = this.requests.get(previous.id);
+    if (!stored || stored.version !== previous.version) {
+      throw new VersionConflictError(previous.version, stored?.version ?? 0);
+    }
+    const slots = slotRepo.slots.get(previous.venueId) ?? [];
+    const index = slots.findIndex((slot) => slot.id === slotId);
+    const slot = slots[index];
+    if (!slot || slot.slotRequestId !== previous.id || slot.requestingHostId !== previous.hostId) {
+      throw new Error('The Venue slot is no longer held by this request');
+    }
+    const nextStatus =
+      updated.status === 'accepted'
+        ? 'booked'
+        : updated.status === 'cancelled' && previous.status === 'accepted'
+          ? 'cancelled'
+          : 'open';
+    const nextSlot = setVenueSlotRequestState(
+      slot,
+      nextStatus,
+      nextStatus === 'open' ? null : previous.id,
+      nextStatus === 'open' ? null : previous.hostId,
+      new Date(updated.updatedAt),
+    );
+    const nextSlots = [...slots];
+    nextSlots[index] = nextSlot;
+    slotRepo.slots.set(previous.venueId, nextSlots);
+    this.requests.set(updated.id, updated);
+  }
+
+  async claimAcceptedSlotEvent(
+    slotRequestId: EntityId,
+    hostId: EntityId,
+    eventId: EntityId,
+  ): Promise<SlotRequest> {
+    const request = this.requests.get(slotRequestId);
+    if (!request || request.hostId !== hostId || request.status !== 'accepted' || !request.slotId) {
+      throw new InvalidOperationError(
+        'An accepted Host slot request is required to create this event',
+      );
+    }
+    if (request.eventId && request.eventId !== eventId) {
+      throw new InvalidOperationError('This accepted slot already has an event');
+    }
+    const updated =
+      request.eventId === eventId
+        ? request
+        : {
+            ...request,
+            eventId,
+            version: request.version + 1,
+            updatedAt: new Date().toISOString(),
+          };
+    this.requests.set(slotRequestId, updated);
+    return updated;
   }
 }
 
@@ -326,13 +435,30 @@ export class MemoryVenueSlotRepository implements VenueSlotRepository {
     this.slots.set(block.venueId, [...existing, block]);
     return block;
   }
+
+  async createOpenSlotIfFree(slot: VenueSlot): Promise<VenueSlot> {
+    return this.createBlockIfFree(slot);
+  }
 }
 
 export class MemoryEventCatalogRepository implements EventCatalogRepository {
+  ticketAddons = new Map<EntityId, TicketAddon>();
   tiers = new Map<EntityId, TicketTier>();
   promos = new Map<EntityId, PromoCode>();
   tables = new Map<EntityId, TablePackage>();
   assignments = new Map<EntityId, PromoterAssignment>();
+
+  async getTicketAddonById(addonId: EntityId): Promise<TicketAddon | null> {
+    return this.ticketAddons.get(addonId) ?? null;
+  }
+
+  async listTicketAddons(eventId: EntityId): Promise<TicketAddon[]> {
+    return [...this.ticketAddons.values()].filter((addon) => addon.eventId === eventId);
+  }
+
+  async saveTicketAddon(addon: TicketAddon, _tx?: TxContext | null): Promise<void> {
+    casSet(this.ticketAddons, addon);
+  }
 
   async getTierById(tierId: EntityId): Promise<TicketTier | null> {
     return this.tiers.get(tierId) ?? null;
@@ -410,6 +536,21 @@ export class MemoryEventCatalogRepository implements EventCatalogRepository {
     return [...this.assignments.values()].filter((a) => a.promoterId === promoterId);
   }
 
+  async listExpiredAssignments(now: Date, limit: number): Promise<PromoterAssignment[]> {
+    return [...this.assignments.values()]
+      .filter(
+        (assignment) =>
+          (assignment.status === 'invited' ||
+            assignment.status === 'accepted' ||
+            assignment.status === 'active') &&
+          assignment.expiresAt !== null &&
+          Number.isFinite(Date.parse(assignment.expiresAt)) &&
+          Date.parse(assignment.expiresAt) <= now.getTime(),
+      )
+      .sort((left, right) => (left.expiresAt ?? '').localeCompare(right.expiresAt ?? ''))
+      .slice(0, Math.max(1, Math.min(limit, 100)));
+  }
+
   async listAllAssignments(query: PaginationQuery): Promise<Page<PromoterAssignment>> {
     return serializeSlice([...this.assignments.values()], query);
   }
@@ -443,17 +584,43 @@ export class MemoryAnalyticsReadModelRepository implements AnalyticsReadModelRep
   async getEventAnalytics(eventId: EntityId): Promise<EventAnalytics | null> {
     return this.eventAnalytics.get(eventId) ?? null;
   }
+
+  async saveOrganizationOverview(overview: OrganizationOverview): Promise<void> {
+    this.overviews.set(overview.organizationId, { ...overview });
+  }
+
+  async saveEventAnalytics(analytics: EventAnalytics): Promise<void> {
+    this.eventAnalytics.set(analytics.eventId, { ...analytics });
+  }
 }
 
 export class MemoryCartReservationRepository implements CartReservationRepository {
   reservations = new Map<EntityId, CartReservation>();
   byIdempotencyKey = new Map<string, CartReservation>();
 
-  async create(reservation: CartReservation, _tx?: TxContext | null): Promise<void> {
-    this.reservations.set(reservation.id, reservation);
+  private eventSequence = new Map<EntityId, number>();
+
+  async create(reservation: CartReservation, _tx?: TxContext | null): Promise<CartReservation> {
+    // Synchronous, so no two holds for an event can take the same number.
+    const sequence = (this.eventSequence.get(reservation.eventId) ?? 0) + 1;
+    this.eventSequence.set(reservation.eventId, sequence);
+    const stored = { ...reservation, sequence };
+    this.reservations.set(stored.id, stored);
     if (reservation.idempotencyKey) {
-      this.byIdempotencyKey.set(reservation.idempotencyKey, reservation);
+      this.byIdempotencyKey.set(reservation.idempotencyKey, stored);
     }
+    return stored;
+  }
+
+  async reactivate(reservationId: EntityId, expiresAt: string): Promise<CartReservation | null> {
+    const existing = this.reservations.get(reservationId);
+    if (!existing) return null;
+    if (existing.status === 'converted') return existing;
+    const sequence = (this.eventSequence.get(existing.eventId) ?? 0) + 1;
+    this.eventSequence.set(existing.eventId, sequence);
+    const revived: CartReservation = { ...existing, status: 'active', expiresAt, sequence };
+    this.reservations.set(reservationId, revived);
+    return revived;
   }
 
   async getById(reservationId: EntityId): Promise<CartReservation | null> {
@@ -484,6 +651,25 @@ export class MemoryCartReservationRepository implements CartReservationRepositor
     }
   }
 
+  async bindProviderOrder(
+    reservationId: EntityId,
+    providerOrderId: string,
+    _tx?: TxContext | null,
+  ): Promise<string | null> {
+    const r = this.reservations.get(reservationId);
+    if (!r) return null;
+    if (r.providerOrderId) return r.providerOrderId;
+    this.reservations.set(reservationId, { ...r, providerOrderId });
+    return providerOrderId;
+  }
+
+  async getByProviderOrderId(providerOrderId: string): Promise<CartReservation | null> {
+    for (const r of this.reservations.values()) {
+      if (r.providerOrderId === providerOrderId) return r;
+    }
+    return null;
+  }
+
   async cleanupExpired(now: Date, _tx?: TxContext | null): Promise<number> {
     let count = 0;
     for (const [id, r] of this.reservations) {
@@ -511,7 +697,17 @@ export class MemoryCartReservationRepository implements CartReservationRepositor
     return [...this.reservations.values()].reduce((sum, r) => {
       if (r.eventId !== eventId || r.userId !== userId) return sum;
       if (r.status !== 'active' || Date.parse(r.expiresAt) <= now.getTime()) return sum;
-      return sum + r.lines.reduce((s, line) => s + (line.tierId === tierId ? line.quantity : 0), 0);
+      return (
+        sum +
+        r.lines.reduce(
+          (s, line) =>
+            s +
+            (line.tierId === tierId
+              ? line.quantity * (line.admissionMode === 'per_person' ? (line.guestCount ?? 1) : 1)
+              : 0),
+          0,
+        )
+      );
     }, 0);
   }
 }
@@ -522,6 +718,17 @@ export class MemoryOrderRepository implements OrderRepository {
 
   async getById(orderId: EntityId): Promise<Order | null> {
     return this.orders.get(orderId) ?? null;
+  }
+
+  async getByBookingReference(bookingReference: string): Promise<Order | null> {
+    const normalized = bookingReference.toUpperCase();
+    return (
+      [...this.orders.values()].find(
+        (order) =>
+          (order.bookingReference ?? bookingReferenceForOrderId(order.id)).toUpperCase() ===
+          normalized,
+      ) ?? null
+    );
   }
 
   async getByPaymentId(paymentId: string): Promise<Order | null> {
@@ -541,13 +748,47 @@ export class MemoryOrderRepository implements OrderRepository {
   }
 
   async listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Order>> {
-    const all = [...this.orders.values()].filter((o) => o.organizationId === organizationId);
+    const all = [...this.orders.values()]
+      .filter((o) => o.organizationId === organizationId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
     return serializeSlice(all, query);
   }
 
   async listByEvent(eventId: EntityId, query: PaginationQuery): Promise<Page<Order>> {
     const all = [...this.orders.values()].filter((o) => o.eventId === eventId);
     return serializeSlice(all, query);
+  }
+
+  async listByPromoter(promoterId: EntityId, query: PaginationQuery): Promise<Page<Order>> {
+    const all = [...this.orders.values()]
+      .filter((order) => order.attribution?.promoterId === promoterId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    return serializeSlice(all, query);
+  }
+
+  async listByPromoterForEvent(
+    promoterId: EntityId,
+    eventId: EntityId,
+    query: PaginationQuery,
+  ): Promise<Page<Order>> {
+    const all = [...this.orders.values()]
+      .filter((order) => order.eventId === eventId && order.attribution?.promoterId === promoterId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    return serializeSlice(all, query);
+  }
+
+  async listSeatClaims(eventId: EntityId) {
+    return [...this.orders.values()]
+      .filter((o) => o.eventId === eventId)
+      .map((o) => ({
+        status: o.status,
+        lines: o.lines.map((line) => ({
+          tierId: line.tierId,
+          quantity: line.quantity,
+          ...(line.guestCount === undefined ? {} : { guestCount: line.guestCount }),
+          ...(line.admissionMode === undefined ? {} : { admissionMode: line.admissionMode }),
+        })),
+      }));
   }
 
   async countPaidQuantityByUserAndEvent(
@@ -561,7 +802,15 @@ export class MemoryOrderRepository implements OrderRepository {
         return sum;
       }
       return (
-        sum + order.lines.reduce((s, line) => s + (line.tierId === tierId ? line.quantity : 0), 0)
+        sum +
+        order.lines.reduce(
+          (s, line) =>
+            s +
+            (line.tierId === tierId
+              ? line.quantity * (line.admissionMode === 'per_person' ? (line.guestCount ?? 1) : 1)
+              : 0),
+          0,
+        )
       );
     }, 0);
   }
@@ -586,6 +835,7 @@ export class MemoryOrderRepository implements OrderRepository {
 
 export class MemoryEntitlementRepository implements EntitlementRepository {
   entitlements = new Map<EntityId, Entitlement>();
+  transfers = new Map<EntityId, TicketTransfer>();
 
   async getById(entitlementId: EntityId): Promise<Entitlement | null> {
     return this.entitlements.get(entitlementId) ?? null;
@@ -601,6 +851,13 @@ export class MemoryEntitlementRepository implements EntitlementRepository {
 
   async listByUser(userId: EntityId, query: PaginationQuery): Promise<Page<Entitlement>> {
     const all = [...this.entitlements.values()].filter((e) => e.userId === userId);
+    return serializeSlice(all, query);
+  }
+
+  async listByHolder(userId: EntityId, query: PaginationQuery): Promise<Page<Entitlement>> {
+    const all = [...this.entitlements.values()].filter(
+      (e) => (e.currentHolderUserId ?? e.userId) === userId,
+    );
     return serializeSlice(all, query);
   }
 
@@ -621,12 +878,93 @@ export class MemoryEntitlementRepository implements EntitlementRepository {
     return serializeSlice([...this.entitlements.values()], query);
   }
 
-  async save(entitlement: Entitlement, _tx?: TxContext | null): Promise<void> {
+  async save(
+    entitlement: Entitlement,
+    _tx?: TxContext | null,
+    _outboxEvent?: DomainEvent,
+  ): Promise<void> {
     casSet(this.entitlements, entitlement);
   }
 
   async saveMany(entitlements: Entitlement[], _tx?: TxContext | null): Promise<void> {
     for (const e of entitlements) casSet(this.entitlements, e);
+  }
+
+  async redeemTicketAddon(
+    input: {
+      entitlementId: EntityId;
+      addonEntitlementId: EntityId;
+      eventId: EntityId;
+      now?: Date;
+    },
+    _outboxEvent?: DomainEvent,
+  ): Promise<Entitlement> {
+    const current = this.entitlements.get(input.entitlementId);
+    if (!current || current.eventId !== input.eventId) {
+      throw new NotFoundError('Ticket extra', input.addonEntitlementId);
+    }
+    const updated = redeemTicketAddonEntitlement(current, input.addonEntitlementId, input.now);
+    this.entitlements.set(updated.id, updated);
+    return updated;
+  }
+
+  async replaceForUpgrade(input: {
+    sourceEntitlementId: EntityId;
+    expectedSourceVersion: number;
+    replacement: Entitlement;
+    now?: Date;
+  }): Promise<{ source: Entitlement; replacement: Entitlement }> {
+    const current = this.entitlements.get(input.sourceEntitlementId);
+    if (current?.status === 'void' && current.upgradedToEntitlementId === input.replacement.id) {
+      const replacement = this.entitlements.get(input.replacement.id);
+      if (replacement) return { source: current, replacement };
+    }
+    if (!current) throw new NotFoundError('Ticket', input.sourceEntitlementId);
+    if (current.version !== input.expectedSourceVersion) {
+      throw new VersionConflictError(input.expectedSourceVersion, current.version);
+    }
+    if (
+      input.replacement.status !== 'valid' ||
+      (input.replacement.unitKind ?? 'paid') !== 'paid' ||
+      input.replacement.upgradeFromEntitlementId !== current.id ||
+      input.replacement.eventId !== current.eventId ||
+      input.replacement.userId !== current.userId ||
+      currentEntitlementHolderId(input.replacement) !== currentEntitlementHolderId(current) ||
+      input.replacement.tierId === current.tierId ||
+      input.replacement.scanCount !== 0 ||
+      input.replacement.refundLock ||
+      input.replacement.pendingTransferId
+    ) {
+      throw new ConflictError('The replacement ticket does not match the source ticket');
+    }
+    if (this.entitlements.has(input.replacement.id)) {
+      throw new ConflictError('The replacement ticket already exists');
+    }
+    const source = supersedeEntitlementForUpgrade(current, input.replacement.id, input.now);
+    this.entitlements.set(source.id, source);
+    this.entitlements.set(input.replacement.id, input.replacement);
+    return { source, replacement: input.replacement };
+  }
+
+  async restoreForUpgradeRefund(input: {
+    sourceEntitlementId: EntityId;
+    replacementEntitlementId: EntityId;
+    refundRequestId: EntityId;
+    now?: Date;
+  }): Promise<{ source: Entitlement; replacement: Entitlement }> {
+    const source = this.entitlements.get(input.sourceEntitlementId);
+    const replacement = this.entitlements.get(input.replacementEntitlementId);
+    if (!source) throw new NotFoundError('Ticket', input.sourceEntitlementId);
+    if (!replacement) throw new NotFoundError('Ticket', input.replacementEntitlementId);
+    const restored = restoreEntitlementAfterUpgradeRefund({
+      source,
+      replacement,
+      refundRequestId: input.refundRequestId,
+      now: input.now,
+    });
+    this.entitlements.set(restored.source.id, restored.source);
+    this.entitlements.set(restored.replacement.id, restored.replacement);
+    return restored;
   }
 
   /**
@@ -654,6 +992,154 @@ export class MemoryEntitlementRepository implements EntitlementRepository {
       (e) => e.tierId === tierId && e.status === 'valid',
     ).length;
   }
+
+  async countActivePaidUnitsByUserAndEvent(userId: EntityId, eventId: EntityId): Promise<number> {
+    return [...this.entitlements.values()].reduce((count, entitlement) => {
+      const kind =
+        entitlement.unitKind ?? (entitlement.orderId.startsWith('RSVP-') ? 'free_rsvp' : 'paid');
+      const activePaid =
+        entitlement.userId === userId &&
+        entitlement.eventId === eventId &&
+        entitlement.status !== 'void' &&
+        kind === 'paid';
+      return activePaid ? count + entitlement.scanCountAllowed : count;
+    }, 0);
+  }
+
+  async createTicketTransfer(
+    transfer: TicketTransfer,
+    expectedCustodianUserId: EntityId,
+  ): Promise<TicketTransfer> {
+    if (this.transfers.has(transfer.id)) throw new ConflictError('Transfer already exists');
+    const entitlement = this.entitlements.get(transfer.entitlementId);
+    if (!entitlement) throw new NotFoundError('Ticket', transfer.entitlementId);
+    const currentHolder = currentEntitlementHolderId(entitlement);
+    const purchaserCustody =
+      currentHolder === null && entitlement.userId === expectedCustodianUserId;
+    if (
+      (currentHolder !== expectedCustodianUserId && !purchaserCustody) ||
+      transfer.senderUserId !== expectedCustodianUserId
+    ) {
+      throw new NotFoundError('Ticket', transfer.entitlementId);
+    }
+    if (
+      entitlement.status !== 'valid' ||
+      entitlement.scanCount > 0 ||
+      entitlement.refundLock ||
+      entitlement.pendingTransferId
+    ) {
+      throw new ConflictError('This ticket cannot be transferred now');
+    }
+    const next = bumpVersion(entitlement, new Date());
+    this.entitlements.set(entitlement.id, { ...next, pendingTransferId: transfer.id });
+    this.transfers.set(transfer.id, transfer);
+    return transfer;
+  }
+
+  async resolveTicketTransfer(input: {
+    transferId: EntityId;
+    actorUserId: EntityId;
+    recipientEmailHash?: string;
+    action: 'accept' | 'decline' | 'cancel' | 'freeze' | 'expire';
+    holderName?: string;
+    now?: Date;
+  }): Promise<{ transfer: TicketTransfer; entitlement: Entitlement }> {
+    const transfer = this.transfers.get(input.transferId);
+    if (!transfer) throw new NotFoundError('Ticket transfer', input.transferId);
+    const entitlement = this.entitlements.get(transfer.entitlementId);
+    if (!entitlement || entitlement.pendingTransferId !== transfer.id) {
+      throw new ConflictError('This ticket transfer is no longer pending');
+    }
+    if (input.action === 'cancel' && input.actorUserId !== transfer.senderUserId) {
+      throw new NotFoundError('Ticket transfer', input.transferId);
+    }
+    if (
+      input.action !== 'expire' &&
+      input.action !== 'cancel' &&
+      input.action !== 'freeze' &&
+      input.actorUserId !== transfer.recipientUserId &&
+      (!transfer.recipientEmailHash || input.recipientEmailHash !== transfer.recipientEmailHash)
+    ) {
+      throw new NotFoundError('Ticket transfer', input.transferId);
+    }
+    const now = input.now ?? new Date();
+    const isExpired = Date.parse(transfer.expiresAt) <= now.getTime();
+    if (input.action === 'expire' && !isExpired) {
+      throw new ConflictError('This ticket transfer has not expired');
+    }
+    const status = isExpired
+      ? 'expired'
+      : input.action === 'accept'
+        ? 'accepted'
+        : input.action === 'decline'
+          ? 'declined'
+          : input.action === 'freeze'
+            ? 'frozen'
+            : 'cancelled';
+    const nextTransfer = resolveTicketTransfer(transfer, status, now);
+    const nextEntitlement =
+      status === 'accepted'
+        ? {
+            ...changeEntitlementHolder(entitlement, {
+              expectedCurrentHolderUserId: currentEntitlementHolderId(entitlement),
+              nextHolderUserId: input.actorUserId,
+              holderName: input.holderName ?? '',
+              now,
+            }),
+            pendingTransferId: null,
+          }
+        : {
+            ...bumpVersion(entitlement, now),
+            pendingTransferId: status === 'frozen' ? transfer.id : null,
+          };
+    this.transfers.set(transfer.id, nextTransfer);
+    this.entitlements.set(entitlement.id, nextEntitlement);
+    return { transfer: nextTransfer, entitlement: nextEntitlement };
+  }
+
+  async getTicketTransfer(transferId: EntityId): Promise<TicketTransfer | null> {
+    return this.transfers.get(transferId) ?? null;
+  }
+
+  async releaseFrozenTicketTransfer(input: {
+    transferId: EntityId;
+    now?: Date;
+  }): Promise<{ transfer: TicketTransfer; entitlement: Entitlement }> {
+    const transfer = this.transfers.get(input.transferId);
+    if (!transfer || transfer.status !== 'frozen') {
+      throw new ConflictError('Only a frozen ticket transfer can be released');
+    }
+    const entitlement = this.entitlements.get(transfer.entitlementId);
+    if (
+      !entitlement ||
+      entitlement.pendingTransferId !== transfer.id ||
+      entitlement.status !== 'valid' ||
+      entitlement.scanCount > 0 ||
+      entitlement.refundLock
+    ) {
+      throw new ConflictError('The frozen ticket can no longer be released');
+    }
+    const now = input.now ?? new Date();
+    const released = { ...bumpVersion(entitlement, now), pendingTransferId: null };
+    this.entitlements.set(entitlement.id, released);
+    return { transfer, entitlement: released };
+  }
+
+  async listTicketTransfersByEntitlement(entitlementId: EntityId): Promise<TicketTransfer[]> {
+    return [...this.transfers.values()].filter(
+      (transfer) => transfer.entitlementId === entitlementId,
+    );
+  }
+
+  async listExpiredTicketTransfers(now: Date, limit = 100): Promise<TicketTransfer[]> {
+    return [...this.transfers.values()]
+      .filter(
+        (transfer) =>
+          transfer.status === 'pending' && Date.parse(transfer.expiresAt) <= now.getTime(),
+      )
+      .sort((left, right) => left.expiresAt.localeCompare(right.expiresAt))
+      .slice(0, Math.max(1, Math.min(500, limit)));
+  }
 }
 
 interface PromoRedemptionRecord {
@@ -666,6 +1152,41 @@ interface PromoRedemptionRecord {
 
 export class MemoryPromoRedemptionRepository implements PromoRedemptionRepository {
   redemptions = new Map<EntityId, PromoRedemptionRecord>();
+
+  async claim(input: {
+    redemption: PromoRedemptionRecord;
+    promoIds: EntityId[];
+    historicalRedemptionCount: number;
+    maxRedemptions: number | null;
+    maxPerUser: number | null;
+  }): Promise<'claimed' | 'already_claimed' | 'global_limit' | 'user_limit'> {
+    const existing = [...this.redemptions.values()].find(
+      (redemption) => redemption.orderId === input.redemption.orderId,
+    );
+    if (existing) return 'already_claimed';
+
+    const aliases = new Set(input.promoIds);
+    const promoCount = [...this.redemptions.values()].filter((redemption) =>
+      aliases.has(redemption.promoId),
+    ).length;
+    if (
+      input.maxRedemptions !== null &&
+      Math.max(promoCount, input.historicalRedemptionCount) >= input.maxRedemptions
+    ) {
+      return 'global_limit';
+    }
+
+    if (input.maxPerUser !== null && input.redemption.userId) {
+      const userCount = [...this.redemptions.values()].filter(
+        (redemption) =>
+          aliases.has(redemption.promoId) && redemption.userId === input.redemption.userId,
+      ).length;
+      if (userCount >= input.maxPerUser) return 'user_limit';
+    }
+
+    this.redemptions.set(input.redemption.id, input.redemption);
+    return 'claimed';
+  }
 
   async create(redemption: PromoRedemptionRecord, _tx?: TxContext | null): Promise<void> {
     this.redemptions.set(redemption.id, redemption);

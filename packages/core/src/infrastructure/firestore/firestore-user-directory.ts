@@ -23,4 +23,15 @@ export class FirestoreUserDirectory implements UserDirectoryPort {
     const email = data?.email as unknown;
     return typeof email === 'string' && email.length > 0 ? email : null;
   }
+  async findUserIdByEmail(email: string): Promise<string | null> {
+    const normalized = email.trim().toLowerCase();
+    const candidates = Array.from(new Set([email.trim(), normalized]));
+    const snap = await this.db
+      .collection(AUTH_USERS_COLLECTION)
+      .where('email', 'in', candidates)
+      .limit(1)
+      .get();
+    if (snap.empty) return null;
+    return snap.docs[0]?.id ?? null;
+  }
 }

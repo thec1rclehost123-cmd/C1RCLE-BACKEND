@@ -60,6 +60,7 @@ export type ScanDenyReason =
   | 'wrong_gate'
   | 'offline_expired'
   | 'override_required'
+  | 'eligibility_required'
   | 'promoter_not_authorized';
 
 export interface ScanLedger extends VersionedEntity {

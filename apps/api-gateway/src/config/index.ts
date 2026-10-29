@@ -113,9 +113,85 @@ const envSchema = z.object({
   APP_VERSION: z.string().min(1).default('0.1.0'),
   BUILD_SHA: z.string().min(1).default('unknown'),
   REDIS_URL: z.string().min(1).default('redis://localhost:6379'),
+  /**
+   * Where rate-limit counters live. `memory` (default) is per instance and
+   * resets on restart; `redis` shares the window across instances using
+   * REDIS_URL, and falls back to memory if Redis is unreachable.
+   */
+  RATE_LIMIT_STORE: z.enum(['memory', 'redis']).default('memory'),
+  /**
+   * Release gate for payouts. While the funds flow (who may hold and distribute
+   * ticket money) and the tax rules are awaiting written legal, provider and CA
+   * approval, the endpoints that request, batch-run or release a payout are
+   * switched off. Unset: ON outside production (dev, tests), OFF in production.
+   * Set `true` only once those approvals are on file. Freezing a payout is a
+   * safety action and stays available either way; reads are unaffected.
+   */
+  PAYOUTS_ENABLED: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((value) => (value === undefined ? undefined : value === 'true')),
+  /** Private access activation stays off outside explicit test/config handoff. */
+  M5_PRIVATE_ACCESS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /** Restricted eligibility sales stay off until policy/legal approval and door controls are ready. */
+  M5_ELIGIBILITY_RULES_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /** Ticket transfer writes remain off unless explicitly enabled. */
+  M5_TICKET_TRANSFERS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /** Preserve the existing offline-manifest behavior unless explicitly disabled for drain. */
+  M5_OFFLINE_TICKET_MANIFESTS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  /** Operator attestation; must remain false until the documented drain window is proven. */
+  M5_OFFLINE_MANIFEST_DRAIN_COMPLETE: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /** Cover sales stay unavailable until policy, merchant and accounting gates are approved. */
+  M5_COVER_SALES_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /** Add-on sales stay off until their accounting, tax and commercial treatment is approved. */
+  M5_TICKET_ADDONS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /** Server-side approval of the participating merchant; never inferred from Venue acceptance. */
+  M5_COVER_MERCHANT_APPROVED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /** Explicitly activate newly issued balances only after business approval. */
+  M5_COVER_ACTIVATION_APPROVED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /** Reviewed cover account mapping is required before accepting any cover sale. */
+  M5_COVER_ACCOUNTING_APPROVED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
   FIRESTORE_PROJECT_ID: z.string().min(1).default('c1rcle-staging'),
+  /** Explicit emulator endpoints; used to enable non-production test fixtures. */
+  FIRESTORE_EMULATOR_HOST: z.string().min(1).optional(),
+  FIREBASE_AUTH_EMULATOR_HOST: z.string().min(1).optional(),
   /** B12: which repository adapter set `lib/v2-services.ts` wires up. */
   STORAGE_DRIVER: z.enum(['memory', 'firestore']).default('memory'),
+  /** Disable process-wide Firestore workers for scoped connected acceptance runs. */
+  BACKGROUND_WORKERS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
   /** Firestore service-account credentials (only read/used when STORAGE_DRIVER=firestore). */
   FIREBASE_CLIENT_EMAIL: z.string().optional(),
   FIREBASE_PRIVATE_KEY: z.string().optional(),
@@ -137,9 +213,25 @@ const envSchema = z.object({
    * falling back to the well-known development default.
    */
   MAGIC_TICKET_SECRET: z.string().min(1).optional(),
+  /**
+   * At-rest encryption of bank-account numbers (AES-256-GCM, scrypt-derived).
+   * Without it the core falls back to a secret published in this repository,
+   * which protects nothing — production refuses to boot without a real one.
+   * Rotating it does not strand older records: those written under the legacy
+   * default stay readable (see `getFullAccountNumber`).
+   */
+  ENCRYPTION_KEY: z.string().min(1).optional(),
+  /** Optional scrypt salt for ENCRYPTION_KEY; changing it re-keys new writes. */
+  ENCRYPTION_SALT: z.string().min(1).optional(),
   /** Email OTP delivery and at-rest OTP HMAC key. */
   RESEND_API_KEY: z.string().min(1).optional(),
   EMAIL_OTP_SECRET: z.string().min(1).optional(),
+  /**
+   * Public origin of the partner dashboard (e.g. https://partners.thec1rcle.com).
+   * Used to build absolute staff-invitation accept links in invitation emails.
+   * Optional: when absent, emails omit the link rather than linking nowhere.
+   */
+  PARTNER_DASHBOARD_URL: z.url().optional(),
   /**
    * Comma-separated list of exact browser origins allowed to call the gateway
    * cross-origin (CORS) and trusted by Better Auth, e.g.
@@ -148,6 +240,7 @@ const envSchema = z.object({
    * cross-origin browser access at all in production. See `allowedBrowserOrigins`.
    */
   CORS_ALLOWED_ORIGINS: z.string().optional(),
+
   /**
    * Escape hatch for CI's Docker smoke-boot only — it exercises the
    * production config guards (NODE_ENV=production) without real Firestore
@@ -302,11 +395,38 @@ const validatedEnvSchema = envSchema.superRefine((value, ctx) => {
       message: 'Production requires a non-development secret of at least 32 characters',
     });
   }
-  if (!value.EMAIL_OTP_SECRET) {
+  if (!value.EMAIL_OTP_SECRET || value.EMAIL_OTP_SECRET.length < 32) {
     ctx.addIssue({
       code: 'custom',
       path: ['EMAIL_OTP_SECRET'],
-      message: 'Production requires EMAIL_OTP_SECRET',
+      message: 'Production requires EMAIL_OTP_SECRET of at least 32 characters',
+    });
+  }
+  if (value.RATE_LIMIT_STORE === 'redis') {
+    let redisUrl: URL | undefined;
+    try {
+      redisUrl = new URL(value.REDIS_URL);
+    } catch {
+      /* reported below */
+    }
+    if (
+      !redisUrl ||
+      !['redis:', 'rediss:'].includes(redisUrl.protocol) ||
+      ['localhost', '127.0.0.1', '::1'].includes(redisUrl.hostname)
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['REDIS_URL'],
+        message:
+          'RATE_LIMIT_STORE=redis in production needs a redis:// or rediss:// REDIS_URL that is not a local development endpoint',
+      });
+    }
+  }
+  if (!value.ENCRYPTION_KEY || value.ENCRYPTION_KEY.length < 32) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['ENCRYPTION_KEY'],
+      message: 'Production requires ENCRYPTION_KEY of at least 32 characters',
     });
   }
   if (!value.MAGIC_TICKET_SECRET || value.MAGIC_TICKET_SECRET.length < 32) {

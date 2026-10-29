@@ -9,6 +9,7 @@ import {
   venueProfileDtoSchema,
   venueSlotDtoSchema,
   createVenueBlockSchema,
+  publishVenueAvailabilitySchema,
   venueAvailabilityDtoSchema,
   venueMenuDtoSchema,
   updateVenueMenuSchema,
@@ -442,6 +443,52 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
     },
   );
 
+  fastify.post(
+    '/venues/:venueId/calendar/availability',
+    {
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({
+          params: venueIdParam,
+          body: publishVenueAvailabilitySchema,
+          headers: venueHeaders.extend({ 'idempotency-key': idempotencyKeySchema }),
+        }),
+        fastify.requirePermission('venue.manage'),
+      ],
+    },
+    async (request, reply) => {
+      const { venueId } = request.params as z.infer<typeof venueIdParam>;
+      const body = request.body as z.infer<typeof publishVenueAvailabilitySchema>;
+      const actor = services.actor(request);
+      const v2Headers = request.v2Headers ?? {};
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: actor.userId,
+        commandName: 'venue-calendar.publish-availability',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { venueId }, body },
+        run: async () => {
+          const slot = await services.venueCalendar.publishAvailability(actor, {
+            venueId,
+            ...body,
+          });
+          const validated = validateV2Response(reply, request, venueSlotDtoSchema, slot);
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 201, body: validated };
+        },
+      }).catch((error: unknown) =>
+        isIdempotencyConflict(error)
+          ? mapDomainError(reply, request, venueId, error, {
+              conflictId: v2Headers['idempotency-key'],
+            })
+          : mapDomainError(reply, request, venueId, error),
+      );
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
+
   // ── UNBLOCK (soft-cancel a blocked slot) ─────────────────────────────────
   fastify.delete(
     '/venues/:venueId/calendar/blocks/:blockId',
@@ -579,7 +626,6 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
           headers: venueHeaders,
         }),
         fastify.requirePermission('venue.read'),
-        fastify.cached('AVAILABILITY'),
       ],
     },
     async (request, reply) => {
@@ -744,8 +790,8 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
         run: async () => {
           const slotRequest = await services.venueSlotRequests.create(actor, {
             venueId,
+            slotId: body.slotId,
             eventId: body.eventId ?? null,
-            hostId: actor.organizationId,
             message: body.message,
           });
           const validated = validateV2Response(reply, request, slotRequestDtoSchema, slotRequest);

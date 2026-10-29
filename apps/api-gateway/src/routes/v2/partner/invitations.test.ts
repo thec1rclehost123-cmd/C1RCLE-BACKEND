@@ -144,7 +144,7 @@ describe('organization invitations', () => {
     await server.close();
   });
 
-  it('refuses acceptance by someone who is already a member', async () => {
+  it('closes the invitation without duplicating when the accepter is already a member', async () => {
     const server = await buildServer();
     const org = await seedOrganization(server);
 
@@ -157,17 +157,25 @@ describe('organization invitations', () => {
     const invitationId = created.json().id;
 
     // The memory driver has a single fixed dev actor, and that actor owns the
-    // organization it just created — so this exercises the duplicate-member
-    // guard rather than the happy path. Acceptance BY A NEW USER is covered at
-    // the domain level in `packages/core/src/domain/invitation.test.ts`, which
-    // can name a different accepting user; wiring a second real session here
-    // needs the firestore driver (see phase-00 Session Log).
+    // organization it just created — so this exercises the already-a-member
+    // path rather than the new-member happy path. Acceptance BY A NEW USER is
+    // covered at the domain level in `packages/core/src/domain/invitation.test.ts`,
+    // which can name a different accepting user; wiring a second real session
+    // here needs the firestore driver (see phase-00 Session Log).
     const accepted = await server.inject({
       method: 'POST',
       url: `/invitations/${invitationId}/accept`,
     });
 
-    expect(accepted.statusCode).toBe(400);
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.json()).toMatchObject({ id: org });
+
+    const listed = await server.inject({
+      method: 'GET',
+      url: `/organizations/${org}/invitations`,
+      headers: read(org),
+    });
+    expect(listed.json().items).toMatchObject([{ id: invitationId, status: 'accepted' }]);
     await server.close();
   });
 

@@ -69,6 +69,14 @@ export interface ObjectStoragePort {
    */
   toPublicUrl(storagePath: string): string;
   /**
+   * Remove anonymous read access from an object URL owned by this provider.
+   * Returns its validated managed object key, or null for URLs outside the
+   * configured bucket/provider. The caller must not infer a key from an
+   * arbitrary URL.
+   */
+  /** Removes anonymous read access and returns the validated managed object key. */
+  revokePublicRead(publicUrl: string, expectedKeyPrefix: string): Promise<string | null>;
+  /**
    * Admin-side signed read — lets a platform admin actually view a KYC
    * document before approving/rejecting an application. v1 had the same
    * idea (`kyc/[uid]/route.js` signed-URL helper) but allowlisted by path
@@ -94,6 +102,10 @@ export class EchoObjectStorage implements ObjectStoragePort {
     // receives the same PUT headers regardless of driver.
     if (request.visibility === 'public') {
       headers['x-goog-acl'] = 'public-read';
+      // Bound the period in which a browser/CDN can reuse a public poster
+      // after the event changes to private. FirebaseObjectStorage signs this
+      // header so the value is persisted as object metadata.
+      headers['cache-control'] = 'public, max-age=60';
     }
     return {
       uploadUrl: `memory://uploads/${request.key}`,
@@ -108,6 +120,20 @@ export class EchoObjectStorage implements ObjectStoragePort {
     // Non-routable reserved host, but a valid URL for `z.url()` — matches the
     // `memory://` upload URL convention of this dev provider.
     return `https://uploads.invalid/${storagePath}`;
+  }
+
+  async revokePublicRead(publicUrl: string, expectedKeyPrefix: string): Promise<string | null> {
+    try {
+      const parsed = new URL(publicUrl);
+      const path = decodeURIComponent(parsed.pathname.replace(/^\//, ''));
+      return parsed.origin === 'https://uploads.invalid' &&
+        expectedKeyPrefix.startsWith('posters/') &&
+        path.startsWith(expectedKeyPrefix)
+        ? path
+        : null;
+    } catch {
+      return null;
+    }
   }
 
   async issueReadUrl(request: ReadUrlRequest): Promise<ReadUrlGrant> {

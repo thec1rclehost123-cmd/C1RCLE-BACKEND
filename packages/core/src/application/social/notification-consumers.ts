@@ -1,11 +1,15 @@
-import { createNotification } from '../../domain/models/social.js';
+import { currentEntitlementHolderId } from '../../domain/models/entitlement.js';
+import { createNotification, eventMaterialChangeSubjectId } from '../../domain/models/social.js';
 
+import type { CoreConfig } from '../../config/index.js';
 import type { DomainEvent } from '../../domain/events.js';
 import type { EntityId } from '../../domain/identity.js';
 import type { FollowTargetType } from '../../domain/models/social.js';
 import type {
   EventRepository,
   FollowRepository,
+  EntitlementRepository,
+  OrderRepository,
   SocialNotificationRepository,
 } from '../../domain/ports/repositories.js';
 
@@ -76,6 +80,104 @@ export function createFollowerFanOutConsumer(deps: FollowerFanOutDeps) {
         ),
       );
     }
+  };
+}
+
+export interface EventMaterialChangeNoticeDeps {
+  orders: Pick<OrderRepository, 'getById'>;
+  entitlements: Pick<EntitlementRepository, 'getById'>;
+  notifications: Pick<SocialNotificationRepository, 'createIfAbsent'>;
+  config: Pick<CoreConfig, 'clock'>;
+}
+
+/**
+ * Creates durable, user-scoped inbox notices for material event changes.
+ * Reading the notice is only an acknowledgement of receipt; it does not
+ * represent consent to the change or waive any refund/remedy rights.
+ */
+export function createEventMaterialChangeNoticeConsumer(deps: EventMaterialChangeNoticeDeps) {
+  return async function notifyTicketOwnersOfMaterialEventChange(domainEvent: DomainEvent) {
+    if (domainEvent.type !== 'event.material_change.order_affected') return;
+    const payload = domainEvent.payload as {
+      eventId: EntityId;
+      orderId: EntityId;
+      entitlementId?: EntityId | null;
+      eventVersion: number;
+      previousTitle: string;
+      title: string;
+      previousStartAt: string;
+      startAt: string;
+    };
+    if (
+      !Number.isSafeInteger(payload.eventVersion) ||
+      payload.eventVersion < 1 ||
+      !payload.entitlementId
+    )
+      return;
+    const eventVersion = payload.eventVersion;
+    const entitlementId = payload.entitlementId;
+    const order = await deps.orders.getById(payload.orderId);
+    if (
+      !order ||
+      order.eventId !== payload.eventId ||
+      !['paid', 'refund_requested'].includes(order.status)
+    ) {
+      return;
+    }
+
+    const recipients = new Map<EntityId, { canAccept: boolean; canRequestRefund: boolean }>();
+    if (order.userId) recipients.set(order.userId, { canAccept: false, canRequestRefund: true });
+    const entitlement = await deps.entitlements.getById(entitlementId);
+    if (
+      !entitlement ||
+      entitlement.orderId !== order.id ||
+      entitlement.eventId !== payload.eventId ||
+      entitlement.status === 'void'
+    ) {
+      return;
+    }
+    const holderId = currentEntitlementHolderId(entitlement);
+    if (holderId) {
+      const current = recipients.get(holderId);
+      recipients.set(holderId, {
+        canAccept: true,
+        canRequestRefund: current?.canRequestRefund ?? false,
+      });
+    }
+    if (recipients.size === 0) return;
+
+    const subjectId = eventMaterialChangeSubjectId(
+      payload.eventId,
+      eventVersion,
+      order.id,
+      entitlementId,
+    );
+    const title =
+      payload.previousTitle === payload.title
+        ? 'Event details changed'
+        : `Event update: ${payload.title}`;
+    const body = `${payload.previousTitle} was updated. Review the current date, time and venue in your ticket wallet. This notice does not change your ticket or refund rights.`;
+
+    await Promise.all(
+      [...recipients].map(([userId, actions]) =>
+        deps.notifications.createIfAbsent(
+          createNotification({
+            userId,
+            type: 'event.material_change',
+            title,
+            body,
+            link: '/tickets',
+            subjectId,
+            eventChange: {
+              eventVersion,
+              entitlementId,
+              ...actions,
+            },
+            now: new Date(domainEvent.occurredAt || deps.config.clock.now().getTime()),
+          }),
+        ),
+      ),
+    );
   };
 }
 

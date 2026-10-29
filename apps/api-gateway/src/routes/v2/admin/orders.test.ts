@@ -1,7 +1,7 @@
 import { createPlatformAdmin } from '@c1rcle/core/domain';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import type { AdminRole, Order } from '@c1rcle/core/domain';
+import type { AdminRole, FinancialJournal, Order } from '@c1rcle/core/domain';
 
 import { createV2Services } from '../../../lib/v2-services.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
@@ -68,6 +68,8 @@ function makeOrder(overrides: Partial<Order> = {}): Order {
     createdAt: now,
     updatedAt: now,
     ...overrides,
+    discountFundingOwner: overrides.discountFundingOwner ?? null,
+    appliedRefundRequestIds: overrides.appliedRefundRequestIds ?? [],
   };
 }
 
@@ -77,6 +79,12 @@ beforeEach(async () => {
   const repos = services.repos();
   (repos.platformAdmins as unknown as { admins: Map<string, unknown> }).admins.clear();
   (repos.orders as unknown as { orders: Map<string, unknown> }).orders.clear();
+  const journals = repos.financialJournals as unknown as {
+    journals: Map<string, unknown>;
+    byIdempotencyKey: Map<string, string>;
+  };
+  journals.journals.clear();
+  journals.byIdempotencyKey.clear();
 
   server = await buildPartnerTestServer({ routes: [adminOrderRoutes] });
 });
@@ -150,5 +158,112 @@ describe('GET /admin/orders', () => {
 
     const singleLine = body.items.find((item: { id: string }) => item.id === 'ORD-2');
     expect(singleLine.ticketCount).toBe(2);
+  });
+});
+
+describe('GET /admin/orders/by-booking-reference/:bookingReference', () => {
+  it('returns frozen Promoter attribution and linked financial journals only to Admins', async () => {
+    await seedAdmin('admin_a', 'finance');
+    const bookingReference = 'C1-ABCDE-12345-67890-F0123';
+    const order = makeOrder({
+      bookingReference,
+      attribution: {
+        referralLinkId: 'link_1',
+        promoterId: 'org_promoter_1',
+        code: 'ABCD1234',
+        assignmentId: 'assignment_1',
+        assignmentVersion: 2,
+        termsSnapshot: { version: 1, ratePercent: 10, flatPaise: 0 },
+        eligibleTierIds: ['tier_1'],
+        commissionPolicyVersion: 'commission-v1',
+        commercialPolicyVersion: 'commercial-v1',
+        attributedAt: new Date().toISOString(),
+        attributionSignature: 'signed-evidence',
+        promoterCommissionPaise: 200,
+      },
+    });
+    await services.repos().orders.save(order);
+    await services.repos().financialJournals.postBatch([
+      {
+        id: 'journal_order_1',
+        organizationId: 'org_1',
+        currency: 'INR',
+        lines: [],
+        source: {
+          type: 'online_payment_capture',
+          id: 'pay_xyz',
+          orderId: order.id,
+          paymentId: 'pay_xyz',
+          eventId: 'event_1',
+          assignmentId: 'assignment_1',
+          commissionPolicyVersion: 'commission-v1',
+          commercialPolicyVersion: 'commercial-v1',
+        },
+        idempotencyKey: 'journal-order-1',
+        accountingPolicy: { version: 'policy-v1', capturedAt: new Date().toISOString() },
+        components: { promoterAllocationPaise: 200 },
+        reversalOfJournalId: null,
+        evidenceOnly: false,
+        status: 'posted',
+        postedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+      } as unknown as FinancialJournal,
+      {
+        id: 'journal_refund_1',
+        organizationId: 'org_1',
+        currency: 'INR',
+        lines: [],
+        source: {
+          type: 'refund',
+          id: 'refund_1',
+          orderId: order.id,
+          paymentId: 'pay_xyz',
+          eventId: 'event_1',
+          assignmentId: 'assignment_1',
+          commissionPolicyVersion: 'commission-v1',
+          commercialPolicyVersion: 'commercial-v1',
+        },
+        idempotencyKey: 'journal-refund-1',
+        accountingPolicy: { version: 'policy-v1', capturedAt: new Date().toISOString() },
+        components: { promoterAllocationPaise: 100 },
+        reversalOfJournalId: 'journal_order_1',
+        evidenceOnly: false,
+        status: 'posted',
+        postedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+      } as unknown as FinancialJournal,
+    ]);
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/admin/orders/by-booking-reference/${bookingReference}`,
+      headers: asUser('admin_a'),
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      bookingReference,
+      attribution: {
+        promoterId: 'org_promoter_1',
+        assignmentId: 'assignment_1',
+        promoterCommissionPaise: 200,
+      },
+      journals: [
+        { sourceType: 'online_payment_capture', componentPromoterCommissionPaise: 200 },
+        {
+          sourceType: 'refund',
+          componentPromoterCommissionPaise: 100,
+          reversalOfJournalId: 'journal_order_1',
+        },
+      ],
+    });
+  });
+
+  it('denies exact booking-reference lookup to a non-admin', async () => {
+    const response = await server.inject({
+      method: 'GET',
+      url: '/admin/orders/by-booking-reference/C1-ABCDE-12345-67890-F0123',
+      headers: asUser('not_an_admin'),
+    });
+    expect(response.statusCode).toBe(401);
   });
 });

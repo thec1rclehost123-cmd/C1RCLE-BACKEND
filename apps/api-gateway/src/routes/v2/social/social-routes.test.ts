@@ -137,6 +137,7 @@ describe('event.published → notification inbox (pub/sub end to end)', () => {
       headers: { 'x-user-id': 'guest_n1' },
     });
     expect(inbox.statusCode).toBe(200);
+    expect(inbox.headers['cache-control']).toBe('private, no-store');
     const body = inbox.json();
     expect(body.items).toHaveLength(1);
     expect(body.items[0]).toMatchObject({
@@ -152,7 +153,9 @@ describe('event.published → notification inbox (pub/sub end to end)', () => {
         url: '/notifications/me/unread-count',
         headers: { 'x-user-id': 'guest_n2' },
       });
-    expect((await unread()).json()).toEqual({ count: 1 });
+    const unreadResponse = await unread();
+    expect(unreadResponse.headers['cache-control']).toBe('private, no-store');
+    expect(unreadResponse.json()).toEqual({ count: 1 });
 
     // guest_n2 cannot mark guest_n1's row.
     const foreign = await server.inject({

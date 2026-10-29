@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
+import { publishEventForTest } from '../../../test-utils/publish-event.js';
 import partnerEventCatalogRoutes from '../partner/event-catalog.js';
 import partnerEventRoutes from '../partner/events.js';
 import partnerOrganizationRoutes from '../partner/organizations.js';
@@ -63,6 +64,7 @@ async function seed(
     payload: { title: 'Sky Night', venueId, startAt: '2026-09-01T18:00:00Z' },
   });
   const eventId: string = event.json().id;
+  await publishEventForTest(eventId);
 
   const priceInPaise = options.priceInPaise ?? 150_000;
   const quantity = options.quantity ?? 100;
@@ -111,7 +113,47 @@ describe('POST /checkout/quote', () => {
     await server.close();
   });
 
-  it('unknown tier id -> 400 invalid_operation, not a 500', async () => {
+  it('accepts the upgrade source field and fails closed when that ticket is not eligible', async () => {
+    const server = await buildServer();
+    const { eventId, tierId } = await seed(server);
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/checkout/quote',
+      payload: {
+        eventId,
+        lines: [{ tierId, quantity: 1 }],
+        upgradeFromEntitlementId: 'ENT-missing-upgrade-source',
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ code: 'validation' });
+    expect(response.json().message).toMatch(/upgrade/);
+    await server.close();
+  });
+
+  it('does not reveal whether a submitted referral code is available', async () => {
+    const server = await buildServer();
+    const { eventId, tierId } = await seed(server);
+
+    const withoutCode = await server.inject({
+      method: 'POST',
+      url: '/checkout/quote',
+      payload: { eventId, lines: [{ tierId, quantity: 1 }] },
+    });
+    const response = await server.inject({
+      method: 'POST',
+      url: '/checkout/quote',
+      payload: { eventId, lines: [{ tierId, quantity: 1 }], referralCode: 'REVOKED-CODE' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(withoutCode.json());
+    await server.close();
+  });
+
+  it('unknown or restricted tier id -> indistinguishable 404', async () => {
     const server = await buildServer();
     const { eventId } = await seed(server);
 
@@ -121,17 +163,14 @@ describe('POST /checkout/quote', () => {
       payload: { eventId, lines: [{ tierId: 'tier_does_not_exist', quantity: 1 }] },
     });
 
-    expect(response.statusCode).toBe(400);
-    expect(response.json()).toMatchObject({ code: 'validation' });
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toMatchObject({ code: 'not_found' });
     await server.close();
   });
 
-  it('unknown event id -> 400 (no tiers found for it), never a 500', async () => {
-    // `quote()` prices lines against the event's catalog — it has no
-    // dedicated event-existence check, so an unknown event surfaces as "tier
-    // not found" (400) rather than a distinct 404. `createHold`, below, does
-    // check event existence explicitly (it needs `organizationId` off the
-    // event) and returns a proper 404 for the same bad id.
+  it('unknown event id -> 404, never a 500', async () => {
+    // `quote()` first checks the event exists and is on sale, so an unknown event
+    // is a plain 404 (as it is for `createHold`, below).
     const server = await buildServer();
 
     const response = await server.inject({
@@ -140,8 +179,8 @@ describe('POST /checkout/quote', () => {
       payload: { eventId: 'event_does_not_exist', lines: [{ tierId: 'tier_1', quantity: 1 }] },
     });
 
-    expect(response.statusCode).toBe(400);
-    expect(response.json()).toMatchObject({ code: 'validation' });
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toMatchObject({ code: 'not_found' });
     await server.close();
   });
 
@@ -194,6 +233,30 @@ describe('POST /checkout/holds', () => {
     expect(body.holdId).toBeTruthy();
     expect(body.expiresAt).toBeTruthy();
     expect(body.pricing.lines).toHaveLength(1);
+    expect(body).not.toHaveProperty('referralAttributionStatus');
+    await server.close();
+  });
+
+  it('does not reveal whether a submitted referral code is available on the hold', async () => {
+    const server = await buildServer();
+    const { eventId, tierId } = await seed(server);
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/checkout/holds',
+      headers: { 'idempotency-key': 'hold-revoked-referral' },
+      payload: {
+        eventId,
+        lines: [{ tierId, quantity: 1 }],
+        referralCode: 'REVOKED-CODE',
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      status: 'active',
+    });
+    expect(response.json()).not.toHaveProperty('referralAttributionStatus');
     await server.close();
   });
 

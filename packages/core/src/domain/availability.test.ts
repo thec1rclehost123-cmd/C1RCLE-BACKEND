@@ -45,12 +45,14 @@ describe('computeVenueAvailability', () => {
       slot('b', 'open'),
       slot('c', 'booked'),
       slot('d', 'blocked'),
+      slot('e', 'pending'),
     ]);
 
     expect(result).toMatchObject({
       openSlots: 2,
       bookedSlots: 1,
       blockedSlots: 1,
+      pendingRequests: 1,
       fullyBooked: false,
     });
   });

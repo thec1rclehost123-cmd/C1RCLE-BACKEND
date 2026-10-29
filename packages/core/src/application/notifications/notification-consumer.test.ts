@@ -7,6 +7,7 @@ import { createNotificationConsumer } from './notification-consumer.js';
 import { NotificationService } from './notification-service.js';
 
 import type { DomainEvent } from '../../domain/events.js';
+import type { Order } from '../../domain/models/order.js';
 import type { ActorContext, ServiceDeps } from '../context.js';
 
 /**
@@ -22,13 +23,24 @@ interface Harness {
   repo: MemoryNotificationRepository;
   service: NotificationService;
   consume: (event: DomainEvent) => Promise<void>;
+  orders: Map<string, unknown>;
 }
 
 function makeHarness(): Harness {
   const repo = new MemoryNotificationRepository();
+  const orders = new Map<string, unknown>();
   let seq = 0;
   const deps = {
-    repositories: { notifications: repo },
+    repositories: {
+      notifications: repo,
+      organizations: {
+        getById: async (id: string) =>
+          id === 'org_promoter' ? { members: [{ capabilities: ['promoter'] }] } : null,
+      },
+      orders: {
+        getById: async (id: string) => (orders.get(id) as Order | undefined) ?? null,
+      },
+    },
     config: { ids: () => `notif_${++seq}`, clock: { now: () => FIXED_NOW } },
     logger: { info: () => undefined },
   } as unknown as ServiceDeps;
@@ -36,10 +48,24 @@ function makeHarness(): Harness {
   const service = new NotificationService(deps);
   const consume = createNotificationConsumer({
     notifications: repo,
+    orders: deps.repositories.orders,
+    organizations: deps.repositories.organizations,
     config: deps.config,
     logger: deps.logger,
   });
-  return { repo, service, consume };
+  return { repo, service, consume, orders };
+}
+
+function attributedOrder(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'order_1',
+    eventId: 'event_1',
+    status: 'paid',
+    bookingReference: 'C1-001',
+    contact: { name: 'Private Guest', email: 'guest-private@example.test', phone: '5550101' },
+    attribution: { promoterId: 'org_promoter', promoterCommissionPaise: 1_250 },
+    ...overrides,
+  };
 }
 
 function event(type: string, overrides: Partial<DomainEvent> = {}): DomainEvent {
@@ -65,6 +91,7 @@ const connectionRequested = (connectionId = 'conn_1', targetId = 'org_venue') =>
       initiatedBy: 'promoter',
       promoterId: 'org_promoter',
       promoterName: 'Ace',
+      targetName: 'Lumen House',
       message: null,
     },
   });
@@ -81,6 +108,179 @@ const actorOf = (organizationId: string): ActorContext => ({
 });
 
 describe('notification consumer — producer mapping', () => {
+  it('deduplicates durable Promoter assignment invitation events', async () => {
+    const { repo, consume } = makeHarness();
+    const invited = event('promoter.assignment.invited', {
+      payload: {
+        assignmentId: 'assignment_1',
+        eventId: 'event_1',
+        promoterId: 'org_promoter',
+        eventTitle: 'Sky Night',
+      },
+    });
+
+    await consume(invited);
+    const first = firstOf(repo);
+    expect(first).toBeDefined();
+    if (!first) throw new Error('Invitation notification was not created');
+    await repo.markRead(first.id, '2026-01-15T12:01:00.000Z');
+    await consume({ ...invited, id: 'retry_event' });
+
+    expect(repo.entries.size).toBe(1);
+    expect(firstOf(repo)).toMatchObject({
+      recipientId: 'org_promoter',
+      recipientType: 'promoter',
+      type: 'promoter.assignment.invited',
+      read: true,
+      data: { assignmentId: 'assignment_1', eventTitle: 'Sky Night' },
+    });
+  });
+
+  it('routes assignment decisions to the event owner organization', async () => {
+    const { repo, consume } = makeHarness();
+    await consume(
+      event('promoter.assignment.accepted', {
+        payload: {
+          assignmentId: 'assignment_2',
+          eventId: 'event_2',
+          promoterId: 'org_promoter',
+          eventOwnerId: 'org_host',
+          eventOwnerType: 'host',
+          eventTitle: 'Sky Night',
+        },
+      }),
+    );
+
+    expect(firstOf(repo)).toMatchObject({
+      recipientId: 'org_host',
+      recipientType: 'host',
+      type: 'promoter.assignment.accepted',
+      data: { assignmentId: 'assignment_2', eventId: 'event_2' },
+    });
+  });
+
+  it('notifies the Promoter once when an assignment expires', async () => {
+    const { repo, consume } = makeHarness();
+    const expired = event('promoter.assignment.expired', {
+      id: 'assignment-expired-event',
+      payload: {
+        assignmentId: 'assignment_3',
+        eventId: 'event_3',
+        promoterId: 'org_promoter',
+        eventTitle: 'Sky Night',
+        expiresAt: '2026-01-15T11:00:00.000Z',
+      },
+    });
+
+    await consume(expired);
+    await consume(expired);
+
+    expect(repo.entries.size).toBe(1);
+    expect(firstOf(repo)).toMatchObject({
+      recipientId: 'org_promoter',
+      recipientType: 'promoter',
+      type: 'promoter.assignment.expired',
+      body: 'Your assignment for "Sky Night" has expired.',
+      data: { assignmentId: 'assignment_3', expiresAt: '2026-01-15T11:00:00.000Z' },
+    });
+  });
+
+  it('notifies the Promoter when a campaign link is activated or revoked', async () => {
+    const { repo, consume } = makeHarness();
+    const activated = event('promoter.campaign.activated', {
+      payload: {
+        referralLinkId: 'link_1',
+        eventId: 'event_1',
+        promoterId: 'org_promoter',
+        eventTitle: 'Sky Night',
+      },
+    });
+    await consume(activated);
+    expect(firstOf(repo)).toMatchObject({
+      recipientId: 'org_promoter',
+      recipientType: 'promoter',
+      type: 'promoter.campaign.activated',
+      data: { referralLinkId: 'link_1', eventId: 'event_1' },
+    });
+
+    await consume(
+      event('promoter.campaign.revoked', {
+        payload: {
+          referralLinkId: 'link_1',
+          eventId: 'event_1',
+          promoterId: 'org_promoter',
+          eventTitle: 'Sky Night',
+        },
+      }),
+    );
+    expect(repo.entries.size).toBe(2);
+    expect(
+      [...repo.entries.values()].some((item) => item.type === 'promoter.campaign.revoked'),
+    ).toBe(true);
+  });
+
+  it('notifies an approved Promoter and assignment suspension changes', async () => {
+    const { repo, consume } = makeHarness();
+    await consume(
+      event('promoter.onboarding.approved', {
+        payload: { requestId: 'request_1', promoterId: 'org_promoter' },
+      }),
+    );
+    expect(firstOf(repo)).toMatchObject({
+      recipientId: 'org_promoter',
+      recipientType: 'promoter',
+      type: 'promoter.onboarding.approved',
+      data: { requestId: 'request_1' },
+    });
+    await consume(
+      event('promoter.assignments.status_changed', {
+        payload: {
+          promoterId: 'org_promoter',
+          status: 'suspended',
+          affectedAssignments: 2,
+        },
+      }),
+    );
+    expect(repo.entries.size).toBe(2);
+    expect(
+      [...repo.entries.values()].some((item) => item.body.includes('2 event assignments')),
+    ).toBe(true);
+  });
+
+  it('notifies a Promoter about their own payout status changes only', async () => {
+    const { repo, consume } = makeHarness();
+    await consume(
+      event('finance.payout.status_changed', {
+        payload: {
+          payoutId: 'payout_1',
+          organizationId: 'org_promoter',
+          status: 'paid',
+          version: 2,
+          amountPaise: 12_500,
+        },
+      }),
+    );
+    expect(firstOf(repo)).toMatchObject({
+      recipientId: 'org_promoter',
+      recipientType: 'promoter',
+      type: 'promoter.commission_payout',
+      data: { payoutId: 'payout_1', payoutStatus: 'paid', amountPaise: 12_500 },
+    });
+
+    await consume(
+      event('finance.payout.status_changed', {
+        payload: {
+          payoutId: 'payout_2',
+          organizationId: 'org_host',
+          status: 'paid',
+          version: 2,
+          amountPaise: 12_500,
+        },
+      }),
+    );
+    expect(repo.entries.size).toBe(1);
+  });
+
   it('addresses a connection request to the target org, not the initiator', async () => {
     const { repo, consume } = makeHarness();
     await consume(connectionRequested());
@@ -94,6 +294,37 @@ describe('notification consumer — producer mapping', () => {
       action: { resourceType: 'promoter_connection', resourceId: 'conn_1' },
     });
     expect(item?.title).toContain('Ace');
+  });
+
+  it('addresses a target-initiated connection request to the PROMOTER org', async () => {
+    // The venue/host opened the conversation, so `targetId` names the
+    // INITIATOR here — the promoter is the side that must answer, and
+    // addressing `targetId` would drop the invite in the initiator's own inbox.
+    const { repo, consume } = makeHarness();
+    await consume(
+      event('promoter_connection.requested', {
+        payload: {
+          connectionId: 'conn_2',
+          targetId: 'org_venue',
+          targetType: 'venue',
+          initiatedBy: 'target',
+          promoterId: 'org_promoter',
+          promoterName: 'Ace',
+          targetName: 'Lumen House',
+          message: 'Fridays with us?',
+        },
+      }),
+    );
+
+    const item = firstOf(repo);
+    expect(item).toMatchObject({
+      recipientId: 'org_promoter',
+      recipientType: 'promoter',
+      type: 'promoter_connection.requested',
+      read: false,
+      action: { resourceType: 'promoter_connection', resourceId: 'conn_2' },
+    });
+    expect(item?.title).toContain('Lumen House');
   });
 
   it('addresses a host-initiated partnership to the venue org', async () => {
@@ -162,6 +393,91 @@ describe('notification consumer — producer mapping', () => {
     const { repo, consume } = makeHarness();
     await consume(event('organization.created', { payload: { name: 'Org', slug: 'org' } }));
     expect(repo.entries.size).toBe(0);
+  });
+
+  it('notifies the attributed Promoter of a fulfilled paid order once, without Guest PII', async () => {
+    const { repo, consume, orders } = makeHarness();
+    orders.set('order_1', attributedOrder());
+    const fulfilled = event('order.fulfilled', {
+      aggregateId: 'order_1',
+      payload: { orderId: 'order_1', eventId: 'event_1' },
+    });
+
+    await consume(fulfilled);
+    const first = firstOf(repo);
+    expect(first).toMatchObject({
+      recipientId: 'org_promoter',
+      recipientType: 'promoter',
+      type: 'promoter.attributed_sale',
+      data: {
+        eventId: 'event_1',
+        orderId: 'order_1',
+        bookingReference: 'C1-001',
+        commissionPaise: 1_250,
+      },
+    });
+    expect(JSON.stringify(first)).not.toContain('guest-private@example.test');
+
+    const id = first?.id;
+    if (!id) throw new Error('expected a Promoter notification');
+    await repo.markRead(id, FIXED_NOW.toISOString());
+    await consume(fulfilled);
+    expect(repo.entries.size).toBe(1);
+    expect(repo.entries.get(id)?.read).toBe(true);
+  });
+
+  it('notifies a Promoter when a refund settles against an attributed order', async () => {
+    const { repo, consume, orders } = makeHarness();
+    orders.set('order_1', attributedOrder());
+    await consume(
+      event('finance.refund.settled', {
+        aggregateId: 'order_1',
+        payload: {
+          refundRequestId: 'refund_1',
+          orderId: 'order_1',
+          amountPaise: 5_000,
+          providerRefundId: 'provider-refund-private',
+        },
+      }),
+    );
+
+    const notification = firstOf(repo);
+    expect(notification).toMatchObject({
+      recipientId: 'org_promoter',
+      recipientType: 'promoter',
+      type: 'promoter.commission_refund',
+      data: {
+        orderId: 'order_1',
+        eventId: 'event_1',
+        refundRequestId: 'refund_1',
+        refundAmountPaise: 5_000,
+      },
+    });
+    expect(JSON.stringify(notification)).not.toContain('provider-refund-private');
+    expect(JSON.stringify(notification)).not.toContain('guest-private@example.test');
+  });
+
+  it('notifies a Promoter when an attributed commission is held for a chargeback', async () => {
+    const { repo, consume, orders } = makeHarness();
+    orders.set('order_1', attributedOrder());
+    await consume(
+      event('finance.chargeback.updated', {
+        aggregateId: 'order_1',
+        payload: { orderId: 'order_1', disputeId: 'dispute_1', status: 'under_review' },
+      }),
+    );
+
+    expect(firstOf(repo)).toMatchObject({
+      recipientId: 'org_promoter',
+      recipientType: 'promoter',
+      type: 'promoter.chargeback_hold',
+      data: {
+        orderId: 'order_1',
+        eventId: 'event_1',
+        disputeId: 'dispute_1',
+        disputeStatus: 'under_review',
+      },
+    });
   });
 });
 

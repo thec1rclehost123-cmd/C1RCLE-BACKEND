@@ -17,6 +17,8 @@ export interface UserDirectoryPort {
   readonly name: string;
   /** `null` when the user cannot be found or has no email on file. */
   getEmailById(userId: EntityId): Promise<string | null>;
+  /** Finds the user id for an email address, or null when no login exists. */
+  findUserIdByEmail(email: string): Promise<string | null>;
 }
 
 /**
@@ -29,6 +31,10 @@ export class NullUserDirectory implements UserDirectoryPort {
   readonly name = 'null';
 
   async getEmailById(): Promise<string | null> {
+    return null;
+  }
+
+  async findUserIdByEmail(): Promise<string | null> {
     return null;
   }
 }

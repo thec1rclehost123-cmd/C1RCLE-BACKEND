@@ -6,7 +6,11 @@
  * fast path later). Concurrent same-key executions resolve to one winner.
  */
 
-import { IdempotencyConflictError, IdempotencyInFlightError } from '../../domain/errors.js';
+import {
+  IdempotencyConflictError,
+  IdempotencyFailedError,
+  IdempotencyInFlightError,
+} from '../../domain/errors.js';
 
 import type { IdempotencyStore } from '../../domain/ports/idempotency.js';
 import type { Logger } from '../../telemetry/logger.js';
@@ -54,7 +58,16 @@ export class IdempotencyService {
    * Executes `command.work()` exactly once per key. Retries replay the stored
    * response; a reused key with a different request throws
    * `IdempotencyConflictError`; a concurrent same-key attempt throws
-   * `IdempotencyInFlightError`. Failures release the claim so a retry can run.
+   * `IdempotencyInFlightError`.
+   *
+   * A failing attempt is marked FAILED, NOT released: the failure may have
+   * happened after a durable write (emit / outbox / response validation), so
+   * re-running it could duplicate the record. A retry of the same key then
+   * throws `IdempotencyFailedError` instead of executing again — the client
+   * must inspect the original outcome, not blindly retry. (This is the one
+   * deliberate deviation from "release on failure": it trades a clean retry of
+   * genuinely-failed commands for a guarantee that a partially-persisted one
+   * can never run twice.)
    */
   async executeOnce<T>(command: IdempotentCommand<T>): Promise<IdempotentResult<T>> {
     const key = buildIdempotencyKey(command.idempotencyKey, command.actorId, command.commandName);
@@ -64,6 +77,9 @@ export class IdempotencyService {
     if (existing) {
       if (existing.requestHash !== command.requestHash) {
         throw new IdempotencyConflictError(command.idempotencyKey);
+      }
+      if (existing.status === 'FAILED') {
+        throw new IdempotencyFailedError(command.idempotencyKey);
       }
       if (existing.status === 'IN_PROGRESS') {
         throw new IdempotencyInFlightError(command.idempotencyKey);
@@ -80,9 +96,9 @@ export class IdempotencyService {
       await this.store.complete(key, result.statusCode, result.body);
       return { replayed: false, ...result };
     } catch (error) {
-      await this.store.release(key).catch(() => {});
+      await this.store.fail(key).catch(() => {});
       this.logger?.warn(
-        `Idempotent command failed; claim released (${command.commandName}:${command.idempotencyKey})`,
+        `Idempotent command failed; claim marked FAILED (${command.commandName}:${command.idempotencyKey})`,
       );
       throw error;
     }

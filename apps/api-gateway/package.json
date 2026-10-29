@@ -11,22 +11,27 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:scenarios": "vitest run --config vitest.scenarios.config.mjs",
+    "repair:fulfilment": "tsx --env-file-if-exists=.env.local src/scripts/repair-fulfilment.ts",
     "seed:admin": "tsx --env-file-if-exists=.env.local src/scripts/seed-platform-admin.ts",
+    "backfill:analytics": "tsx --env-file-if-exists=.env.local src/scripts/backfill-analytics.ts",
     "configure:storage-cors": "tsx --env-file-if-exists=.env.local src/scripts/configure-storage-cors.ts"
   },
   "dependencies": {
     "@c1rcle/contracts": "workspace:^",
     "@c1rcle/core": "workspace:^",
     "@fastify/cors": "^11.0.0",
-    "better-auth": "^1.0.0",
-    "better-auth-firestore": "^1.0.0",
+    "better-auth": "^1.7.7",
+    "better-auth-firestore": "^1.3.3",
     "fastify": "^5.12.1",
-    "firebase-admin": "^13.0.0",
     "fastify-plugin": "^5.0.0",
-    "zod": "^4.2.0"
+    "firebase-admin": "^13.0.0",
+    "ioredis": "^6.0.0",
+    "zod": "^4.6.6"
   },
   "devDependencies": {
+    "@types/ioredis-mock": "^8.2.8",
     "@types/node": "^24.0.0",
+    "ioredis-mock": "^8.13.1",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0",
     "vitest": "^4.1.11"

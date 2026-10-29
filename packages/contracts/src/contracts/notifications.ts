@@ -48,6 +48,8 @@ export type NotificationDto = z.infer<typeof notificationDtoSchema>;
 export const notificationsListResponseSchema = z.object({
   items: z.array(notificationDtoSchema),
   pageInfo: pageInfoSchema,
+  /** Opaque cursor needed to fetch the next bounded inbox page. */
+  nextCursor: z.string().nullable(),
   /** Live unread count for the bell badge — returned with every page read. */
   unreadCount: z.number().int().nonnegative(),
 });

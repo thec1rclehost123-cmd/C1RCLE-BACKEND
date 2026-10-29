@@ -44,20 +44,39 @@ export class FirestoreInvitationRepository implements InvitationRepository {
     organizationId: EntityId,
     email: string,
   ): Promise<OrganizationInvitation | null> {
-    const snap = await this.collection
-      .where('organizationId', '==', organizationId)
-      .where('email', '==', normalizeEmail(email))
-      .where('status', '==', 'pending')
-      .limit(10)
-      .get();
+    // Single equality filter only (automatic single-field index): the previous
+    // triple-where (`organizationId` + `email` + `status`) demands a composite
+    // index that was never deployed, so every invite on the firestore driver
+    // failed with FAILED_PRECONDITION → 500. Email is the selective filter;
+    // org + status + expiry are checked in code (same pattern as
+    // `listPendingByEmail` below).
+    const wanted = normalizeEmail(email);
+    const snap = await this.collection.where('email', '==', wanted).limit(50).get();
 
     for (const doc of snap.docs) {
       const invitation = toInvitation(doc.data());
+      if (invitation.organizationId !== organizationId) continue;
+      if (invitation.status !== 'pending') continue;
       // `status === 'pending'` in storage can still be *effectively* expired;
       // the time check is authoritative so a lapsed row never blocks a re-invite.
       if (effectiveInvitationStatus(invitation) === 'pending') return invitation;
     }
     return null;
+  }
+
+  async listPendingByEmail(email: string): Promise<OrganizationInvitation[]> {
+    // Single equality filter only (automatic single-field index): pairing
+    // filters or adding `orderBy` would demand a new composite index at
+    // deploy time. Fifty rows filter and sort trivially in code.
+    const snap = await this.collection.where('email', '==', normalizeEmail(email)).limit(50).get();
+
+    const pending: OrganizationInvitation[] = [];
+    for (const doc of snap.docs) {
+      const invitation = toInvitation(doc.data());
+      if (invitation.status !== 'pending') continue;
+      if (effectiveInvitationStatus(invitation) === 'pending') pending.push(invitation);
+    }
+    return pending.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
   async save(invitation: OrganizationInvitation, _tx?: TxContext | null): Promise<void> {

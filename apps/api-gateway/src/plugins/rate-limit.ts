@@ -1,6 +1,8 @@
 import { buildV2ErrorResponse } from '@c1rcle/contracts';
 import fp from 'fastify-plugin';
 
+import { createMemoryRateLimitStore, type RateLimitStore } from '../lib/rate-limit-store.js';
+
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 /**
@@ -12,8 +14,10 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
  * NAT and lets one account rotate addresses; user alone lets an anonymous
  * flood through. Both, plus tenant, so one noisy org cannot starve another.
  *
- * Sliding window, in-memory. A Redis-backed store can replace it later
- * without changing the classes or the key shape.
+ * Sliding window. The counters live in a `RateLimitStore`: process memory by
+ * default, or Redis (`RATE_LIMIT_STORE=redis`) so the window is shared across
+ * gateway instances and survives restarts. Classes and key shape are the same
+ * either way.
  */
 
 export type RateLimitClass =
@@ -54,42 +58,15 @@ export interface RateLimitOptions {
   now?: () => number;
   /** Disables enforcement (tests that are not about rate limiting). */
   enabled?: boolean;
+  /** Counter storage. Defaults to per-process memory. */
+  store?: RateLimitStore;
 }
-
-/**
- * Every route class here is reachable by an unauthenticated caller (OTP
- * send/verify, login, signup, public reads) — so the compound key is
- * attacker-controlled: a botnet rotating source IPs can mint effectively
- * unlimited distinct keys, each a permanent `Map` entry, since nothing
- * previously pruned a key once created. That is a memory-exhaustion DoS
- * available to anyone who can send HTTP requests, not just an authenticated
- * abuser. `MAX_TRACKED_KEYS` bounds the map's size; insertion order in a
- * `Map` iterates oldest-first, so evicting `hits.keys().next().value` evicts
- * the least-recently-touched key — an approximate LRU without a second
- * data structure, adequate for a sliding-window counter that is inherently
- * approximate already.
- */
-const MAX_TRACKED_KEYS = 50_000;
 
 export default fp<RateLimitOptions>(
   async (fastify: FastifyInstance, options: RateLimitOptions) => {
     const now = options.now ?? (() => Date.now());
     const enabled = options.enabled ?? true;
-    /** key → hit timestamps inside the current window. Insertion order = LRU order. */
-    const hits = new Map<string, number[]>();
-
-    function touch(key: string, value: number[]): void {
-      // Re-inserting (delete then set) moves the key to the "most recently
-      // used" end of the Map's iteration order — otherwise a key hit once
-      // long ago but never revisited would still occupy an early slot and
-      // never get evicted ahead of one that just churned through its window.
-      hits.delete(key);
-      if (hits.size >= MAX_TRACKED_KEYS) {
-        const oldestKey = hits.keys().next().value;
-        if (oldestKey !== undefined) hits.delete(oldestKey);
-      }
-      hits.set(key, value);
-    }
+    const store = options.store ?? createMemoryRateLimitStore();
 
     fastify.decorate('rateLimit', (limitClass: RateLimitClass) => {
       const budget = RATE_LIMIT_CLASSES[limitClass];
@@ -97,22 +74,12 @@ export default fp<RateLimitOptions>(
       return async (request: FastifyRequest, reply: FastifyReply) => {
         if (!enabled) return;
 
-        const key = compoundKey(request, limitClass);
-        const current = now();
-        const windowStart = current - budget.windowMs;
+        const decision = await store.hit(compoundKey(request, limitClass), budget, now());
 
-        const recent = (hits.get(key) ?? []).filter((stamp) => stamp > windowStart);
-
-        if (recent.length >= budget.limit) {
-          const oldest = recent[0] ?? current;
-          const retryAfterSeconds = Math.max(
-            1,
-            Math.ceil((oldest + budget.windowMs - current) / 1000),
-          );
-          touch(key, recent);
+        if (!decision.allowed) {
           void reply
             .status(429)
-            .header('retry-after', String(retryAfterSeconds))
+            .header('retry-after', String(decision.retryAfterSeconds))
             .send(
               buildV2ErrorResponse({
                 status: 429,
@@ -123,9 +90,6 @@ export default fp<RateLimitOptions>(
             );
           return reply;
         }
-
-        recent.push(current);
-        touch(key, recent);
       };
     });
 

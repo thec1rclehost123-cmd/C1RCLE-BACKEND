@@ -38,7 +38,6 @@ export class MemoryInvitationRepository implements InvitationRepository {
       nextCursor: next < all.length ? String(next) : null,
     };
   }
-
   async findPendingByEmail(
     organizationId: EntityId,
     email: string,
@@ -52,6 +51,16 @@ export class MemoryInvitationRepository implements InvitationRepository {
       if (effectiveInvitationStatus(invitation) === 'pending') return invitation;
     }
     return null;
+  }
+
+  async listPendingByEmail(email: string): Promise<OrganizationInvitation[]> {
+    const wanted = normalizeEmail(email);
+    return [...this.invitations.values()]
+      .filter(
+        (invitation) =>
+          invitation.email === wanted && effectiveInvitationStatus(invitation) === 'pending',
+      )
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
   async save(invitation: OrganizationInvitation, _tx?: TxContext | null): Promise<void> {

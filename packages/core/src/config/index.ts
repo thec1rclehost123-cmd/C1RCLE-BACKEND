@@ -57,6 +57,12 @@ export interface CoreConfig {
    * by a server secret an attacker with DB read access does not also have.
    */
   emailOtpSecret: string;
+  /**
+   * Public origin of the partner dashboard, used to build absolute staff-
+   * invitation accept links. Optional: when absent, invitation emails omit the
+   * link (the invitee asks their manager for it) rather than linking nowhere.
+   */
+  partnerDashboardUrl?: string | undefined;
 }
 
 export interface CoreConfigInput {
@@ -70,6 +76,7 @@ export interface CoreConfigInput {
   bankEncryptionSecret?: string;
   bankEncryptionSalt?: string;
   emailOtpSecret?: string;
+  partnerDashboardUrl?: string;
 }
 
 export class CoreConfigError extends Error {
@@ -78,6 +85,15 @@ export class CoreConfigError extends Error {
     this.name = 'CoreConfigError';
   }
 }
+
+/**
+ * The secret and salt that bank-account numbers were encrypted with before the
+ * gateway wired `ENCRYPTION_KEY` through. They are published in this repository,
+ * so they protect nothing; they exist only so records written under them can
+ * still be decrypted (see `getFullAccountNumber`). Never use them to encrypt.
+ */
+export const LEGACY_BANK_ENCRYPTION_SECRET = 'default-bank-encryption-secret-change-in-production';
+export const LEGACY_BANK_ENCRYPTION_SALT = 'default-bank-encryption-salt';
 
 export function createCoreConfig(input: CoreConfigInput): CoreConfig {
   if (!input.redis || typeof input.redis.url !== 'string' || input.redis.url.length === 0) {
@@ -112,10 +128,10 @@ export function createCoreConfig(input: CoreConfigInput): CoreConfig {
     features: input.features ?? {},
     magicTicketSecret:
       input.magicTicketSecret ?? 'default-magic-ticket-secret-change-in-production',
-    bankEncryptionSecret:
-      input.bankEncryptionSecret ?? 'default-bank-encryption-secret-change-in-production',
-    bankEncryptionSalt: input.bankEncryptionSalt ?? 'default-bank-encryption-salt',
+    bankEncryptionSecret: input.bankEncryptionSecret ?? LEGACY_BANK_ENCRYPTION_SECRET,
+    bankEncryptionSalt: input.bankEncryptionSalt ?? LEGACY_BANK_ENCRYPTION_SALT,
     emailOtpSecret: input.emailOtpSecret ?? 'default-email-otp-secret-change-in-production',
+    ...(input.partnerDashboardUrl ? { partnerDashboardUrl: input.partnerDashboardUrl } : {}),
   };
 }
 

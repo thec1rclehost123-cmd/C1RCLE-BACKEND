@@ -1,5 +1,5 @@
 import { buildV2ErrorResponse } from '@c1rcle/contracts';
-import { createLogger, type Logger } from '@c1rcle/core';
+import { createLogger, refreshAnalyticsReadModel, type Logger } from '@c1rcle/core';
 import cors from '@fastify/cors';
 import Fastify, { LogController, type FastifyInstance } from 'fastify';
 
@@ -12,7 +12,13 @@ import {
   type GatewayConfig,
 } from './config/index.js';
 import { redactPaths } from './lib/logger-config.js';
+import {
+  createMemoryRateLimitStore,
+  createRedisRateLimitStore,
+  type RateLimitStore,
+} from './lib/rate-limit-store.js';
 import { createReadinessChecks } from './lib/readiness.js';
+import { createRedisClient, createRedisReadinessCheck } from './lib/redis.js';
 import { createRequestIdGenerator, onRequestHook } from './lib/request-tracing.js';
 import { createGatewayRuntimeState, type GatewayRuntimeState } from './lib/runtime-state.js';
 import { createV2Services } from './lib/v2-services.js';
@@ -42,7 +48,24 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   const logLevel = config.LOG_LEVEL === 'silent' ? 'silent' : config.LOG_LEVEL;
   const runtimeState = options.runtimeState ?? createGatewayRuntimeState();
   const trustedProxyMatcher = createTrustedProxyMatcher(getTrustedProxyCidrs(config));
-  const readinessChecks = options.readinessChecks ?? createReadinessChecks(config);
+  // Redis is only opened when something uses it: today that is the rate
+  // limiter (RATE_LIMIT_STORE=redis). Otherwise nothing connects and readiness
+  // doesn't report on a dependency the gateway doesn't have.
+  const redis =
+    config.RATE_LIMIT_STORE === 'redis' ? createRedisClient(config.REDIS_URL) : undefined;
+  const readinessChecks =
+    options.readinessChecks ??
+    createReadinessChecks(config, {
+      ...(redis ? { redisCheck: createRedisReadinessCheck(redis) } : {}),
+      // Any Razorpay variable being set means payments are meant to work, so a
+      // partial set (e.g. keys without the webhook secret) must show up here.
+      // A deployment that sets none keeps the check off.
+      paymentProviderActive: [
+        config.RAZORPAY_KEY_ID,
+        config.RAZORPAY_KEY_SECRET,
+        config.RAZORPAY_WEBHOOK_SECRET,
+      ].some(Boolean),
+    });
 
   const app = Fastify({
     trustProxy: (address) => trustedProxyMatcher(address),
@@ -68,6 +91,59 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         app.log.error(fields ?? {}, msg);
       },
     });
+
+  // Misconfigurations that are tolerated outside production but weaken a real
+  // deployment. Production refuses to boot for the hard ones (config/index.ts).
+  if (config.STORAGE_DRIVER === 'firestore') {
+    if (!config.ENCRYPTION_KEY) {
+      logger.warn('encryption_key_not_set', {
+        hint: 'Bank account numbers are sealed with the built-in development key. Set ENCRYPTION_KEY.',
+      });
+    }
+    const razorpaySet = [
+      config.RAZORPAY_KEY_ID,
+      config.RAZORPAY_KEY_SECRET,
+      config.RAZORPAY_WEBHOOK_SECRET,
+    ].filter(Boolean).length;
+    if (razorpaySet < 3) {
+      logger.warn('payments_not_configured', {
+        configured: razorpaySet,
+        of: 3,
+        hint: 'Set RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET and RAZORPAY_WEBHOOK_SECRET to enable payments.',
+      });
+    }
+  }
+  if (config.BETTER_AUTH_SECRET === 'dev-only-change-me' || config.BETTER_AUTH_SECRET.length < 32) {
+    logger.warn('weak_auth_secret', {
+      hint: 'BETTER_AUTH_SECRET is the development default or shorter than 32 characters.',
+    });
+  }
+
+  let rateLimitStore: RateLimitStore = createMemoryRateLimitStore();
+  if (redis) {
+    // ioredis emits 'error' on every failed reconnect; unhandled, that is noisy
+    // and (without a listener) alarming. The store already degrades to memory.
+    redis.on('error', (error: Error) => {
+      // Connection-refused arrives as an AggregateError with an empty message.
+      const code = (error as { code?: string }).code;
+      logger.warn('redis_error', {
+        message: error.message === '' ? (code ?? error.name) : error.message,
+      });
+    });
+    rateLimitStore = createRedisRateLimitStore(redis, {
+      fallback: rateLimitStore,
+      onError: (error) => {
+        logger.warn('rate_limit_redis_unavailable_using_memory', {
+          message: error instanceof Error ? error.message : String(error),
+        });
+      },
+    });
+    app.addHook('onClose', async () => {
+      await redis.quit().catch(() => {
+        redis.disconnect();
+      });
+    });
+  }
 
   app.addHook('onRequest', onRequestHook);
 
@@ -121,7 +197,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await app.register(rbacPlugin, {
     resolveActor: (request) => v2Services.actor(request),
   });
-  await app.register(rateLimitPlugin);
+  await app.register(rateLimitPlugin, { store: rateLimitStore });
   await app.register(cachePlugin);
 
   app.setErrorHandler((error, request, reply) => {
@@ -153,9 +229,27 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   // depended on it (every reader filters by `expiresAt`), but the documents
   // never got swept, so this restores the hygiene v1 had. Firestore-only:
   // the memory driver (tests) never spawns a timer.
-  if (config.STORAGE_DRIVER === 'firestore') {
+  if (config.STORAGE_DRIVER === 'firestore' && config.BACKGROUND_WORKERS_ENABLED) {
     const repos = v2Services.repos();
     const sweepIntervalMs = 5 * 60 * 1000;
+    const expirePromoterAssignments = () => {
+      void v2Services.catalog
+        .expireDuePromoterAssignments()
+        .then((count) => {
+          if (count > 0) logger.info('promoter assignments expired', { count });
+        })
+        .catch((error: unknown) => {
+          logger.error('promoter assignment expiry sweep failed', { error });
+        });
+    };
+    expirePromoterAssignments();
+    const assignmentExpiryTimer = setInterval(expirePromoterAssignments, sweepIntervalMs);
+    assignmentExpiryTimer.unref();
+    app.addHook('onClose', (_instance, done) => {
+      clearInterval(assignmentExpiryTimer);
+      done();
+    });
+
     const sweepTimer = setInterval(() => {
       const now = new Date();
       void repos.cartReservations.cleanupExpired(now).catch((error: unknown) => {
@@ -164,10 +258,59 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       void repos.scannerSessions.cleanupExpired().catch((error: unknown) => {
         logger.error('scanner session sweep failed', { error });
       });
+      void repos.eventCoverAccounts
+        .cleanupExpiredRedemptionChallenges(now, 100)
+        .then((count) => {
+          if (count > 0) logger.info('event cover redemption challenges expired', { count });
+        })
+        .catch((error: unknown) => {
+          logger.error('event cover redemption expiry sweep failed', { error });
+        });
+      void v2Services.waitlist
+        .cleanupExpiredOffers(now, 100)
+        .then((count) => {
+          if (count > 0) logger.info('waitlist offers expired', { count });
+        })
+        .catch((error: unknown) => {
+          logger.error('waitlist offer expiry sweep failed', { error });
+        });
+      void v2Services.tickets
+        .cleanupExpiredTransfers(now, 100)
+        .then((count) => {
+          if (count > 0) logger.info('ticket transfers expired', { count });
+        })
+        .catch((error: unknown) => {
+          logger.error('ticket transfer expiry sweep failed', { error });
+        });
     }, sweepIntervalMs);
     sweepTimer.unref();
     app.addHook('onClose', (_instance, done) => {
       clearInterval(sweepTimer);
+      done();
+    });
+
+    // B11: the analytics projection consumer (see `analytics-projection.ts`)
+    // reconciles a row the moment an event's lifecycle changes. It cannot cover
+    // revenue/tickets/check-ins, though: those move on order and scan writes
+    // that emit no domain event, so the read model would otherwise freeze at
+    // whatever the last `event.*` projected. This sweep is that missing
+    // freshness — it bounds staleness to its interval, at one bounded pass over
+    // every event and org. The same function is the backfill script, so a fresh
+    // database and a running one converge to the same rows.
+    const analyticsRefreshIntervalMs = 5 * 60 * 1000;
+    const analyticsTimer = setInterval(() => {
+      void refreshAnalyticsReadModel({
+        analytics: v2Services.analytics,
+        events: repos.events,
+        organizations: repos.organizations,
+        logger,
+      }).catch((error: unknown) => {
+        logger.error('analytics read-model refresh failed', { error });
+      });
+    }, analyticsRefreshIntervalMs);
+    analyticsTimer.unref();
+    app.addHook('onClose', (_instance, done) => {
+      clearInterval(analyticsTimer);
       done();
     });
   }

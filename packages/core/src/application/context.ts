@@ -14,6 +14,7 @@ import type { InventoryService } from './inventory/inventory-service.js';
 import type { PricingService } from './pricing/pricing-service.js';
 import type { OrganizationRole, Capability } from '../domain/models/organization.js';
 import type { AdminAuditRepository } from '../domain/ports/audit.js';
+import type { EmailDeliveryRepository } from '../domain/ports/email-delivery.js';
 import type { EmailSender } from '../domain/ports/email-sender.js';
 import type { ObjectStoragePort } from '../domain/ports/object-storage.js';
 import type { OutboxWriter } from '../domain/ports/outbox.js';
@@ -40,13 +41,20 @@ import type {
   PromoRedemptionRepository,
   ScanLedgerRepository,
   EventCodeRepository,
+  TicketAccessRepository,
   ScannerSessionRepository,
   ScannerDeviceRepository,
   DoorSaleRepository,
   CoverWalletRepository,
   CoverWalletTxnRepository,
   CoverWalletReconciliationRepository,
+  EventCoverPolicyRepository,
+  EventCoverAccountRepository,
+  ComplimentaryAllocationRepository,
+  WaitlistRepository,
   LedgerRepository,
+  FinancialJournalRepository,
+  JournalTransitionRepository,
   PayoutRepository,
   BankAccountRepository,
   DisputeRepository,
@@ -56,6 +64,9 @@ import type {
   FollowRepository,
   SocialNotificationRepository,
   AdminRefundRequestRepository,
+  ProviderPaymentRepository,
+  ProviderFinancialEventRepository,
+  ReconciliationRepository,
   UserAccountRepository,
   UserBanRepository,
   PlatformSettingsRepository,
@@ -63,6 +74,11 @@ import type {
   SafetyReportRepository,
   NotificationRepository,
 } from '../domain/ports/repositories.js';
+import type {
+  StaffCredentialProvisioner,
+  StaffRotationStore,
+  StaffUserDirectory,
+} from '../domain/ports/staff-credentials.js';
 import type { UserDirectoryPort } from '../domain/ports/user-directory.js';
 import type { VerificationProvider } from '../domain/ports/verification.js';
 import type { Logger } from '../telemetry/logger.js';
@@ -104,14 +120,22 @@ export interface ServiceDeps {
    * notifying an applicant their onboarding request needs changes).
    */
   emailSender: EmailSender;
+  /** Durable idempotency/evidence for domain-triggered transactional email. */
+  emailDeliveries: EmailDeliveryRepository;
   /**
-   * Phase 2 gap-closure: resolves a `userId` to an email for the services
-   * that need to reach a user outside their own session. `NullUserDirectory`
-   * on the memory driver; reads Better Auth's own store on firestore.
+   * Resolves a `userId` to an email, or finds a user by email.
+   * `NullUserDirectory` / `MemoryStaffUserDirectory` on memory; `FirestoreUserDirectory` on firestore.
    */
-  userDirectory: UserDirectoryPort;
+  userDirectory: UserDirectoryPort & StaffUserDirectory;
   /** Phase 4: Payment provider (pluggable) */
   paymentProvider: PaymentProvider;
+  /**
+   * Staff login provisioning + first-login rotation flags (pluggable).
+   * Better Auth-backed in production, in-memory on the memory driver.
+   */
+  credentialProvisioner: StaffCredentialProvisioner;
+  /** First-login rotation flags by login user id (same driver split). */
+  rotationStore: StaffRotationStore;
   /** Phase 4: Pricing engine */
   pricing: PricingService;
   /** Phase 4: Inventory service */
@@ -140,6 +164,7 @@ export interface ServiceDeps {
     // Phase 5
     scanLedger: ScanLedgerRepository;
     eventCodes: EventCodeRepository;
+    ticketAccess: TicketAccessRepository;
     scannerSessions: ScannerSessionRepository;
     /** Phase 5: handsets a venue has authorized to work its door. */
     scannerDevices: ScannerDeviceRepository;
@@ -147,8 +172,16 @@ export interface ServiceDeps {
     coverWallets: CoverWalletRepository;
     coverWalletTxns: CoverWalletTxnRepository;
     coverWalletReconciliations: CoverWalletReconciliationRepository;
+    /** M5: immutable exact-version cover proposals and Venue approvals. */
+    eventCoverPolicies: EventCoverPolicyRepository;
+    eventCoverAccounts: EventCoverAccountRepository;
+    complimentaryAllocations: ComplimentaryAllocationRepository;
+    waitlist: WaitlistRepository;
     // Phase 6
     ledger: LedgerRepository;
+    /** Immutable balanced journals for the Milestone 2 accounting engine. */
+    financialJournals: FinancialJournalRepository;
+    journalTransition: JournalTransitionRepository;
     payouts: PayoutRepository;
     bankAccounts: BankAccountRepository;
     disputes: DisputeRepository;
@@ -158,8 +191,15 @@ export interface ServiceDeps {
     /** Phase 8: guest → venue/host follow edges. */
     follows: FollowRepository;
     /** Phase 8: per-user in-app inbox, written by bus consumers. */
+
     socialNotifications: SocialNotificationRepository;
     refundRequests: AdminRefundRequestRepository;
+    /** The payment provider's record of each payment, for reconciliation. */
+    providerPayments: ProviderPaymentRepository;
+    /** Immutable, privacy-minimized provider event journal. */
+    providerFinancialEvents: ProviderFinancialEventRepository;
+    /** Persisted finance reconciliation runs and evidence. */
+    reconciliations: ReconciliationRepository;
     /** Platform support tickets (guest intake + admin desk). */
     supportTickets: SupportTicketRepository;
     /** Platform safety reports (guest intake + admin desk). */

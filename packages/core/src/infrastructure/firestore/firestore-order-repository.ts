@@ -1,3 +1,5 @@
+import { bookingReferenceForOrderId } from '../../domain/models/order.js';
+
 import { compareAndSet } from './compare-and-set.js';
 import { paginateQuery, paginateUnordered } from './pagination.js';
 
@@ -31,6 +33,16 @@ export class FirestoreOrderRepository implements OrderRepository {
     return data ? toOrder(data) : null;
   }
 
+  async getByBookingReference(bookingReference: string): Promise<Order | null> {
+    const snap = await this.collection
+      .where('bookingReference', '==', bookingReference.toUpperCase())
+      .limit(1)
+      .get();
+    if (snap.empty) return null;
+    const data = snap.docs[0]?.data();
+    return data ? toOrder(data) : null;
+  }
+
   async getByPaymentId(paymentId: string): Promise<Order | null> {
     const snap = await this.collection.where('paymentId', '==', paymentId).limit(1).get();
     if (snap.empty) return null;
@@ -59,7 +71,10 @@ export class FirestoreOrderRepository implements OrderRepository {
 
   async listByOrganization(organizationId: EntityId, query: PaginationQuery): Promise<Page<Order>> {
     const base = this.collection.where('organizationId', '==', organizationId);
-    return paginateUnordered(base, query, toOrder);
+    // The deployed index supports this exact predicate/order pair. A recent
+    // partner order page must be globally newest-first; sorting only the first
+    // arbitrary Firestore page can silently omit the actual latest orders.
+    return paginateQuery(base.orderBy('createdAt', 'desc'), query, toOrder);
   }
 
   /**
@@ -76,6 +91,53 @@ export class FirestoreOrderRepository implements OrderRepository {
     return paginateQuery(base, query, toOrder);
   }
 
+  /** Single-field nested equality uses Firestore's automatic index; no composite index required. */
+  async listByPromoter(promoterId: EntityId, query: PaginationQuery): Promise<Page<Order>> {
+    const base = this.collection.where('attribution.promoterId', '==', promoterId);
+    return paginateUnordered(base, query, toOrder);
+  }
+
+  /** Event + immutable Promoter equality filters use the declared composite index. */
+  async listByPromoterForEvent(
+    promoterId: EntityId,
+    eventId: EntityId,
+    query: PaginationQuery,
+  ): Promise<Page<Order>> {
+    const base = this.collection
+      .where('eventId', '==', eventId)
+      .where('attribution.promoterId', '==', promoterId);
+    return paginateUnordered(base, query, toOrder);
+  }
+
+  // One equality filter (served by the automatic single-field index) and a
+  // projection of just the two fields seat counting needs, streamed in one read.
+  // The status is filtered by the caller rather than with `in`, which could ask
+  // for a composite index this deployment does not have.
+  async listSeatClaims(eventId: EntityId) {
+    const snap = await this.collection
+      .where('eventId', '==', eventId)
+      .select('status', 'lines')
+      .get();
+    return snap.docs.map((doc) => {
+      const data = doc.data();
+      const lines = (data.lines ?? []) as {
+        tierId: string;
+        quantity: number;
+        guestCount?: number;
+        admissionMode?: 'bundle' | 'per_person';
+      }[];
+      return {
+        status: data.status as OrderStatus,
+        lines: lines.map((line) => ({
+          tierId: line.tierId,
+          quantity: line.quantity,
+          ...(line.guestCount === undefined ? {} : { guestCount: line.guestCount }),
+          ...(line.admissionMode === undefined ? {} : { admissionMode: line.admissionMode }),
+        })),
+      };
+    });
+  }
+
   async countPaidQuantityByUserAndEvent(
     userId: EntityId,
     eventId: EntityId,
@@ -89,7 +151,15 @@ export class FirestoreOrderRepository implements OrderRepository {
       const order = toOrder(doc.data());
       if (order.eventId !== eventId || order.status !== 'paid') return sum;
       return (
-        sum + order.lines.reduce((s, line) => s + (line.tierId === tierId ? line.quantity : 0), 0)
+        sum +
+        order.lines.reduce(
+          (s, line) =>
+            s +
+            (line.tierId === tierId
+              ? line.quantity * (line.admissionMode === 'per_person' ? (line.guestCount ?? 1) : 1)
+              : 0),
+          0,
+        )
       );
     }, 0);
   }
@@ -112,6 +182,7 @@ export class FirestoreOrderRepository implements OrderRepository {
 function toDoc(order: Order): DocumentData {
   return {
     id: order.id,
+    bookingReference: order.bookingReference ?? bookingReferenceForOrderId(order.id),
     eventId: order.eventId,
     organizationId: order.organizationId,
     userId: order.userId,
@@ -121,6 +192,7 @@ function toDoc(order: Order): DocumentData {
     currency: order.currency,
     subtotalPaise: order.subtotalPaise,
     discountPaise: order.discountPaise,
+    discountFundingOwner: order.discountFundingOwner ?? null,
     discountedSubtotalPaise: order.discountedSubtotalPaise,
     platformFeePaise: order.platformFeePaise,
     paymentFeePaise: order.paymentFeePaise,
@@ -133,7 +205,9 @@ function toDoc(order: Order): DocumentData {
     paidAt: order.paidAt,
     reservationExpiresAt: order.reservationExpiresAt,
     failureReason: order.failureReason,
+    eventCancellation: order.eventCancellation ?? null,
     refundedPaise: order.refundedPaise,
+    appliedRefundRequestIds: order.appliedRefundRequestIds ?? [],
     version: order.version,
     createdAt: order.createdAt,
     updatedAt: order.updatedAt,
@@ -143,6 +217,9 @@ function toDoc(order: Order): DocumentData {
 function toOrder(data: DocumentData): Order {
   return {
     id: data.id as string,
+    bookingReference:
+      (data.bookingReference as string | undefined) ??
+      bookingReferenceForOrderId(data.id as string),
     eventId: data.eventId as string,
     organizationId: data.organizationId as string,
     userId: data.userId as string | null,
@@ -152,6 +229,8 @@ function toOrder(data: DocumentData): Order {
     currency: data.currency as string,
     subtotalPaise: data.subtotalPaise as number,
     discountPaise: data.discountPaise as number,
+    discountFundingOwner:
+      (data.discountFundingOwner as Order['discountFundingOwner'] | undefined) ?? null,
     discountedSubtotalPaise: data.discountedSubtotalPaise as number,
     platformFeePaise: data.platformFeePaise as number,
     paymentFeePaise: data.paymentFeePaise as number,
@@ -164,9 +243,11 @@ function toOrder(data: DocumentData): Order {
     paidAt: data.paidAt as string | null,
     reservationExpiresAt: data.reservationExpiresAt as string,
     failureReason: data.failureReason as string | null,
+    eventCancellation: (data.eventCancellation as Order['eventCancellation'] | undefined) ?? null,
     // Existing orders written before this field existed have no value —
     // they predate refunds, so zero is the correct read, not a guess.
     refundedPaise: (data.refundedPaise as number | undefined) ?? 0,
+    appliedRefundRequestIds: (data.appliedRefundRequestIds as string[] | undefined) ?? [],
     version: data.version as number,
     createdAt: data.createdAt as string,
     updatedAt: data.updatedAt as string,

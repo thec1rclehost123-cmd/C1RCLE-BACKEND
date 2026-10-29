@@ -3,6 +3,7 @@ import { transitionStatus } from '../fsm.js';
 import { bumpVersion, newVersionedEntity } from '../identity.js';
 
 import type { EntityId, VersionedEntity } from '../identity.js';
+import type { PromoterAgreementAcceptance } from './promoter-agreement.js';
 
 /**
  * ─── Partner onboarding (Phase 2) ────────────────────────────────────────────
@@ -104,6 +105,8 @@ export interface OnboardingRequest extends VersionedEntity {
   reviewNote: string | null;
   /** Set once approved — the organization this request produced. */
   provisionedOrganizationId: EntityId | null;
+  /** Versioned acceptance evidence; absent on legacy requests until accepted. */
+  promoterAgreementAcceptances?: PromoterAgreementAcceptance[];
 }
 
 export interface CreateOnboardingRequestInput {
@@ -129,6 +132,7 @@ export function createOnboardingRequest(input: CreateOnboardingRequestInput): On
     reviewedAt: null,
     reviewNote: null,
     provisionedOrganizationId: null,
+    promoterAgreementAcceptances: [],
     ...newVersionedEntity(input.now ?? new Date()),
   };
 }

@@ -25,6 +25,10 @@ export type EventStatus =
   | 'archived'
   | 'cancelled';
 
+/** Unlisted links are not confidential; code/invited events require an identity-bound grant. */
+export type EventVisibilityMode = 'public' | 'unlisted' | 'code' | 'invited';
+export type EventAddressDisclosure = 'public' | 'after_grant' | 'hidden';
+
 export const EVENT_STATUSES: readonly EventStatus[] = [
   'draft',
   'review',
@@ -53,6 +57,24 @@ export const EVENT_TRANSITIONS: Readonly<Record<EventStatus, readonly EventStatu
   cancelled: [],
 };
 
+/** Terminal statuses: no outbound transitions and no attribute mutation. */
+const TERMINAL_EVENT_STATUSES: readonly EventStatus[] = ['cancelled', 'archived'];
+
+export function isTerminalEventStatus(status: EventStatus): boolean {
+  return TERMINAL_EVENT_STATUSES.includes(status);
+}
+
+/**
+ * Rejects attribute updates on a terminal event. `EVENT_TRANSITIONS` already
+ * freezes status changes, but `updateEvent` (title/pricing/promo/…) would
+ * otherwise still rewrite a cancelled or archived event.
+ */
+function assertEventMutable(event: Event): void {
+  if (isTerminalEventStatus(event.status)) {
+    throw new InvalidOperationError(`A ${event.status} event is terminal and cannot be modified`);
+  }
+}
+
 export interface TicketTierRef {
   tierId: EntityId;
   priceInPaise: number;
@@ -71,6 +93,20 @@ export interface EventCompensation {
   salaryNotes: string | null;
 }
 
+/** Server-owned venue and entry information shown on the Guest event detail. */
+export interface EventEntryRules {
+  doorsOpenAt: string | null;
+  lastEntryAt: string | null;
+  reentryAllowed: boolean | null;
+  minimumAge: number | null;
+  idRequired: boolean | null;
+  accessibilityNotes: string | null;
+  dressCode: string | null;
+  alcoholPolicy: string | null;
+  prohibitedItems: string[];
+  supportDetails: string | null;
+}
+
 export interface Event extends VersionedEntity {
   id: EntityId;
   organizationId: EntityId;
@@ -87,11 +123,17 @@ export interface Event extends VersionedEntity {
   /** Full public description. */
   description: string;
   imageUrl: string | null;
+  /** Managed poster key retained only for grant-authorized private reads. */
+  privateImageStoragePath?: string | null;
   /** ISO-8601 timestamps. */
   startAt: string;
   endAt: string | null;
   status: EventStatus;
-  /** Caching visibility derived from status (public vs internal). */
+  /** Missing on legacy records means public. Private modes require a verified grant for detail. */
+  visibilityMode?: EventVisibilityMode;
+  /** Fine-grained venue address access; private legacy events fail closed. */
+  addressDisclosure?: EventAddressDisclosure;
+  /** Discovery visibility derived from event status and visibility mode. */
   isPublic: boolean;
   /** Opaque tags — presentation only. */
   tags: string[];
@@ -101,6 +143,7 @@ export interface Event extends VersionedEntity {
   /** Reason/meta recorded when CANCELLED. */
   cancellationReason: string | null;
   compensation?: EventCompensation | null;
+  entryRules?: EventEntryRules;
   /**
    * Total people the room legally holds, for the door's occupancy gauge.
    *
@@ -131,11 +174,15 @@ export interface CreateEventInput {
   summary?: string;
   description?: string;
   imageUrl?: string | null;
+  privateImageStoragePath?: string | null;
   startAt: string;
   endAt?: string | null;
   tags?: string[];
   compensation?: EventCompensation | null;
   capacity?: number | null;
+  visibilityMode?: EventVisibilityMode;
+  addressDisclosure?: EventAddressDisclosure;
+  entryRules?: EventEntryRules;
   now?: Date;
 }
 
@@ -177,9 +224,14 @@ export function createEvent(input: CreateEventInput): Event {
     title: input.title,
     status: 'draft',
     isPublic: false,
+    visibilityMode: input.visibilityMode ?? 'public',
+    addressDisclosure:
+      input.addressDisclosure ??
+      (input.visibilityMode === 'code' || input.visibilityMode === 'invited' ? 'hidden' : 'public'),
     summary: input.summary ?? '',
     description: input.description ?? '',
     imageUrl: input.imageUrl ?? null,
+    privateImageStoragePath: input.privateImageStoragePath ?? null,
     startAt: input.startAt,
     endAt: input.endAt ?? null,
     tags: input.tags ?? [],
@@ -187,6 +239,7 @@ export function createEvent(input: CreateEventInput): Event {
     isFree: true,
     cancellationReason: null,
     compensation: input.compensation ?? null,
+    ...(input.entryRules === undefined ? {} : { entryRules: input.entryRules }),
     capacity: input.capacity ?? null,
     adminOverride: false,
     ...newVersionedEntity(now),
@@ -194,11 +247,13 @@ export function createEvent(input: CreateEventInput): Event {
 }
 
 interface EventChanges {
+  venueId?: EntityId;
   slug?: string;
   title?: string;
   summary?: string;
   description?: string;
   imageUrl?: string | null;
+  privateImageStoragePath?: string | null;
   startAt?: string;
   endAt?: string | null;
   tags?: string[];
@@ -206,12 +261,25 @@ interface EventChanges {
   isFree?: boolean;
   compensation?: EventCompensation | null;
   capacity?: number | null;
+  visibilityMode?: EventVisibilityMode;
+  addressDisclosure?: EventAddressDisclosure;
+  entryRules?: EventEntryRules;
 }
 
 /** Controlled attribute update (no status changes here). Bumps version. */
 export function updateEvent(event: Event, changes: EventChanges, now?: Date): Event {
+  assertEventMutable(event);
   const stamped = bumpVersion(event, now ?? new Date());
-  return { ...stamped, ...changes };
+  const updated = { ...stamped, ...changes };
+  return {
+    ...updated,
+    // Preserve legacy/manual hidden state on unrelated edits. Only an explicit
+    // visibility-mode change may recompute the discovery projection.
+    isPublic:
+      changes.visibilityMode === undefined
+        ? event.isPublic
+        : computeIsPublic(updated.status, updated.visibilityMode ?? 'public'),
+  };
 }
 
 /**
@@ -238,7 +306,7 @@ export function transitionEvent(event: Event, to: EventStatus, now?: Date): Even
   return {
     ...stamped,
     status: next,
-    isPublic: computeIsPublic(next),
+    isPublic: computeIsPublic(next, event.visibilityMode ?? 'public'),
     // Any real status change clears an admin override — `adminPauseEvent`
     // re-sets it explicitly right after calling this. A self-pause or a
     // partner's own resume should never carry a stale override flag.
@@ -312,8 +380,14 @@ export function adminForceCompleteEvent(event: Event, now?: Date): Event {
   return { ...stamped, status: 'ended', isPublic: false, adminOverride: true };
 }
 
-function computeIsPublic(status: EventStatus): boolean {
-  return status === 'published' || status === 'sales_paused' || status === 'started';
+function computeIsPublic(
+  status: EventStatus,
+  visibilityMode: EventVisibilityMode = 'public',
+): boolean {
+  return (
+    visibilityMode === 'public' &&
+    (status === 'published' || status === 'sales_paused' || status === 'started')
+  );
 }
 
 export function isPublicStatus(status: EventStatus): boolean {

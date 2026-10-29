@@ -45,6 +45,7 @@ function promoToDto(promo: PromoCode) {
     type: promo.type,
     discountType: promo.discountType,
     discountValue: promo.discountValue,
+    discountFundingOwner: promo.discountFundingOwner,
     maxRedemptions: promo.maxRedemptions,
     redemptionCount: promo.redemptionCount,
     startsAt: promo.startsAt,
@@ -90,6 +91,7 @@ export default async function adminPromotionsRoutes(fastify: FastifyInstance) {
       preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({})],
     },
     async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
       const userId = requireUserId(request, reply);
       if (userId === undefined) return reply;
 
