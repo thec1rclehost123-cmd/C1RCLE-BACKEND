@@ -41,12 +41,17 @@ import type {
   PromoRedemptionRepository,
   ScanLedgerRepository,
   EventCodeRepository,
+  TicketAccessRepository,
   ScannerSessionRepository,
   ScannerDeviceRepository,
   DoorSaleRepository,
   CoverWalletRepository,
   CoverWalletTxnRepository,
   CoverWalletReconciliationRepository,
+  EventCoverPolicyRepository,
+  EventCoverAccountRepository,
+  ComplimentaryAllocationRepository,
+  WaitlistRepository,
   LedgerRepository,
   FinancialJournalRepository,
   JournalTransitionRepository,
@@ -159,6 +164,7 @@ export interface ServiceDeps {
     // Phase 5
     scanLedger: ScanLedgerRepository;
     eventCodes: EventCodeRepository;
+    ticketAccess: TicketAccessRepository;
     scannerSessions: ScannerSessionRepository;
     /** Phase 5: handsets a venue has authorized to work its door. */
     scannerDevices: ScannerDeviceRepository;
@@ -166,6 +172,11 @@ export interface ServiceDeps {
     coverWallets: CoverWalletRepository;
     coverWalletTxns: CoverWalletTxnRepository;
     coverWalletReconciliations: CoverWalletReconciliationRepository;
+    /** M5: immutable exact-version cover proposals and Venue approvals. */
+    eventCoverPolicies: EventCoverPolicyRepository;
+    eventCoverAccounts: EventCoverAccountRepository;
+    complimentaryAllocations: ComplimentaryAllocationRepository;
+    waitlist: WaitlistRepository;
     // Phase 6
     ledger: LedgerRepository;
     /** Immutable balanced journals for the Milestone 2 accounting engine. */

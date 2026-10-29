@@ -32,6 +32,8 @@ import { FinancialPostingService } from './financial-posting-service.js';
 import { ProviderPaymentService } from './provider-payment-service.js';
 
 import type { EntityId } from '../../domain/identity.js';
+import type { Entitlement } from '../../domain/models/entitlement.js';
+import type { EventCoverAccount } from '../../domain/models/event-cover.js';
 import type { Order } from '../../domain/models/order.js';
 import type { AdminRefundRequest } from '../../domain/models/refund-request.js';
 import type { AuditRequestMeta } from '../../domain/ports/audit.js';
@@ -137,7 +139,18 @@ export class RefundService {
         );
       }
     }
-    const hasRedeemedEntitlement = orderEntitlements.some((e) => e.status === 'redeemed');
+    const coverAccounts = await this.getCoverAccounts(order, orderEntitlements);
+    await this.assertCoverRefundScope(
+      order,
+      command.amountPaise,
+      ticketLines.length > 0,
+      coverAccounts,
+    );
+    const hasRedeemedEntitlement = orderEntitlements.some(
+      (entitlement) =>
+        entitlement.status === 'redeemed' ||
+        entitlement.ticketAddons?.some((addon) => addon.status === 'redeemed'),
+    );
 
     const now = this.deps.config.clock.now();
     const platformSettings = await this.deps.repositories.platformSettings.get();
@@ -272,6 +285,25 @@ export class RefundService {
     let request = await this.requireRefundRequest(refundRequestId);
     let order = await this.requireOrder(request.orderId);
     if (request.status === 'settled') return { request, order };
+    // Recheck and freeze at execution: an approved request may predate delayed
+    // cover issuance, and a Venue redemption must not race provider movement.
+    const orderEntitlements = await this.entitlements.getByOrderId(order.id);
+    const coverAccounts = await this.getCoverAccounts(order, orderEntitlements);
+    await this.assertCoverRefundScope(
+      order,
+      request.amountPaise,
+      request.scope === 'ticket_lines',
+      coverAccounts,
+      request.id,
+    );
+    const coverAccountsToFreeze = coverAccounts.filter((account) => account.status !== 'refunded');
+    if (coverAccountsToFreeze.length > 0) {
+      await this.deps.repositories.eventCoverAccounts.freezeForRefund(
+        coverAccountsToFreeze.map((account) => account.entitlementId),
+        request.id,
+        this.deps.config.clock.now(),
+      );
+    }
 
     const now = this.deps.config.clock.now();
     if (request.status === 'executing' && request.providerRefundId === null) {
@@ -290,6 +322,9 @@ export class RefundService {
         if (!(error instanceof VersionConflictError)) throw error;
         const winner = await this.requireRefundRequest(refundRequestId);
         if (winner.status === 'settled') return { request: winner, order };
+        if (winner.status === 'rejected' || winner.status === 'failed') {
+          await this.releaseCoverRefundFreeze(order.id, request.id, this.deps.config.clock.now());
+        }
         throw new ConflictError('Refund execution is already in progress');
       }
     } else if (request.status !== 'executing') {
@@ -328,6 +363,7 @@ export class RefundService {
           );
           await this.refundRequests.save(failed);
           await this.releaseSelectedTickets(failed, now);
+          await this.releaseCoverRefundFreeze(order.id, request.id, now);
           const restored = restoreOrderAfterRefundFailure(order, now);
           await this.orders.save(restored);
           await emit(
@@ -361,6 +397,7 @@ export class RefundService {
         const failed = markRefundFailed(request, 'Provider definitively rejected the refund', now);
         await this.refundRequests.save(failed);
         await this.releaseSelectedTickets(failed, now);
+        await this.releaseCoverRefundFreeze(order.id, request.id, now);
         const restored = restoreOrderAfterRefundFailure(order, now);
         await this.orders.save(restored);
         await emit(
@@ -414,6 +451,15 @@ export class RefundService {
       postedAt: now,
     });
 
+    for (const account of coverAccounts) {
+      await this.deps.repositories.eventCoverAccounts.refundUnused(account.id, {
+        operationId: request.id,
+        refundRequestId: request.id,
+        actorUserId: admin.id,
+        now,
+      });
+    }
+
     const refundedOrder = applyOrderRefund(order, request.amountPaise, now, request.id);
     if (refundedOrder !== order) await this.orders.save(refundedOrder);
     if (refundedOrder.status === 'refunded' || request.scope === 'ticket_lines') {
@@ -426,6 +472,15 @@ export class RefundService {
       for (const entitlement of targets) {
         if (!entitlement || entitlement.orderId !== order.id) {
           throw new InvalidOperationError('Refund ticket selection no longer matches the order');
+        }
+        if (refundedOrder.status === 'refunded' && entitlement.upgradeFromEntitlementId) {
+          await this.entitlements.restoreForUpgradeRefund({
+            sourceEntitlementId: entitlement.upgradeFromEntitlementId,
+            replacementEntitlementId: entitlement.id,
+            refundRequestId: request.id,
+            now,
+          });
+          continue;
         }
         const voided = voidEntitlement(entitlement, now, request.id);
         if (voided !== entitlement) await this.entitlements.save(voided);
@@ -487,6 +542,93 @@ export class RefundService {
     const request = await this.refundRequests.getById(id);
     if (!request) throw new NotFoundError('refund_request', id);
     return request;
+  }
+
+  private async getCoverAccounts(
+    order: Order,
+    entitlements: readonly Entitlement[],
+  ): Promise<EventCoverAccount[]> {
+    const coverAccounts = await Promise.all(
+      entitlements.map((entitlement) =>
+        this.deps.repositories.eventCoverAccounts.getByEntitlement(entitlement.id),
+      ),
+    );
+    const linked = coverAccounts.filter(
+      (account): account is EventCoverAccount => account !== null,
+    );
+    const expectedCoverCount = order.lines.reduce((count, line) => {
+      if ((line.coverUnitPricePaise ?? 0) <= 0) return count;
+      const attendeeUnits = line.admissionMode === 'per_person' ? (line.guestCount ?? 1) : 1;
+      return count + line.quantity * attendeeUnits;
+    }, 0);
+    if (linked.length !== expectedCoverCount) {
+      throw new InvalidOperationError(
+        'Cover refund is unavailable until every purchased cover entitlement has its ledger account',
+      );
+    }
+    for (const account of linked) {
+      const entitlement = entitlements.find((item) => item.id === account.entitlementId);
+      const line = order.lines.find((item) => item.tierId === entitlement?.tierId);
+      if (
+        !entitlement ||
+        account.orderId !== order.id ||
+        account.eventId !== order.eventId ||
+        (line?.coverUnitPricePaise ?? 0) !== account.issuedPaise
+      ) {
+        throw new InvalidOperationError('Cover account provenance does not match the refund order');
+      }
+    }
+    return linked;
+  }
+
+  private async assertCoverRefundScope(
+    order: Order,
+    amountPaise: number,
+    ticketLines: boolean,
+    accounts: readonly EventCoverAccount[],
+    refundRequestId?: EntityId,
+  ): Promise<void> {
+    if (accounts.length === 0) return;
+    const eligible =
+      !ticketLines &&
+      order.refundedPaise === 0 &&
+      amountPaise === refundableBalance(order) &&
+      (await Promise.all(
+        accounts.map(async (account) => {
+          const alreadyRefunded =
+            refundRequestId !== undefined &&
+            account.status === 'refunded' &&
+            account.refundedPaise === account.issuedPaise &&
+            account.remainingPaise === 0 &&
+            (await this.deps.repositories.eventCoverAccounts.listEntries(account.id)).some(
+              (entry) => entry.type === 'refund' && entry.operationId === refundRequestId,
+            );
+          return (
+            account.refundPolicy === 'unused_full_before_redemption' &&
+            (alreadyRefunded ||
+              (account.remainingPaise === account.issuedPaise &&
+                account.reservedPaise === 0 &&
+                account.redeemedPaise === 0 &&
+                account.refundedPaise === 0 &&
+                (account.status === 'active' ||
+                  (account.status === 'frozen' && account.refundRequestId === refundRequestId))))
+          );
+        }),
+      ).then((results) => results.every(Boolean)));
+    if (!eligible) {
+      throw new InvalidOperationError(
+        'Event cover refunds require the full unused balance, an eligible saved Venue policy, and a full-order refund',
+      );
+    }
+  }
+
+  private async releaseCoverRefundFreeze(orderId: EntityId, requestId: EntityId, now: Date) {
+    const orderEntitlements = await this.entitlements.getByOrderId(orderId);
+    await this.deps.repositories.eventCoverAccounts.releaseRefundFreeze(
+      orderEntitlements.map((entitlement) => entitlement.id),
+      requestId,
+      now,
+    );
   }
 
   private async ensureSelectedTicketsFrozen(request: AdminRefundRequest, now: Date): Promise<void> {

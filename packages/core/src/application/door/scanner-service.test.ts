@@ -91,4 +91,21 @@ describe('generateMagicTicketQr', () => {
       scanner.generateMagicTicketQr(voidEntitlement.id, stranger),
     ).rejects.toBeInstanceOf(NotFoundError);
   });
+
+  it('binds an assigned ticket QR to its current holder and rotates by credential version', async () => {
+    const transferred = {
+      ...BASE_ENTITLEMENT,
+      currentHolderUserId: 'guest-2',
+      credentialVersion: 2,
+    };
+    const { scanner } = serviceFor(transferred);
+    const recipient = { ...HOLDER, userId: 'guest-2' };
+
+    await expect(scanner.generateMagicTicketQr(transferred.id, recipient)).resolves.toMatchObject({
+      qrPayload: expect.stringMatching(/^ENT-1:2:\d+:\w+$/),
+    });
+    await expect(scanner.generateMagicTicketQr(transferred.id, HOLDER)).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
+  });
 });

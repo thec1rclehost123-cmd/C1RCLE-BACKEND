@@ -42,7 +42,9 @@ export class FirebaseObjectStorage implements ObjectStoragePort {
     };
     if (request.visibility === 'public') {
       extensionHeaders['x-goog-acl'] = 'public-read';
+      extensionHeaders['cache-control'] = 'public, max-age=60';
       putHeaders['x-goog-acl'] = 'public-read';
+      putHeaders['cache-control'] = 'public, max-age=60';
     }
 
     const [uploadUrl] = await this.storage.bucket(this.bucketName).file(request.key).getSignedUrl({
@@ -68,6 +70,72 @@ export class FirebaseObjectStorage implements ObjectStoragePort {
     // PUT sets *that object's* ACL to public-read while the bucket and every
     // KYC/private object stay credential-only.
     return `https://storage.googleapis.com/${this.bucketName}/${storagePath}`;
+  }
+
+  async revokePublicRead(publicUrl: string, expectedKeyPrefix: string): Promise<string | null> {
+    let parsed: URL;
+    try {
+      parsed = new URL(publicUrl);
+    } catch {
+      return null;
+    }
+
+    const prefix = `/${this.bucketName}/posters/`;
+    if (
+      parsed.origin !== 'https://storage.googleapis.com' ||
+      parsed.username !== '' ||
+      parsed.password !== '' ||
+      parsed.port !== '' ||
+      parsed.search !== '' ||
+      parsed.hash !== '' ||
+      !parsed.pathname.startsWith(prefix)
+    ) {
+      return null;
+    }
+
+    let storagePath: string;
+    try {
+      storagePath = parsed.pathname
+        .slice(`/${this.bucketName}/`.length)
+        .split('/')
+        .map((segment) => decodeURIComponent(segment))
+        .join('/');
+    } catch {
+      return null;
+    }
+    if (storagePath.split('/').some((segment) => segment === '.' || segment === '..')) {
+      return null;
+    }
+    if (!expectedKeyPrefix.startsWith('posters/') || !storagePath.startsWith(expectedKeyPrefix)) {
+      return null;
+    }
+
+    const file = this.storage.bucket(this.bucketName).file(storagePath);
+    try {
+      await file.acl.delete({ entity: 'allUsers' });
+    } catch (error) {
+      // An absent object/ACL is already private, so retries stay safe.
+      if (typeof error === 'object' && error !== null && 'code' in error && error.code === 404) {
+        try {
+          await file.setMetadata({ cacheControl: 'private, no-store' });
+        } catch (metadataError) {
+          // A missing object has nothing left to expose; an existing object
+          // with an ACL-only 404 still needs its response cache restricted.
+          if (
+            typeof metadataError !== 'object' ||
+            metadataError === null ||
+            !('code' in metadataError) ||
+            metadataError.code !== 404
+          ) {
+            throw metadataError;
+          }
+        }
+        return storagePath;
+      }
+      throw error;
+    }
+    await file.setMetadata({ cacheControl: 'private, no-store' });
+    return storagePath;
   }
 
   async issueReadUrl(request: ReadUrlRequest): Promise<ReadUrlGrant> {

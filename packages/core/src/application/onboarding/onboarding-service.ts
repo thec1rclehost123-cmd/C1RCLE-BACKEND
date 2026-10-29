@@ -4,6 +4,7 @@ import {
   NotFoundError,
   OnboardingRequestNotFoundError,
 } from '../../domain/errors.js';
+import { domainEvent } from '../../domain/events.js';
 import {
   addOnboardingDocument,
   allRequiredDocumentsVerified,
@@ -22,6 +23,10 @@ import {
   verifyOnboardingDocument,
 } from '../../domain/models/onboarding.js';
 import { createOrganization } from '../../domain/models/organization.js';
+import {
+  PROMOTER_AGREEMENT_TEST_FIXTURE,
+  recordPromoterAgreementAcceptance,
+} from '../../domain/models/promoter-agreement.js';
 import { createVenue } from '../../domain/models/venue.js';
 
 import type { EntityId } from '../../domain/identity.js';
@@ -155,6 +160,40 @@ export class OnboardingService {
     return this.repo.listForUser(userId, query);
   }
 
+  getCurrentPromoterAgreement() {
+    return this.testAgreementFixtureAllowed() ? PROMOTER_AGREEMENT_TEST_FIXTURE : null;
+  }
+
+  async acceptPromoterAgreement(
+    userId: EntityId,
+    requestId: EntityId,
+    version: string,
+  ): Promise<OnboardingRequest> {
+    const artifact = this.getCurrentPromoterAgreement();
+    if (!artifact) {
+      throw new InvalidOperationError(
+        'No approved Promoter agreement is available; campaign activation remains blocked',
+      );
+    }
+    if (artifact.version !== version) {
+      throw new InvalidOperationError('The Promoter agreement version is no longer current');
+    }
+    const request = await this.requireOwn(userId, requestId);
+    const updated = recordPromoterAgreementAcceptance(
+      request,
+      artifact,
+      userId,
+      this.deps.config.clock.now(),
+      this.testAgreementFixtureAllowed(),
+    );
+    if (updated !== request) await this.repo.save(updated);
+    return updated;
+  }
+
+  private testAgreementFixtureAllowed(): boolean {
+    return this.deps.config.features.m4PromoterAgreementFixture === true;
+  }
+
   /** Autosave. Everything that is not a profile field is dropped, not merged. */
   async saveProgress(
     userId: EntityId,
@@ -232,8 +271,23 @@ export class OnboardingService {
 
   async submit(userId: EntityId, requestId: EntityId): Promise<OnboardingRequest> {
     const request = await this.requireOwn(userId, requestId);
-    const submitted = submitOnboardingRequest(request, this.deps.config.clock.now());
+    const now = this.deps.config.clock.now();
+    const submitted = submitOnboardingRequest(request, now);
     await this.repo.save(submitted);
+    if (request.requestedType === 'promoter') {
+      await this.deps.outbox.append(
+        domainEvent({
+          id: this.deps.config.ids(),
+          type: 'promoter.onboarding.submitted',
+          aggregateId: request.id,
+          // Before approval, the applicant is the only available owner scope.
+          organizationId: request.userId,
+          actorId: userId,
+          payload: { requestId: request.id },
+          occurredAt: now.getTime(),
+        }),
+      );
+    }
     this.deps.logger.info('onboarding.submitted', { requestId });
     return submitted;
   }
@@ -484,6 +538,19 @@ export class OnboardingService {
       ipAddress: meta?.ipAddress,
       userAgent: meta?.userAgent,
     });
+    if (request.requestedType === 'promoter') {
+      await this.deps.outbox.append(
+        domainEvent({
+          id: this.deps.config.ids(),
+          type: 'promoter.onboarding.approved',
+          aggregateId: request.id,
+          organizationId: organization.id,
+          actorId: adminUserId,
+          payload: { requestId: request.id, promoterId: organization.id },
+          occurredAt: now.getTime(),
+        }),
+      );
+    }
     this.deps.logger.info('onboarding.approved', {
       requestId: request.id,
       organizationId: organization.id,
@@ -558,7 +625,8 @@ export class OnboardingService {
     // whether a business gets onto the platform.
     const admin = await this.authority.authorize(adminUserId, 'ONBOARDING_APPROVE');
     const request = await this.requireRequest(command.requestId);
-    const updated = apply(request, admin, this.deps.config.clock.now());
+    const now = this.deps.config.clock.now();
+    const updated = apply(request, admin, now);
     await this.repo.save(updated);
     await this.authority.record(admin, {
       action: auditAction,
@@ -570,6 +638,20 @@ export class OnboardingService {
       ipAddress: meta?.ipAddress,
       userAgent: meta?.userAgent,
     });
+    if (updated.status === 'rejected' && request.requestedType === 'promoter') {
+      await this.deps.outbox.append(
+        domainEvent({
+          id: this.deps.config.ids(),
+          type: 'promoter.onboarding.rejected',
+          aggregateId: request.id,
+          // Before approval, the applicant is the only available owner scope.
+          organizationId: request.userId,
+          actorId: adminUserId,
+          payload: { requestId: request.id },
+          occurredAt: now.getTime(),
+        }),
+      );
+    }
     return updated;
   }
 

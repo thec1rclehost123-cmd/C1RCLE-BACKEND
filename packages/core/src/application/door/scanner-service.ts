@@ -6,9 +6,16 @@ import {
   InvalidOperationError,
   ForbiddenError,
   NotFoundError,
+  ServiceUnavailableError,
   UnauthorizedError,
 } from '../../domain/errors.js';
-import { evaluateAdmission } from '../../domain/models/entitlement.js';
+import { deterministicDomainEventId, domainEvent } from '../../domain/events.js';
+import {
+  entitlementRequiresEligibilityVerification,
+  entitlementCredentialVersion,
+  evaluateAdmission,
+  requiresEligibilityVerification,
+} from '../../domain/models/entitlement.js';
 import {
   isSessionValid,
   canSessionScan,
@@ -144,6 +151,12 @@ export interface ScannerService {
 
   // ── Scanning ─────────────────────────────────────────────────────────────
   scan(input: ScanInput, actor: ActorContext): Promise<ScanResult>;
+  redeemTicketAddon(input: {
+    eventId: EntityId;
+    entitlementId: EntityId;
+    addonEntitlementId: EntityId;
+    sessionToken: string;
+  }): Promise<Entitlement>;
   resolve(input: ResolveInput, actor: ActorContext): Promise<TicketResolution>;
   getScan(checkInId: EntityId, actor: ActorContext): Promise<ScanLedger>;
   overrideScan(checkInId: EntityId, reason: string, actor: ActorContext): Promise<ScanLedger>;
@@ -195,6 +208,8 @@ export interface ScanInput {
   /** Ignored when the code is gate-restricted; the code's gate wins. */
   gate?: string;
   scannedAt?: string;
+  /** Set only after the authorized operator checked the attendee against the sold policy. */
+  eligibilityVerified?: boolean;
 }
 
 export interface BindDeviceCommand {
@@ -256,6 +271,8 @@ export interface TicketSummary {
   scansUsed: number;
   scansAllowed: number;
   status: string;
+  ticketAddons?: Entitlement['ticketAddons'];
+  eligibilityPolicy?: { audienceType: string; minAge: number | null; maxAge: number | null };
 }
 
 export interface ScanResult {
@@ -437,7 +454,10 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
     sessionId: EntityId;
     deviceId: string;
     expectedScansUsed: number;
+    expectedCredentialVersion: number;
     seats: number;
+    eligibilityVerified: boolean;
+    eligibilityRequired: boolean;
     expiresAtMs: number;
   }): string {
     const body = [
@@ -446,7 +466,10 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
       args.sessionId,
       args.deviceId,
       String(args.expectedScansUsed),
+      String(args.expectedCredentialVersion),
       String(args.seats),
+      String(args.eligibilityVerified),
+      String(args.eligibilityRequired),
       String(args.expiresAtMs),
     ].join('|');
     return `${Buffer.from(body, 'utf8').toString('base64url')}.${hmacHex(`confirm:${body}`)}`;
@@ -458,7 +481,10 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
     sessionId: EntityId;
     deviceId: string;
     expectedScansUsed: number;
+    expectedCredentialVersion: number;
     seats: number;
+    eligibilityVerified: boolean;
+    eligibilityRequired: boolean;
     expiresAtMs: number;
   }
 
@@ -473,16 +499,24 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
     }
     if (!hmacMatches(signature, hmacHex(`confirm:${body}`))) return null;
     const parts = body.split('|');
-    if (parts.length !== 7) return null;
-    const [entitlementId, eventId, sessionId, deviceId, used, seats, expiresAt] = parts as [
-      string,
-      string,
-      string,
-      string,
-      string,
-      string,
-      string,
-    ];
+    if (parts.length !== 10) return null;
+    const [
+      entitlementId,
+      eventId,
+      sessionId,
+      deviceId,
+      used,
+      credentialVersion,
+      seats,
+      eligibilityVerified,
+      eligibilityRequired,
+      expiresAt,
+    ] = parts as [string, string, string, string, string, string, string, string, string, string];
+    if (
+      (eligibilityVerified !== 'true' && eligibilityVerified !== 'false') ||
+      (eligibilityRequired !== 'true' && eligibilityRequired !== 'false')
+    )
+      return null;
     const expiresAtMs = Number.parseInt(expiresAt, 10);
     if (!Number.isFinite(expiresAtMs) || expiresAtMs < Date.now()) return null;
     return {
@@ -491,7 +525,10 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
       sessionId,
       deviceId,
       expectedScansUsed: Number.parseInt(used, 10),
+      expectedCredentialVersion: Number.parseInt(credentialVersion, 10),
       seats: Number.parseInt(seats, 10),
+      eligibilityVerified: eligibilityVerified === 'true',
+      eligibilityRequired: eligibilityRequired === 'true',
       expiresAtMs,
     };
   }
@@ -510,20 +547,31 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
   function decodeQr(
     qrPayload: string,
     atMs: number = Date.now(),
-  ): { entitlementId: EntityId | null; magic: boolean } {
+  ): { entitlementId: EntityId | null; magic: boolean; credentialVersion: number | null } {
     const parsed = parseRotatingQr(qrPayload);
-    if (parsed === null) return { entitlementId: qrPayload, magic: false };
+    if (parsed === null) return { entitlementId: qrPayload, magic: false, credentialVersion: null };
     // `atMs` is "now" for an online scan and the device's own scan time for an
     // offline one. A signature that verifies for a window far from `atMs` is a
     // replayed screenshot, not clock drift.
-    const ticketKey = deriveTicketKey(config.magicTicketSecret, parsed.entitlementId);
+    const ticketKey = deriveTicketKey(
+      config.magicTicketSecret,
+      parsed.entitlementId,
+      parsed.credentialVersion,
+    );
     if (!checkRotatingQr({ ticketKey, parsed, atMs })) {
-      return { entitlementId: null, magic: true };
+      return { entitlementId: null, magic: true, credentialVersion: parsed.credentialVersion };
     }
-    return { entitlementId: parsed.entitlementId, magic: true };
+    return {
+      entitlementId: parsed.entitlementId,
+      magic: true,
+      credentialVersion: parsed.credentialVersion,
+    };
   }
 
-  function ticketSummary(entitlement: Entitlement): TicketSummary {
+  function ticketSummary(
+    entitlement: Entitlement,
+    eligibilityPolicy?: { audienceType: string; minAge: number | null; maxAge: number | null },
+  ): TicketSummary {
     return {
       id: entitlement.id,
       tierName: entitlement.tierName,
@@ -532,6 +580,35 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
       scansUsed: entitlement.scanCount,
       scansAllowed: entitlement.scanCountAllowed,
       status: entitlement.status,
+      ...(entitlement.ticketAddons ? { ticketAddons: entitlement.ticketAddons } : {}),
+      ...(eligibilityPolicy
+        ? { eligibilityPolicy }
+        : entitlement.eligibility
+          ? {
+              eligibilityPolicy: {
+                audienceType: entitlement.eligibility.audienceType ?? 'GENERAL',
+                minAge: entitlement.eligibility.minAge ?? null,
+                maxAge: entitlement.eligibility.maxAge ?? null,
+              },
+            }
+          : {}),
+    };
+  }
+
+  async function eligibilityPolicyFor(entitlement: Entitlement) {
+    if (entitlement.eligibility) {
+      return {
+        audienceType: entitlement.eligibility.audienceType,
+        minAge: entitlement.eligibility.minAge,
+        maxAge: entitlement.eligibility.maxAge,
+      };
+    }
+    const tier = await deps.repositories.catalog.getTierById(entitlement.tierId);
+    if (!tier || !requiresEligibilityVerification(tier)) return undefined;
+    return {
+      audienceType: tier.audienceType ?? 'GENERAL',
+      minAge: tier.minAge ?? null,
+      maxAge: tier.maxAge ?? null,
     };
   }
 
@@ -885,6 +962,36 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
     // system says is half-used. So an untouched couple ticket stops here and
     // asks — and NOTHING is written, because a question is not an admission.
     const preview = await entitlements.findById(decoded.entitlementId);
+    const eligibilityPolicy = preview ? await eligibilityPolicyFor(preview) : undefined;
+    const eligibilityRequired = Boolean(
+      preview &&
+      (entitlementRequiresEligibilityVerification(preview) ||
+        (eligibilityPolicy !== undefined && requiresEligibilityVerification(eligibilityPolicy))),
+    );
+    if (
+      preview &&
+      decoded.magic &&
+      decoded.credentialVersion !== entitlementCredentialVersion(preview)
+    ) {
+      const scanRecord = await recordScan({
+        ...scanArgs,
+        entitlementId: decoded.entitlementId,
+        entitlement: preview,
+        admitted: false,
+        denyReason: 'invalid_signature',
+        denyMessage: 'Ticket credential has been replaced',
+        scansUsed: preview.scanCount,
+        scansAllowed: preview.scanCountAllowed,
+      });
+      await bumpCodeUsage(session.codeId);
+      return {
+        scan: scanRecord,
+        status: 'denied',
+        denyReason: 'invalid_signature',
+        denyMessage: 'Ticket credential has been replaced',
+        entitlement: ticketSummary(preview, eligibilityPolicy),
+      };
+    }
     if (
       preview &&
       preview.eventId === event.id &&
@@ -898,7 +1005,7 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
       return {
         scan: null,
         status: 'confirmation_required',
-        entitlement: ticketSummary(preview),
+        entitlement: ticketSummary(preview, eligibilityPolicy),
         confirmation: {
           token: mintConfirmationToken({
             entitlementId: preview.id,
@@ -906,7 +1013,10 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
             sessionId: session.id,
             deviceId: session.deviceId,
             expectedScansUsed: preview.scanCount,
+            expectedCredentialVersion: entitlementCredentialVersion(preview),
             seats: 2,
+            eligibilityVerified: input.eligibilityVerified === true,
+            eligibilityRequired,
             expiresAtMs,
           }),
           expiresAt: new Date(expiresAtMs).toISOString(),
@@ -917,7 +1027,13 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
 
     // THE atomic step. Everything this returns already accounts for every
     // concurrent scanner.
-    const claim = await entitlements.claimAdmission(decoded.entitlementId, event.id);
+    const claim = await entitlements.claimAdmission(decoded.entitlementId, event.id, {
+      ...(decoded.magic && decoded.credentialVersion !== null
+        ? { expectedCredentialVersion: decoded.credentialVersion }
+        : {}),
+      ...(input.eligibilityVerified === true ? { eligibilityVerified: true } : {}),
+      ...(eligibilityRequired ? { eligibilityRequired: true } : {}),
+    });
     const entitlement = claim.entitlement;
 
     const scanRecord = await recordScan({
@@ -949,7 +1065,7 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
         ...(claim.denyReason ? { denyReason: claim.denyReason } : {}),
         ...(claim.denyMessage ? { denyMessage: claim.denyMessage } : {}),
         ...(entitlement && claim.denyReason !== 'wrong_event'
-          ? { entitlement: ticketSummary(entitlement) }
+          ? { entitlement: ticketSummary(entitlement, eligibilityPolicy) }
           : {}),
       };
     }
@@ -972,11 +1088,60 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
     return {
       scan: scanRecord,
       status: 'consumed',
-      ...(entitlement ? { entitlement: ticketSummary(entitlement) } : {}),
+      ...(entitlement ? { entitlement: ticketSummary(entitlement, eligibilityPolicy) } : {}),
     };
   }
 
   /** Non-consuming preview — same rule, no write. */
+  async function redeemTicketAddon(input: {
+    eventId: EntityId;
+    entitlementId: EntityId;
+    addonEntitlementId: EntityId;
+    sessionToken: string;
+  }): Promise<Entitlement> {
+    const session = await authenticateSession(input.sessionToken, input.eventId);
+    if (!session.permissions.canScan) {
+      throw new ForbiddenError('This scanner session cannot redeem ticket extras');
+    }
+    const current = await deps.entitlements.getById(input.entitlementId);
+    if (!current || current.eventId !== input.eventId) {
+      throw new NotFoundError('Ticket extra', input.addonEntitlementId);
+    }
+    const now = deps.config.clock.now();
+    const addon = current.ticketAddons?.find((item) => item.id === input.addonEntitlementId);
+    if (!addon) throw new InvalidOperationError('Ticket extra was not found on this admission');
+    const event = domainEvent({
+      id: deterministicDomainEventId(
+        'ticket.addon.redeemed',
+        current.id,
+        addon.id,
+        String(now.getTime()),
+      ),
+      type: 'ticket.addon.redeemed',
+      aggregateId: current.id,
+      organizationId: current.organizationId,
+      actorId: session.createdBy,
+      payload: {
+        entitlementId: current.id,
+        addonEntitlementId: addon.id,
+        addonId: addon.addonId,
+        eventId: current.eventId,
+      },
+      occurredAt: now.getTime(),
+    });
+    const updated = await deps.entitlements.redeemTicketAddon(
+      {
+        entitlementId: current.id,
+        addonEntitlementId: addon.id,
+        eventId: input.eventId,
+        now,
+      },
+      event,
+    );
+    await deps.outbox.append(event);
+    return updated;
+  }
+
   async function resolve(input: ResolveInput, actor: ActorContext): Promise<TicketResolution> {
     const event = await requireEvent(input.eventId, actor);
     if (event.status === 'cancelled') {
@@ -997,6 +1162,18 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
       };
     }
     const entitlement = await entitlements.findById(decoded.entitlementId);
+    const eligibilityPolicy = entitlement ? await eligibilityPolicyFor(entitlement) : undefined;
+    if (
+      entitlement &&
+      decoded.magic &&
+      decoded.credentialVersion !== entitlementCredentialVersion(entitlement)
+    ) {
+      return {
+        status: 'invalid',
+        denyReason: 'invalid_signature',
+        denyMessage: 'Ticket credential has been replaced',
+      };
+    }
     const decision = evaluateAdmission(entitlement, event.id);
     if (!decision.admitted) {
       return {
@@ -1004,7 +1181,7 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
         denyReason: decision.denyReason,
         denyMessage: decision.denyMessage,
         ...(entitlement && decision.denyReason !== 'wrong_event'
-          ? { entitlement: ticketSummary(entitlement) }
+          ? { entitlement: ticketSummary(entitlement, eligibilityPolicy) }
           : {}),
       };
     }
@@ -1012,7 +1189,7 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
       status: 'valid',
       denyReason: null,
       denyMessage: null,
-      ...(entitlement ? { entitlement: ticketSummary(entitlement) } : {}),
+      ...(entitlement ? { entitlement: ticketSummary(entitlement, eligibilityPolicy) } : {}),
     };
   }
 
@@ -1067,7 +1244,8 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
   ): Promise<{ qrPayload: string; expiresAt: string; refreshIntervalSec: number }> {
     const entitlement = await entitlements.findById(ticketId);
     if (!entitlement) throw new NotFoundError('Ticket', ticketId);
-    const isHolder = entitlement.userId !== null && entitlement.userId === actor.userId;
+    const currentHolder = entitlement.currentHolderUserId ?? entitlement.userId;
+    const isHolder = currentHolder !== null && currentHolder === actor.userId;
     const isStaff = entitlement.organizationId === actor.organizationId;
     if (!isHolder && !isStaff) throw new NotFoundError('Ticket', ticketId);
     if (
@@ -1082,9 +1260,14 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
     const windowStart = Math.floor(nowMs / 1000 / MAGIC_WINDOW_SEC) * MAGIC_WINDOW_SEC;
     return {
       qrPayload: buildRotatingQr(
-        deriveTicketKey(config.magicTicketSecret, ticketId),
+        deriveTicketKey(
+          config.magicTicketSecret,
+          ticketId,
+          entitlementCredentialVersion(entitlement),
+        ),
         ticketId,
         nowMs,
+        entitlementCredentialVersion(entitlement),
       ),
       expiresAt: new Date((windowStart + MAGIC_WINDOW_SEC) * 1000).toISOString(),
       refreshIntervalSec: MAGIC_WINDOW_SEC,
@@ -1316,6 +1499,9 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
     const claim = await entitlements.claimAdmission(claims.entitlementId, event.id, {
       seats: claims.seats,
       expectedScansUsed: claims.expectedScansUsed,
+      expectedCredentialVersion: claims.expectedCredentialVersion,
+      eligibilityVerified: claims.eligibilityVerified,
+      eligibilityRequired: claims.eligibilityRequired,
     });
     const scanRecord = await recordScan({
       ...base,
@@ -1418,6 +1604,14 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
     sessionToken: string,
     actor: ActorContext,
   ): Promise<OfflineManifest> {
+    if (
+      config.features.m5OfflineTicketManifests === false ||
+      config.features.m5TicketTransfers === true
+    ) {
+      throw new ServiceUnavailableError(
+        'Offline ticket manifests are disabled for this deployment',
+      );
+    }
     const event = await requireEvent(eventId, actor);
     if (event.status === 'cancelled') {
       throw new InvalidOperationError(
@@ -1429,6 +1623,14 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
     if (!canSessionScan(session)) {
       throw new ForbiddenError('This scanner session may not scan tickets');
     }
+
+    // Offline admission cannot perform the required per-holder staff check.
+    // Fail closed for restricted entitlements, including legacy tickets whose
+    // immutable purchase snapshot predates M5.
+    const tiers = await deps.repositories.catalog.listTiers(event.id);
+    const restrictedTierIds = new Set(
+      tiers.filter((tier) => requiresEligibilityVerification(tier)).map((tier) => tier.id),
+    );
 
     const signedAt = new Date();
     const expiresAt = new Date(signedAt.getTime() + OFFLINE_MANIFEST_TTL_MS);
@@ -1442,12 +1644,24 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
       for (const entitlement of page.items) {
         if (entitlement.status === 'void' || entitlement.refundLock) continue;
         if (entitlement.scanCount >= entitlement.scanCountAllowed) continue;
+        if (
+          entitlementRequiresEligibilityVerification(entitlement) ||
+          (!entitlement.eligibility && restrictedTierIds.has(entitlement.tierId))
+        ) {
+          throw new ServiceUnavailableError(
+            'Offline admission is unavailable for tickets that require eligibility verification',
+          );
+        }
         entries.push({
           entitlementId: entitlement.id,
           validFrom: signedAt.toISOString(),
           validTo: expiresAt.toISOString(),
           seatsRemaining: entitlement.scanCountAllowed - entitlement.scanCount,
-          ticketKey: deriveTicketKey(config.magicTicketSecret, entitlement.id),
+          ticketKey: deriveTicketKey(
+            config.magicTicketSecret,
+            entitlement.id,
+            entitlementCredentialVersion(entitlement),
+          ),
         });
       }
       cursor = page.nextCursor;
@@ -1562,7 +1776,11 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
         continue;
       }
 
-      const claim = await entitlements.claimAdmission(decoded.entitlementId, event.id);
+      const claim = await entitlements.claimAdmission(decoded.entitlementId, event.id, {
+        ...(decoded.magic && decoded.credentialVersion !== null
+          ? { expectedCredentialVersion: decoded.credentialVersion }
+          : {}),
+      });
       await recordScan({
         eventId: event.id,
         organizationId: event.organizationId,
@@ -1599,6 +1817,7 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
     getSession,
     revokeSession,
     scan,
+    redeemTicketAddon,
     resolve,
     bindDevice,
     reauthorizeDevice,

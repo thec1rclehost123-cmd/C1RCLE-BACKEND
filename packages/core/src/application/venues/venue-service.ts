@@ -441,9 +441,22 @@ export class VenueSlotRequestService {
       cursor: null,
       limit: 1000,
     });
+    let linkedEvent: Event | null = null;
+    if (command.eventId) {
+      linkedEvent = await this.deps.repositories.events.getById(command.eventId);
+      if (!linkedEvent || linkedEvent.organizationId !== actor.organizationId) {
+        throw new NotFoundError('event', command.eventId);
+      }
+      if (linkedEvent.status === 'cancelled' || linkedEvent.status === 'archived') {
+        throw new InvalidOperationError(
+          'A cancelled or archived event cannot request a new Venue slot',
+        );
+      }
+    }
     if (
       events.items.some(
         (event) =>
+          event.id !== linkedEvent?.id &&
           event.status !== 'cancelled' &&
           event.status !== 'archived' &&
           doSlotRangesOverlap(

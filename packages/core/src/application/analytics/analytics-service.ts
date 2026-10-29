@@ -234,6 +234,148 @@ export class AnalyticsService {
   }
 
   /**
+   * Server-derived Promoter sales for an event. Ticket value and commission
+   * use the same captured-order states as event analytics and are explicitly
+   * before refund adjustments; this is an attribution projection, not a
+   * payable-balance or causal-lift calculation.
+   */
+  async getEventPromoterAnalytics(
+    actor: ActorContext,
+    eventId: EntityId,
+  ): Promise<EventPromoterAnalytics> {
+    const event = await this.deps.repositories.events.getById(eventId);
+    if (!event || event.organizationId !== actor.organizationId) {
+      throw new EventNotFoundError(eventId);
+    }
+
+    const orders: Order[] = [];
+    const pageSize = 250;
+    let cursor: string | null = null;
+    let complete = true;
+    do {
+      const remaining = COMPUTE_SCAN_LIMIT - orders.length;
+      const page = await this.deps.repositories.orders.listByEvent(eventId, {
+        limit: Math.min(pageSize, remaining),
+        cursor,
+      });
+      orders.push(...page.items);
+      cursor = page.nextCursor;
+      if (cursor !== null && orders.length >= COMPUTE_SCAN_LIMIT) complete = false;
+    } while (cursor !== null && orders.length < COMPUTE_SCAN_LIMIT);
+
+    const captured = orders.filter((order) => isCaptured(order.status));
+    const transition = await this.deps.repositories.journalTransition.get();
+    let liabilityComplete = true;
+    const byPromoter = new Map<string, EventPromoterAnalyticsItem>();
+    for (const order of captured) {
+      const attribution = order.attribution;
+      if (!attribution) continue;
+      const current = byPromoter.get(attribution.promoterId) ?? {
+        promoterOrganizationId: attribution.promoterId,
+        attributedOrderCount: 0,
+        attributedTicketCount: 0,
+        attributedTicketValuePaise: 0,
+        recordedCommissionPaise: 0,
+        netAttributedValuePaise: 0,
+        commissionPayableBalancePaise: 0,
+        liabilityComplete: true,
+        liabilityReadModel: 'legacy_ledger_v1' as const,
+      };
+      const ticketCount = ticketsIn(order);
+      byPromoter.set(attribution.promoterId, {
+        ...current,
+        attributedOrderCount: current.attributedOrderCount + 1,
+        attributedTicketCount: current.attributedTicketCount + ticketCount,
+        attributedTicketValuePaise:
+          current.attributedTicketValuePaise + order.discountedSubtotalPaise,
+        recordedCommissionPaise:
+          current.recordedCommissionPaise + attribution.promoterCommissionPaise,
+        netAttributedValuePaise:
+          current.netAttributedValuePaise +
+          order.discountedSubtotalPaise -
+          attribution.promoterCommissionPaise,
+        commissionPayableBalancePaise: current.commissionPayableBalancePaise,
+        liabilityComplete: current.liabilityComplete,
+        liabilityReadModel: transition.readModel,
+      });
+    }
+
+    for (const [promoterOrganizationId, current] of byPromoter) {
+      if (transition.readModel === 'financial_journal_v2') {
+        const payableLines =
+          await this.deps.repositories.financialJournals.listPayableLinesByOrganization(
+            promoterOrganizationId,
+          );
+        const commissionPayableBalancePaise = payableLines
+          .filter((line) => line.account === 'promoter_payable' && line.source.eventId === eventId)
+          .reduce(
+            (balance, line) =>
+              balance + (line.side === 'credit' ? line.amountPaise : -line.amountPaise),
+            0,
+          );
+        byPromoter.set(promoterOrganizationId, {
+          ...current,
+          commissionPayableBalancePaise,
+          liabilityComplete: true,
+        });
+        continue;
+      }
+
+      let commissionPayableBalancePaise = 0;
+      let ledgerCursor: string | null = null;
+      let scanned = 0;
+      do {
+        const remaining = COMPUTE_SCAN_LIMIT - scanned;
+        const page = await this.deps.repositories.ledger.listByOrganization(
+          promoterOrganizationId,
+          { limit: Math.min(pageSize, remaining), cursor: ledgerCursor },
+        );
+        for (const entry of page.items) {
+          if (
+            entry.eventId === eventId &&
+            entry.entryType === 'promoter_commission' &&
+            entry.status !== 'paid_out'
+          ) {
+            commissionPayableBalancePaise += entry.amount;
+          }
+        }
+        scanned += page.items.length;
+        ledgerCursor = page.nextCursor;
+        if (ledgerCursor !== null && scanned >= COMPUTE_SCAN_LIMIT) liabilityComplete = false;
+      } while (ledgerCursor !== null && scanned < COMPUTE_SCAN_LIMIT);
+      byPromoter.set(promoterOrganizationId, {
+        ...current,
+        commissionPayableBalancePaise,
+        liabilityComplete: scanned < COMPUTE_SCAN_LIMIT || ledgerCursor === null,
+        liabilityReadModel: transition.readModel,
+      });
+    }
+
+    const items = [...byPromoter.values()].sort((left, right) =>
+      left.promoterOrganizationId.localeCompare(right.promoterOrganizationId),
+    );
+    return {
+      eventId,
+      complete: complete && liabilityComplete,
+      capturedTicketCount: captured.reduce((sum, order) => sum + ticketsIn(order), 0),
+      attributedTicketCount: items.reduce((sum, item) => sum + item.attributedTicketCount, 0),
+      attributedTicketValuePaise: items.reduce(
+        (sum, item) => sum + item.attributedTicketValuePaise,
+        0,
+      ),
+      recordedCommissionPaise: items.reduce((sum, item) => sum + item.recordedCommissionPaise, 0),
+      netAttributedValuePaise: items.reduce((sum, item) => sum + item.netAttributedValuePaise, 0),
+      commissionPayableBalancePaise: items.reduce(
+        (sum, item) => sum + item.commissionPayableBalancePaise,
+        0,
+      ),
+      liabilityComplete: items.every((item) => item.liabilityComplete),
+      liabilityReadModel: transition.readModel,
+      items,
+    };
+  }
+
+  /**
    * Recomputes the organization's read-model row and stores it. Called by the
    * projection consumer (on `event.*`) and by the periodic refresh — never by a
    * request handler. The recompute is the same bounded scan the read path
@@ -462,7 +604,13 @@ export class AnalyticsService {
         status: event.status,
         venueId: event.venueId,
         venueName: venue?.public.name ?? null,
-        imageUrl: event.imageUrl,
+        // Older private events may still carry a long-lived public poster URL.
+        // Partner cards are not an authorized media-delivery path, so redact it
+        // even for tenant-scoped reads until the poster ACL inventory is fixed.
+        imageUrl:
+          event.visibilityMode === 'code' || event.visibilityMode === 'invited'
+            ? null
+            : event.imageUrl,
         ticketsSold: soldByEvent.get(event.id) ?? 0,
         // `public.capacity` is nullable by design (a venue may never declare
         // one), and that `null` must survive to the wire as `null`.
@@ -650,6 +798,37 @@ export class AnalyticsService {
       conversionRate: 0,
     };
   }
+}
+
+export interface EventPromoterAnalyticsItem {
+  readonly promoterOrganizationId: EntityId;
+  readonly attributedOrderCount: number;
+  readonly attributedTicketCount: number;
+  readonly attributedTicketValuePaise: number;
+  readonly recordedCommissionPaise: number;
+  readonly netAttributedValuePaise: number;
+  /** Signed net payable balance from the selected finance read model. */
+  readonly commissionPayableBalancePaise: number;
+  readonly liabilityComplete: boolean;
+  readonly liabilityReadModel: 'legacy_ledger_v1' | 'financial_journal_v2';
+}
+
+export interface EventPromoterAnalytics {
+  readonly eventId: EntityId;
+  /** False when more than the bounded source scan cap remains. */
+  readonly complete: boolean;
+  readonly capturedTicketCount: number;
+  readonly attributedTicketCount: number;
+  /** Captured discounted ticket value before refund adjustments. */
+  readonly attributedTicketValuePaise: number;
+  /** Frozen commission from captured orders before refund adjustments. */
+  readonly recordedCommissionPaise: number;
+  /** Ticket value less recorded commission; not a payable liability or causal lift. */
+  readonly netAttributedValuePaise: number;
+  readonly commissionPayableBalancePaise: number;
+  readonly liabilityComplete: boolean;
+  readonly liabilityReadModel: 'legacy_ledger_v1' | 'financial_journal_v2';
+  readonly items: readonly EventPromoterAnalyticsItem[];
 }
 
 export interface OrganizationSalesBreakdown {

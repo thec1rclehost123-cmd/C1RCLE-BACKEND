@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import { createCoreConfig } from '../../config/index.js';
-import { ConflictError, InvalidOperationError, UnauthorizedError } from '../../domain/errors.js';
+import {
+  ConflictError,
+  ForbiddenError,
+  InvalidOperationError,
+  TicketTierNotFoundError,
+  UnauthorizedError,
+} from '../../domain/errors.js';
 import { createTicketTier } from '../../domain/models/event-catalog.js';
 import { createEvent, transitionEvent } from '../../domain/models/event.js';
 import { createGuestProfile } from '../../domain/models/guest-profile.js';
@@ -17,6 +23,7 @@ import {
   MemoryEventRepository,
   MemoryOrderRepository,
 } from '../../infrastructure/memory/memory-repositories.js';
+import { MemoryUserAccountRepository } from '../../infrastructure/memory/memory-user-account-repository.js';
 import { InventoryService } from '../inventory/inventory-service.js';
 import { PricingService } from '../pricing/pricing-service.js';
 
@@ -40,6 +47,7 @@ const config = createCoreConfig({
   redis: { url: 'redis://localhost:6379' },
   firestore: { projectId: 'test-project' },
   clock: { now: () => NOW },
+  features: { m5EligibilityRulesEnabled: true },
 });
 
 const actor = (userId: string): ActorContext => ({
@@ -49,16 +57,30 @@ const actor = (userId: string): ActorContext => ({
   capabilities: [],
 });
 
-function buildService() {
+function buildService(serviceConfig = config) {
   const events = new MemoryEventRepository();
   const catalog = new MemoryEventCatalogRepository();
   const orders = new MemoryOrderRepository();
   const entitlements = new MemoryEntitlementRepository();
   const carts = new MemoryCartReservationRepository();
   const guestProfiles = new MemoryGuestProfileRepository();
+  const users = new MemoryUserAccountRepository();
+  const outbox = new MemoryOutboxStore();
+  for (const id of ['user_1', 'user_2']) {
+    users.save({
+      id,
+      email: `${id}@example.test`,
+      name: id,
+      image: null,
+      emailVerified: true,
+      role: 'guest',
+      createdAt: NOW.getTime(),
+      updatedAt: NOW.getTime(),
+    });
+  }
   const deps = {
-    config,
-    outbox: new MemoryOutboxStore(),
+    config: serviceConfig,
+    outbox,
     pricing: new PricingService({ eventCatalog: catalog }),
     inventory: new InventoryService({
       eventCatalog: catalog,
@@ -72,12 +94,22 @@ function buildService() {
       orders,
       entitlements,
       guestProfiles,
+      users,
       ledger: new MemoryLedgerRepository(),
       financialJournals: new MemoryFinancialJournalRepository(),
       leaderboard: new MemoryLeaderboardRepository(),
     },
   } as unknown as ServiceDeps;
-  return { deps, events, catalog, orders, guestProfiles, service: new CheckoutService(deps) };
+  return {
+    deps,
+    outbox,
+    events,
+    catalog,
+    orders,
+    guestProfiles,
+    users,
+    service: new CheckoutService(deps),
+  };
 }
 
 async function seedPublishedFreeEvent(
@@ -136,6 +168,97 @@ function seedLegacyFreeTier(catalog: MemoryEventCatalogRepository): void {
 }
 
 describe('CheckoutService.createRsvp', () => {
+  it('requires an eligibility attestation without collecting attendee demographics', async () => {
+    const { events, catalog, service } = buildService();
+    await seedPublishedFreeEvent(events);
+    seedTier(catalog, { audienceType: 'FEMALE', minAge: 21 });
+
+    await expect(
+      service.createRsvp({ actor: actor('user_1'), eventId: 'evt_1', tierId: 'tier_1' }),
+    ).rejects.toBeInstanceOf(InvalidOperationError);
+    await expect(
+      service.quote({
+        actor: actor('user_1'),
+        eventId: 'evt_1',
+        lines: [{ tierId: 'tier_1', quantity: 1 }],
+      }),
+    ).rejects.toBeInstanceOf(InvalidOperationError);
+
+    const { order, entitlements } = await service.createRsvp({
+      actor: actor('user_1'),
+      eventId: 'evt_1',
+      tierId: 'tier_1',
+      eligibilityAttested: true,
+    });
+    expect(order.lines[0]?.eligibility).toMatchObject({
+      audienceType: 'FEMALE',
+      minAge: 21,
+      maxAge: null,
+      attested: true,
+    });
+    expect(order.lines[0]?.eligibility).not.toHaveProperty('gender');
+    expect(order.lines[0]?.eligibility).not.toHaveProperty('dateOfBirth');
+    expect(entitlements[0]?.eligibility).toEqual(order.lines[0]?.eligibility);
+
+    const quote = await service.quote({
+      actor: actor('user_2'),
+      eventId: 'evt_1',
+      lines: [{ tierId: 'tier_1', quantity: 1, eligibilityAttested: true }],
+    });
+    const hold = await service.createHold({
+      actor: actor('user_2'),
+      eventId: 'evt_1',
+      organizationId: 'org_1',
+      lines: [
+        {
+          tierId: 'tier_1',
+          tierName: 'General Admission',
+          quantity: 1,
+          unitPricePaise: 0,
+          eligibilityAttested: true,
+        },
+      ],
+      pricing: quote.pricing,
+      appliedPromoCode: null,
+      attribution: quote.attribution,
+      idempotencyKey: 'eligible-hold',
+    });
+    expect(hold.lines[0]?.eligibility).toMatchObject({
+      audienceType: 'FEMALE',
+      minAge: 21,
+      maxAge: null,
+      attested: true,
+    });
+  });
+
+  it('keeps restricted eligibility sales blocked when the approval gate is off', async () => {
+    const restrictedConfig = createCoreConfig({
+      redis: { url: 'redis://localhost:6379' },
+      firestore: { projectId: 'test-project' },
+      clock: { now: () => NOW },
+      features: { m5EligibilityRulesEnabled: false },
+    });
+    const { events, catalog, service } = buildService(restrictedConfig);
+    await seedPublishedFreeEvent(events);
+    seedTier(catalog, { audienceType: 'STUDENT' });
+
+    await expect(
+      service.quote({
+        actor: actor('user_1'),
+        eventId: 'evt_1',
+        lines: [{ tierId: 'tier_1', quantity: 1, eligibilityAttested: true }],
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(
+      service.createRsvp({
+        actor: actor('user_1'),
+        eventId: 'evt_1',
+        tierId: 'tier_1',
+        eligibilityAttested: true,
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
   it('uses the authenticated Guest profile name without storing email or phone', async () => {
     const { events, catalog, guestProfiles, service } = buildService();
     await seedPublishedFreeEvent(events);
@@ -182,6 +305,32 @@ describe('CheckoutService.createRsvp', () => {
     expect(entitlements[0]).toMatchObject({ orderId: order.id, status: 'valid' });
   });
 
+  it('writes one durable, role-explicit issuance event per RSVP entitlement', async () => {
+    const { events, catalog, service, outbox } = buildService();
+    await seedPublishedFreeEvent(events);
+    seedLegacyFreeTier(catalog);
+
+    const first = await service.createRsvp({
+      actor: actor('user_1'),
+      eventId: 'evt_1',
+      tierId: 'tier_legacy',
+    });
+    const issuanceEvents = (await outbox.listPending()).filter(
+      (row) => row.type === 'ticket.issued',
+    );
+    expect(issuanceEvents).toHaveLength(1);
+    expect(issuanceEvents[0]?.payload).toMatchObject({
+      type: 'ticket.issued',
+      payload: {
+        entitlementId: first.entitlements[0]?.id,
+        orderId: first.order.id,
+        eventId: 'evt_1',
+        purchaserUserId: 'user_1',
+        holderUserId: 'user_1',
+      },
+    });
+  });
+
   it('rejects a legacy tier whose door price is non-zero', async () => {
     const { events, catalog, service } = buildService();
     await seedPublishedFreeEvent(events);
@@ -205,6 +354,27 @@ describe('CheckoutService.createRsvp', () => {
     ).rejects.toBeInstanceOf(InvalidOperationError);
   });
 
+  it('rejects group-shaped free RSVP tiers until every attendee has an identity-bound claim', async () => {
+    const { events, catalog, orders, service } = buildService();
+    await seedPublishedFreeEvent(events);
+    const rsvpTier = createTicketTier({
+      id: 'tier_1',
+      eventId: 'evt_1',
+      organizationId: 'org_1',
+      name: 'Legacy group RSVP',
+      accessType: 'RSVP',
+      quantity: 10,
+    });
+    // Simulate a legacy or manually corrupted stored row that predates the
+    // current domain-level guard against group-shaped free RSVP tiers.
+    await catalog.saveTier({ ...rsvpTier, guestCount: 2 });
+
+    await expect(
+      service.createRsvp({ actor: actor('user_1'), eventId: 'evt_1', tierId: 'tier_1' }),
+    ).rejects.toThrow(/individually verified attendee claim/);
+    await expect(orders.getById(rsvpOrderId('evt_1', 'user_1'))).resolves.toBeNull();
+  });
+
   it('rejects unauthenticated and system actors', async () => {
     const { events, catalog, service } = buildService();
     await seedPublishedFreeEvent(events);
@@ -220,6 +390,69 @@ describe('CheckoutService.createRsvp', () => {
         tierId: 'tier_1',
       }),
     ).rejects.toBeInstanceOf(UnauthorizedError);
+  });
+
+  it('requires a persisted verified account and fails closed when it is missing', async () => {
+    const { events, catalog, users, service } = buildService();
+    await seedPublishedFreeEvent(events);
+    seedTier(catalog);
+    users.save({
+      id: 'unverified',
+      email: 'unverified@example.test',
+      name: 'Unverified',
+      image: null,
+      emailVerified: false,
+      role: 'guest',
+      createdAt: NOW.getTime(),
+      updatedAt: NOW.getTime(),
+    });
+
+    await expect(
+      service.createRsvp({ actor: actor('unverified'), eventId: 'evt_1', tierId: 'tier_1' }),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(
+      service.createRsvp({ actor: actor('missing'), eventId: 'evt_1', tierId: 'tier_1' }),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it('does not issue a restricted RSVP without an access grant', async () => {
+    const { events, catalog, service } = buildService();
+    await seedPublishedFreeEvent(events);
+    seedTier(catalog);
+    const tier = await catalog.getTierById('tier_1');
+    expect(tier).not.toBeNull();
+    if (!tier) return;
+    await catalog.saveTier({ ...tier, accessMode: 'invited', version: tier.version + 1 });
+
+    await expect(
+      service.createRsvp({ actor: actor('user_1'), eventId: 'evt_1', tierId: 'tier_1' }),
+    ).rejects.toBeInstanceOf(TicketTierNotFoundError);
+  });
+
+  it('blocks paid quote and free RSVP on a private event without its event grant', async () => {
+    const { events, catalog, service } = buildService();
+    await seedPublishedFreeEvent(events);
+    seedTier(catalog);
+    const event = await events.getById('evt_1');
+    expect(event).not.toBeNull();
+    if (!event) return;
+    await events.save({
+      ...event,
+      visibilityMode: 'code',
+      isPublic: false,
+      version: event.version + 1,
+    });
+
+    await expect(
+      service.createRsvp({ actor: actor('user_1'), eventId: 'evt_1', tierId: 'tier_1' }),
+    ).rejects.toBeInstanceOf(TicketTierNotFoundError);
+    await expect(
+      service.quote({
+        actor: actor('user_1'),
+        eventId: 'evt_1',
+        lines: [{ tierId: 'tier_1', quantity: 1 }],
+      }),
+    ).rejects.toBeInstanceOf(TicketTierNotFoundError);
   });
 
   it('rejects a second RSVP and converges id and slug callers on one order', async () => {

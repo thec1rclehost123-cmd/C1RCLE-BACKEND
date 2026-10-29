@@ -114,11 +114,12 @@ function buildDeps() {
 
   const emailSender = new FakeEmailSender();
   const userDirectory = new FakeUserDirectory();
+  const outbox = new MemoryOutboxStore();
 
   const deps: ServiceDeps = {
     config,
     logger: noopLogger,
-    outbox: new MemoryOutboxStore(),
+    outbox,
     emailDeliveries: new MemoryEmailDeliveryRepository(),
     adminAudit: new MemoryAdminAuditRepository(),
     verification: new FormatCheckVerificationProvider(),
@@ -139,7 +140,7 @@ function buildDeps() {
 
   const authority = new AdminAuthorityService(deps);
   const service = new OnboardingService(deps, authority);
-  return { deps, authority, service, repositories, emailSender, userDirectory };
+  return { deps, authority, service, repositories, emailSender, userDirectory, outbox };
 }
 
 const PROFILE = {
@@ -287,6 +288,37 @@ describe('OnboardingService — KYC document desk', () => {
     expect(emailSender.sent[0]).toMatchObject({
       recipient: 'applicant@example.com',
       params: { legalName: 'Blue Room Hospitality', note: 'Selfie is unreadable' },
+    });
+  });
+
+  it('emits authoritative outbox events when a Promoter application is submitted and rejected', async () => {
+    const { service, repositories, outbox } = ctx;
+    const created = await service.start('user_a', {
+      requestedType: 'promoter',
+      plan: 'basic',
+      profile: PROFILE,
+    });
+    for (const label of ['id_front', 'id_back', 'selfie']) {
+      await service.addDocument('user_a', {
+        requestId: created.id,
+        label,
+        storagePath: `kyc/${label}.jpg`,
+      });
+    }
+    const request = await service.submit('user_a', created.id);
+    const submitted = await outbox.listPending();
+    expect(submitted.map((row) => row.type)).toContain('promoter.onboarding.submitted');
+
+    await seedAdmin(repositories, 'admin_a');
+    await service.reject('admin_a', { requestId: request.id, note: 'Not eligible' });
+    const rejected = await outbox.listPending();
+    expect(rejected.map((row) => row.type)).toContain('promoter.onboarding.rejected');
+    expect(
+      rejected.find((row) => row.type === 'promoter.onboarding.rejected')?.payload,
+    ).toMatchObject({
+      organizationId: 'user_a',
+      actorId: 'admin_a',
+      payload: { requestId: request.id },
     });
   });
 

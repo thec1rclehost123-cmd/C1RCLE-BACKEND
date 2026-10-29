@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { InvalidOperationError } from '../../domain/errors.js';
+import { createTicketAddon } from '../../domain/models/ticket-addon.js';
 
 import { PricingService } from './pricing-service.js';
 
@@ -32,6 +33,7 @@ function tier(overrides: Partial<TicketTier> = {}): TicketTier {
 function service(ticket: TicketTier): PricingService {
   const catalog = {
     listTiers: async () => [ticket],
+    listTicketAddons: async () => [],
     getPromoByCode: async () => null,
   } as unknown as EventCatalogRepository;
   return new PricingService({ eventCatalog: catalog });
@@ -83,5 +85,86 @@ describe('PricingService ticket-tier pricing', () => {
         lines: [{ tierId: 'TIER-1', quantity: 1 }],
       }),
     ).rejects.toThrow(/not started/);
+  });
+
+  it('uses server catalog price for a per-ticket add-on and keeps it outside the admission subtotal', async () => {
+    const parking = createTicketAddon({
+      id: 'ADDON-PARKING',
+      eventId: 'EVT-1',
+      organizationId: 'ORG-1',
+      name: 'Parking pass',
+      kind: 'parking',
+      priceInPaise: 50_000,
+      quantity: 20,
+    });
+    const addonPricing = new PricingService({
+      eventCatalog: {
+        listTiers: async () => [tier()],
+        listTicketAddons: async () => [parking],
+        getPromoByCode: async () => null,
+      } as unknown as EventCatalogRepository,
+    });
+
+    const result = await addonPricing.calculate({
+      eventId: 'EVT-1',
+      lines: [
+        {
+          tierId: 'TIER-1',
+          quantity: 1,
+          ticketAddons: [{ addonId: parking.id, quantityPerEntitlement: 1 }],
+        },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      admissionSubtotalPaise: 199_900,
+      addOnSubtotalPaise: 50_000,
+      subtotalPaise: 249_900,
+      discountedSubtotalPaise: 249_900,
+      lines: [
+        {
+          unitPricePaise: 249_900,
+          ticketAddons: [
+            {
+              addonId: 'ADDON-PARKING',
+              unitPricePaise: 50_000,
+              quantityPerEntitlement: 1,
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('rejects add-ons from a different event and quantities over their per-ticket limit', async () => {
+    const parking = createTicketAddon({
+      id: 'ADDON-PARKING',
+      eventId: 'EVT-1',
+      organizationId: 'ORG-1',
+      name: 'Parking pass',
+      kind: 'parking',
+      priceInPaise: 50_000,
+      quantity: 20,
+      maxPerEntitlement: 1,
+    });
+    const addonPricing = new PricingService({
+      eventCatalog: {
+        listTiers: async () => [tier({ eventId: 'EVT-2' })],
+        listTicketAddons: async () => [parking],
+        getPromoByCode: async () => null,
+      } as unknown as EventCatalogRepository,
+    });
+    await expect(
+      addonPricing.calculate({
+        eventId: 'EVT-2',
+        lines: [
+          {
+            tierId: 'TIER-1',
+            quantity: 1,
+            ticketAddons: [{ addonId: parking.id, quantityPerEntitlement: 1 }],
+          },
+        ],
+      }),
+    ).rejects.toThrow(/not available/);
   });
 });

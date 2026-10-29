@@ -149,6 +149,7 @@ describe.runIf(RUN)('Firestore adapters (live project)', () => {
       const found = page.items.find((u) => u.id === docId);
       expect(found).toBeDefined();
       expect(found?.email).toBe(`${docId}@example.com`);
+      expect(found?.emailVerified).toBe(true);
       expect(typeof found?.createdAt).toBe('number');
     },
     NETWORK_TIMEOUT,

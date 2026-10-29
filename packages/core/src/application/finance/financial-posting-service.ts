@@ -37,6 +37,7 @@ export interface TicketSalePostingInput {
   readonly providerConfirmed: boolean;
   readonly currency: CurrencyCode;
   readonly ticketFaceValuePaise: number;
+  readonly eventCoverLiabilityPaise?: number;
   readonly discountPaise: number;
   readonly discountFundingOwner: DiscountFundingOwner | null;
   readonly netTicketRevenuePaise: number;
@@ -45,6 +46,9 @@ export interface TicketSalePostingInput {
   readonly paymentFeePaise: number;
   readonly providerFeePaise?: number;
   readonly allocation: PartnerAllocation;
+  readonly promoterAssignmentId?: EntityId | null;
+  readonly commissionPolicyVersion?: string | null;
+  readonly commercialPolicyVersion?: string | null;
   readonly policy?: AccountingPolicySnapshot;
   readonly postedAt?: Date;
 }
@@ -73,6 +77,7 @@ export function buildTicketSaleJournals(input: TicketSalePostingInput): Financia
   }
   const saleComponents: FinancialComponentBreakdown = {
     ticketFaceValuePaise: input.ticketFaceValuePaise,
+    eventCoverLiabilityPaise: input.eventCoverLiabilityPaise ?? 0,
     discountPaise: input.discountPaise,
     discountFundingOwner: input.discountFundingOwner,
     netTicketRevenuePaise: input.netTicketRevenuePaise,
@@ -111,12 +116,23 @@ export function buildTicketSaleJournals(input: TicketSalePostingInput): Financia
     orderId: input.orderId,
     paymentId: input.paymentId,
     eventId: input.eventId,
+    ...(input.promoterAssignmentId
+      ? {
+          assignmentId: input.promoterAssignmentId,
+          commissionPolicyVersion: input.commissionPolicyVersion ?? null,
+          commercialPolicyVersion: input.commercialPolicyVersion ?? null,
+        }
+      : {}),
   };
   const policy = input.policy ?? DEFAULT_ACCOUNTING_POLICY;
   const clearingAccount =
     input.sourceType === 'door_cash_sale' ? 'cash_bank_clearing' : 'provider_clearing';
   const customerTotal =
-    input.netTicketRevenuePaise + input.gstPaise + input.platformFeePaise + input.paymentFeePaise;
+    input.netTicketRevenuePaise +
+    (input.eventCoverLiabilityPaise ?? 0) +
+    input.gstPaise +
+    input.platformFeePaise +
+    input.paymentFeePaise;
 
   const collection = createPostedJournal({
     organizationId: input.organizationId,
@@ -142,6 +158,14 @@ export function buildTicketSaleJournals(input: TicketSalePostingInput): Financia
         organizationId: input.organizationId,
         component: 'netTicketRevenuePaise',
         memo: 'Discounted ticket face value collected',
+      }),
+      line({
+        account: 'event_cover_liability',
+        side: 'credit',
+        amountPaise: input.eventCoverLiabilityPaise ?? 0,
+        organizationId: input.organizationId,
+        component: 'eventCoverLiabilityPaise',
+        memo: 'Event cover funds held for entitlement redemption or refund',
       }),
       line({
         account: 'platform_fee_revenue',

@@ -1,18 +1,27 @@
 import { describe, expect, it } from 'vitest';
 
 import { createCoreConfig } from '../../config/index.js';
+import { ForbiddenError } from '../../domain/errors.js';
+import { issueEntitlements } from '../../domain/models/entitlement.js';
 import { createPromoCode, createTicketTier } from '../../domain/models/event-catalog.js';
 import { createEvent, transitionEvent } from '../../domain/models/event.js';
+import { attachPaymentIntent, createOrder, markPaid } from '../../domain/models/order.js';
+import { createTicketAddon } from '../../domain/models/ticket-addon.js';
 import { MemoryFinancialJournalRepository } from '../../infrastructure/memory/memory-financial-journal-repository.js';
 import { MemoryLeaderboardRepository } from '../../infrastructure/memory/memory-leaderboard-repository.js';
 import { MemoryLedgerRepository } from '../../infrastructure/memory/memory-ledger-repository.js';
+import { MemoryOnboardingRepository } from '../../infrastructure/memory/memory-onboarding-repository.js';
 import { MemoryOutboxStore } from '../../infrastructure/memory/memory-outbox-store.js';
+import { MemoryPartnershipRepository } from '../../infrastructure/memory/memory-partnership-repository.js';
+import { MemoryProviderFinancialEventRepository } from '../../infrastructure/memory/memory-provider-financial-event-repository.js';
+import { MemoryProviderPaymentRepository } from '../../infrastructure/memory/memory-provider-payment-repository.js';
 import {
   MemoryCartReservationRepository,
   MemoryEntitlementRepository,
   MemoryEventCatalogRepository,
   MemoryEventRepository,
   MemoryOrderRepository,
+  MemoryPlatformSettingsRepository,
   MemoryPromoRedemptionRepository,
 } from '../../infrastructure/memory/memory-repositories.js';
 import { InventoryService } from '../inventory/inventory-service.js';
@@ -34,6 +43,7 @@ const config = createCoreConfig({
   redis: { url: 'redis://localhost:6379' },
   firestore: { projectId: 'test-project' },
   clock: { now: () => NOW },
+  features: { m5TicketAddonsEnabled: true },
 });
 const actor = (userId: string): ActorContext => ({
   userId,
@@ -42,13 +52,20 @@ const actor = (userId: string): ActorContext => ({
   capabilities: [],
 });
 
-async function build(options: { eventStatus?: 'published' | 'draft' | 'cancelled' } = {}) {
+async function build(
+  options: {
+    eventStatus?: 'published' | 'draft' | 'cancelled';
+    config?: ReturnType<typeof createCoreConfig>;
+  } = {},
+) {
   const events = new MemoryEventRepository();
   const catalog = new MemoryEventCatalogRepository();
   const orders = new MemoryOrderRepository();
   const carts = new MemoryCartReservationRepository();
+  const providerPayments = new MemoryProviderPaymentRepository();
+  const providerFinancialEvents = new MemoryProviderFinancialEventRepository();
   const deps = {
-    config,
+    config: options.config ?? config,
     outbox: new MemoryOutboxStore(),
     pricing: new PricingService({ eventCatalog: catalog }),
     inventory: new InventoryService({
@@ -66,6 +83,11 @@ async function build(options: { eventStatus?: 'published' | 'draft' | 'cancelled
       financialJournals: new MemoryFinancialJournalRepository(),
       leaderboard: new MemoryLeaderboardRepository(),
       promoRedemptions: new MemoryPromoRedemptionRepository(),
+      providerPayments,
+      providerFinancialEvents,
+      onboarding: new MemoryOnboardingRepository(),
+      partnerships: new MemoryPartnershipRepository(),
+      platformSettings: new MemoryPlatformSettingsRepository(),
     },
   } as unknown as ServiceDeps;
 
@@ -89,6 +111,8 @@ async function build(options: { eventStatus?: 'published' | 'draft' | 'cancelled
     catalog,
     orders,
     carts,
+    providerPayments,
+    providerFinancialEvents,
     events,
     redemptions: deps.repositories.promoRedemptions,
     service: new CheckoutService(deps),
@@ -104,6 +128,28 @@ async function seedTier(catalog: MemoryEventCatalogRepository, quantity = 10) {
       name: 'General',
       priceInPaise: 100_000,
       quantity,
+      now: NOW,
+    }),
+  );
+}
+
+async function seedAdditionalTier(
+  catalog: MemoryEventCatalogRepository,
+  id: string,
+  guestCount = 1,
+  admissionMode: 'bundle' | 'per_person' = 'bundle',
+  quantity = 20,
+) {
+  await catalog.saveTier(
+    createTicketTier({
+      id,
+      eventId: 'evt_1',
+      organizationId: 'org_1',
+      name: id,
+      priceInPaise: 50_000,
+      quantity,
+      guestCount,
+      admissionMode,
       now: NOW,
     }),
   );
@@ -137,6 +183,451 @@ async function holdFor(
     idempotencyKey: key,
   });
 }
+
+async function holdLinesFor(
+  service: CheckoutService,
+  userId: string,
+  key: string,
+  lines: { tierId: string; quantity: number }[],
+) {
+  const { pricing } = await service.quote({ actor: actor(userId), eventId: 'evt_1', lines });
+  return service.createHold({
+    actor: actor(userId),
+    eventId: 'evt_1',
+    organizationId: 'org_1',
+    lines: pricing.lines.map((line) => ({
+      tierId: line.tierId,
+      tierName: line.tierName,
+      quantity: line.quantity,
+      unitPricePaise: line.unitPricePaise,
+    })),
+    pricing,
+    appliedPromoCode: pricing.appliedPromoCode,
+    attribution: null,
+    idempotencyKey: key,
+  });
+}
+
+async function seedPaidSingleTicket(input: Awaited<ReturnType<typeof build>>, userId = 'user_1') {
+  const { catalog, service, carts, orders, deps } = input;
+  await seedTier(catalog);
+  const hold = await holdFor(service, userId, `upgrade-source-${userId}`);
+  await carts.bindProviderOrder(hold.id, `pi-source-${userId}`);
+  const pending = createOrder({
+    id: `order-source-${userId}`,
+    eventId: hold.eventId,
+    organizationId: hold.organizationId,
+    userId,
+    contact: { name: 'Guest', email: `${userId}@example.test`, phone: '' },
+    pricing: hold.pricing,
+    now: NOW,
+  });
+  const paid = markPaid(
+    attachPaymentIntent(pending, `pi-source-${userId}`, NOW),
+    `pay-source-${userId}`,
+    NOW,
+  );
+  await orders.save({ ...paid, version: 1 });
+  await carts.convertToOrder(hold.id, paid.id);
+  const [source] = issueEntitlements({ order: paid, now: NOW });
+  if (!source) throw new Error('Expected one source entitlement');
+  await deps.repositories.entitlements.save(source);
+  return source;
+}
+
+describe('bounded checkout ticket upgrades', () => {
+  it('quotes and reserves only the authoritative admission-price difference', async () => {
+    const state = await build();
+    const source = await seedPaidSingleTicket(state);
+    await state.catalog.saveTier(
+      createTicketTier({
+        id: 'tier_premium',
+        eventId: 'evt_1',
+        organizationId: 'org_1',
+        name: 'Premium',
+        priceInPaise: 150_000,
+        quantity: 4,
+        now: NOW,
+      }),
+    );
+
+    const quote = await state.service.quote({
+      actor: actor('user_1'),
+      eventId: 'evt_1',
+      lines: [{ tierId: 'tier_premium', quantity: 1 }],
+      upgradeFromEntitlementId: source.id,
+    });
+    expect(quote.pricing.subtotalPaise).toBe(50_000);
+    expect(quote.pricing.lines[0]).toMatchObject({
+      tierId: 'tier_premium',
+      admissionUnitPricePaise: 50_000,
+      coverUnitPricePaise: 0,
+    });
+    expect(quote.upgrade).toMatchObject({
+      sourceEntitlementId: source.id,
+      sourceEntitlementVersion: source.version,
+      sourceOrderId: source.orderId,
+      targetTierId: 'tier_premium',
+      priorAdmissionPaidPaise: 100_000,
+      replacementAdmissionPaise: 150_000,
+      incrementalAdmissionPaise: 50_000,
+    });
+
+    const hold = await state.service.createHold({
+      actor: actor('user_1'),
+      eventId: 'evt_1',
+      organizationId: 'org_1',
+      lines: quote.pricing.lines.map((line) => ({
+        tierId: line.tierId,
+        tierName: line.tierName,
+        quantity: line.quantity,
+        unitPricePaise: line.unitPricePaise,
+        admissionUnitPricePaise: line.admissionUnitPricePaise,
+        coverUnitPricePaise: line.coverUnitPricePaise,
+      })),
+      pricing: quote.pricing,
+      appliedPromoCode: null,
+      attribution: quote.attribution,
+      upgrade: quote.upgrade,
+      idempotencyKey: 'premium-upgrade-hold',
+    });
+    expect(hold.upgrade).toEqual(quote.upgrade);
+    expect(hold.lines[0]?.unitPricePaise).toBe(50_000);
+    expect(await state.deps.repositories.entitlements.getById(source.id)).toMatchObject({
+      status: 'valid',
+    });
+
+    state.deps.paymentProvider = {
+      createOrder: async (request) => ({
+        id: 'pi-upgrade-failed',
+        amountPaise: request.amountPaise,
+        currency: request.currency,
+        status: 'created',
+      }),
+      getPayment: async (paymentId) => ({
+        verified: true,
+        paymentId,
+        orderId: 'pi-upgrade-failed',
+        amountPaise: hold.pricing.grandTotalPaise,
+        currency: hold.pricing.currency,
+        captured: false,
+      }),
+      verifyPayment: async () => {
+        throw new Error('unused');
+      },
+      capturePayment: async () => {
+        throw new Error('unused');
+      },
+      refundPayment: async () => {
+        throw new Error('unused');
+      },
+    };
+    const attempt = await state.service.createPaymentIntent({
+      actor: actor('user_1'),
+      holdId: hold.id,
+      idempotencyKey: 'upgrade-failed-payment',
+    });
+    await expect(
+      state.service.confirmPayment({
+        actor: actor('user_1'),
+        paymentId: 'pay-upgrade-failed',
+        paymentIntentId: attempt.paymentIntentId,
+        holdId: hold.id,
+        _idempotencyKey: 'upgrade-failed-payment-confirmation',
+      }),
+    ).rejects.toThrow(/has not been captured/);
+    expect(await state.deps.repositories.entitlements.getById(source.id)).toMatchObject({
+      status: 'valid',
+      version: source.version,
+    });
+  });
+
+  it('rejects a source pass after it is scanned or used by another account', async () => {
+    const state = await build();
+    const source = await seedPaidSingleTicket(state);
+    await state.catalog.saveTier(
+      createTicketTier({
+        id: 'tier_premium',
+        eventId: 'evt_1',
+        organizationId: 'org_1',
+        name: 'Premium',
+        priceInPaise: 150_000,
+        quantity: 4,
+        now: NOW,
+      }),
+    );
+
+    const quote = await state.service.quote({
+      actor: actor('user_1'),
+      eventId: 'evt_1',
+      lines: [{ tierId: 'tier_premium', quantity: 1 }],
+      upgradeFromEntitlementId: source.id,
+    });
+    const hold = await state.service.createHold({
+      actor: actor('user_1'),
+      eventId: 'evt_1',
+      organizationId: 'org_1',
+      lines: quote.pricing.lines.map((line) => ({
+        tierId: line.tierId,
+        tierName: line.tierName,
+        quantity: line.quantity,
+        unitPricePaise: line.unitPricePaise,
+        admissionUnitPricePaise: line.admissionUnitPricePaise,
+        coverUnitPricePaise: line.coverUnitPricePaise,
+      })),
+      pricing: quote.pricing,
+      appliedPromoCode: null,
+      attribution: quote.attribution,
+      upgrade: quote.upgrade,
+      idempotencyKey: 'upgrade-ticket-later-scanned',
+    });
+
+    await expect(
+      state.service.quote({
+        actor: actor('user_2'),
+        eventId: 'evt_1',
+        lines: [{ tierId: 'tier_premium', quantity: 1 }],
+        upgradeFromEntitlementId: source.id,
+      }),
+    ).rejects.toThrow(/not eligible/);
+
+    await state.deps.repositories.entitlements.claimAdmission(source.id, source.eventId, {
+      now: NOW,
+    });
+    await expect(
+      state.service.quote({
+        actor: actor('user_1'),
+        eventId: 'evt_1',
+        lines: [{ tierId: 'tier_premium', quantity: 1 }],
+        upgradeFromEntitlementId: source.id,
+      }),
+    ).rejects.toThrow(/not eligible/);
+    await expect(
+      state.service.createPaymentIntent({
+        actor: actor('user_1'),
+        holdId: hold.id,
+        idempotencyKey: 'upgrade-after-source-scan',
+      }),
+    ).rejects.toThrow(/source ticket changed/);
+  });
+
+  it('retires the original pass only after captured payment fulfills the replacement', async () => {
+    const state = await build();
+    const source = await seedPaidSingleTicket(state);
+    const currentEvent = await state.events.getById('evt_1');
+    if (!currentEvent) throw new Error('Expected seeded event');
+    await state.events.save({ ...currentEvent, venueId: null, version: currentEvent.version + 1 });
+    await state.catalog.saveTier(
+      createTicketTier({
+        id: 'tier_premium',
+        eventId: 'evt_1',
+        organizationId: 'org_1',
+        name: 'Premium',
+        priceInPaise: 150_000,
+        quantity: 4,
+        now: NOW,
+      }),
+    );
+    const quote = await state.service.quote({
+      actor: actor('user_1'),
+      eventId: 'evt_1',
+      lines: [{ tierId: 'tier_premium', quantity: 1 }],
+      upgradeFromEntitlementId: source.id,
+    });
+    const hold = await state.service.createHold({
+      actor: actor('user_1'),
+      eventId: 'evt_1',
+      organizationId: 'org_1',
+      lines: quote.pricing.lines.map((line) => ({
+        tierId: line.tierId,
+        tierName: line.tierName,
+        quantity: line.quantity,
+        unitPricePaise: line.unitPricePaise,
+        admissionUnitPricePaise: line.admissionUnitPricePaise,
+        coverUnitPricePaise: line.coverUnitPricePaise,
+      })),
+      pricing: quote.pricing,
+      appliedPromoCode: null,
+      attribution: quote.attribution,
+      upgrade: quote.upgrade,
+      idempotencyKey: 'premium-upgrade-success',
+    });
+    state.deps.paymentProvider = {
+      createOrder: async (request) => ({
+        id: 'pi-upgrade-success',
+        amountPaise: request.amountPaise,
+        currency: request.currency,
+        status: 'created',
+      }),
+      getPayment: async (paymentId) => ({
+        verified: true,
+        paymentId,
+        orderId: 'pi-upgrade-success',
+        amountPaise: hold.pricing.grandTotalPaise,
+        currency: hold.pricing.currency,
+        captured: true,
+      }),
+      verifyPayment: async () => {
+        throw new Error('unused');
+      },
+      capturePayment: async () => {
+        throw new Error('unused');
+      },
+      refundPayment: async () => {
+        throw new Error('unused');
+      },
+    };
+    const attempt = await state.service.createPaymentIntent({
+      actor: actor('user_1'),
+      holdId: hold.id,
+      idempotencyKey: 'upgrade-success-intent',
+    });
+
+    const result = await state.service.confirmPayment({
+      actor: actor('user_1'),
+      paymentId: 'pay-upgrade-success',
+      paymentIntentId: attempt.paymentIntentId,
+      holdId: hold.id,
+      _idempotencyKey: 'upgrade-success-confirmation',
+    });
+    const upgradedSource = await state.deps.repositories.entitlements.getById(source.id);
+    const replacement = result.entitlements[0];
+
+    expect(result.order.grandTotalPaise).toBe(quote.pricing.grandTotalPaise);
+    expect(upgradedSource).toMatchObject({
+      status: 'void',
+      upgradedToEntitlementId: replacement?.id,
+    });
+    expect(replacement).toMatchObject({
+      status: 'valid',
+      tierId: 'tier_premium',
+      upgradeFromEntitlementId: source.id,
+    });
+
+    const replay = await state.service.confirmPayment({
+      actor: actor('user_1'),
+      paymentId: 'pay-upgrade-success',
+      paymentIntentId: attempt.paymentIntentId,
+      holdId: hold.id,
+      _idempotencyKey: 'upgrade-success-confirmation-replay',
+    });
+    expect(replay.entitlements).toEqual(result.entitlements);
+  });
+});
+
+describe('event-wide active paid-unit limit', () => {
+  it('fails closed when a restricted tier is quoted or held without an access grant', async () => {
+    const { catalog, service } = await build();
+    await seedTier(catalog, 20);
+    const publicQuote = await service.quote({
+      actor: actor('user_1'),
+      eventId: 'evt_1',
+      lines: [{ tierId: 'tier_1', quantity: 1 }],
+    });
+    const publicTier = await catalog.getTierById('tier_1');
+    expect(publicTier).not.toBeNull();
+    if (!publicTier) return;
+    await catalog.saveTier({
+      ...publicTier,
+      accessMode: 'code',
+      version: publicTier.version + 1,
+    });
+
+    await expect(
+      service.quote({
+        actor: actor('user_1'),
+        eventId: 'evt_1',
+        lines: [{ tierId: 'tier_1', quantity: 1 }],
+      }),
+    ).rejects.toThrow(/Ticket tier .* not found/);
+    await expect(
+      service.createHold({
+        actor: actor('user_1'),
+        eventId: 'evt_1',
+        organizationId: 'org_1',
+        lines: publicQuote.pricing.lines.map((line) => ({
+          tierId: line.tierId,
+          tierName: line.tierName,
+          quantity: line.quantity,
+          unitPricePaise: line.unitPricePaise,
+        })),
+        pricing: publicQuote.pricing,
+        appliedPromoCode: null,
+        attribution: null,
+        idempotencyKey: 'direct-restricted-tier-hold',
+      }),
+    ).rejects.toThrow(/Ticket tier .* not found/);
+  });
+
+  it('allows ten held admission units across mixed tiers and refuses the eleventh', async () => {
+    const { catalog, service } = await build();
+    await seedTier(catalog, 20);
+    await seedAdditionalTier(catalog, 'tier_2', 2);
+
+    await holdLinesFor(service, 'user_1', 'ten', [
+      { tierId: 'tier_1', quantity: 6 },
+      { tierId: 'tier_2', quantity: 2 },
+    ]);
+    await expect(
+      holdLinesFor(service, 'user_1', 'eleven', [{ tierId: 'tier_2', quantity: 1 }]),
+    ).rejects.toThrow(/maximum of 10 paid admission units/);
+  });
+
+  it('keeps concurrent holds within ten units by hold sequence', async () => {
+    const { catalog, service } = await build();
+    await seedTier(catalog, 20);
+    const attempts = await Promise.allSettled([
+      holdLinesFor(service, 'user_1', 'tab-a', [{ tierId: 'tier_1', quantity: 6 }]),
+      holdLinesFor(service, 'user_1', 'tab-b', [{ tierId: 'tier_1', quantity: 6 }]),
+    ]);
+
+    expect(attempts.filter((attempt) => attempt.status === 'fulfilled')).toHaveLength(1);
+    expect(attempts.filter((attempt) => attempt.status === 'rejected')).toHaveLength(1);
+  });
+
+  it('snapshots per-person group shape and reserves one admission per attendee', async () => {
+    const { catalog, service } = await build();
+    await seedAdditionalTier(catalog, 'group', 3, 'per_person', 3);
+
+    const hold = await holdLinesFor(service, 'user_1', 'group-hold', [
+      { tierId: 'group', quantity: 1 },
+    ]);
+
+    expect(hold.lines[0]).toMatchObject({
+      tierId: 'group',
+      quantity: 1,
+      guestCount: 3,
+      admissionMode: 'per_person',
+    });
+    await expect(
+      holdLinesFor(service, 'user_2', 'group-over-capacity', [{ tierId: 'group', quantity: 1 }]),
+    ).rejects.toThrow(/Insufficient inventory/);
+  });
+
+  it('applies tier per-user caps to per-person group attendees', async () => {
+    const { catalog, service } = await build();
+    await catalog.saveTier(
+      createTicketTier({
+        id: 'capped-group',
+        eventId: 'evt_1',
+        organizationId: 'org_1',
+        name: 'Capped group',
+        priceInPaise: 50_000,
+        quantity: 10,
+        guestCount: 3,
+        admissionMode: 'per_person',
+        maxPerUser: 2,
+        now: NOW,
+      }),
+    );
+
+    await expect(
+      holdLinesFor(service, 'user_1', 'capped-group-hold', [
+        { tierId: 'capped-group', quantity: 1 },
+      ]),
+    ).rejects.toThrow(/maximum of 2 per user/);
+  });
+});
 
 describe('an event must be on sale to take payment', () => {
   it('refuses a hold on a draft event', async () => {
@@ -284,6 +775,37 @@ describe('payment is refused once the event stops being on sale', () => {
   });
 });
 
+describe('payment retries respect a pending refund lock', () => {
+  it('does not issue tickets when a late callback resumes a refund-requested order', async () => {
+    const { catalog, orders, service, deps } = await build();
+    await seedTier(catalog);
+    const hold = await holdFor(service, 'user_1', 'refund-retry-hold');
+    const order = {
+      id: 'order-refund-requested',
+      eventId: hold.eventId,
+      organizationId: 'org_1',
+      userId: 'user_1',
+      status: 'refund_requested',
+      paymentId: 'pay-refund-requested',
+      paymentIntentId: 'pi-refund-requested',
+      version: 1,
+    } as unknown as Order;
+    await orders.save(order);
+
+    const result = await service.confirmPayment({
+      actor: actor('user_1'),
+      paymentId: order.paymentId ?? '',
+      paymentIntentId: order.paymentIntentId ?? '',
+      holdId: hold.id,
+      _idempotencyKey: 'late-refund-requested-retry',
+    });
+
+    expect(result.order.status).toBe('refund_requested');
+    expect(result.entitlements).toEqual([]);
+    expect(await deps.repositories.entitlements.getByOrderId(order.id)).toEqual([]);
+  });
+});
+
 describe('promo redemption limits count every redemption record', () => {
   const limited = (overrides: Record<string, unknown>) =>
     createPromoCode({
@@ -386,6 +908,46 @@ describe('an amount the payment provider would refuse is refused up front', () =
     await expect(holdFor(service, 'user_1', 'k1')).resolves.toBeDefined();
   });
 
+  it('does not convert a free RSVP into paid checkout through an add-on', async () => {
+    const { catalog, service } = await build();
+    await catalog.saveTier(
+      createTicketTier({
+        id: 'tier_1',
+        eventId: 'evt_1',
+        organizationId: 'org_1',
+        name: 'Free',
+        accessType: 'RSVP',
+        quantity: 5,
+        now: NOW,
+      }),
+    );
+    const addon = createTicketAddon({
+      id: 'addon-rsvp',
+      eventId: 'evt_1',
+      organizationId: 'org_1',
+      name: 'Parking pass',
+      kind: 'parking',
+      priceInPaise: 5_000,
+      quantity: 5,
+      now: NOW,
+    });
+    await catalog.saveTicketAddon(addon);
+
+    await expect(
+      service.quote({
+        actor: actor('user_rsvp_addon'),
+        eventId: 'evt_1',
+        lines: [
+          {
+            tierId: 'tier_1',
+            quantity: 1,
+            ticketAddons: [{ addonId: addon.id, quantityPerEntitlement: 1 }],
+          },
+        ],
+      }),
+    ).rejects.toThrow(/cannot be purchased with a free RSVP/);
+  });
+
   it('still allows the smallest chargeable total (exactly 100 paise)', async () => {
     const { catalog, service } = await build();
     await catalog.saveTier(
@@ -403,5 +965,150 @@ describe('an amount the payment provider would refuse is refused up front', () =
     // 92 + fees (5 + 2) + GST (1) is exactly 100 paise.
     const hold = await holdFor(service, 'user_1', 'k1');
     expect(hold.pricing.grandTotalPaise).toBe(100);
+  });
+
+  it('quotes add-ons at the server catalog price and reserves their stock with the ticket hold', async () => {
+    const { catalog, service, deps } = await build();
+    await seedTier(catalog);
+    const addon = createTicketAddon({
+      id: 'addon-parking',
+      eventId: 'evt_1',
+      organizationId: 'org_1',
+      name: 'Parking pass',
+      kind: 'parking',
+      priceInPaise: 10_000,
+      quantity: 2,
+      maxPerEntitlement: 2,
+      now: NOW,
+    });
+    await catalog.saveTicketAddon(addon);
+
+    const quote = await service.quote({
+      actor: actor('user_addon_1'),
+      eventId: 'evt_1',
+      lines: [
+        {
+          tierId: 'tier_1',
+          quantity: 1,
+          ticketAddons: [{ addonId: addon.id, quantityPerEntitlement: 2 }],
+        },
+      ],
+    });
+    expect(quote.pricing).toMatchObject({
+      admissionSubtotalPaise: 100_000,
+      addOnSubtotalPaise: 20_000,
+      subtotalPaise: 120_000,
+      lines: [{ unitPricePaise: 120_000 }],
+    });
+    const hold = await service.createHold({
+      actor: actor('user_addon_1'),
+      eventId: 'evt_1',
+      organizationId: 'org_1',
+      lines: quote.pricing.lines.map((line) => ({
+        tierId: line.tierId,
+        tierName: line.tierName,
+        quantity: line.quantity,
+        unitPricePaise: line.unitPricePaise,
+        admissionUnitPricePaise: line.admissionUnitPricePaise,
+        coverUnitPricePaise: line.coverUnitPricePaise,
+        ticketAddons: line.ticketAddons,
+      })),
+      pricing: quote.pricing,
+      appliedPromoCode: quote.pricing.appliedPromoCode,
+      attribution: null,
+      idempotencyKey: 'hold-with-addons',
+    });
+
+    expect(hold.lines[0]?.ticketAddons).toEqual(quote.pricing.lines[0]?.ticketAddons);
+    expect(await deps.inventory.getAvailableTicketAddonQuantity(addon.id)).toBe(0);
+    const second = await service.quote({
+      actor: actor('user_addon_2'),
+      eventId: 'evt_1',
+      lines: [
+        {
+          tierId: 'tier_1',
+          quantity: 1,
+          ticketAddons: [{ addonId: addon.id, quantityPerEntitlement: 1 }],
+        },
+      ],
+    });
+    await expect(
+      service.createHold({
+        actor: actor('user_addon_2'),
+        eventId: 'evt_1',
+        organizationId: 'org_1',
+        lines: second.pricing.lines.map((line) => ({
+          tierId: line.tierId,
+          tierName: line.tierName,
+          quantity: line.quantity,
+          unitPricePaise: line.unitPricePaise,
+          admissionUnitPricePaise: line.admissionUnitPricePaise,
+          coverUnitPricePaise: line.coverUnitPricePaise,
+          ticketAddons: line.ticketAddons,
+        })),
+        pricing: second.pricing,
+        appliedPromoCode: second.pricing.appliedPromoCode,
+        attribution: null,
+        idempotencyKey: 'sold-out-addon',
+      }),
+    ).rejects.toThrow(/Insufficient inventory for a selected ticket add-on/);
+  });
+
+  it('blocks new add-on quotes and holds while the approval gate is off', async () => {
+    const enabled = await build();
+    await seedTier(enabled.catalog);
+    const addon = createTicketAddon({
+      id: 'addon-disabled',
+      eventId: 'evt_1',
+      organizationId: 'org_1',
+      name: 'Parking pass',
+      kind: 'parking',
+      priceInPaise: 5_000,
+      quantity: 5,
+      now: NOW,
+    });
+    await enabled.catalog.saveTicketAddon(addon);
+    const actorContext = actor('user_addon_disabled');
+    const line = {
+      tierId: 'tier_1',
+      quantity: 1,
+      ticketAddons: [{ addonId: addon.id, quantityPerEntitlement: 1 }],
+    };
+    const quote = await enabled.service.quote({
+      actor: actorContext,
+      eventId: 'evt_1',
+      lines: [line],
+    });
+    const disabledConfig = createCoreConfig({
+      redis: { url: 'redis://localhost:6379' },
+      firestore: { projectId: 'test-project' },
+      clock: { now: () => NOW },
+      features: { m5TicketAddonsEnabled: false },
+    });
+    const disabled = new CheckoutService({ ...enabled.deps, config: disabledConfig });
+
+    await expect(
+      disabled.quote({ actor: actorContext, eventId: 'evt_1', lines: [line] }),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(
+      disabled.createHold({
+        actor: actorContext,
+        eventId: 'evt_1',
+        organizationId: 'org_1',
+        lines: quote.pricing.lines.map((pricedLine) => ({
+          tierId: pricedLine.tierId,
+          tierName: pricedLine.tierName,
+          quantity: pricedLine.quantity,
+          unitPricePaise: pricedLine.unitPricePaise,
+          admissionUnitPricePaise: pricedLine.admissionUnitPricePaise,
+          coverUnitPricePaise: pricedLine.coverUnitPricePaise,
+          ticketAddons: pricedLine.ticketAddons,
+        })),
+        pricing: quote.pricing,
+        appliedPromoCode: null,
+        attribution: null,
+        idempotencyKey: 'addon-disabled-hold',
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenError);
   });
 });

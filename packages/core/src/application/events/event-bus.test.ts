@@ -28,6 +28,62 @@ function makeAuditBus(store: MemoryOutboxStore = new MemoryOutboxStore()) {
 }
 
 describe('InProcessEventBus (B09) — EventPublished → audit/consumer wiring', () => {
+  it('dispatches the appended event without claiming unrelated pending outbox rows', async () => {
+    const store = new MemoryOutboxStore();
+    await store.append(makeEvent({ id: 'evt_unrelated_backlog' }));
+    const bus = new InProcessEventBus(store);
+    const seen: string[] = [];
+    bus.subscribe('event.published', async (event) => {
+      seen.push(event.id);
+    });
+
+    await bus.append(makeEvent({ id: 'evt_newly_appended' }));
+
+    expect(seen).toEqual(['evt_newly_appended']);
+    expect(store.all()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'evt_unrelated_backlog', status: 'pending' }),
+        expect.objectContaining({ id: 'evt_newly_appended', status: 'processed' }),
+      ]),
+    );
+
+    await bus.drain();
+    expect(seen).toEqual(['evt_newly_appended', 'evt_unrelated_backlog']);
+  });
+
+  it('does not lose a scoped append that arrives while another event is dispatching', async () => {
+    const store = new MemoryOutboxStore();
+    const bus = new InProcessEventBus(store);
+    const seen: string[] = [];
+    let enteredFirst: (() => void) | undefined;
+    let releaseFirst: (() => void) | undefined;
+    const firstEntered = new Promise<void>((resolve) => {
+      enteredFirst = resolve;
+    });
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    bus.subscribe('event.published', async (event) => {
+      seen.push(event.id);
+      if (event.id === 'evt_dispatch_first') {
+        enteredFirst?.();
+        await firstGate;
+      }
+    });
+
+    const firstAppend = bus.append(makeEvent({ id: 'evt_dispatch_first' }));
+    await firstEntered;
+    await bus.append(makeEvent({ id: 'evt_dispatch_second' }));
+    releaseFirst?.();
+    await firstAppend;
+
+    expect(seen).toEqual(['evt_dispatch_first', 'evt_dispatch_second']);
+    expect(store.all().map(({ id, status }) => ({ id, status }))).toEqual([
+      { id: 'evt_dispatch_first', status: 'processed' },
+      { id: 'evt_dispatch_second', status: 'processed' },
+    ]);
+  });
+
   it('one publish produces exactly one audit record', async () => {
     const { audits, bus } = makeAuditBus();
     await bus.append(makeEvent());

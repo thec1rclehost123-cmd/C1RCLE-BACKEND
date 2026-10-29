@@ -38,6 +38,16 @@ export class FirestoreNotificationRepository implements NotificationRepository {
     await this.collection.doc(notification.id).set(toDoc(notification));
   }
 
+  async createIfAbsent(notification: Notification): Promise<boolean> {
+    const ref = this.collection.doc(notification.id);
+    return this.db.runTransaction(async (tx) => {
+      const existing = await tx.get(ref);
+      if (existing.exists) return false;
+      tx.create(ref, toDoc(notification));
+      return true;
+    });
+  }
+
   async save(notification: Notification, _tx?: TxContext | null): Promise<void> {
     await this.collection.doc(notification.id).set(toDoc(notification));
   }

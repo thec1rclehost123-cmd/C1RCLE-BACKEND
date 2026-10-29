@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { createCoreConfig } from '../../config/index.js';
+import { createEvent } from '../../domain/models/event.js';
 import { createOrganization } from '../../domain/models/organization.js';
 import { approvePartnership, createPartnership } from '../../domain/models/partnership.js';
 import { createVenue } from '../../domain/models/venue.js';
@@ -151,6 +152,76 @@ describe('VenueService — auto-provisioning resilience', () => {
 
     const list = await service.list(actor, { limit: 10, cursor: null });
     expect(list.items.length).toBe(0);
+  });
+});
+
+describe('VenueSlotRequestService reschedule requests', () => {
+  it('binds a replacement slot request to an owned active event', async () => {
+    const deps = createTestDeps();
+    const venue = createVenue({
+      id: 'venue_reschedule_request',
+      organizationId: 'venue_org_reschedule_request',
+      ownerId: 'venue_owner_reschedule_request',
+      name: 'Reschedule Venue',
+      slug: 'reschedule-venue',
+      now: NOW,
+    });
+    await deps.repositories.venues.save(venue);
+    const partnership = createPartnership({
+      id: 'partnership_reschedule_request',
+      hostOrganizationId: 'host_org_reschedule_request',
+      venueOrganizationId: venue.organizationId,
+      venueId: venue.id,
+      initiatedBy: 'host',
+      now: NOW,
+    });
+    await deps.repositories.partnerships.save(
+      approvePartnership(partnership, venue.organizationId, NOW),
+    );
+    const hostActor: ActorContext = {
+      userId: 'host_owner_reschedule_request',
+      organizationId: 'host_org_reschedule_request',
+      role: 'owner',
+      capabilities: ['host'],
+    };
+    const event = createEvent({
+      id: 'event_reschedule_request',
+      organizationId: hostActor.organizationId,
+      venueId: venue.id,
+      title: 'Reschedule Event',
+      startAt: '2026-11-06T13:00:00.000Z',
+      endAt: '2026-11-06T15:00:00.000Z',
+      now: NOW,
+    });
+    await deps.repositories.events.save(event);
+    const venueActor: ActorContext = {
+      userId: 'venue_owner_reschedule_request',
+      organizationId: venue.organizationId,
+      role: 'owner',
+      capabilities: ['venue'],
+    };
+    const replacementSlot = await new VenueCalendarService(deps).publishAvailability(venueActor, {
+      venueId: venue.id,
+      label: 'Replacement date',
+      startTime: '2026-11-07T12:00:00.000Z',
+      endTime: '2026-11-07T18:00:00.000Z',
+      timezone: 'Asia/Kolkata',
+    });
+    const requests = new VenueSlotRequestService(deps);
+    const request = await requests.create(hostActor, {
+      venueId: venue.id,
+      slotId: replacementSlot.id,
+      eventId: event.id,
+      message: 'Requesting a reschedule.',
+    });
+    expect(request).toMatchObject({ eventId: event.id, status: 'pending' });
+    await expect(
+      requests.create(hostActor, {
+        venueId: venue.id,
+        slotId: replacementSlot.id,
+        eventId: 'event_owned_by_another_host',
+      }),
+    ).rejects.toThrow(/event/);
   });
 });
 

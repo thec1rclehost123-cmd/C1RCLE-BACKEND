@@ -38,8 +38,15 @@ export const MAGIC_WINDOW_SEC = 30;
 const PKCS8_ED25519_PREFIX = Buffer.from('302e020100300506032b657004220420', 'hex');
 const SPKI_ED25519_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
 
-export function deriveTicketKey(masterSecret: string, entitlementId: string): string {
-  return createHmac('sha256', masterSecret).update(`ticket-key|${entitlementId}`).digest('hex');
+export function deriveTicketKey(
+  masterSecret: string,
+  entitlementId: string,
+  credentialVersion = 1,
+): string {
+  const versionPart = credentialVersion <= 1 ? '' : `|${credentialVersion}`;
+  return createHmac('sha256', masterSecret)
+    .update(`ticket-key|${entitlementId}${versionPart}`)
+    .digest('hex');
 }
 
 export function windowStartFor(atMs: number): number {
@@ -50,34 +57,52 @@ export function rotatingQrSignature(
   ticketKey: string,
   entitlementId: string,
   windowStart: number,
+  credentialVersion = 1,
 ): string {
-  return createHmac('sha256', ticketKey).update(`${entitlementId}:${windowStart}`).digest('hex');
+  const fields =
+    credentialVersion <= 1
+      ? `${entitlementId}:${windowStart}`
+      : `${entitlementId}:${credentialVersion}:${windowStart}`;
+  return createHmac('sha256', ticketKey).update(fields).digest('hex');
 }
 
-export function buildRotatingQr(ticketKey: string, entitlementId: string, atMs: number): string {
+export function buildRotatingQr(
+  ticketKey: string,
+  entitlementId: string,
+  atMs: number,
+  credentialVersion = 1,
+): string {
   const windowStart = windowStartFor(atMs);
-  return `${entitlementId}:${windowStart}:${rotatingQrSignature(ticketKey, entitlementId, windowStart)}`;
+  const signature = rotatingQrSignature(ticketKey, entitlementId, windowStart, credentialVersion);
+  return credentialVersion <= 1
+    ? `${entitlementId}:${windowStart}:${signature}`
+    : `${entitlementId}:${credentialVersion}:${windowStart}:${signature}`;
 }
 
 export interface ParsedRotatingQr {
   entitlementId: string;
+  credentialVersion: number;
   /** `null` when the window field is not an integer. */
   windowStart: number | null;
   signature: string;
 }
 
 /**
- * Splits `id:window:signature`. Returns `null` for anything that is not three
- * non-empty colon-separated parts (opaque ids never contain `:`, so that shape
- * is the bare-id path, not a malformed rotating code).
+ * Splits the legacy `id:window:signature` and versioned
+ * `id:version:window:signature` forms.
  */
 export function parseRotatingQr(payload: string): ParsedRotatingQr | null {
   const parts = payload.split(':');
-  if (parts.length !== 3 || !parts.every((p) => p.length > 0)) return null;
-  const [entitlementId, windowStr, signature] = parts as [string, string, string];
+  if ((parts.length !== 3 && parts.length !== 4) || !parts.every((p) => p.length > 0)) return null;
+  const [entitlementId, second, third, fourth] = parts as [string, string, string, string?];
+  const credentialVersion = parts.length === 4 ? Number.parseInt(second, 10) : 1;
+  const windowStr = parts.length === 4 ? third : second;
+  const signature = parts.length === 4 ? (fourth ?? '') : third;
   const windowStart = Number.parseInt(windowStr, 10);
   return {
     entitlementId,
+    credentialVersion:
+      Number.isSafeInteger(credentialVersion) && credentialVersion > 0 ? credentialVersion : 0,
     windowStart: Number.isFinite(windowStart) ? windowStart : null,
     signature,
   };
@@ -112,11 +137,21 @@ export function checkRotatingQr(args: {
   if (parsed.windowStart === null) return false;
   const current = constantTimeEquals(
     parsed.signature,
-    rotatingQrSignature(ticketKey, parsed.entitlementId, parsed.windowStart),
+    rotatingQrSignature(
+      ticketKey,
+      parsed.entitlementId,
+      parsed.windowStart,
+      parsed.credentialVersion,
+    ),
   );
   const previous = constantTimeEquals(
     parsed.signature,
-    rotatingQrSignature(ticketKey, parsed.entitlementId, parsed.windowStart - MAGIC_WINDOW_SEC),
+    rotatingQrSignature(
+      ticketKey,
+      parsed.entitlementId,
+      parsed.windowStart - MAGIC_WINDOW_SEC,
+      parsed.credentialVersion,
+    ),
   );
   if (!current && !previous) return false;
   return Math.abs(windowStartFor(atMs) - parsed.windowStart) <= MAGIC_WINDOW_SEC * 2;

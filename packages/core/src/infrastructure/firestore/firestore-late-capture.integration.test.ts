@@ -16,10 +16,12 @@ import { MemoryOutboxStore } from '../memory/memory-outbox-store.js';
 import { buildRepositories } from '../utils.js';
 
 import { FirestoreCartReservationRepository } from './firestore-cart-reservation-repository.js';
+import { FirestoreEntitlementRepository } from './firestore-entitlement-repository.js';
 import { FirestoreEventCatalogRepository } from './firestore-event-catalog-repository.js';
 import { FirestoreOrderRepository } from './firestore-order-repository.js';
 
 import type { ActorContext, ServiceDeps } from '../../application/context.js';
+import type { Entitlement } from '../../domain/models/entitlement.js';
 
 /**
  * ─── A payment that lands after its hold expired, against a REAL Firestore ───
@@ -52,6 +54,84 @@ describe.runIf(EMULATOR)('late payment vs a new buyer (Firestore emulator)', () 
     db = new Firestore({ projectId: 'demo-c1rcle' });
   });
 
+  it('finds orders by immutable Promoter attribution using the nested single-field index', async () => {
+    const promoterId = `m4-promoter-${randomUUID()}`;
+    const orderId = `m4-order-${randomUUID()}`;
+    const eventId = `m4-event-${randomUUID()}`;
+    const now = new Date().toISOString();
+    await db
+      .collection('v2_orders')
+      .doc(orderId)
+      .set({
+        id: orderId,
+        bookingReference: `M4-${randomUUID().slice(0, 8)}`,
+        eventId,
+        organizationId: `m4-host-${randomUUID()}`,
+        userId: `m4-guest-${randomUUID()}`,
+        contact: { name: 'Fixture', email: 'fixture@example.test', phone: '' },
+        status: 'paid',
+        lines: [{ tierId: 'm4-tier', quantity: 2, unitPricePaise: 22_500, subtotalPaise: 45_000 }],
+        currency: 'INR',
+        subtotalPaise: 45_000,
+        discountPaise: 0,
+        discountFundingOwner: null,
+        discountedSubtotalPaise: 45_000,
+        platformFeePaise: 0,
+        paymentFeePaise: 0,
+        gstPaise: 0,
+        grandTotalPaise: 45_000,
+        appliedPromoCode: null,
+        attribution: {
+          promoterId,
+          referralLinkId: 'm4-link',
+          assignmentId: 'm4-assignment',
+          assignmentVersion: 1,
+          termsSnapshot: { version: 1, ratePercent: 10, flatPaise: 0 },
+          eligibleTierIds: null,
+          commissionPolicyVersion: 'commission-v1',
+          commercialPolicyVersion: 'commercial-v1',
+          code: 'M4CODE',
+          attributedAt: now,
+          attributionSignature: 'test-signature',
+          promoterCommissionPaise: 4_500,
+        },
+        paymentIntentId: null,
+        paymentId: null,
+        paidAt: now,
+        reservationExpiresAt: now,
+        failureReason: null,
+        eventCancellation: null,
+        refundedPaise: 0,
+        appliedRefundRequestIds: [],
+        version: 1,
+        createdAt: now,
+        updatedAt: now,
+      });
+
+    const page = await new FirestoreOrderRepository(db).listByPromoter(promoterId, {
+      limit: 10,
+      cursor: null,
+    });
+    expect(page.total).toBe(1);
+    expect(page.items.map((order) => order.id)).toEqual([orderId]);
+    expect(page.items[0]?.attribution?.promoterId).toBe(promoterId);
+
+    const eventScopedPage = await new FirestoreOrderRepository(db).listByPromoterForEvent(
+      promoterId,
+      eventId,
+      { limit: 10, cursor: null },
+    );
+    expect(eventScopedPage.total).toBe(1);
+    expect(eventScopedPage.items.map((order) => order.id)).toEqual([orderId]);
+
+    const otherEventPage = await new FirestoreOrderRepository(db).listByPromoterForEvent(
+      promoterId,
+      'm4-event-other',
+      { limit: 10, cursor: null },
+    );
+    expect(otherEventPage.total).toBe(0);
+  }, 45_000);
+
   /** One published event with a single seat, and a first buyer whose hold has already lapsed. */
   async function lapsedHoldForTheLastSeat() {
     const run = randomUUID().slice(0, 8);
@@ -60,11 +140,13 @@ describe.runIf(EMULATOR)('late payment vs a new buyer (Firestore emulator)', () 
     const catalog = new FirestoreEventCatalogRepository(db);
     const carts = new FirestoreCartReservationRepository(db);
     const orders = new FirestoreOrderRepository(db);
+    const entitlements = new FirestoreEntitlementRepository(db);
     const repositories = {
       ...buildRepositories({ STORAGE_DRIVER: 'memory', FIRESTORE_PROJECT_ID: 'demo-c1rcle' }),
       catalog,
       cartReservations: carts,
       orders,
+      entitlements,
     };
 
     let event = createEvent({
@@ -154,7 +236,19 @@ describe.runIf(EMULATOR)('late payment vs a new buyer (Firestore emulator)', () 
         return original(...args);
       });
     };
-    return { run, eventId, carts, orders, hold, lateCapture, refund, slowOrderWrite };
+    return {
+      run,
+      eventId,
+      tierId,
+      carts,
+      orders,
+      entitlements,
+      lapsedHold: lapsed,
+      hold,
+      lateCapture,
+      refund,
+      slowOrderWrite,
+    };
   }
 
   /** Seats actually promised: paid orders plus live holds. */
@@ -229,5 +323,49 @@ describe.runIf(EMULATOR)('late payment vs a new buyer (Firestore emulator)', () 
     const keys = new Set(ctx.refund.mock.calls.map(([request]) => request.idempotencyKey));
     expect(keys.size).toBe(1);
     expect(await seatsPromised(ctx)).toBe(1);
+  }, 120_000);
+
+  it('refunds a late capture that would exceed the purchaser event-wide paid-unit cap', async () => {
+    const ctx = await lapsedHoldForTheLastSeat();
+    const existingPaidEntitlement: Entitlement = {
+      id: `m5-late-quota-entitlement-${ctx.run}`,
+      orderId: `m5-late-quota-order-${ctx.run}`,
+      eventId: ctx.eventId,
+      organizationId: 'org_1',
+      tierId: ctx.tierId,
+      tierName: 'General',
+      userId: 'buyer_a',
+      unitKind: 'paid',
+      currentHolderUserId: 'buyer_a',
+      credentialVersion: 1,
+      pendingTransferId: null,
+      holderName: 'Existing paid unit fixture',
+      status: 'valid',
+      scanCountAllowed: 10,
+      scanCount: 0,
+      scannedAt: [],
+      refundLock: null,
+      version: 1,
+      createdAt: NOW.toISOString(),
+      updatedAt: NOW.toISOString(),
+    };
+    await ctx.entitlements.saveMany([existingPaidEntitlement]);
+
+    try {
+      await expect(ctx.lateCapture()).rejects.toBeInstanceOf(PaymentRefundedError);
+      expect(ctx.refund).toHaveBeenCalledTimes(1);
+      expect(ctx.refund.mock.calls[0]?.[0]).toMatchObject({
+        paymentId: `pay_${ctx.run}`,
+        idempotencyKey: `autorefund:pay_${ctx.run}`,
+      });
+      expect(await ctx.orders.getByPaymentId(`pay_${ctx.run}`)).toBeNull();
+      expect(
+        await ctx.entitlements.countActivePaidUnitsByUserAndEvent('buyer_a', ctx.eventId),
+      ).toBe(10);
+      const releasedHold = await ctx.carts.getById(ctx.lapsedHold.id);
+      expect(releasedHold?.status).toBe('released');
+    } finally {
+      await db.collection('v2_entitlements').doc(existingPaidEntitlement.id).delete();
+    }
   }, 120_000);
 });

@@ -41,6 +41,10 @@ import {
   FirestoreCoverWalletRepository,
   FirestoreCoverWalletTxnRepository,
   FirestoreCoverWalletReconciliationRepository,
+  FirestoreEventCoverPolicyRepository,
+  FirestoreEventCoverAccountRepository,
+  FirestoreComplimentaryAllocationRepository,
+  FirestoreWaitlistRepository,
   FirestoreLedgerRepository,
   FirestoreFinancialJournalRepository,
   FirestoreJournalTransitionRepository,
@@ -62,6 +66,7 @@ import {
   FirestoreUserBanRepository,
   FirestorePlatformSettingsRepository,
   FirestoreNotificationRepository,
+  FirestoreTicketAccessRepository,
 } from './firestore/index.js';
 import {
   MemoryOrganizationRepository,
@@ -91,6 +96,10 @@ import {
   MemoryCoverWalletRepository,
   MemoryCoverWalletTxnRepository,
   MemoryCoverWalletReconciliationRepository,
+  MemoryEventCoverPolicyRepository,
+  MemoryEventCoverAccountRepository,
+  MemoryComplimentaryAllocationRepository,
+  MemoryWaitlistRepository,
   MemoryLedgerRepository,
   MemoryFinancialJournalRepository,
   MemoryJournalTransitionRepository,
@@ -112,6 +121,7 @@ import {
   MemoryUserBanRepository,
   MemoryPlatformSettingsRepository,
   MemoryNotificationRepository,
+  MemoryTicketAccessRepository,
 } from './memory/index.js';
 import { MemoryIdempotencyStore } from './memory/memory-idempotency-store.js';
 
@@ -162,12 +172,17 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
       // Phase 5 repositories
       scanLedger: new MemoryScanLedgerRepository(),
       eventCodes: new MemoryEventCodeRepository(),
+      ticketAccess: new MemoryTicketAccessRepository(),
       scannerSessions: new MemoryScannerSessionRepository(),
       scannerDevices: new MemoryScannerDeviceRepository(),
       doorSales: new MemoryDoorSaleRepository(),
       coverWallets: new MemoryCoverWalletRepository(),
       coverWalletTxns: new MemoryCoverWalletTxnRepository(),
       coverWalletReconciliations: new MemoryCoverWalletReconciliationRepository(),
+      eventCoverPolicies: new MemoryEventCoverPolicyRepository(),
+      eventCoverAccounts: new MemoryEventCoverAccountRepository(),
+      complimentaryAllocations: new MemoryComplimentaryAllocationRepository(),
+      waitlist: new MemoryWaitlistRepository(),
       // Phase 6
       ledger: new MemoryLedgerRepository(),
       financialJournals,
@@ -228,12 +243,17 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
     // Phase 5 repositories
     scanLedger: new FirestoreScanLedgerRepository(db),
     eventCodes: new FirestoreEventCodeRepository(db),
+    ticketAccess: new FirestoreTicketAccessRepository(db),
     scannerSessions: new FirestoreScannerSessionRepository(db),
     scannerDevices: new FirestoreScannerDeviceRepository(db),
     doorSales: new FirestoreDoorSaleRepository(db),
     coverWallets: new FirestoreCoverWalletRepository(db),
     coverWalletTxns: new FirestoreCoverWalletTxnRepository(db),
     coverWalletReconciliations: new FirestoreCoverWalletReconciliationRepository(db),
+    eventCoverPolicies: new FirestoreEventCoverPolicyRepository(db),
+    eventCoverAccounts: new FirestoreEventCoverAccountRepository(db),
+    complimentaryAllocations: new FirestoreComplimentaryAllocationRepository(db),
+    waitlist: new FirestoreWaitlistRepository(db),
     // Phase 6
     ledger: new FirestoreLedgerRepository(db),
     financialJournals: new FirestoreFinancialJournalRepository(db),

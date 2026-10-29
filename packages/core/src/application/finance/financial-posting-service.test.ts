@@ -97,6 +97,36 @@ describe('FinancialPostingService', () => {
     expect(repository.journals.size).toBe(3);
   });
 
+  it('posts event cover to a separate liability without increasing distributable ticket revenue', async () => {
+    const journals = buildTicketSaleJournals({
+      ...saleInput(),
+      eventCoverLiabilityPaise: 5_000,
+    });
+    const collection = journals[0];
+    expect(collection?.lines).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          account: 'event_cover_liability',
+          side: 'credit',
+          amountPaise: 5_000,
+        }),
+        expect.objectContaining({
+          account: 'provider_clearing',
+          side: 'debit',
+          amountPaise: 122_200,
+        }),
+      ]),
+    );
+    expect(collection?.components).toMatchObject({
+      ticketFaceValuePaise: 100_000,
+      eventCoverLiabilityPaise: 5_000,
+      netTicketRevenuePaise: 90_000,
+    });
+    expect(journals[1]?.lines.find((entry) => entry.account === 'host_payable')?.amountPaise).toBe(
+      70_000,
+    );
+  });
+
   it('rejects reuse of an idempotency key for changed financial content', async () => {
     const repository = new MemoryFinancialJournalRepository();
     const first = buildTicketSaleJournals(saleInput())[0];

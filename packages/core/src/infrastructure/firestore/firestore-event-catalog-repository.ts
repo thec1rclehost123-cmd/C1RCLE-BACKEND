@@ -1,3 +1,4 @@
+import { compareAndSet } from './compare-and-set.js';
 import { paginateQuery } from './pagination.js';
 
 import type { EntityId } from '../../domain/identity.js';
@@ -7,6 +8,7 @@ import type {
   TablePackage,
   PromoterAssignment,
 } from '../../domain/models/event-catalog.js';
+import type { TicketAddon } from '../../domain/models/ticket-addon.js';
 import type {
   EventCatalogRepository,
   Page,
@@ -16,6 +18,7 @@ import type {
 import type { DocumentData, Firestore, Query } from 'firebase-admin/firestore';
 
 const TIERS = 'v2_event_catalog_tiers';
+const TICKET_ADDONS = 'v2_event_ticket_addons';
 const PROMOS = 'v2_event_catalog_promos';
 const TABLES = 'v2_event_catalog_tables';
 const ASSIGNMENTS = 'v2_event_catalog_promoter_assignments';
@@ -32,12 +35,42 @@ function toAssignment(data: DocumentData): PromoterAssignment {
     ...(data as unknown as PromoterAssignment),
     endedAt: (data.endedAt ?? null) as string | null,
     suspendedAt: (data.suspendedAt ?? null) as string | null,
+    suspendedFromStatus:
+      (data.suspendedFromStatus as PromoterAssignment['suspendedFromStatus'] | undefined) ?? null,
+    invitedAt: (data.invitedAt as string | null | undefined) ?? null,
+    invitedBy: (data.invitedBy as string | null | undefined) ?? null,
+    respondedAt: (data.respondedAt as string | null | undefined) ?? null,
+    respondedBy: (data.respondedBy as string | null | undefined) ?? null,
+    acceptedAt: (data.acceptedAt as string | null | undefined) ?? null,
+    rejectedAt: (data.rejectedAt as string | null | undefined) ?? null,
+    revokedAt: (data.revokedAt as string | null | undefined) ?? null,
+    revokedBy: (data.revokedBy as string | null | undefined) ?? null,
+    revocationReason: (data.revocationReason as string | null | undefined) ?? null,
+    startsAt: (data.startsAt as string | null | undefined) ?? null,
+    expiresAt: (data.expiresAt as string | null | undefined) ?? null,
+    eligibleTierIds: (data.eligibleTierIds as string[] | null | undefined) ?? null,
   };
 }
 
 /** Firestore adapter for `EventCatalogRepository` (B12) — tiers/promos/tables/promoter-assignments. */
 export class FirestoreEventCatalogRepository implements EventCatalogRepository {
   constructor(private readonly db: Firestore) {}
+
+  // ── Ticket add-ons ────────────────────────────────────────────────────────
+  async getTicketAddonById(addonId: EntityId): Promise<TicketAddon | null> {
+    const snap = await this.db.collection(TICKET_ADDONS).doc(addonId).get();
+    return snap.exists ? (snap.data() as unknown as TicketAddon) : null;
+  }
+  async listTicketAddons(eventId: EntityId): Promise<TicketAddon[]> {
+    const snap = await this.db.collection(TICKET_ADDONS).where('eventId', '==', eventId).get();
+    return snap.docs.map((doc) => doc.data() as unknown as TicketAddon);
+  }
+  async saveTicketAddon(addon: TicketAddon, _tx?: TxContext | null): Promise<void> {
+    await this.db
+      .collection(TICKET_ADDONS)
+      .doc(addon.id)
+      .set({ ...addon });
+  }
 
   // ── Ticket tiers ──────────────────────────────────────────────────────────
   async getTierById(tierId: EntityId): Promise<TicketTier | null> {
@@ -145,15 +178,29 @@ export class FirestoreEventCatalogRepository implements EventCatalogRepository {
     const snap = await this.db.collection(ASSIGNMENTS).where('promoterId', '==', promoterId).get();
     return snap.docs.map((doc) => toAssignment(doc.data()));
   }
+  async listExpiredAssignments(now: Date, limit: number): Promise<PromoterAssignment[]> {
+    const snap = await this.db
+      .collection(ASSIGNMENTS)
+      .where('status', 'in', ['invited', 'accepted', 'active'])
+      .where('expiresAt', '<=', now.toISOString())
+      .orderBy('expiresAt', 'asc')
+      .limit(Math.max(1, Math.min(limit, 100)))
+      .get();
+    return snap.docs
+      .map((doc) => toAssignment(doc.data()))
+      .filter(
+        (assignment) =>
+          assignment.expiresAt !== null && Number.isFinite(Date.parse(assignment.expiresAt)),
+      );
+  }
   async listAllAssignments(query: PaginationQuery): Promise<Page<PromoterAssignment>> {
     const base = this.db.collection(ASSIGNMENTS);
     return paginateQuery(base, query, toAssignment);
   }
   async saveAssignment(assignment: PromoterAssignment, _tx?: TxContext | null): Promise<void> {
-    await this.db
-      .collection(ASSIGNMENTS)
-      .doc(assignment.id)
-      .set({ ...assignment });
+    await compareAndSet(this.db, this.db.collection(ASSIGNMENTS), assignment, (value) => ({
+      ...value,
+    }));
   }
 }
 

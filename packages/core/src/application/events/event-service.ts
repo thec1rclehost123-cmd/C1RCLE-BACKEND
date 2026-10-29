@@ -9,11 +9,14 @@ import {
   transitionEvent,
   cancelEvent,
   updateEvent,
-  isPublicStatus,
   type EventStatus,
   type Event,
   type EventCompensation,
+  type EventAddressDisclosure,
+  type EventEntryRules,
+  type EventVisibilityMode,
 } from '../../domain/models/event.js';
+import { transitionSlotRequest } from '../../domain/models/venue.js';
 import { requireOrgAccess, emit } from '../context.js';
 
 import type { EntityId } from '../../domain/identity.js';
@@ -31,6 +34,9 @@ export interface CreateEventCommand {
   endAt?: string | null;
   tags?: string[];
   compensation?: EventCompensation | null;
+  visibilityMode?: EventVisibilityMode;
+  addressDisclosure?: EventAddressDisclosure;
+  entryRules?: EventEntryRules;
   slotRequestId?: EntityId | null;
 }
 
@@ -38,6 +44,8 @@ export interface UpdateEventCommand {
   eventId: EntityId;
   expectedVersion: number | null;
   changes: {
+    venueId?: EntityId;
+    slotRequestId?: EntityId;
     slug?: string;
     title?: string;
     summary?: string;
@@ -49,6 +57,9 @@ export interface UpdateEventCommand {
     startingPricePaise?: number;
     isFree?: boolean;
     compensation?: EventCompensation | null;
+    visibilityMode?: EventVisibilityMode;
+    addressDisclosure?: EventAddressDisclosure;
+    entryRules?: EventEntryRules;
   };
 }
 
@@ -75,6 +86,20 @@ export class EventService {
   }
 
   async create(actor: ActorContext, command: CreateEventCommand): Promise<Event> {
+    const visibilityMode = command.visibilityMode ?? 'public';
+    if (
+      (visibilityMode === 'code' || visibilityMode === 'invited') &&
+      this.deps.config.features.m5PrivateAccess !== true
+    ) {
+      throw new InvalidOperationError('Private event access is not enabled for this deployment');
+    }
+    if (
+      command.addressDisclosure === 'after_grant' &&
+      visibilityMode !== 'code' &&
+      visibilityMode !== 'invited'
+    ) {
+      throw new InvalidOperationError('After-grant address disclosure requires a private event');
+    }
     await this.assertVenueAccess(actor, command.venueId);
     const isHost = actor.capabilities.includes('host');
     let acceptedRequest: SlotRequest | null = null;
@@ -124,11 +149,21 @@ export class EventService {
             existingEvent.summary === (command.summary ?? '') &&
             existingEvent.description === (command.description ?? '') &&
             existingEvent.imageUrl === (command.imageUrl ?? null) &&
+            (existingEvent.visibilityMode ?? 'public') === (command.visibilityMode ?? 'public') &&
+            (existingEvent.addressDisclosure ??
+              (existingEvent.visibilityMode === 'code' || existingEvent.visibilityMode === 'invited'
+                ? 'hidden'
+                : 'public')) ===
+              (command.addressDisclosure ??
+                (command.visibilityMode === 'code' || command.visibilityMode === 'invited'
+                  ? 'hidden'
+                  : 'public')) &&
             existingEvent.startAt === command.startAt &&
             existingEvent.endAt === (command.endAt ?? null) &&
             JSON.stringify(existingEvent.tags) === JSON.stringify(command.tags ?? []) &&
             JSON.stringify(existingEvent.compensation) ===
-              JSON.stringify(command.compensation ?? null);
+              JSON.stringify(command.compensation ?? null) &&
+            JSON.stringify(existingEvent.entryRules) === JSON.stringify(command.entryRules);
           if (sameCreateCommand) return existingEvent;
           throw new InvalidOperationError(
             'The accepted Venue slot request is unavailable for this Host',
@@ -168,6 +203,11 @@ export class EventService {
         throw new InvalidOperationError('The event conflicts with a Venue calendar slot');
       }
     }
+    const privateVisibility = visibilityMode === 'code' || visibilityMode === 'invited';
+    const posterUrl = command.imageUrl ?? null;
+    const privateImageStoragePath = privateVisibility
+      ? await this.revokePrivatePoster(posterUrl, actor.organizationId)
+      : null;
     const event = createEvent({
       id: acceptedRequest?.eventId ?? this.deps.config.ids(),
       organizationId: actor.organizationId,
@@ -175,9 +215,13 @@ export class EventService {
       title: command.title,
       summary: command.summary ?? '',
       description: command.description ?? '',
-      imageUrl: command.imageUrl ?? null,
+      imageUrl: privateVisibility ? null : posterUrl,
+      privateImageStoragePath,
       startAt: command.startAt,
       endAt: command.endAt ?? null,
+      visibilityMode: command.visibilityMode ?? 'public',
+      addressDisclosure: command.addressDisclosure,
+      entryRules: command.entryRules,
       tags: command.tags ?? [],
       compensation: command.compensation ?? null,
       now: this.deps.config.clock.now(),
@@ -319,20 +363,82 @@ export class EventService {
 
   async update(actor: ActorContext, command: UpdateEventCommand): Promise<Event> {
     const event = await this.fetchOwned(actor, command.eventId);
+    const { slotRequestId, ...requestedChanges } = command.changes;
+    const nextVisibilityMode = command.changes.visibilityMode ?? event.visibilityMode ?? 'public';
+    const nextAddressDisclosure = command.changes.addressDisclosure ?? event.addressDisclosure;
+    if (
+      (nextVisibilityMode === 'code' || nextVisibilityMode === 'invited') &&
+      this.deps.config.features.m5PrivateAccess !== true
+    ) {
+      throw new InvalidOperationError('Private event access is not enabled for this deployment');
+    }
+    if (
+      nextAddressDisclosure === 'after_grant' &&
+      nextVisibilityMode !== 'code' &&
+      nextVisibilityMode !== 'invited'
+    ) {
+      throw new InvalidOperationError('After-grant address disclosure requires a private event');
+    }
     if (command.expectedVersion !== null && event.version !== command.expectedVersion) {
       throw new VersionConflictError(command.expectedVersion, event.version);
     }
-    const updated = updateEvent(event, command.changes, this.deps.config.clock.now());
+    const nextStartAt = command.changes.startAt ?? event.startAt;
+    const nextEndAt = Object.hasOwn(command.changes, 'endAt')
+      ? (command.changes.endAt ?? null)
+      : event.endAt;
+    const nextVenueId = requestedChanges.venueId ?? event.venueId;
+    const scheduleChange =
+      nextStartAt !== event.startAt ||
+      nextEndAt !== event.endAt ||
+      nextVenueId !== event.venueId ||
+      slotRequestId !== undefined;
+    let approvedRequest: SlotRequest | null = null;
+    if (actor.capabilities.includes('host') && scheduleChange) {
+      approvedRequest = await this.assertHostRescheduleFitsAcceptedSlot(
+        actor,
+        event,
+        nextStartAt,
+        nextEndAt,
+        nextVenueId,
+        slotRequestId,
+      );
+      requestedChanges.venueId = approvedRequest.venueId;
+    } else if (slotRequestId !== undefined || nextVenueId !== event.venueId) {
+      throw new InvalidOperationError('Only a Host can apply a Venue-approved slot request');
+    }
+    const isPrivate = nextVisibilityMode === 'code' || nextVisibilityMode === 'invited';
+    const imageChanged = Object.hasOwn(command.changes, 'imageUrl');
+    const nextImageUrl = imageChanged ? (command.changes.imageUrl ?? null) : event.imageUrl;
+    const privateImageStoragePath = isPrivate
+      ? imageChanged
+        ? await this.revokePrivatePoster(nextImageUrl, actor.organizationId)
+        : (event.privateImageStoragePath ??
+          (await this.revokePrivatePoster(event.imageUrl, actor.organizationId)))
+      : null;
+    const changes = isPrivate
+      ? {
+          ...requestedChanges,
+          imageUrl: null,
+          privateImageStoragePath,
+        }
+      : { ...requestedChanges, privateImageStoragePath: null };
+    const updated = updateEvent(event, changes, this.deps.config.clock.now());
     if (updated === event) return event;
     await this.repo.save(updated);
+    if (approvedRequest)
+      await this.releaseSupersededEventSlots(actor, event.id, approvedRequest.id);
     const materialChange =
-      event.title !== updated.title || event.startAt !== updated.startAt
+      event.title !== updated.title ||
+      event.startAt !== updated.startAt ||
+      event.venueId !== updated.venueId
         ? {
             eventVersion: updated.version,
             previousTitle: event.title,
             title: updated.title,
             previousStartAt: event.startAt,
             startAt: updated.startAt,
+            previousVenueId: event.venueId,
+            venueId: updated.venueId,
           }
         : null;
     await emit(this.deps, actor, updated.id, 'event.updated', {
@@ -363,6 +469,7 @@ export class EventService {
    */
   async publish(actor: ActorContext, eventId: EntityId): Promise<Event> {
     const event = await this.fetchOwned(actor, eventId);
+    this.assertPrivateAccessEnabled(event);
     const tiers = await this.deps.repositories.catalog.listTiers(event.id);
     validateCompensationForPublish(
       event.compensation ?? null,
@@ -383,7 +490,19 @@ export class EventService {
     const isFree = !event.isFree
       ? false
       : paidTiers.length === 0 || paidTiers.every((tier) => tier.priceInPaise === 0);
-    const withCatalogSummary = { ...event, startingPricePaise, isFree };
+    const isPrivate = event.visibilityMode === 'code' || event.visibilityMode === 'invited';
+    const privateImageStoragePath = isPrivate
+      ? ((await this.revokePrivatePoster(event.imageUrl, actor.organizationId)) ??
+        event.privateImageStoragePath ??
+        null)
+      : null;
+    const withCatalogSummary = {
+      ...event,
+      startingPricePaise,
+      isFree,
+      imageUrl: isPrivate ? null : event.imageUrl,
+      privateImageStoragePath,
+    };
     // The `scheduled` step is transient: only the final `published` state is
     // persisted, so the version bump happens once. Walking two live bumps
     // (review→scheduled→published) and saving only the last would write
@@ -414,6 +533,7 @@ export class EventService {
 
   async resumeSales(actor: ActorContext, eventId: EntityId): Promise<Event> {
     const event = await this.fetchOwned(actor, eventId);
+    this.assertPrivateAccessEnabled(event);
     const updated = transitionEvent(event, 'published', this.deps.config.clock.now());
     if (updated === event) return event;
     await this.repo.save(updated);
@@ -447,6 +567,142 @@ export class EventService {
     return updated;
   }
 
+  private assertPrivateAccessEnabled(event: Event): void {
+    if (
+      (event.visibilityMode === 'code' || event.visibilityMode === 'invited') &&
+      this.deps.config.features.m5PrivateAccess !== true
+    ) {
+      throw new InvalidOperationError('Private event access is not enabled for this deployment');
+    }
+  }
+
+  /**
+   * A Host may adjust timing only inside the exact Venue-approved slot already
+   * attached to this event. A different day/time requires a fresh Venue slot
+   * approval; changing the event record alone cannot move that reservation.
+   */
+  private async assertHostRescheduleFitsAcceptedSlot(
+    actor: ActorContext,
+    event: Event,
+    startAt: string,
+    endAt: string | null,
+    venueId: EntityId | null,
+    preferredRequestId?: EntityId,
+  ): Promise<SlotRequest> {
+    let cursor: string | null = null;
+    const acceptedRequests: SlotRequest[] = [];
+    do {
+      const page = await this.deps.repositories.slotRequests.listByHost(actor.organizationId, {
+        cursor,
+        limit: 100,
+      });
+      acceptedRequests.push(
+        ...page.items.filter(
+          (request) =>
+            request.eventId === event.id &&
+            request.status === 'accepted' &&
+            (preferredRequestId === undefined || request.id === preferredRequestId),
+        ),
+      );
+      cursor = page.nextCursor;
+    } while (cursor !== null);
+
+    if (acceptedRequests.length === 0 || !endAt) {
+      throw new InvalidOperationError(
+        'A Host reschedule requires its active Venue-approved time slot',
+      );
+    }
+    const start = Date.parse(startAt);
+    const end = Date.parse(endAt);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+      throw new InvalidOperationError(
+        'Host event timing must remain within its Venue-approved slot',
+      );
+    }
+    for (const request of acceptedRequests) {
+      if (!request.slotId || request.venueId !== venueId || request.hostId !== actor.organizationId)
+        continue;
+      const slot = await this.deps.repositories.venueSlots.getSlotById(request.slotId);
+      if (
+        slot &&
+        slot.status === 'booked' &&
+        slot.slotRequestId === request.id &&
+        slot.requestingHostId === actor.organizationId &&
+        slot.venueId === request.venueId &&
+        start >= Date.parse(slot.startTime) &&
+        end <= Date.parse(slot.endTime)
+      ) {
+        const partnership = await this.deps.repositories.partnerships.findByPair(
+          actor.organizationId,
+          request.venueId,
+        );
+        const venue = await this.deps.repositories.venues.getById(request.venueId);
+        if (venue?.status === 'active' && partnership?.status === 'active') return request;
+      }
+    }
+    throw new InvalidOperationError(
+      preferredRequestId
+        ? 'The selected Venue slot request is not an accepted, booked slot for this event'
+        : 'Host event timing must remain within its Venue-approved slot',
+    );
+  }
+
+  /** Release older accepted reservations only after the event points at its new approved slot. */
+  private async releaseSupersededEventSlots(
+    actor: ActorContext,
+    eventId: EntityId,
+    currentRequestId: EntityId,
+  ): Promise<void> {
+    let cursor: string | null = null;
+    do {
+      const page = await this.deps.repositories.slotRequests.listByHost(actor.organizationId, {
+        cursor,
+        limit: 100,
+      });
+      for (const request of page.items) {
+        if (
+          request.eventId === eventId &&
+          request.status === 'accepted' &&
+          request.id !== currentRequestId &&
+          request.slotId
+        ) {
+          const cancelled = transitionSlotRequest(
+            request,
+            'cancelled',
+            this.deps.config.clock.now(),
+          );
+          await this.deps.repositories.slotRequests.transitionForSlot(request, cancelled);
+        }
+      }
+      cursor = page.nextCursor;
+    } while (cursor !== null);
+  }
+
+  /**
+   * Private event activation must not leave a known poster readable without
+   * authorization. Only the configured storage provider may resolve/revoke
+   * its own generated poster URLs; unknown/external URLs keep activation shut.
+   */
+  private async revokePrivatePoster(
+    imageUrl: string | null,
+    organizationId: EntityId,
+  ): Promise<string | null> {
+    if (imageUrl === null) return null;
+    const storagePath = await this.deps.objectStorage.revokePublicRead(
+      imageUrl,
+      `posters/${organizationId}/`,
+    );
+    if (storagePath === null) {
+      throw new InvalidOperationError(
+        'Private events require artwork hosted in managed storage so public access can be revoked',
+      );
+    }
+    this.deps.logger.info('events.private_poster_public_read_revoked', {
+      provider: this.deps.objectStorage.name,
+    });
+    return storagePath;
+  }
+
   async duplicate(actor: ActorContext, eventId: EntityId): Promise<Event> {
     const source = await this.fetchOwned(actor, eventId);
     if (!source.venueId) throw new EventNotFoundError(eventId);
@@ -457,11 +713,21 @@ export class EventService {
       title: source.title,
       summary: source.summary,
       description: source.description,
-      imageUrl: source.imageUrl,
+      imageUrl:
+        source.visibilityMode === 'code' || source.visibilityMode === 'invited'
+          ? null
+          : source.imageUrl,
+      privateImageStoragePath:
+        source.visibilityMode === 'code' || source.visibilityMode === 'invited'
+          ? ((await this.revokePrivatePoster(source.imageUrl, actor.organizationId)) ??
+            source.privateImageStoragePath ??
+            null)
+          : null,
       startAt: source.startAt,
       endAt: source.endAt,
       tags: source.tags,
       compensation: source.compensation,
+      visibilityMode: source.visibilityMode ?? 'public',
       now: this.deps.config.clock.now(),
     });
     await this.repo.save(copy);
@@ -484,7 +750,7 @@ export class EventService {
     eventId: EntityId,
   ): Promise<{ event: Event; isPublic: boolean }> {
     const event = await this.fetchOwned(actor, eventId);
-    return { event, isPublic: isPublicStatus(event.status) };
+    return { event, isPublic: event.isPublic };
   }
 
   /** Direct status transition used by idempotent flows (validate-then-transition). */

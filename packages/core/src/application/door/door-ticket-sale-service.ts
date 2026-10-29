@@ -177,6 +177,11 @@ export function createDoorTicketSaleService(
     if (tier.status !== 'active') {
       throw new InvalidOperationError('That ticket type is not on sale');
     }
+    if (tier.admissionMode === 'per_person') {
+      throw new InvalidOperationError(
+        'Per-person group tickets must be completed through the guest checkout flow',
+      );
+    }
 
     // The door is the last place that should oversell a room.
     const available = await deps.inventory.getAvailableQuantity(command.eventId, tier.id);

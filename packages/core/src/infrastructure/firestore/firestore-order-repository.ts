@@ -91,6 +91,24 @@ export class FirestoreOrderRepository implements OrderRepository {
     return paginateQuery(base, query, toOrder);
   }
 
+  /** Single-field nested equality uses Firestore's automatic index; no composite index required. */
+  async listByPromoter(promoterId: EntityId, query: PaginationQuery): Promise<Page<Order>> {
+    const base = this.collection.where('attribution.promoterId', '==', promoterId);
+    return paginateUnordered(base, query, toOrder);
+  }
+
+  /** Event + immutable Promoter equality filters use the declared composite index. */
+  async listByPromoterForEvent(
+    promoterId: EntityId,
+    eventId: EntityId,
+    query: PaginationQuery,
+  ): Promise<Page<Order>> {
+    const base = this.collection
+      .where('eventId', '==', eventId)
+      .where('attribution.promoterId', '==', promoterId);
+    return paginateUnordered(base, query, toOrder);
+  }
+
   // One equality filter (served by the automatic single-field index) and a
   // projection of just the two fields seat counting needs, streamed in one read.
   // The status is filtered by the caller rather than with `in`, which could ask
@@ -102,10 +120,20 @@ export class FirestoreOrderRepository implements OrderRepository {
       .get();
     return snap.docs.map((doc) => {
       const data = doc.data();
-      const lines = (data.lines ?? []) as { tierId: string; quantity: number }[];
+      const lines = (data.lines ?? []) as {
+        tierId: string;
+        quantity: number;
+        guestCount?: number;
+        admissionMode?: 'bundle' | 'per_person';
+      }[];
       return {
         status: data.status as OrderStatus,
-        lines: lines.map((l) => ({ tierId: l.tierId, quantity: l.quantity })),
+        lines: lines.map((line) => ({
+          tierId: line.tierId,
+          quantity: line.quantity,
+          ...(line.guestCount === undefined ? {} : { guestCount: line.guestCount }),
+          ...(line.admissionMode === undefined ? {} : { admissionMode: line.admissionMode }),
+        })),
       };
     });
   }
@@ -123,7 +151,15 @@ export class FirestoreOrderRepository implements OrderRepository {
       const order = toOrder(doc.data());
       if (order.eventId !== eventId || order.status !== 'paid') return sum;
       return (
-        sum + order.lines.reduce((s, line) => s + (line.tierId === tierId ? line.quantity : 0), 0)
+        sum +
+        order.lines.reduce(
+          (s, line) =>
+            s +
+            (line.tierId === tierId
+              ? line.quantity * (line.admissionMode === 'per_person' ? (line.guestCount ?? 1) : 1)
+              : 0),
+          0,
+        )
       );
     }, 0);
   }

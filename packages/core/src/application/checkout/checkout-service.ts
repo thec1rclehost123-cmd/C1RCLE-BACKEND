@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import {
   ConflictError,
   EventNotFoundError,
+  ForbiddenError,
   InvalidOperationError,
   NotFoundError,
   PaymentRefundedError,
@@ -11,10 +12,24 @@ import {
   VersionConflictError,
 } from '../../domain/errors.js';
 import { deterministicDomainEventId, domainEvent } from '../../domain/events.js';
-import { issueEntitlements } from '../../domain/models/entitlement.js';
-import { effectiveTierPricePaise } from '../../domain/models/event-catalog.js';
+import {
+  currentEntitlementHolderId,
+  issueEntitlements,
+  requiresEligibilityVerification,
+} from '../../domain/models/entitlement.js';
+import {
+  effectiveTierPricePaise,
+  COMMERCIAL_ALLOCATION_POLICY_VERSION,
+  PROMOTER_COMMISSION_POLICY_VERSION,
+} from '../../domain/models/event-catalog.js';
+import {
+  createEventCoverAccount,
+  isEventCoverPolicyAccepted,
+} from '../../domain/models/event-cover.js';
+import { promoterCommissionFitsDistributableValue } from '../../domain/models/ledger.js';
 import { platformFeePercentFor } from '../../domain/models/onboarding.js';
 import { commissionTierFor } from '../../domain/models/partnership.js';
+import { calculatePricing } from '../../domain/models/pricing.js';
 import { isSystemActor, SYSTEM_ACTOR } from '../context.js';
 import { createFinanceService } from '../finance/finance-service.js';
 import { FinancialPostingService } from '../finance/financial-posting-service.js';
@@ -24,11 +39,16 @@ import {
   ReferralLinkService,
   signPromoterAttribution,
 } from '../promoters/referral-link-service.js';
+import { TicketAccessService } from '../tickets/ticket-access-service.js';
 
 import type { EntityId } from '../../domain/identity.js';
-import type { CartReservation } from '../../domain/models/cart-reservation.js';
+import type {
+  CartReservation,
+  TicketUpgradeSnapshot,
+} from '../../domain/models/cart-reservation.js';
 import type { Entitlement } from '../../domain/models/entitlement.js';
 import type { CommissionTerms } from '../../domain/models/event-catalog.js';
+import type { EventCoverPolicyProposal } from '../../domain/models/event-cover.js';
 import type { Order, OrderContact } from '../../domain/models/order.js';
 import type { PricingBreakdown } from '../../domain/models/pricing.js';
 import type { PaymentVerificationResponse } from '../../domain/ports/payment-provider.js';
@@ -44,6 +64,10 @@ export interface CheckoutAttribution {
   assignmentId: EntityId;
   assignmentVersion: number;
   termsSnapshot: CommissionTerms;
+  eligibleTierIds: EntityId[] | null;
+  commissionPolicyVersion: string;
+  commercialPolicyVersion: string;
+  attributedAt: string;
   attributionSignature: string;
   promoterCommissionPaise: number;
 }
@@ -65,7 +89,7 @@ export function rsvpOrderId(eventId: EntityId, userId: EntityId): EntityId {
  * All mutations are idempotent and use the transactional outbox for fulfillment events.
  */
 /** A fulfilment step a paid order may be missing. */
-export type FulfilmentGap = 'hold' | 'hold_conversion' | 'tickets' | 'ledger';
+export type FulfilmentGap = 'hold' | 'hold_conversion' | 'tickets' | 'cover_accounts' | 'ledger';
 
 export interface FulfilmentGaps {
   /** False when no hold is bound to the order's provider order (nothing can be repaired). */
@@ -92,9 +116,38 @@ export interface PaymentRecoveryStatus {
 
 /** How long a hold keeps its seats (10 minutes). */
 export const DEFAULT_HOLD_TTL_MS = 10 * 60 * 1000;
+export const MAX_ACTIVE_PAID_UNITS_PER_EVENT_PER_PURCHASER = 10;
 
 /** The smallest amount the payment provider will take (₹1). */
 export const MIN_ONLINE_PAYMENT_PAISE = 100;
+
+const EVENT_COVER_SALES_FLAG = 'm5EventCoverSales';
+const EVENT_COVER_MERCHANT_APPROVAL_FLAG = 'm5CoverMerchantApproved';
+
+function requiresEligibilityAttestation(tier: {
+  audienceType?: string;
+  minAge?: number | null;
+  maxAge?: number | null;
+}): boolean {
+  return requiresEligibilityVerification(tier);
+}
+
+function assertEligibilityAttested(
+  tier: { audienceType?: string; minAge?: number | null; maxAge?: number | null },
+  attested?: boolean,
+  eligibilityRulesEnabled?: boolean,
+): void {
+  if (requiresEligibilityAttestation(tier) && eligibilityRulesEnabled !== true) {
+    throw new ForbiddenError(
+      'This eligibility-restricted ticket is unavailable until the required policy and entry controls are approved',
+    );
+  }
+  if (requiresEligibilityAttestation(tier) && attested !== true) {
+    throw new InvalidOperationError(
+      'Confirm that all attendees meet this ticket eligibility policy',
+    );
+  }
+}
 
 export class CheckoutService {
   private readonly financeService: FinanceService;
@@ -123,6 +176,60 @@ export class CheckoutService {
     });
   }
 
+  private async requireAcceptedCoverPolicy(
+    event: NonNullable<Awaited<ReturnType<ServiceDeps['repositories']['events']['getById']>>>,
+    amountPaise: number,
+    expected?: { proposalId: EntityId; policyVersion: string; termsDigest: string },
+    requireSalesApproval = true,
+  ): Promise<EventCoverPolicyProposal> {
+    if (
+      requireSalesApproval &&
+      (this.deps.config.features[EVENT_COVER_SALES_FLAG] !== true ||
+        this.deps.config.features[EVENT_COVER_MERCHANT_APPROVAL_FLAG] !== true ||
+        this.deps.config.features.m5CoverAccountingApproved !== true)
+    ) {
+      throw new InvalidOperationError('Event cover sales are not approved or enabled');
+    }
+    const proposals = await this.deps.repositories.eventCoverPolicies.listProposalsByEvent(
+      event.id,
+    );
+    const candidates = expected
+      ? proposals.filter((proposal) => proposal.id === expected.proposalId)
+      : proposals.filter((proposal) => proposal.terms.coverAmountPaise === amountPaise);
+    for (const proposal of candidates.sort((a, b) => b.createdAt.localeCompare(a.createdAt))) {
+      if (
+        proposal.hostOrganizationId !== event.organizationId ||
+        proposal.terms.eventId !== event.id ||
+        proposal.terms.coverAmountPaise !== amountPaise ||
+        (expected &&
+          (proposal.policyVersion !== expected.policyVersion ||
+            proposal.termsDigest !== expected.termsDigest))
+      ) {
+        continue;
+      }
+      const venue = event.venueId
+        ? await this.deps.repositories.venues.getById(event.venueId)
+        : null;
+      if (
+        !venue ||
+        venue.status !== 'active' ||
+        venue.organizationId !== proposal.venueOrganizationId
+      ) {
+        continue;
+      }
+      if (event.organizationId !== venue.organizationId) {
+        const partnership = await this.deps.repositories.partnerships.findByPair(
+          event.organizationId,
+          venue.id,
+        );
+        if (!partnership || partnership.status !== 'active') continue;
+      }
+      const acceptance = await this.deps.repositories.eventCoverPolicies.getAcceptance(proposal.id);
+      if (isEventCoverPolicyAccepted(proposal, acceptance)) return proposal;
+    }
+    throw new InvalidOperationError('This ticket requires an accepted current Venue cover policy');
+  }
+
   /**
    * Step 1: Quote — calculates pricing for a set of lines + promo.
    * Pure calculation, no side effects.
@@ -130,21 +237,220 @@ export class CheckoutService {
   async quote(input: {
     actor: ActorContext;
     eventId: EntityId;
-    lines: { tierId: EntityId; quantity: number }[];
+    lines: {
+      tierId: EntityId;
+      quantity: number;
+      ticketAddons?: { addonId: EntityId; quantityPerEntitlement: number }[];
+      accessGrantId?: EntityId;
+      eligibilityAttested?: boolean;
+    }[];
     promoCode?: string | null;
     referralCode?: string | null;
-  }): Promise<{ pricing: PricingBreakdown; attribution: CheckoutAttribution | null }> {
-    const { eventId, lines, promoCode, referralCode } = input;
+    upgradeFromEntitlementId?: EntityId;
+  }): Promise<{
+    pricing: PricingBreakdown;
+    attribution: CheckoutAttribution | null;
+    upgrade: TicketUpgradeSnapshot | null;
+  }> {
+    const { eventId, lines, promoCode, referralCode, upgradeFromEntitlementId } = input;
+    if (
+      lines.some((line) => line.ticketAddons?.length) &&
+      this.deps.config.features.m5TicketAddonsEnabled !== true
+    ) {
+      throw new ForbiddenError('Ticket add-on sales are not enabled');
+    }
+
+    let sourceUpgrade: Omit<
+      TicketUpgradeSnapshot,
+      'targetTierId' | 'replacementAdmissionPaise' | 'incrementalAdmissionPaise'
+    > | null = null;
+    if (upgradeFromEntitlementId) {
+      if (
+        !input.actor.userId ||
+        lines.length !== 1 ||
+        lines[0]?.quantity !== 1 ||
+        Boolean(lines[0]?.ticketAddons?.length) ||
+        promoCode ||
+        referralCode
+      ) {
+        throw new InvalidOperationError(
+          'A ticket upgrade requires one authenticated, undiscounted ticket',
+        );
+      }
+      const source = await this.deps.repositories.entitlements.getById(upgradeFromEntitlementId);
+      if (
+        !source ||
+        source.eventId !== eventId ||
+        currentEntitlementHolderId(source) !== input.actor.userId ||
+        source.status !== 'valid' ||
+        source.scanCount !== 0 ||
+        source.refundLock ||
+        source.pendingTransferId ||
+        (source.unitKind ?? (source.orderId.startsWith('RSVP-') ? 'free_rsvp' : 'paid')) !== 'paid'
+      ) {
+        throw new InvalidOperationError('This ticket is not eligible for an upgrade');
+      }
+      const sourceOrder = await this.deps.repositories.orders.getById(source.orderId);
+      const sourceLine = sourceOrder?.lines.find((line) => line.tierId === source.tierId);
+      const sourceHold = sourceOrder?.paymentIntentId
+        ? await this.deps.repositories.cartReservations.getByProviderOrderId(
+            sourceOrder.paymentIntentId,
+          )
+        : null;
+      const sourcePrice = sourceHold?.pricing.lines.find((line) => line.tierId === source.tierId);
+      const sourceEntitlements = sourceOrder
+        ? await this.deps.repositories.entitlements.getByOrderId(sourceOrder.id)
+        : [];
+      const sourceLineEntitlements = sourceEntitlements.filter(
+        (item) => item.tierId === source.tierId,
+      );
+      if (
+        !sourceOrder ||
+        sourceOrder.status !== 'paid' ||
+        sourceOrder.eventId !== eventId ||
+        sourceHold?.convertedOrderId !== sourceOrder.id ||
+        !sourceLine ||
+        !sourcePrice ||
+        sourceLine.quantity !== 1 ||
+        sourceLineEntitlements.length !== 1 ||
+        source.scanCountAllowed !== 1 ||
+        (sourceLine.coverUnitPricePaise ?? 0) !== 0 ||
+        (sourcePrice.coverUnitPricePaise ?? 0) !== 0
+      ) {
+        throw new InvalidOperationError(
+          'Only a single-admission ticket without cover can be upgraded',
+        );
+      }
+      const priorAdmissionPaidPaise =
+        sourcePrice.discountedAdmissionSubtotalPaise ??
+        sourcePrice.admissionSubtotalPaise ??
+        sourcePrice.subtotalPaise;
+      sourceUpgrade = {
+        sourceEntitlementId: source.id,
+        sourceEntitlementVersion: source.version,
+        sourceOrderId: sourceOrder.id,
+        sourceTierId: source.tierId,
+        priorAdmissionPaidPaise,
+      };
+    }
 
     await this.assertOnSale(eventId);
+    const event = await this.deps.repositories.events.getById(eventId);
+    if (!event) throw new EventNotFoundError(eventId);
 
-    const pricingLines = lines.map((l) => ({ tierId: l.tierId, quantity: l.quantity }));
+    const coverPolicies = new Map<EntityId, EventCoverPolicyProposal>();
+    for (const line of lines) {
+      const tier = await this.deps.repositories.catalog.getTierById(line.tierId);
+      if (!tier || tier.eventId !== eventId) {
+        throw new TicketTierNotFoundError(line.tierId);
+      }
+      if (tier.accessType === 'RSVP' && line.ticketAddons?.length) {
+        throw new InvalidOperationError('Ticket add-ons cannot be purchased with a free RSVP');
+      }
+      assertEligibilityAttested(
+        tier,
+        line.eligibilityAttested,
+        this.deps.config.features.m5EligibilityRulesEnabled,
+      );
+      if ((tier.coverAmountPaise ?? 0) > 0) {
+        coverPolicies.set(
+          tier.id,
+          await this.requireAcceptedCoverPolicy(event, tier.coverAmountPaise ?? 0),
+        );
+      }
+      if (
+        (tier.accessMode ?? 'public') !== 'public' &&
+        (!line.accessGrantId ||
+          !input.actor.userId ||
+          !(await new TicketAccessService(this.deps).hasGrantForTier(
+            line.accessGrantId,
+            input.actor.userId,
+            eventId,
+            line.tierId,
+          )))
+      ) {
+        throw new TicketTierNotFoundError(line.tierId);
+      }
+      if (
+        (event.visibilityMode === 'code' || event.visibilityMode === 'invited') &&
+        (!line.accessGrantId ||
+          !input.actor.userId ||
+          !(await new TicketAccessService(this.deps).hasGrantForEvent(
+            line.accessGrantId,
+            input.actor.userId,
+            eventId,
+            event.visibilityMode === 'invited' ? 'invitation' : 'code',
+          )))
+      ) {
+        throw new TicketTierNotFoundError(line.tierId);
+      }
+    }
 
-    const pricing = await this.deps.pricing.calculate({
+    const pricingLines = lines.map((l) => ({
+      tierId: l.tierId,
+      quantity: l.quantity,
+      ...(l.ticketAddons === undefined ? {} : { ticketAddons: l.ticketAddons }),
+    }));
+
+    const targetPricing = await this.deps.pricing.calculate({
       eventId,
       lines: pricingLines,
       promoCode,
     });
+    let upgrade: TicketUpgradeSnapshot | null = null;
+    let basePricing = targetPricing;
+    if (sourceUpgrade) {
+      const requestedTarget = lines[0];
+      if (!requestedTarget) throw new InvalidOperationError('A ticket upgrade requires one target');
+      const targetLine = targetPricing.lines[0];
+      const targetTier = await this.deps.repositories.catalog.getTierById(requestedTarget.tierId);
+      const replacementAdmissionPaise = targetLine?.admissionUnitPricePaise ?? 0;
+      const incrementalAdmissionPaise =
+        replacementAdmissionPaise - sourceUpgrade.priorAdmissionPaidPaise;
+      if (
+        !targetLine ||
+        !targetTier ||
+        targetTier.id === sourceUpgrade.sourceTierId ||
+        targetTier.coverAmountPaise ||
+        (targetTier.admissionMode === 'per_person' && (targetTier.guestCount ?? 1) !== 1) ||
+        incrementalAdmissionPaise <= 0
+      ) {
+        throw new InvalidOperationError(
+          'The selected ticket does not have a positive upgrade price',
+        );
+      }
+      basePricing = calculatePricing({
+        lines: [
+          {
+            tier: { ...targetTier, priceInPaise: incrementalAdmissionPaise, coverAmountPaise: 0 },
+            quantity: 1,
+          },
+        ],
+        currency: 'INR',
+      });
+      upgrade = {
+        ...sourceUpgrade,
+        targetTierId: targetTier.id,
+        replacementAdmissionPaise,
+        incrementalAdmissionPaise,
+      };
+    }
+    const pricing: PricingBreakdown = {
+      ...basePricing,
+      lines: basePricing.lines.map((line) => {
+        const policy = coverPolicies.get(line.tierId);
+        return policy
+          ? {
+              ...line,
+              coverPolicy: {
+                proposalId: policy.id,
+                policyVersion: policy.policyVersion,
+                termsDigest: policy.termsDigest,
+              },
+            }
+          : line;
+      }),
+    };
 
     if (pricing.discountPaise > 0 && pricing.discountFundingOwner == null) {
       throw new InvalidOperationError(
@@ -166,12 +472,38 @@ export class CheckoutService {
       const signed = await new ReferralLinkService(this.deps).resolveAttribution(
         eventId,
         referralCode,
+        input.actor.userId,
       );
       if (signed) {
-        const promoterCommissionPaise = commissionForLines(pricing.lines, signed.terms);
-        if (promoterCommissionPaise > pricing.grandTotalPaise - pricing.platformFeePaise) {
+        const promoterCommissionPaise = commissionForLines(
+          pricing.lines,
+          signed.terms,
+          signed.eligibleTierIds ?? null,
+        );
+        const event = await this.deps.repositories.events.getById(eventId);
+        if (!event) throw new EventNotFoundError(eventId);
+        const onboarding = await this.deps.repositories.onboarding.findByProvisionedOrganizationId(
+          event.organizationId,
+        );
+        const platformFeeRate = platformFeePercentFor(onboarding?.plan ?? 'basic') / 100;
+        let venueShareRate = 0;
+        if (event.venueId) {
+          const partnership = await this.deps.repositories.partnerships.findByPair(
+            event.organizationId,
+            event.venueId,
+          );
+          venueShareRate = (partnership?.venueShareRate ?? 0) / 100;
+        }
+        if (
+          !promoterCommissionFitsDistributableValue(
+            pricing.discountedAdmissionSubtotalPaise ?? pricing.discountedSubtotalPaise,
+            promoterCommissionPaise,
+            platformFeeRate,
+            venueShareRate,
+          )
+        ) {
           throw new InvalidOperationError(
-            'The assigned promoter commission exceeds this order’s distributable total',
+            'The assigned promoter commission exceeds this order’s distributable ticket revenue',
           );
         }
         attribution = {
@@ -181,13 +513,19 @@ export class CheckoutService {
           assignmentId: signed.assignmentId,
           assignmentVersion: signed.assignmentVersion,
           termsSnapshot: signed.terms,
+          eligibleTierIds: signed.eligibleTierIds ?? null,
+          commissionPolicyVersion:
+            signed.commissionPolicyVersion ?? PROMOTER_COMMISSION_POLICY_VERSION,
+          commercialPolicyVersion:
+            signed.commercialPolicyVersion ?? COMMERCIAL_ALLOCATION_POLICY_VERSION,
+          attributedAt: this.deps.config.clock.now().toISOString(),
           attributionSignature: signPromoterAttribution(signed, this.deps.config.magicTicketSecret),
           promoterCommissionPaise,
         };
       }
     }
 
-    return { pricing, attribution };
+    return { pricing, attribution, upgrade };
   }
 
   /**
@@ -243,13 +581,25 @@ export class CheckoutService {
     actor: ActorContext;
     eventId: EntityId;
     organizationId: EntityId;
-    lines: { tierId: EntityId; tierName: string; quantity: number; unitPricePaise: number }[];
+    lines: {
+      tierId: EntityId;
+      tierName: string;
+      quantity: number;
+      unitPricePaise: number;
+      admissionUnitPricePaise?: number;
+      coverUnitPricePaise?: number;
+      coverPolicy?: { proposalId: EntityId; policyVersion: string; termsDigest: string };
+      ticketAddons?: PricingBreakdown['lines'][number]['ticketAddons'];
+      accessGrantId?: EntityId;
+      eligibilityAttested?: boolean;
+    }[];
     pricing: PricingBreakdown;
     appliedPromoCode: string | null;
     attribution: CheckoutAttribution | null;
     userId?: EntityId | null;
     /** Who the tickets are for; becomes the order contact. */
     attendee?: OrderContact | null;
+    upgrade?: TicketUpgradeSnapshot | null;
     idempotencyKey: string;
     reservationTtlMs?: number;
   }): Promise<CartReservation> {
@@ -262,12 +612,36 @@ export class CheckoutService {
       attribution,
       userId,
       attendee,
+      upgrade,
       idempotencyKey,
       reservationTtlMs,
     } = input;
 
     const now = new Date();
     const buyerId = userId ?? input.actor.userId;
+    const event = await this.deps.repositories.events.getById(eventId);
+    if (!event) throw new EventNotFoundError(eventId);
+
+    if (upgrade) {
+      const source = await this.deps.repositories.entitlements.getById(upgrade.sourceEntitlementId);
+      if (
+        !buyerId ||
+        lines.length !== 1 ||
+        lines[0]?.quantity !== 1 ||
+        lines[0]?.tierId !== upgrade.targetTierId ||
+        upgrade.sourceOrderId !== source?.orderId ||
+        upgrade.sourceTierId !== source?.tierId ||
+        upgrade.sourceEntitlementVersion !== source?.version ||
+        source?.eventId !== eventId ||
+        currentEntitlementHolderId(source) !== buyerId ||
+        source.status !== 'valid' ||
+        source.scanCount !== 0 ||
+        source.refundLock ||
+        source.pendingTransferId
+      ) {
+        throw new InvalidOperationError('The source ticket changed after the upgrade quote');
+      }
+    }
 
     // An idempotency key identifies a request by ONE buyer. Looking it up on its
     // own would hand a buyer someone else's hold (and its holdId and pricing)
@@ -278,11 +652,166 @@ export class CheckoutService {
     const existing = await this.deps.repositories.cartReservations.getByIdempotencyKey(scopedKey);
     if (existing) return existing;
 
+    if (
+      lines.some((line) => line.ticketAddons?.length) &&
+      this.deps.config.features.m5TicketAddonsEnabled !== true
+    ) {
+      throw new ForbiddenError('Ticket add-on sales are not enabled');
+    }
+
+    // The server owns group semantics. Snapshot the tier's attendee count and
+    // issuance mode into the hold so edits after quote cannot change fulfillment.
+    const holdLines = await Promise.all(
+      lines.map(async (line) => {
+        const tier = await this.deps.repositories.catalog.getTierById(line.tierId);
+        if (!tier || tier.eventId !== eventId) {
+          throw new TicketTierNotFoundError(line.tierId);
+        }
+        if (tier.accessType === 'RSVP' && line.ticketAddons?.length) {
+          throw new InvalidOperationError('Ticket add-ons cannot be purchased with a free RSVP');
+        }
+        assertEligibilityAttested(
+          tier,
+          line.eligibilityAttested,
+          this.deps.config.features.m5EligibilityRulesEnabled,
+        );
+        const coverAmountPaise = tier.coverAmountPaise ?? 0;
+        const ticketAddons = await Promise.all(
+          (line.ticketAddons ?? []).map(async (selection) => {
+            const addon = await this.deps.repositories.catalog.getTicketAddonById(
+              selection.addonId,
+            );
+            const nowMs = now.getTime();
+            if (
+              !addon ||
+              addon.eventId !== eventId ||
+              addon.organizationId !== organizationId ||
+              addon.status !== 'active' ||
+              addon.name !== selection.name ||
+              addon.kind !== selection.kind ||
+              addon.priceInPaise !== selection.unitPricePaise ||
+              selection.quantityPerEntitlement < 1 ||
+              selection.quantityPerEntitlement > addon.maxPerEntitlement ||
+              (addon.salesStartAt !== null && Date.parse(addon.salesStartAt) > nowMs) ||
+              (addon.salesEndAt !== null && Date.parse(addon.salesEndAt) <= nowMs)
+            ) {
+              throw new InvalidOperationError('A selected ticket add-on changed after the quote');
+            }
+            return { ...selection };
+          }),
+        );
+        const entitlementCountPerPurchaseUnit =
+          (tier.admissionMode ?? 'bundle') === 'per_person' ? (tier.guestCount ?? 1) : 1;
+        const addOnUnitPricePaise = ticketAddons.reduce(
+          (sum, addon) => sum + addon.unitPricePaise * addon.quantityPerEntitlement,
+          0,
+        );
+        if (
+          (line.coverUnitPricePaise ?? 0) !== coverAmountPaise ||
+          line.unitPricePaise !==
+            (line.admissionUnitPricePaise ?? line.unitPricePaise) +
+              (line.coverUnitPricePaise ?? 0) *
+                ((tier.admissionMode ?? 'bundle') === 'per_person' ? (tier.guestCount ?? 1) : 1) +
+              addOnUnitPricePaise * entitlementCountPerPurchaseUnit
+        ) {
+          throw new InvalidOperationError('Ticket price components changed after the quote');
+        }
+        let coverPolicy: EventCoverPolicyProposal | null = null;
+        if (coverAmountPaise > 0 && line.coverPolicy) {
+          coverPolicy = await this.requireAcceptedCoverPolicy(
+            event,
+            coverAmountPaise,
+            line.coverPolicy,
+          );
+        } else if (coverAmountPaise > 0 || line.coverPolicy) {
+          throw new InvalidOperationError('This ticket no longer has its accepted cover policy');
+        }
+        if (
+          (tier.accessMode ?? 'public') !== 'public' &&
+          (!line.accessGrantId ||
+            !buyerId ||
+            !(await new TicketAccessService(this.deps).hasGrantForTier(
+              line.accessGrantId,
+              buyerId,
+              eventId,
+              line.tierId,
+            )))
+        ) {
+          throw new TicketTierNotFoundError(line.tierId);
+        }
+        if (
+          (event.visibilityMode === 'code' || event.visibilityMode === 'invited') &&
+          (!line.accessGrantId ||
+            !buyerId ||
+            !(await new TicketAccessService(this.deps).hasGrantForEvent(
+              line.accessGrantId,
+              buyerId,
+              eventId,
+              event.visibilityMode === 'invited' ? 'invitation' : 'code',
+            )))
+        ) {
+          throw new TicketTierNotFoundError(line.tierId);
+        }
+        return {
+          ...line,
+          ...(line.admissionUnitPricePaise === undefined
+            ? {}
+            : { admissionUnitPricePaise: line.admissionUnitPricePaise }),
+          ...(line.coverUnitPricePaise === undefined
+            ? {}
+            : { coverUnitPricePaise: line.coverUnitPricePaise }),
+          ...(coverPolicy
+            ? {
+                coverPolicy: {
+                  proposalId: coverPolicy.id,
+                  policyVersion: coverPolicy.policyVersion,
+                  termsDigest: coverPolicy.termsDigest,
+                },
+              }
+            : {}),
+          ...(ticketAddons.length > 0 ? { ticketAddons } : {}),
+          guestCount: tier.guestCount ?? 1,
+          admissionMode: tier.admissionMode ?? 'bundle',
+          ...(requiresEligibilityAttestation(tier)
+            ? {
+                eligibility: {
+                  audienceType: tier.audienceType ?? 'GENERAL',
+                  minAge: tier.minAge ?? null,
+                  maxAge: tier.maxAge ?? null,
+                  attested: true as const,
+                  attestedAt: now.toISOString(),
+                },
+              }
+            : {}),
+        };
+      }),
+    );
+
     // Check inventory availability
-    for (const line of lines) {
+    for (const line of holdLines) {
       const available = await this.deps.inventory.getAvailableQuantity(eventId, line.tierId);
-      if (available < line.quantity) {
+      const requestedUnits =
+        line.quantity * (line.admissionMode === 'per_person' ? line.guestCount : 1);
+      if (available < requestedUnits) {
         throw new InvalidOperationError(`Insufficient inventory for tier ${line.tierName}`);
+      }
+    }
+
+    const requestedAddons = new Map<EntityId, number>();
+    for (const line of holdLines) {
+      const entitlementCount =
+        line.quantity * (line.admissionMode === 'per_person' ? (line.guestCount ?? 1) : 1);
+      for (const addon of line.ticketAddons ?? []) {
+        requestedAddons.set(
+          addon.addonId,
+          (requestedAddons.get(addon.addonId) ?? 0) +
+            entitlementCount * addon.quantityPerEntitlement,
+        );
+      }
+    }
+    for (const [addonId, requested] of requestedAddons) {
+      if ((await this.deps.inventory.getAvailableTicketAddonQuantity(addonId)) < requested) {
+        throw new InvalidOperationError('Insufficient inventory for a selected ticket add-on');
       }
     }
 
@@ -292,7 +821,7 @@ export class CheckoutService {
     // any identity (`buyerId` null) fall through — there is no stable key to
     // count against, and v1 never enforced a per-user tier cap either.
     if (buyerId) {
-      for (const line of lines) {
+      for (const line of holdLines) {
         const tier = await this.deps.repositories.catalog.getTierById(line.tierId);
         if (!tier?.maxPerUser) continue;
         const alreadyHeld = await this.deps.repositories.cartReservations.countActiveQuantity(
@@ -306,7 +835,9 @@ export class CheckoutService {
           eventId,
           line.tierId,
         );
-        if (alreadyHeld + alreadyBought + line.quantity > tier.maxPerUser) {
+        const requestedUnits =
+          line.quantity * (line.admissionMode === 'per_person' ? line.guestCount : 1);
+        if (alreadyHeld + alreadyBought + requestedUnits > tier.maxPerUser) {
           throw new InvalidOperationError(
             `${tier.name} has a maximum of ${tier.maxPerUser} per user`,
           );
@@ -322,7 +853,7 @@ export class CheckoutService {
       eventId,
       organizationId,
       userId: buyerId,
-      lines: lines.map((l) => ({ ...l })),
+      lines: holdLines.map((line) => ({ ...line })),
       pricing,
       appliedPromoCode,
       attribution: attribution ?? null,
@@ -330,6 +861,7 @@ export class CheckoutService {
       expiresAt: new Date(now.getTime() + ttl).toISOString(),
       convertedOrderId: null,
       attendee: attendee ?? null,
+      ...(upgrade ? { upgrade: { ...upgrade } } : {}),
       idempotencyKey: scopedKey,
       version: 1,
       createdAt: now.toISOString(),
@@ -349,6 +881,14 @@ export class CheckoutService {
       const tierName = stored.lines.find((line) => line.tierId === overbooked)?.tierName ?? 'tier';
       throw new InvalidOperationError(`Insufficient inventory for tier ${tierName}`);
     }
+    const overbookedAddon = await this.deps.inventory.firstOverbookedTicketAddon(stored);
+    if (overbookedAddon !== null) {
+      await this.deps.repositories.cartReservations.release(stored.id);
+      const addon = await this.deps.repositories.catalog.getTicketAddonById(overbookedAddon);
+      throw new InvalidOperationError(
+        `Insufficient inventory for ${addon?.name ?? 'a selected ticket add-on'}`,
+      );
+    }
 
     // The per-user cap has the same check-then-write shape: one buyer firing
     // several requests at once passes the early check on every one of them. Judge
@@ -357,6 +897,12 @@ export class CheckoutService {
     if (overCap !== null) {
       await this.deps.repositories.cartReservations.release(stored.id);
       throw new InvalidOperationError(`${overCap.name} has a maximum of ${overCap.max} per user`);
+    }
+    if (await this.isOverActivePaidUnitCap(stored)) {
+      await this.deps.repositories.cartReservations.release(stored.id);
+      throw new InvalidOperationError(
+        `A maximum of ${MAX_ACTIVE_PAID_UNITS_PER_EVENT_PER_PURCHASER} paid admission units is allowed per event`,
+      );
     }
     return stored;
   }
@@ -379,11 +925,22 @@ export class CheckoutService {
     actor: ActorContext;
     eventId: EntityId;
     tierId: EntityId;
+    accessGrantId?: EntityId;
+    eligibilityAttested?: boolean;
+    referralCode?: string | null;
   }): Promise<{ order: Order; entitlements: Entitlement[] }> {
-    const { actor, eventId, tierId } = input;
+    const { actor, eventId, tierId, referralCode, accessGrantId, eligibilityAttested } = input;
 
     if (!actor.userId || isSystemActor(actor)) {
       throw new UnauthorizedError('Authentication is required to book tickets');
+    }
+
+    // M5 RSVP uniqueness is enforced per account backed by the platform's
+    // existing verified identity signal. Missing directory records fail
+    // closed; account IDs do not prove one-human-per-account identity.
+    const account = await this.deps.repositories.users.getById(actor.userId);
+    if (!account?.emailVerified) {
+      throw new ForbiddenError('A verified account is required to RSVP');
     }
 
     const event =
@@ -393,14 +950,30 @@ export class CheckoutService {
     if (event.status !== 'published') {
       throw new InvalidOperationError(`Event is ${event.status}, RSVP is unavailable`);
     }
+    if (
+      (event.visibilityMode === 'code' || event.visibilityMode === 'invited') &&
+      !(await new TicketAccessService(this.deps).hasGrantForEvent(
+        accessGrantId ?? '',
+        actor.userId,
+        event.id,
+        event.visibilityMode === 'invited' ? 'invitation' : 'code',
+      ))
+    ) {
+      throw new TicketTierNotFoundError(tierId);
+    }
     if (!event.isFree) {
       throw new InvalidOperationError('RSVP is available only for free events');
     }
 
     const tier = await this.deps.repositories.catalog.getTierById(tierId);
-    if (!tier || tier.eventId !== event.id) {
+    if (!tier || tier.eventId !== event.id || (tier.accessMode ?? 'public') !== 'public') {
       throw new TicketTierNotFoundError(tierId);
     }
+    assertEligibilityAttested(
+      tier,
+      eligibilityAttested,
+      this.deps.config.features.m5EligibilityRulesEnabled,
+    );
     if (tier.status !== 'active') {
       throw new InvalidOperationError(`Tier ${tier.name} is ${tier.status}`);
     }
@@ -409,6 +982,11 @@ export class CheckoutService {
     const unitPricePaise = effectiveTierPricePaise(tier);
     if (unitPricePaise !== 0) {
       throw new InvalidOperationError('RSVP is available only for zero-price tiers');
+    }
+    if ((tier.guestCount ?? 1) > 1 || tier.admissionMode === 'per_person') {
+      throw new InvalidOperationError(
+        'Group RSVPs require an individually verified attendee claim for every admission',
+      );
     }
 
     // Deterministic id from the RESOLVED event id (callers may pass id or
@@ -425,6 +1003,34 @@ export class CheckoutService {
     // Keep contact email/phone blank for RSVP; they are not needed to issue the
     // pass, and the profile name is sufficient for the partner attendee roster.
     const guestProfile = await this.deps.repositories.guestProfiles.getByUserId(actor.userId);
+
+    let attribution: CheckoutAttribution | null = null;
+    if (referralCode) {
+      const signed = await new ReferralLinkService(this.deps).resolveAttribution(
+        event.id,
+        referralCode,
+        actor.userId,
+      );
+      if (signed) {
+        attribution = {
+          referralLinkId: signed.referralLinkId,
+          promoterId: signed.promoterId,
+          code: signed.code,
+          assignmentId: signed.assignmentId,
+          assignmentVersion: signed.assignmentVersion,
+          termsSnapshot: signed.terms,
+          eligibleTierIds: signed.eligibleTierIds ?? null,
+          commissionPolicyVersion:
+            signed.commissionPolicyVersion ?? PROMOTER_COMMISSION_POLICY_VERSION,
+          commercialPolicyVersion:
+            signed.commercialPolicyVersion ?? COMMERCIAL_ALLOCATION_POLICY_VERSION,
+          attributedAt: this.deps.config.clock.now().toISOString(),
+          attributionSignature: signPromoterAttribution(signed, this.deps.config.magicTicketSecret),
+          // Free RSVPs count as conversions, but have no monetary commission.
+          promoterCommissionPaise: 0,
+        };
+      }
+    }
 
     await this.deps.inventory.assertAvailable(event.id, tierId, 1);
 
@@ -443,10 +1049,24 @@ export class CheckoutService {
           quantity: 1,
           unitPricePaise: 0,
           subtotalPaise: 0,
+          ...(requiresEligibilityAttestation(tier)
+            ? {
+                eligibility: {
+                  audienceType: tier.audienceType ?? 'GENERAL',
+                  minAge: tier.minAge ?? null,
+                  maxAge: tier.maxAge ?? null,
+                  attested: true as const,
+                  attestedAt: now.toISOString(),
+                },
+              }
+            : {}),
         },
       ],
       currency: tier.currency,
       subtotalPaise: 0,
+      admissionSubtotalPaise: 0,
+      coverSubtotalPaise: 0,
+      discountedAdmissionSubtotalPaise: 0,
       discountPaise: 0,
       discountFundingOwner: null,
       discountedSubtotalPaise: 0,
@@ -455,7 +1075,7 @@ export class CheckoutService {
       gstPaise: 0,
       grandTotalPaise: 0,
       appliedPromoCode: null,
-      attribution: null,
+      attribution,
       paymentIntentId: null,
       paymentId: orderId,
       paidAt: now.toISOString(),
@@ -501,6 +1121,7 @@ export class CheckoutService {
     }
 
     const entitlements = await this.deps.repositories.entitlements.getByOrderId(orderId);
+    await this.recordAttributionSale(order);
     await this.financialPostingService.postZeroValueEvidence({
       organizationId: order.organizationId,
       orderId: order.id,
@@ -511,6 +1132,16 @@ export class CheckoutService {
     });
     await this.ensureOrderFulfilledEvent(order);
     return { order, entitlements };
+  }
+
+  private async recordAttributionSale(order: Order): Promise<void> {
+    if (!order.attribution) return;
+    await this.deps.repositories.referralLinks.recordSale(
+      order.attribution.referralLinkId,
+      order.id,
+      order.discountedAdmissionSubtotalPaise ?? order.discountedSubtotalPaise,
+      order.attribution.promoterCommissionPaise,
+    );
   }
 
   /**
@@ -541,12 +1172,49 @@ export class CheckoutService {
       const held = mine.reduce(
         (sum, other) =>
           sum +
-          other.lines.filter((l) => l.tierId === line.tierId).reduce((n, l) => n + l.quantity, 0),
+          other.lines
+            .filter((l) => l.tierId === line.tierId)
+            .reduce(
+              (n, l) =>
+                n + l.quantity * (l.admissionMode === 'per_person' ? (l.guestCount ?? 1) : 1),
+              0,
+            ),
         0,
       );
       if (bought + held > tier.maxPerUser) return { name: tier.name, max: tier.maxPerUser };
     }
     return null;
+  }
+
+  /**
+   * Enforces the event-wide paid-unit cap after the hold receives its ordered
+   * repository position. Existing purchaser entitlements and active holds at
+   * or before this hold converge concurrent tabs on the first ten units.
+   */
+  private async isOverActivePaidUnitCap(hold: CartReservation): Promise<boolean> {
+    if (!hold.userId) return false;
+    const repos = this.deps.repositories;
+    const purchased = await repos.entitlements.countActivePaidUnitsByUserAndEvent(
+      hold.userId,
+      hold.eventId,
+    );
+    const myPosition = hold.sequence ?? Number.MAX_SAFE_INTEGER;
+    const mine = (await repos.cartReservations.listActiveByEvent(hold.eventId, new Date())).filter(
+      (other) =>
+        other.userId === hold.userId &&
+        (other.id === hold.id || (other.sequence ?? 0) <= myPosition),
+    );
+    let heldUnits = 0;
+    for (const other of mine) {
+      for (const line of other.lines) {
+        const tier = await repos.catalog.getTierById(line.tierId);
+        heldUnits += line.quantity * (line.guestCount ?? tier?.guestCount ?? 1);
+      }
+    }
+    // The source ticket remains valid while the replacement is being paid for,
+    // but the two admissions must not consume two purchaser-cap units.
+    const upgradeCredit = hold.upgrade ? 1 : 0;
+    return purchased - upgradeCredit + heldUnits > MAX_ACTIVE_PAID_UNITS_PER_EVENT_PER_PURCHASER;
   }
 
   /**
@@ -592,6 +1260,58 @@ export class CheckoutService {
     // after the host has cancelled or paused it. (A payment already in flight is
     // a different case: confirmPayment still honours or refunds it.)
     await this.assertOnSale(hold.eventId);
+
+    const event = await this.deps.repositories.events.getById(hold.eventId);
+    if (!event) throw new EventNotFoundError(hold.eventId);
+    if (hold.upgrade) {
+      const source = await this.deps.repositories.entitlements.getById(
+        hold.upgrade.sourceEntitlementId,
+      );
+      if (
+        !source ||
+        source.version !== hold.upgrade.sourceEntitlementVersion ||
+        source.orderId !== hold.upgrade.sourceOrderId ||
+        source.tierId !== hold.upgrade.sourceTierId ||
+        source.eventId !== hold.eventId ||
+        currentEntitlementHolderId(source) !== hold.userId ||
+        source.status !== 'valid' ||
+        source.scanCount !== 0 ||
+        source.refundLock ||
+        source.pendingTransferId
+      ) {
+        throw new InvalidOperationError('The source ticket changed before upgrade payment began');
+      }
+    }
+    for (const line of hold.lines) {
+      const tier = await this.deps.repositories.catalog.getTierById(line.tierId);
+      if (!tier || tier.eventId !== event.id) throw new TicketTierNotFoundError(line.tierId);
+      if (
+        (tier.accessMode ?? 'public') !== 'public' &&
+        (!line.accessGrantId ||
+          !hold.userId ||
+          !(await new TicketAccessService(this.deps).hasGrantForTier(
+            line.accessGrantId,
+            hold.userId,
+            event.id,
+            tier.id,
+          )))
+      ) {
+        throw new TicketTierNotFoundError(line.tierId);
+      }
+      if (
+        (event.visibilityMode === 'code' || event.visibilityMode === 'invited') &&
+        (!line.accessGrantId ||
+          !hold.userId ||
+          !(await new TicketAccessService(this.deps).hasGrantForEvent(
+            line.accessGrantId,
+            hold.userId,
+            event.id,
+            event.visibilityMode === 'invited' ? 'invitation' : 'code',
+          )))
+      ) {
+        throw new TicketTierNotFoundError(line.tierId);
+      }
+    }
 
     if (hold.providerOrderId) {
       return {
@@ -819,6 +1539,17 @@ export class CheckoutService {
         quantity: l.quantity,
         unitPricePaise: l.unitPricePaise,
         subtotalPaise: l.unitPricePaise * l.quantity,
+        ...(l.admissionUnitPricePaise === undefined
+          ? {}
+          : { admissionUnitPricePaise: l.admissionUnitPricePaise }),
+        ...(l.coverUnitPricePaise === undefined
+          ? {}
+          : { coverUnitPricePaise: l.coverUnitPricePaise }),
+        ...(l.coverPolicy === undefined ? {} : { coverPolicy: l.coverPolicy }),
+        ...(l.ticketAddons === undefined ? {} : { ticketAddons: l.ticketAddons }),
+        ...(l.guestCount === undefined ? {} : { guestCount: l.guestCount }),
+        ...(l.admissionMode === undefined ? {} : { admissionMode: l.admissionMode }),
+        ...(l.eligibility === undefined ? {} : { eligibility: l.eligibility }),
       })),
       currency: hold.pricing.currency,
       subtotalPaise: hold.pricing.subtotalPaise,
@@ -829,6 +1560,11 @@ export class CheckoutService {
       paymentFeePaise: hold.pricing.paymentFeePaise,
       gstPaise: hold.pricing.gstPaise,
       grandTotalPaise: hold.pricing.grandTotalPaise,
+      admissionSubtotalPaise: hold.pricing.admissionSubtotalPaise ?? hold.pricing.subtotalPaise,
+      coverSubtotalPaise: hold.pricing.coverSubtotalPaise ?? 0,
+      addOnSubtotalPaise: hold.pricing.addOnSubtotalPaise ?? 0,
+      discountedAdmissionSubtotalPaise:
+        hold.pricing.discountedAdmissionSubtotalPaise ?? hold.pricing.discountedSubtotalPaise,
       appliedPromoCode: hold.appliedPromoCode,
       attribution: hold.attribution,
       paymentIntentId,
@@ -1075,7 +1811,9 @@ export class CheckoutService {
       if (!(error instanceof InvalidOperationError)) throw error;
       overbooked = revived.lines[0]?.tierId ?? '';
     }
-    if (overbooked === null) return revived;
+    const overTierUserCap = await this.firstTierOverUserCap(revived);
+    const overEventUserCap = await this.isOverActivePaidUnitCap(revived);
+    if (overbooked === null && overTierUserCap === null && !overEventUserCap) return revived;
 
     await repo.release(revived.id);
     await this.deps.paymentProvider.refundPayment({
@@ -1112,6 +1850,16 @@ export class CheckoutService {
       now: new Date(),
     });
     if (wanted.some((entitlement) => !have.has(entitlement.id))) missing.push('tickets');
+    for (const entitlement of wanted) {
+      const line = hold.lines.find((item) => item.tierId === entitlement.tierId);
+      if (
+        (line?.coverUnitPricePaise ?? 0) > 0 &&
+        !(await repos.eventCoverAccounts.getByEntitlement(entitlement.id))
+      ) {
+        missing.push('cover_accounts');
+        break;
+      }
+    }
     // A zero-value order has no money to split, so no ledger entry is expected.
     if (order.grandTotalPaise > 0) {
       const sourceType = order.paymentId?.startsWith('door_cash_')
@@ -1165,6 +1913,16 @@ export class CheckoutService {
     hold: CartReservation,
   ): Promise<{ order: Order; entitlements: Entitlement[] }> {
     const repos = this.deps.repositories;
+    const currentOrder = await repos.orders.getById(order.id);
+    if (!currentOrder) throw new NotFoundError('order', order.id);
+    order = currentOrder;
+
+    // A payment callback can be redelivered after an Admin refund request has
+    // locked the order. Resume only still-paid orders; otherwise this path
+    // could issue fresh tickets or cover balances while money is under review.
+    if (order.status !== 'paid') {
+      return { order, entitlements: await repos.entitlements.getByOrderId(order.id) };
+    }
 
     const event = await repos.events.getById(order.eventId);
     if (event?.status === 'cancelled') {
@@ -1199,8 +1957,64 @@ export class CheckoutService {
       admitsPerUnit: await this.buildAdmitsPerUnit(hold.lines),
       now: new Date(),
     });
+    if (hold.upgrade) {
+      const issued = wanted[0];
+      if (wanted.length !== 1 || !issued) {
+        throw new InvalidOperationError('A ticket upgrade must issue exactly one replacement pass');
+      }
+      const replacement = {
+        ...issued,
+        upgradeFromEntitlementId: hold.upgrade.sourceEntitlementId,
+      };
+      await repos.entitlements.replaceForUpgrade({
+        sourceEntitlementId: hold.upgrade.sourceEntitlementId,
+        expectedSourceVersion: hold.upgrade.sourceEntitlementVersion,
+        replacement,
+        now: this.deps.config.clock.now(),
+      });
+    } else {
+      for (const entitlement of wanted) {
+        if (!have.has(entitlement.id)) {
+          await repos.entitlements.save(
+            entitlement,
+            undefined,
+            this.ticketIssuedEvent(order, entitlement),
+          );
+        }
+      }
+    }
+
     for (const entitlement of wanted) {
-      if (!have.has(entitlement.id)) await repos.entitlements.save(entitlement);
+      const line = hold.lines.find((item) => item.tierId === entitlement.tierId);
+      const amountPaise = line?.coverUnitPricePaise ?? 0;
+      if (amountPaise <= 0) continue;
+      if (!event || !line?.coverPolicy) {
+        throw new InvalidOperationError('Paid cover entitlement has no accepted policy snapshot');
+      }
+      const proposal = await this.requireAcceptedCoverPolicy(
+        event,
+        amountPaise,
+        line.coverPolicy,
+        false,
+      );
+      const account = createEventCoverAccount({
+        entitlementId: entitlement.id,
+        orderId: order.id,
+        eventId: order.eventId,
+        guestUserId: currentEntitlementHolderId(entitlement),
+        hostOrganizationId: order.organizationId,
+        venueOrganizationId: proposal.venueOrganizationId,
+        amountPaise,
+        providerCaptureConfirmed: order.status === 'paid' && Boolean(order.paymentId),
+        // The immutable accepted policy in the paid hold is the approval
+        // evidence; later disabling sales must not strand captured orders.
+        merchantApproved: true,
+        policyVersion: proposal.policyVersion,
+        refundPolicy: proposal.terms.refundPolicy,
+        activationApproved: this.deps.config.features.m5CoverActivationApproved === true,
+        now: this.deps.config.clock.now(),
+      });
+      await repos.eventCoverAccounts.createIssuedAccount(account);
     }
 
     // Settlement: the only writer into the partner ledger for a ticket sale.
@@ -1213,6 +2027,10 @@ export class CheckoutService {
   }
 
   private async ensureOrderFulfilledEvent(order: Order): Promise<void> {
+    const entitlements = await this.deps.repositories.entitlements.getByOrderId(order.id);
+    for (const entitlement of entitlements) {
+      await this.deps.outbox.append(this.ticketIssuedEvent(order, entitlement));
+    }
     await this.deps.outbox.append(
       domainEvent({
         id: deterministicDomainEventId('order.fulfilled', order.id),
@@ -1224,6 +2042,27 @@ export class CheckoutService {
         occurredAt: this.deps.config.clock.now().getTime(),
       }),
     );
+  }
+
+  private ticketIssuedEvent(order: Order, entitlement: Entitlement) {
+    return domainEvent({
+      id: deterministicDomainEventId('ticket.issued', entitlement.id),
+      type: 'ticket.issued',
+      aggregateId: entitlement.id,
+      organizationId: entitlement.organizationId,
+      actorId: order.userId ?? SYSTEM_ACTOR.userId,
+      payload: {
+        entitlementId: entitlement.id,
+        orderId: order.id,
+        eventId: entitlement.eventId,
+        purchaserUserId: entitlement.userId,
+        holderUserId: entitlement.currentHolderUserId ?? entitlement.userId,
+        ...(entitlement.upgradeFromEntitlementId
+          ? { upgradeFromEntitlementId: entitlement.upgradeFromEntitlementId }
+          : {}),
+      },
+      occurredAt: this.deps.config.clock.now().getTime(),
+    });
   }
 
   private async claimPromoRedemption(
@@ -1324,7 +2163,7 @@ export class CheckoutService {
         // Compatibility ledger now follows the same basis as the canonical
         // journal: only discounted ticket face value is distributable. Guest
         // fees and GST remain separate liabilities/revenue components.
-        grossAmount: order.discountedSubtotalPaise,
+        grossAmount: order.discountedAdmissionSubtotalPaise ?? order.discountedSubtotalPaise,
         hostOrganizationId,
         venueOrganizationId,
         promoterOrganizationId,
@@ -1358,10 +2197,12 @@ export class CheckoutService {
       // command entry until a terminal confirmation integration exists.
       providerConfirmed: sourceType !== 'door_electronic_sale',
       currency: order.currency,
-      ticketFaceValuePaise: order.subtotalPaise,
+      ticketFaceValuePaise: order.admissionSubtotalPaise ?? order.subtotalPaise,
+      eventCoverLiabilityPaise: order.coverSubtotalPaise ?? 0,
       discountPaise: order.discountPaise,
       discountFundingOwner: order.discountFundingOwner,
-      netTicketRevenuePaise: order.discountedSubtotalPaise,
+      netTicketRevenuePaise:
+        order.discountedAdmissionSubtotalPaise ?? order.discountedSubtotalPaise,
       gstPaise: order.gstPaise,
       platformFeePaise: order.platformFeePaise,
       paymentFeePaise: order.paymentFeePaise,
@@ -1385,6 +2226,9 @@ export class CheckoutService {
         promoterOrganizationId,
         promoterPaise: amountFor('promoter_commission'),
       },
+      promoterAssignmentId: order.attribution?.assignmentId ?? null,
+      commissionPolicyVersion: order.attribution?.commissionPolicyVersion ?? null,
+      commercialPolicyVersion: order.attribution?.commercialPolicyVersion ?? null,
       postedAt: this.deps.config.clock.now(),
     });
 
@@ -1448,13 +2292,19 @@ export function admitsForTier(
   return tier?.guestCount ?? (tier?.entryType === 'couple' ? 2 : 1);
 }
 
-function commissionForLines(lines: PricingBreakdown['lines'], terms: CommissionTerms): number {
-  return lines.reduce((sum, line) => {
-    const rate = terms.tierRates?.[line.tierId] ?? terms;
-    return (
-      sum +
-      Math.floor((line.subtotalPaise * rate.ratePercent) / 100) +
-      rate.flatPaise * line.quantity
-    );
-  }, 0);
+function commissionForLines(
+  lines: PricingBreakdown['lines'],
+  terms: CommissionTerms,
+  eligibleTierIds: EntityId[] | null,
+): number {
+  return lines
+    .filter((line) => eligibleTierIds === null || eligibleTierIds.includes(line.tierId))
+    .reduce((sum, line) => {
+      const rate = terms.tierRates?.[line.tierId] ?? terms;
+      return (
+        sum +
+        Math.floor(((line.admissionSubtotalPaise ?? line.subtotalPaise) * rate.ratePercent) / 100) +
+        rate.flatPaise * line.quantity
+      );
+    }, 0);
 }

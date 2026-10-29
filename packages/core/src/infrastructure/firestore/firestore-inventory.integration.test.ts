@@ -13,6 +13,7 @@ import { MemoryOutboxStore } from '../memory/memory-outbox-store.js';
 import { MemoryEventRepository } from '../memory/memory-repositories.js';
 
 import { FirestoreCartReservationRepository } from './firestore-cart-reservation-repository.js';
+import { FirestoreEntitlementRepository } from './firestore-entitlement-repository.js';
 import { FirestoreEventCatalogRepository } from './firestore-event-catalog-repository.js';
 import { FirestoreOrderRepository } from './firestore-order-repository.js';
 
@@ -60,6 +61,7 @@ describe.runIf(EMULATOR)('seat reservation (Firestore emulator)', () => {
     const events = new MemoryEventRepository();
     const catalog = new FirestoreEventCatalogRepository(db);
     const carts = new FirestoreCartReservationRepository(db);
+    const entitlements = new FirestoreEntitlementRepository(db);
     const orders = new FirestoreOrderRepository(db);
 
     let event = createEvent({
@@ -95,7 +97,7 @@ describe.runIf(EMULATOR)('seat reservation (Firestore emulator)', () => {
         cartReservation: carts,
         order: orders,
       }),
-      repositories: { events, catalog, cartReservations: carts, orders },
+      repositories: { events, catalog, cartReservations: carts, orders, entitlements },
     } as unknown as ServiceDeps;
     const service = new CheckoutService(deps);
 

@@ -86,10 +86,12 @@ export class MemoryOutboxStore implements OutboxStore {
     now: number;
     leaseMs: number;
     limit?: number;
+    eventId?: EntityId;
   }): Promise<OutboxRecord[]> {
     const eligible = [...this.rows.values()]
       .filter(
         (row) =>
+          (input.eventId === undefined || row.id === input.eventId) &&
           row.attempts < OUTBOX_MAX_ATTEMPTS &&
           ((row.status === 'pending' && row.nextAttemptAt <= input.now) ||
             (row.status === 'processing' &&
