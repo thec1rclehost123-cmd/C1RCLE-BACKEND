@@ -57,14 +57,18 @@
         "CVE-2026-84292",
         "CVE-2026-84394",
         "GHSA-hrr3-gc8f-f4qj",
-        "GHSA-jvvf-x445-j334"
+        "GHSA-jvvf-x445-j334",
+        "GHSA-w74x-v6f9-j3xg",
+        "GHSA-wjr9-j795-jxcr",
+        "GHSA-xhq7-xmqj-769h",
+        "GHSA-333x-w4r6-6crp"
       ],
       "why": "SSRF and host confusion (unvalidated port, unbalanced URI brackets) plus mailto header injection. fast-uri@3 serves ajv, fast-uri@4 serves fast-json-stringify/@fastify/ajv-compiler, so both majors need pinning.",
       "overrides": {
-        "fast-uri@^3.0.0": "3.1.8",
-        "fast-uri@^4.0.0": "4.1.5"
+        "fast-uri@^3.0.0": "3.1.9",
+        "fast-uri@^4.0.0": "4.2.3"
       },
-      "resolved": ["3.1.8", "4.1.5"]
+      "resolved": ["3.1.9", "4.2.3"]
     },
     {
       "name": "nanoid",
@@ -126,6 +130,13 @@
       "why": "Command injection via improper file path validation in launch-editor, bundled in the vite dev server, in 8.2.0 through 8.2.3. Reached only through vitest (a devDependency), but pnpm audit and the Docker Trivy scan fail HIGH on it. Pinned EXACTLY to 8.2.4 and scoped to the 8.2 line vitest already resolves, so a newer major is not pulled in by accident.",
       "overrides": { "vite@>=8.2.0 <8.3.0": "8.2.4" },
       "resolved": ["8.2.4"]
+    },
+    {
+      "name": "zod",
+      "advisories": ["GHSA-mrhx-c7xc-m3w5", "CVE-2023-54404"],
+      "why": "Memory exhaustion while validating oversized constrained collections in zod < 4.6.6 (high; pnpm audit and the Docker Trivy scan both fail on it). zod validates every gateway request and response and is used inside better-auth. A floor rather than an exact pin so a newer patched release needs no manifest edit. The frontend repo pins zod as well and must stay on the same release line, because the contract parity check builds both sides with one zod.",
+      "overrides": { "zod": ">=4.6.6" },
+      "minResolved": "4.6.6"
     }
   ]
 }
