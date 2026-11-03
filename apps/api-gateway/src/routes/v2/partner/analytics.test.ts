@@ -123,6 +123,8 @@ describe('organization analytics overview', () => {
       headers: { ...read(org), 'idempotency-key': `event-${++keySeq}` },
       payload: {
         title: 'M3 cache freshness event',
+        summary: 'Analytics cache acceptance event.',
+        description: 'A test event for publication and analytics cache invalidation.',
         venueId: venue.json().id,
         startAt: '2099-09-01T18:00:00Z',
       },
@@ -143,11 +145,13 @@ describe('organization analytics overview', () => {
       url: `/events/${eventId}/review`,
       headers: { ...read(org), 'idempotency-key': `review-${++keySeq}` },
     });
-    await server.inject({
+    const published = await server.inject({
       method: 'POST',
       url: `/events/${eventId}/publish`,
       headers: { ...read(org), 'idempotency-key': `publish-${++keySeq}` },
     });
+
+    expect(published.statusCode).toBe(200);
 
     const afterPublish = await server.inject({
       method: 'GET',

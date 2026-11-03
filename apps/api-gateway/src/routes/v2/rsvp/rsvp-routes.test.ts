@@ -83,7 +83,13 @@ async function seed(
     method: 'POST',
     url: `/organizations/${org}/events`,
     headers: write(org),
-    payload: { title: 'Free Night', venueId, startAt: '2026-09-01T18:00:00Z' },
+    payload: {
+      title: 'Free Night',
+      venueId,
+      startAt: '2026-09-01T18:00:00Z',
+      summary: 'Test RSVP event',
+      description: 'Connected route fixture for free entry.',
+    },
   });
   expect(event.statusCode).toBe(201);
   const eventId: string = event.json().id;
@@ -118,7 +124,7 @@ async function seed(
       url: `/events/${eventId}/${action}`,
       headers: write(org),
     });
-    expect(transition.statusCode).toBe(200);
+    expect(transition.statusCode, transition.body).toBe(200);
   }
 
   return { org, eventId, tierId };
@@ -254,14 +260,14 @@ describe('POST /rsvp', () => {
     await server.close();
   });
 
-  it('rejects a free tier on a paid event with 400', async () => {
+  it('fulfills a free tier on an event with paid entry', async () => {
     seedVerifiedTestAccounts();
     const server = await buildServer();
     const { eventId, tierId } = await seed(server, { isFree: false });
 
     const response = await rsvp(server, { eventId, tierId });
-    expect(response.statusCode).toBe(400);
-    expect(response.json()).toMatchObject({ code: 'validation' });
+    expect(response.statusCode).toBe(201);
+    expect(response.json().entitlements).toHaveLength(1);
     await server.close();
   });
 

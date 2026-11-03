@@ -379,6 +379,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   const eventBus = new InProcessEventBus(outboxStore);
   eventBus.subscribe('event.published', createAuditConsumer(audits));
   eventBus.subscribe('event.updated', createAuditConsumer(audits));
+  eventBus.subscribe('event.ticket_tier_limits_updated', createAuditConsumer(audits));
   eventBus.subscribe('event.cancelled', createAuditConsumer(audits));
   eventBus.subscribe('event.cancellation.order_affected', createAuditConsumer(audits));
   // B11: the analytics projection consumer is subscribed below, once `deps`

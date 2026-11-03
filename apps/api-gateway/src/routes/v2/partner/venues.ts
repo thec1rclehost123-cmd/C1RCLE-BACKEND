@@ -791,6 +791,8 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
           const slotRequest = await services.venueSlotRequests.create(actor, {
             venueId,
             slotId: body.slotId,
+            startTime: body.startTime,
+            endTime: body.endTime,
             eventId: body.eventId ?? null,
             message: body.message,
           });

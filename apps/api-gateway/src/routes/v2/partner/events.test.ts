@@ -10,7 +10,13 @@ const buildServer = () => buildPartnerTestServer({ routes: [partnerEventRoutes] 
 const VALID_HEADERS = { 'x-organization-id': 'org_1' };
 const CREATE_HEADERS = { 'x-organization-id': 'org_1', 'idempotency-key': 'idem-event-1' };
 
-const CREATE_BODY = { title: 'Sky Night', venueId: 'ven_1', startAt: '2026-08-01T18:00:00Z' };
+const CREATE_BODY = {
+  title: 'Sky Night',
+  venueId: 'ven_1',
+  startAt: '2026-08-01T18:00:00Z',
+  summary: 'An evening of music and dancing.',
+  description: 'Join us for live music, dancing, and a night out with friends.',
+};
 
 describe('restricted event projection privacy', () => {
   it.each(['code', 'invited'] as const)('omits historical poster URLs for %s events', (mode) => {
@@ -25,6 +31,66 @@ describe('restricted event projection privacy', () => {
     });
 
     expect(eventToDto(event).imageUrl).toBeNull();
+  });
+});
+
+describe('event media', () => {
+  const media = {
+    youtubeUrl: 'https://www.youtube.com/watch?v=abc123',
+    gallery: [{ url: 'https://example.test/gallery.jpg', alt: 'Dance floor' }],
+    spotlights: [
+      {
+        id: 'artist-1',
+        title: 'Artist One',
+        link: 'https://example.test/artist',
+        imageUrl: null,
+        description: 'Live set',
+        startTime: '23:00',
+        endTime: '01:00',
+      },
+    ],
+  };
+  it('persists media through the authenticated create and read projection', async () => {
+    const server = await buildServer();
+    const response = await server.inject({
+      method: 'POST',
+      url: '/organizations/org_1/events',
+      headers: { ...VALID_HEADERS, 'idempotency-key': 'media-create-1' },
+      payload: { ...CREATE_BODY, media },
+    });
+    expect(response.statusCode).toBe(201);
+    const event = response.json();
+    expect(event.media).toEqual(media);
+    const read = await server.inject({
+      method: 'GET',
+      url: `/events/${event.id}`,
+      headers: VALID_HEADERS,
+    });
+    expect(read.statusCode).toBe(200);
+    expect(read.json().media).toEqual(media);
+    await server.close();
+  });
+  it('rejects unsafe video URLs at the API boundary', async () => {
+    const server = await buildServer();
+    const response = await server.inject({
+      method: 'POST',
+      url: '/organizations/org_1/events',
+      headers: { ...VALID_HEADERS, 'idempotency-key': 'media-invalid' },
+      payload: { ...CREATE_BODY, media: { ...media, youtubeUrl: 'https://attacker.test/video' } },
+    });
+    expect(response.statusCode).toBe(422);
+    await server.close();
+  });
+  it('does not expose media from historical restricted records', () => {
+    const event = makeEvent({
+      id: 'private-media',
+      organizationId: 'org_1',
+      venueId: 'ven_1',
+      title: 'Private',
+      startAt: CREATE_BODY.startAt,
+      visibilityMode: 'code',
+    });
+    expect(eventToDto({ ...event, media }).media).toBeUndefined();
   });
 });
 

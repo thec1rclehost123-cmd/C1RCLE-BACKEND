@@ -4,6 +4,8 @@ import {
   paginationQuerySchema,
   ticketTierDtoSchema,
   createTicketTierSchema,
+  updateTicketTierLimitsSchema,
+  versionHeaderSchema,
   ticketAddonDtoSchema,
   ticketAddonListResponseSchema,
   createTicketAddonSchema,
@@ -55,6 +57,7 @@ import type { FastifyInstance } from 'fastify';
 const services = createV2Services();
 
 const eventIdParam = z.object({ eventId: opaqueIdSchema });
+const ticketTierIdParam = eventIdParam.extend({ tierId: opaqueIdSchema });
 const assignmentIdParam = z.object({ assignmentId: opaqueIdSchema });
 
 const readHeaders = z.looseObject({ 'x-organization-id': opaqueIdSchema });
@@ -441,6 +444,61 @@ export default async function partnerEventCatalogRoutes(fastify: FastifyInstance
           );
           if (validated === undefined) throw new Error('v2 response validation failed');
           return { statusCode: 201, body: validated };
+        },
+      }).catch((error: unknown) =>
+        isIdempotencyConflict(error)
+          ? mapDomainError(reply, request, eventId, error, {
+              conflictId: v2Headers['idempotency-key'],
+            })
+          : mapDomainError(reply, request, eventId, error),
+      );
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
+
+  fastify.patch(
+    '/events/:eventId/ticket-tiers/:tierId',
+    {
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({
+          params: ticketTierIdParam,
+          headers: commandHeaders.extend({ 'if-match': versionHeaderSchema }),
+          body: updateTicketTierLimitsSchema,
+        }),
+        fastify.requirePermission('event.update'),
+      ],
+    },
+    async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
+      const { eventId, tierId } = request.params as z.infer<typeof ticketTierIdParam>;
+      const body = request.body as z.infer<typeof updateTicketTierLimitsSchema>;
+      const actor = services.actor(request);
+      const v2Headers = request.v2Headers ?? {};
+      const expectedVersion = Number.parseInt(v2Headers['if-match'] ?? '', 10);
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: actor.userId,
+        commandName: 'event-ticket-tiers.update-limits',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { eventId, tierId }, body },
+        run: async () => {
+          const tier = await services.catalog.updateTierLimits(actor, {
+            eventId,
+            tierId,
+            expectedVersion,
+            maxPerOrder: body.maxPerOrder,
+          });
+          const validated = validateV2Response(
+            reply,
+            request,
+            ticketTierDtoSchema,
+            tierToDto(tier),
+          );
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
         },
       }).catch((error: unknown) =>
         isIdempotencyConflict(error)

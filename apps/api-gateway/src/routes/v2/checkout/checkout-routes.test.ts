@@ -1,3 +1,4 @@
+import { checkoutQuoteResponseSchema } from '@c1rcle/contracts';
 import { describe, expect, it } from 'vitest';
 
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
@@ -85,6 +86,53 @@ async function seed(
 }
 
 describe('POST /checkout/quote', () => {
+  it.each([0, -1, 101])('rejects invalid quantity %s at the HTTP boundary', async (quantity) => {
+    const server = await buildServer();
+    const { eventId, tierId } = await seed(server);
+    const response = await server.inject({
+      method: 'POST',
+      url: '/checkout/quote',
+      payload: { eventId, lines: [{ tierId, quantity }] },
+    });
+    expect(response.statusCode).toBe(422);
+    await server.close();
+  });
+
+  it('rejects browser totals and ignores a line price in favor of the catalog', async () => {
+    const server = await buildServer();
+    const { eventId, tierId, priceInPaise } = await seed(server, { priceInPaise: 150_000 });
+    const response = await server.inject({
+      method: 'POST',
+      url: '/checkout/quote',
+      payload: {
+        eventId,
+        lines: [{ tierId, quantity: 1, unitPricePaise: 1 }],
+        subtotalPaise: 1,
+        platformFeePaise: 0,
+        gstPaise: 0,
+        grandTotalPaise: 1,
+      },
+    });
+    expect(response.statusCode).toBe(422);
+    const priced = await server.inject({
+      method: 'POST',
+      url: '/checkout/quote',
+      payload: { eventId, lines: [{ tierId, quantity: 1, unitPricePaise: 1 }] },
+    });
+    expect(priced.statusCode).toBe(200);
+    const quote = checkoutQuoteResponseSchema.parse(priced.json());
+    expect(quote.lines[0]?.unitPricePaise).toBe(priceInPaise);
+    expect(quote.subtotalPaise).toBe(priceInPaise);
+    expect(quote.grandTotalPaise).toBeGreaterThan(priceInPaise);
+    expect(quote.grandTotalPaise).toBe(
+      quote.discountedSubtotalPaise +
+        quote.platformFeePaise +
+        quote.paymentFeePaise +
+        quote.gstPaise,
+    );
+    await server.close();
+  });
+
   it('returns a reconciling pricing breakdown for the requested lines', async () => {
     const server = await buildServer();
     const { eventId, tierId, priceInPaise } = await seed(server, { priceInPaise: 150_000 });

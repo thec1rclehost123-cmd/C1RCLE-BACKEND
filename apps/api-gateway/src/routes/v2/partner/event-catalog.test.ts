@@ -312,6 +312,97 @@ describe('ticket tiers', () => {
     await server.close();
   });
 
+  it('updates only maxPerOrder with event ownership, versioning, and idempotent retry', async () => {
+    const server = await buildServer();
+    const { org, eventId } = await seed(server);
+    const created = await server.inject({
+      method: 'POST',
+      url: `/events/${eventId}/ticket-tiers`,
+      headers: write(org),
+      payload: {
+        name: 'General Entry',
+        priceInPaise: 50_000,
+        quantity: 20,
+        maxPerOrder: 10,
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const tier = created.json();
+    const updateRequest = {
+      method: 'PATCH' as const,
+      url: `/events/${eventId}/ticket-tiers/${tier.id}`,
+      headers: { ...write(org), 'if-match': String(tier.version) },
+      payload: { maxPerOrder: 8 },
+    };
+
+    const updated = await server.inject(updateRequest);
+    const replay = await server.inject(updateRequest);
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json()).toMatchObject({
+      maxPerOrder: 8,
+      priceInPaise: 50_000,
+      quantity: 20,
+      version: Number(tier.version) + 1,
+    });
+    expect(replay.json()).toEqual(updated.json());
+
+    const unsafe = await server.inject({
+      ...updateRequest,
+      headers: { ...write(org), 'if-match': String(updated.json().version) },
+      payload: { maxPerOrder: 8, quantity: 100 },
+    });
+    expect(unsafe.statusCode).toBe(422);
+
+    const listed = await server.inject({
+      method: 'GET',
+      url: `/events/${eventId}/ticket-tiers`,
+      headers: read(org),
+    });
+    expect(listed.json()).toContainEqual(expect.objectContaining({ id: tier.id, maxPerOrder: 8 }));
+    await server.close();
+  });
+
+  it('hides a tier from another event and enforces the single-person RSVP cap', async () => {
+    const server = await buildServer();
+    const { org, eventId } = await seed(server);
+    const other = await seed(server);
+    const foreignTier = await server.inject({
+      method: 'POST',
+      url: `/events/${other.eventId}/ticket-tiers`,
+      headers: write(other.org),
+      payload: {
+        name: 'Other event tier',
+        priceInPaise: 50_000,
+        quantity: 20,
+        maxPerOrder: 10,
+      },
+    });
+    const wrongEvent = await server.inject({
+      method: 'PATCH',
+      url: `/events/${eventId}/ticket-tiers/${foreignTier.json().id}`,
+      headers: { ...write(org), 'if-match': String(foreignTier.json().version) },
+      payload: { maxPerOrder: 5 },
+    });
+    expect(wrongEvent.statusCode).toBe(404);
+
+    const rsvp = await server.inject({
+      method: 'POST',
+      url: `/events/${eventId}/ticket-tiers`,
+      headers: write(org),
+      payload: { name: 'Free RSVP', quantity: 20, accessType: 'RSVP', maxPerOrder: 1 },
+    });
+    expect(rsvp.statusCode).toBe(201);
+    expect(rsvp.json().maxPerOrder).toBe(1);
+    const invalidRsvpLimit = await server.inject({
+      method: 'PATCH',
+      url: `/events/${eventId}/ticket-tiers/${rsvp.json().id}`,
+      headers: { ...write(org), 'if-match': String(rsvp.json().version) },
+      payload: { maxPerOrder: 2 },
+    });
+    expect(invalidRsvpLimit.statusCode).toBe(400);
+    await server.close();
+  });
+
   it('round-trips independent access, audience, phase, benefit, and table fields', async () => {
     const server = await buildServer();
     const { org, eventId } = await seed(server);

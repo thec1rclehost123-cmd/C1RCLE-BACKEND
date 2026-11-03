@@ -317,6 +317,9 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
             tags: body.tags,
             compensation: body.compensation ?? null,
             entryRules: body.entryRules,
+            media: body.media,
+            visibilityMode: body.visibilityMode,
+            addressDisclosure: body.addressDisclosure,
           });
           const validated = validateV2Response(reply, request, eventDtoSchema, eventToDto(event));
           if (validated === undefined) throw new Error('v2 response validation failed');
@@ -582,6 +585,7 @@ export function eventToDto(event: Event) {
     title: event.title,
     summary: event.summary,
     description: event.description,
+    ...(!privateEvent && event.media ? { media: event.media } : {}),
     // Never serialize a public object URL for restricted events. Older private
     // records may predate managed poster ACL revocation, and promoter/partner
     // projections must not re-expose those historical URLs.

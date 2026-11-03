@@ -81,7 +81,10 @@ async function activateHostPartnership(
   expect(approved.statusCode).toBe(200);
 }
 
-async function createHostSlotRequestFixture(server: Awaited<ReturnType<typeof buildServer>>) {
+async function createHostSlotRequestFixture(
+  server: Awaited<ReturnType<typeof buildServer>>,
+  linkLiveEvent = false,
+) {
   const { id: venueId } = await createVenue(server);
   const hostOrganizationId = `org_host_slot_test_${String(venueSeq)}`;
   await activateHostPartnership(server, venueId, hostOrganizationId);
@@ -105,14 +108,61 @@ async function createHostSlotRequestFixture(server: Awaited<ReturnType<typeof bu
       'x-organization-id': hostOrganizationId,
       'idempotency-key': nextVenueKey(),
     },
-    payload: { slotId: slotResponse.json().id, message: 'M3 slot request fixture' },
+    payload: {
+      slotId: slotResponse.json().id,
+      message: 'M3 slot request fixture',
+    },
   });
   expect(requestResponse.statusCode).toBe(201);
+  let request = requestResponse.json();
+  if (linkLiveEvent) {
+    const accepted = await server.inject({
+      method: 'POST',
+      url: `/venues/slot-requests/${request.id}/accept`,
+      headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
+    });
+    expect(accepted.statusCode).toBe(200);
+    const created = await server.inject({
+      method: 'POST',
+      url: `/organizations/${hostOrganizationId}/events`,
+      headers: { 'x-organization-id': hostOrganizationId, 'idempotency-key': nextVenueKey() },
+      payload: {
+        title: 'Live event linked to a Venue booking',
+        venueId,
+        slotRequestId: request.id,
+        startAt: '2030-11-04T12:30:00.000Z',
+        endAt: '2030-11-04T16:30:00.000Z',
+        summary: 'A concise guest-facing summary.',
+        description: 'A complete guest-facing description for the linked event.',
+      },
+    });
+    expect(created.statusCode, JSON.stringify(created.json())).toBe(201);
+    const eventId = String(created.json().id);
+    const review = await server.inject({
+      method: 'POST',
+      url: `/events/${eventId}/review`,
+      headers: { 'x-organization-id': hostOrganizationId, 'idempotency-key': nextVenueKey() },
+    });
+    expect(review.statusCode).toBe(200);
+    const published = await server.inject({
+      method: 'POST',
+      url: `/events/${eventId}/publish`,
+      headers: { 'x-organization-id': hostOrganizationId, 'idempotency-key': nextVenueKey() },
+    });
+    expect(published.statusCode).toBe(200);
+    const outgoing = await server.inject({
+      method: 'GET',
+      url: `/organizations/${hostOrganizationId}/slot-requests?limit=10`,
+      headers: { 'x-organization-id': hostOrganizationId },
+    });
+    expect(outgoing.statusCode).toBe(200);
+    request = outgoing.json().items.find((item: { id: string }) => item.id === request.id);
+  }
   return {
     venueId,
     hostOrganizationId,
     slot: slotResponse.json(),
-    request: requestResponse.json(),
+    request,
   };
 }
 
@@ -1065,6 +1115,39 @@ describe('V2 partners venues slice — slot requests', () => {
     await server.close();
   });
 
+  it('rejects the API cancellation command for a booking linked to a published event', async () => {
+    const server = await buildSlotRequestServer();
+    const fixture = await createHostSlotRequestFixture(server, true);
+    expect(fixture.request.eventId).toBeTruthy();
+    expect(fixture.request.status).toBe('accepted');
+
+    const cancellation = await server.inject({
+      method: 'POST',
+      url: `/venues/slot-requests/${fixture.request.id}/cancel`,
+      headers: {
+        'x-organization-id': fixture.hostOrganizationId,
+        'idempotency-key': nextVenueKey(),
+      },
+    });
+    expect(cancellation.statusCode).toBe(400);
+    expect(cancellation.json()).toMatchObject({ code: 'validation' });
+
+    const outgoing = await server.inject({
+      method: 'GET',
+      url: `/organizations/${fixture.hostOrganizationId}/slot-requests?limit=10`,
+      headers: { 'x-organization-id': fixture.hostOrganizationId },
+    });
+    expect(outgoing.statusCode).toBe(200);
+    expect(outgoing.json().items).toContainEqual(
+      expect.objectContaining({
+        id: fixture.request.id,
+        eventId: fixture.request.eventId,
+        status: 'accepted',
+      }),
+    );
+    await server.close();
+  });
+
   it('rejects a cancel of a still-pending request (state machine: pending → cancelled is not legal)', async () => {
     const server = await buildSlotRequestServer();
     const fixture = await createHostSlotRequestFixture(server);
@@ -1091,6 +1174,138 @@ describe('V2 partners venues slice — slot requests', () => {
     });
     expect(response.statusCode).toBe(404);
     expect(response.json()).toMatchObject({ code: 'not_found' });
+    await server.close();
+  });
+});
+
+describe('Host requests for automatically available time', () => {
+  it('accepts an unpublished interval, replays it safely, and rejects an overlap', async () => {
+    const server = await buildSlotRequestServer();
+    const fixture = await createHostSlotRequestFixture(server);
+    const key = nextVenueKey();
+    const options = {
+      method: 'POST' as const,
+      url: `/venues/${fixture.venueId}/slot-requests`,
+      headers: { 'x-organization-id': fixture.hostOrganizationId, 'idempotency-key': key },
+      payload: { startTime: '2031-04-12T13:30:00.000Z', endTime: '2031-04-12T17:30:00.000Z' },
+    };
+    const created = await server.inject(options);
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({
+      status: 'pending',
+      slotStartTime: options.payload.startTime,
+      slotEndTime: options.payload.endTime,
+    });
+    const replay = await server.inject(options);
+    expect(replay.statusCode).toBe(201);
+    expect(replay.json().id).toBe(created.json().id);
+    const overlap = await server.inject({
+      ...options,
+      headers: { ...options.headers, 'idempotency-key': nextVenueKey() },
+      payload: { startTime: '2031-04-12T14:30:00.000Z', endTime: '2031-04-12T18:30:00.000Z' },
+    });
+    expect(overlap.statusCode).toBe(400);
+    const adjacent = await server.inject({
+      ...options,
+      headers: { ...options.headers, 'idempotency-key': nextVenueKey() },
+      payload: { startTime: '2031-04-12T17:30:00.000Z', endTime: '2031-04-12T18:30:00.000Z' },
+    });
+    expect(adjacent.statusCode).toBe(201);
+    await server.close();
+  });
+  it('rejects intervals at a Venue without an active partnership', async () => {
+    const server = await buildSlotRequestServer();
+    const { id } = await createVenue(server);
+    const response = await server.inject({
+      method: 'POST',
+      url: `/venues/${id}/slot-requests`,
+      headers: { 'x-organization-id': 'unpartnered-host', 'idempotency-key': nextVenueKey() },
+      payload: { startTime: '2031-05-01T13:30:00.000Z', endTime: '2031-05-01T17:30:00.000Z' },
+    });
+    expect(response.statusCode).toBe(400);
+    await server.close();
+  });
+});
+
+describe('Automatic interval conflict protection', () => {
+  it('allows only one concurrent request and rejects blocked times', async () => {
+    const server = await buildSlotRequestServer();
+    const fixture = await createHostSlotRequestFixture(server);
+    const request = () =>
+      server.inject({
+        method: 'POST',
+        url: `/venues/${fixture.venueId}/slot-requests`,
+        headers: {
+          'x-organization-id': fixture.hostOrganizationId,
+          'idempotency-key': nextVenueKey(),
+        },
+        payload: { startTime: '2032-04-12T13:30:00.000Z', endTime: '2032-04-12T17:30:00.000Z' },
+      });
+    const results = await Promise.all([request(), request()]);
+    expect(results.map((r) => r.statusCode).sort()).toEqual([201, 400]);
+    const block = await server.inject({
+      method: 'POST',
+      url: `/venues/${fixture.venueId}/calendar/blocks`,
+      headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
+      payload: {
+        label: 'Closed',
+        startTime: '2032-05-12T13:30:00.000Z',
+        endTime: '2032-05-12T17:30:00.000Z',
+      },
+    });
+    expect(block.statusCode).toBe(201);
+    const blocked = await server.inject({
+      method: 'POST',
+      url: `/venues/${fixture.venueId}/slot-requests`,
+      headers: {
+        'x-organization-id': fixture.hostOrganizationId,
+        'idempotency-key': nextVenueKey(),
+      },
+      payload: { startTime: '2032-05-12T14:30:00.000Z', endTime: '2032-05-12T16:30:00.000Z' },
+    });
+    expect(blocked.statusCode).toBe(400);
+    await server.close();
+  });
+});
+
+describe('Overnight automatic availability', () => {
+  it('persists an IST overnight interval and rejects a conflict after midnight', async () => {
+    const server = await buildSlotRequestServer();
+    const fixture = await createHostSlotRequestFixture(server);
+    const makeRequest = (startTime: string, endTime: string) =>
+      server.inject({
+        method: 'POST',
+        url: `/venues/${fixture.venueId}/slot-requests`,
+        headers: {
+          'x-organization-id': fixture.hostOrganizationId,
+          'idempotency-key': nextVenueKey(),
+        },
+        payload: { startTime, endTime },
+      });
+    const overnight = await makeRequest('2033-04-12T17:30:00.000Z', '2033-04-12T20:30:00.000Z');
+    expect(overnight.statusCode).toBe(201);
+    expect(overnight.json()).toMatchObject({
+      slotStartTime: '2033-04-12T17:30:00.000Z',
+      slotEndTime: '2033-04-12T20:30:00.000Z',
+      timezone: 'Asia/Kolkata',
+    });
+    const overlap = await makeRequest('2033-04-12T19:30:00.000Z', '2033-04-12T21:30:00.000Z');
+    expect(overlap.statusCode).toBe(400);
+    const nextDay = await server.inject({
+      method: 'GET',
+      url: `/venues/${fixture.venueId}/availability?from=2033-04-12T18:30:00.000Z&to=2033-04-13T18:29:59.999Z`,
+      headers: { 'x-organization-id': fixture.hostOrganizationId },
+    });
+    expect(nextDay.statusCode).toBe(200);
+    expect(nextDay.json().slots).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          startTime: '2033-04-12T17:30:00.000Z',
+          endTime: '2033-04-12T20:30:00.000Z',
+          status: 'pending',
+        }),
+      ]),
+    );
     await server.close();
   });
 });

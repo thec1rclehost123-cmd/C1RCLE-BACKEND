@@ -120,6 +120,8 @@ describe('event.published → notification inbox (pub/sub end to end)', () => {
       organizationId: org.id,
       venueId: venue.id,
       title: 'Rooftop Night',
+      summary: 'Guest notification acceptance event.',
+      description: 'A namespaced in-memory event for follower notification verification.',
       startAt: '2026-12-31T20:00:00.000Z',
     });
     await services.repos().events.save({ ...draft, status: 'review' });

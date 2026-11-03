@@ -59,6 +59,8 @@ describe('V2 services wiring (B09) — EventPublished → audit trail end-to-end
 
     const event = await services.events.create(actor, {
       title: 'Headliner Night',
+      summary: 'An evening of live music.',
+      description: 'A live music event with the headline performer.',
       venueId: 'ven_1',
       startAt: '2026-08-01T18:00:00.000Z',
     });
@@ -85,6 +87,8 @@ describe('V2 services wiring (B09) — EventPublished → audit trail end-to-end
 
     const event = await services.events.create(actor, {
       title: 'Rain Check',
+      summary: 'An outdoor music event.',
+      description: 'An outdoor music event subject to safe weather conditions.',
       venueId: 'ven_1',
       startAt: '2026-08-01T18:00:00.000Z',
     });

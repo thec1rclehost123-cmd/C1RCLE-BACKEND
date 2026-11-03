@@ -40,7 +40,10 @@ export default tseslint.config(
       sourceType: 'module',
       globals: { ...globals.node },
       parserOptions: {
-        projectService: true,
+        projectService: {
+          allowDefaultProject: ['docs/reference/route-manifest.ts'],
+          defaultProject: 'tsconfig.base.json',
+        },
       },
     },
     linterOptions: {

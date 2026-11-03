@@ -183,7 +183,13 @@ async function seedPublishedEvent(
     method: 'POST',
     url: `/api/v2/organizations/${orgId}/events`,
     headers: host(orgId),
-    payload: { title: 'Sky Night', venueId, startAt: '2026-09-01T18:00:00Z' },
+    payload: {
+      title: 'Sky Night',
+      summary: 'A music night at Sky Bar.',
+      description: 'Live music and dancing at Sky Bar for the acceptance scenario.',
+      venueId,
+      startAt: '2026-09-01T18:00:00Z',
+    },
   });
   expect(event.statusCode, JSON.stringify(event.json())).toBe(201);
   const eventId: string = event.json().id;
@@ -707,6 +713,8 @@ describe('scenario: M4 Promoter campaign attribution over the full API', () => {
       headers: host(hostOrgId),
       payload: {
         title: 'M4 Free RSVP Night',
+        summary: 'A free RSVP music night.',
+        description: 'Free RSVP event for testing promoter attribution without paid commission.',
         venueId,
         startAt: '2026-11-01T18:00:00Z',
       },
