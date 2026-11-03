@@ -101,7 +101,7 @@ jobs:
     # PR-gate only. A push to main/staging is always a merge of a PR that
     # already ran this — re-running it on the merge commit is the exact
     # duplication this workflow used to have (same job, same diff, twice).
-    if: needs.changes.outputs.code == 'true' && github.event_name != 'push'
+    if: (github.event_name == 'workflow_dispatch' || needs.changes.outputs.code == 'true') && github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -202,7 +202,7 @@ jobs:
     # that's the one branch whose coverage baseline this job records below,
     # so it can't simply be skipped there. A push to staging is always an
     # already-tested PR merge, so it's skipped like the other gates.
-    if: needs.changes.outputs.code == 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
+    if: (github.event_name == 'workflow_dispatch' || needs.changes.outputs.code == 'true') && (github.event_name != 'push' || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -292,7 +292,7 @@ jobs:
   scenario:
     name: Scenario suite (merge only)
     needs: changes
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging') && needs.changes.outputs.code == 'true'
+    if: (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging'))) && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.code == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -314,7 +314,7 @@ jobs:
   firestore-emulator:
     name: Firestore emulator tests
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -338,7 +338,7 @@ jobs:
     name: Docker build & scan
     needs: changes
     # PR-gate only — see `static`'s comment above for why push is excluded.
-    if: needs.changes.outputs.docker == 'true' && !inputs.skip_docker && github.event_name != 'push'
+    if: (github.event_name == 'workflow_dispatch' || needs.changes.outputs.docker == 'true') && !inputs.skip_docker && github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
@@ -491,7 +491,7 @@ jobs:
     name: Contract parity (frontend)
     needs: changes
     # PR-gate only — see `static`'s comment above for why push is excluded.
-    if: vars.CONTRACT_PARITY_ENABLED != 'false' && needs.changes.outputs.contracts == 'true' && github.event_name != 'push'
+    if: vars.CONTRACT_PARITY_ENABLED != 'false' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.contracts == 'true') && github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -502,7 +502,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           repository: ${{ vars.FRONTEND_REPO || 'thec1rclehost123-cmd/C1RCLE-FRONTEND' }}
-          ref: ${{ vars.FRONTEND_REF || inputs.frontend_ref || github.base_ref || 'main' }}
+          ref: ${{ inputs.frontend_ref || vars.FRONTEND_REF || github.base_ref || 'main' }}
           token: ${{ secrets.FRONTEND_REPO_TOKEN || github.token }}
           path: frontend
           persist-credentials: false
@@ -534,6 +534,11 @@ jobs:
 
       # Exit 0 = agree, 1 = drift, 2 = cannot check (missing dists). All three
       # are meaningful; only 0 passes.
+      - name: Record exact paired commits
+        run: |
+          git -C backend rev-parse HEAD
+          git -C frontend rev-parse HEAD
+
       - name: Compare contracts
         working-directory: backend
         run: node scripts/contract-parity.mjs --frontend "$GITHUB_WORKSPACE/frontend"
@@ -542,7 +547,7 @@ jobs:
   actionlint:
     name: Actionlint
     needs: changes
-    if: needs.changes.outputs.workflows == 'true'
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.workflows == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
