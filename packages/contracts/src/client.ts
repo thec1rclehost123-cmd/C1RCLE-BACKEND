@@ -3,6 +3,7 @@
  * This file re-exports all domain contracts for convenient importing.
  * Source of truth is in ./contracts/ directory (modular monolith structure).
  */
+export { PRODUCT_TIME_ZONE, PRODUCT_TIME_ZONE_OFFSET_MINUTES } from './contracts/timezone.js';
 
 // Shared primitives
 export type {
@@ -137,6 +138,7 @@ export type {
   PosterUploadUrlDto,
   TicketTierDto,
   CreateTicketTierRequest,
+  UpdateTicketTierLimitsRequest,
   PublicTicketTierDto,
   PublicTicketTierListResponse,
   TicketAddonDto,
@@ -170,6 +172,7 @@ export {
   ticketTierStatusSchema,
   ticketTierDtoSchema,
   createTicketTierSchema,
+  updateTicketTierLimitsSchema,
   publicTicketTierDtoSchema,
   publicTicketTierListResponseSchema,
   ticketAddonDtoSchema,

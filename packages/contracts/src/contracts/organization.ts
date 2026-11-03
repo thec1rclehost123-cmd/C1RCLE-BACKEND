@@ -214,11 +214,25 @@ export type SlotRequestDto = z.infer<typeof slotRequestDtoSchema>;
 
 export const createSlotRequestSchema = z
   .object({
-    slotId: opaqueIdSchema,
+    slotId: opaqueIdSchema.optional(),
+    startTime: z.iso.datetime().optional(),
+    endTime: z.iso.datetime().optional(),
     eventId: opaqueIdSchema.nullable().optional(),
     message: z.string().max(2000).optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (input) => Boolean(input.slotId) !== (Boolean(input.startTime) || Boolean(input.endTime)),
+    'Choose a slot or a time interval.',
+  )
+  .refine(
+    (input) =>
+      Boolean(input.slotId) ||
+      Boolean(
+        input.startTime && input.endTime && Date.parse(input.endTime) > Date.parse(input.startTime),
+      ),
+    'Enter a valid start and end time.',
+  );
 export type CreateSlotRequestInput = z.infer<typeof createSlotRequestSchema>;
 
 /** `GET /venues/:venueId/slot-requests` and `GET /organizations/:organizationId/slot-requests`. */

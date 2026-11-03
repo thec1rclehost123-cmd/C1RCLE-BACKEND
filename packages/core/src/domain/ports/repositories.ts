@@ -321,7 +321,7 @@ export interface SlotRequestRepository {
   listByHost(hostId: EntityId, query: PaginationQuery): Promise<Page<SlotRequest>>;
   save(request: SlotRequest, tx?: TxContext | null): Promise<void>;
   /** Atomically changes an open Venue slot to pending and inserts its request. */
-  createForOpenSlot(request: SlotRequest): Promise<void>;
+  createForOpenSlot(request: SlotRequest, implicitSlot?: VenueSlot): Promise<void>;
   /** Atomically updates a slot-bound request and its pending/booked slot state. */
   transitionForSlot(request: SlotRequest, updated: SlotRequest): Promise<void>;
   /** Atomically claims an accepted slot request for its single Host event. */
@@ -390,6 +390,8 @@ export interface EventCatalogRepository {
   findWalkInTier(eventId: EntityId): Promise<TicketTier | null>;
   findDineInTier(eventId: EntityId): Promise<TicketTier | null>;
   saveTier(tier: TicketTier, tx?: TxContext | null): Promise<void>;
+  /** Compare-and-set update; creation remains on saveTier. */
+  updateTier(tier: TicketTier): Promise<void>;
   // Promo codes
   getPromoById(promoId: EntityId): Promise<PromoCode | null>;
   getPromoByCode(code: string, eventId: EntityId | null): Promise<PromoCode | null>;

@@ -209,6 +209,16 @@ export function createTicketTier(input: CreateTicketTierInput): TicketTier {
   const accessType = input.accessType ?? 'ENTRY';
   const priceInPaise = input.priceInPaise ?? 0;
   if (
+    input.maxPerOrder !== undefined &&
+    input.maxPerOrder !== null &&
+    (!Number.isInteger(input.maxPerOrder) || input.maxPerOrder < 1 || input.maxPerOrder > 10)
+  ) {
+    throw new InvalidOperationError('Ticket maximum per order must be between 1 and 10');
+  }
+  if (accessType === 'RSVP' && input.maxPerOrder != null && input.maxPerOrder !== 1) {
+    throw new InvalidOperationError('Free RSVP tickets are limited to one per order');
+  }
+  if (
     accessType === 'RSVP' &&
     (input.priceInPaise !== undefined ||
       input.pricingPhases?.length ||
@@ -294,7 +304,7 @@ export function createTicketTier(input: CreateTicketTierInput): TicketTier {
     status: 'active',
     salesStartAt: input.salesStartAt ?? null,
     salesEndAt: input.salesEndAt ?? null,
-    maxPerOrder: input.maxPerOrder ?? null,
+    maxPerOrder: accessType === 'RSVP' ? (input.maxPerOrder ?? 1) : (input.maxPerOrder ?? null),
     accessMode: input.accessMode ?? 'public',
     accessType,
     audienceType: input.audienceType ?? 'GENERAL',
@@ -334,6 +344,22 @@ export function updateTicketTier(
   >,
   now?: Date,
 ): TicketTier {
+  if (
+    changes.maxPerOrder !== undefined &&
+    (typeof changes.maxPerOrder !== 'number' ||
+      !Number.isInteger(changes.maxPerOrder) ||
+      changes.maxPerOrder < 1 ||
+      changes.maxPerOrder > 10)
+  ) {
+    throw new InvalidOperationError('Ticket maximum per order must be between 1 and 10');
+  }
+  if (
+    changes.maxPerOrder !== undefined &&
+    (changes.accessType ?? tier.accessType) === 'RSVP' &&
+    changes.maxPerOrder !== 1
+  ) {
+    throw new InvalidOperationError('Free RSVP tickets are limited to one per order');
+  }
   if (changes.priceInPaise !== undefined && changes.priceInPaise < 0) {
     throw new InvalidOperationError('Ticket tier price cannot be negative');
   }

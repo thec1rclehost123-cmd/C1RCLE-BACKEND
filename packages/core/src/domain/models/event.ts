@@ -107,6 +107,37 @@ export interface EventEntryRules {
   supportDetails: string | null;
 }
 
+export interface EventMedia {
+  titleFont?:
+    'classic' | 'eclectic' | 'fancy' | 'digital' | 'literary' | 'impact' | 'modern' | 'condensed';
+  youtubeUrl: string | null;
+  gallery: { url: string; alt: string }[];
+  spotlights: {
+    id: string;
+    title: string;
+    link: string | null;
+    imageUrl: string | null;
+    description: string;
+    startTime: string | null;
+    endTime: string | null;
+  }[];
+}
+
+function assertMediaVisibility(
+  media: EventMedia | undefined,
+  visibility: EventVisibilityMode | undefined,
+) {
+  if (
+    (visibility === 'code' || visibility === 'invited') &&
+    media &&
+    (media.gallery.length || media.spotlights.some((item) => item.imageUrl))
+  ) {
+    throw new InvalidOperationError(
+      'Gallery and spotlight images are currently available for public or unlisted events only',
+    );
+  }
+}
+
 export interface Event extends VersionedEntity {
   id: EntityId;
   organizationId: EntityId;
@@ -144,6 +175,7 @@ export interface Event extends VersionedEntity {
   cancellationReason: string | null;
   compensation?: EventCompensation | null;
   entryRules?: EventEntryRules;
+  media?: EventMedia;
   /**
    * Total people the room legally holds, for the door's occupancy gauge.
    *
@@ -183,6 +215,7 @@ export interface CreateEventInput {
   visibilityMode?: EventVisibilityMode;
   addressDisclosure?: EventAddressDisclosure;
   entryRules?: EventEntryRules;
+  media?: EventMedia;
   now?: Date;
 }
 
@@ -216,6 +249,7 @@ function trimDashes(value: string): string {
 
 export function createEvent(input: CreateEventInput): Event {
   const now = input.now ?? new Date();
+  assertMediaVisibility(input.media, input.visibilityMode);
   return {
     id: input.id,
     organizationId: input.organizationId,
@@ -240,6 +274,7 @@ export function createEvent(input: CreateEventInput): Event {
     cancellationReason: null,
     compensation: input.compensation ?? null,
     ...(input.entryRules === undefined ? {} : { entryRules: input.entryRules }),
+    ...(input.media === undefined ? {} : { media: input.media }),
     capacity: input.capacity ?? null,
     adminOverride: false,
     ...newVersionedEntity(now),
@@ -264,6 +299,7 @@ interface EventChanges {
   visibilityMode?: EventVisibilityMode;
   addressDisclosure?: EventAddressDisclosure;
   entryRules?: EventEntryRules;
+  media?: EventMedia;
 }
 
 /** Controlled attribute update (no status changes here). Bumps version. */
@@ -271,6 +307,7 @@ export function updateEvent(event: Event, changes: EventChanges, now?: Date): Ev
   assertEventMutable(event);
   const stamped = bumpVersion(event, now ?? new Date());
   const updated = { ...stamped, ...changes };
+  assertMediaVisibility(updated.media, updated.visibilityMode);
   return {
     ...updated,
     // Preserve legacy/manual hidden state on unrelated edits. Only an explicit

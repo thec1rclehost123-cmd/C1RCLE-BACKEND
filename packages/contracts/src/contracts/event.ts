@@ -54,6 +54,56 @@ export const eventEntryRulesSchema = z
   .strict();
 export type EventEntryRulesDto = z.infer<typeof eventEntryRulesSchema>;
 
+const eventMediaHttpsUrl = z.url({ protocol: /^https$/, error: 'Use an HTTPS link' });
+export const eventMediaSchema = z
+  .object({
+    titleFont: z
+      .enum([
+        'classic',
+        'eclectic',
+        'fancy',
+        'digital',
+        'literary',
+        'impact',
+        'modern',
+        'condensed',
+      ])
+      .optional(),
+    youtubeUrl: z
+      .url({
+        protocol: /^https$/,
+        hostname: /^(youtube\.com|www\.youtube\.com|m\.youtube\.com|youtu\.be)$/,
+        error: 'Use an HTTPS YouTube link',
+      })
+      .nullable(),
+    gallery: z
+      .array(z.object({ url: eventMediaHttpsUrl, alt: z.string().max(200) }).strict())
+      .max(10),
+    spotlights: z
+      .array(
+        z
+          .object({
+            id: z.string().min(1).max(80),
+            title: z.string().trim().min(1).max(120),
+            link: eventMediaHttpsUrl.nullable(),
+            imageUrl: eventMediaHttpsUrl.nullable(),
+            description: z.string().max(350),
+            startTime: z
+              .string()
+              .regex(/^([01]\d|2[0-3]):[0-5]\d$/)
+              .nullable(),
+            endTime: z
+              .string()
+              .regex(/^([01]\d|2[0-3]):[0-5]\d$/)
+              .nullable(),
+          })
+          .strict(),
+      )
+      .max(12),
+  })
+  .strict();
+export type EventMediaDto = z.infer<typeof eventMediaSchema>;
+
 export const eventDtoSchema = z.object({
   id: opaqueIdSchema,
   organizationId: opaqueIdSchema,
@@ -79,6 +129,7 @@ export const eventDtoSchema = z.object({
   cancellationReason: z.string().max(1000).nullable(),
   compensation: eventCompensationSchema.nullable().optional(),
   entryRules: eventEntryRulesSchema.optional(),
+  media: eventMediaSchema.optional(),
   version: z.number().int().positive(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
@@ -120,6 +171,7 @@ export const createEventSchema = z.object({
   visibilityMode: eventVisibilityModeValueSchema.optional(),
   addressDisclosure: eventAddressDisclosureSchema.optional(),
   entryRules: eventEntryRulesSchema.optional(),
+  media: eventMediaSchema.optional(),
 });
 export type CreateEventInput = z.infer<typeof createEventSchema>;
 
@@ -175,6 +227,7 @@ export const updateEventSchema = z
     visibilityMode: eventVisibilityModeValueSchema.optional(),
     addressDisclosure: eventAddressDisclosureSchema.optional(),
     entryRules: eventEntryRulesSchema.optional(),
+    media: eventMediaSchema.optional(),
   })
   .strict();
 export type UpdateEventInput = z.infer<typeof updateEventSchema>;
@@ -291,7 +344,7 @@ const createTicketTierBaseSchema = z
     quantity: z.number().int().nonnegative(),
     salesStartAt: z.iso.datetime().nullable().optional(),
     salesEndAt: z.iso.datetime().nullable().optional(),
-    maxPerOrder: z.number().int().positive().nullable().optional(),
+    maxPerOrder: z.number().int().positive().max(10).nullable().optional(),
     accessMode: ticketTierAccessModeSchema.optional(),
     accessType: ticketAccessTypeSchema.optional(),
     audienceType: ticketAudienceTypeSchema.optional(),
@@ -332,6 +385,13 @@ export const createTicketTierSchema = createTicketTierBaseSchema.superRefine((ti
           message: 'RSVP tickets cannot include price, pricing phases, door price, or commission.',
         });
     }
+    if (tier.maxPerOrder !== undefined && tier.maxPerOrder !== 1) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['maxPerOrder'],
+        message: 'Free RSVP tickets must be limited to one per order.',
+      });
+    }
   } else {
     if (tier.priceInPaise === undefined || tier.priceInPaise <= 0) {
       ctx.addIssue({
@@ -343,6 +403,11 @@ export const createTicketTierSchema = createTicketTierBaseSchema.superRefine((ti
   }
 });
 export type CreateTicketTierRequest = z.infer<typeof createTicketTierSchema>;
+
+export const updateTicketTierLimitsSchema = z
+  .object({ maxPerOrder: z.number().int().min(1).max(10) })
+  .strict();
+export type UpdateTicketTierLimitsRequest = z.infer<typeof updateTicketTierLimitsSchema>;
 
 export const ticketAddonDtoSchema = z.object({
   id: opaqueIdSchema,

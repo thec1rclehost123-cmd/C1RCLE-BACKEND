@@ -53,6 +53,12 @@ export interface EventPayloads {
       venueId?: EntityId | null;
     } | null;
   };
+  'event.ticket_tier_limits_updated': {
+    eventId: EntityId;
+    tierId: EntityId;
+    tierName: string;
+    maxPerOrder: number;
+  };
   'event.material_change.batch_requested': {
     eventId: EntityId;
     eventVersion: number;
