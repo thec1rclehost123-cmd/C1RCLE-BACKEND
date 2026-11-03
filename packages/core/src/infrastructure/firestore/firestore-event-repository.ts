@@ -91,6 +91,7 @@ function toEvent(data: DocumentData): Event {
     title: data.title as string,
     summary: data.summary as string,
     description: data.description as string,
+    ...(data.media ? { media: data.media as NonNullable<Event['media']> } : {}),
     imageUrl: (data.imageUrl as string | null) ?? null,
     privateImageStoragePath: (data.privateImageStoragePath as string | null | undefined) ?? null,
     startAt: data.startAt as string,

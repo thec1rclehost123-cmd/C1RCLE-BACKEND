@@ -168,6 +168,27 @@ function seedLegacyFreeTier(catalog: MemoryEventCatalogRepository): void {
 }
 
 describe('CheckoutService.createRsvp', () => {
+  it('fulfills a zero-price RSVP tier on an event that also has paid entry', async () => {
+    const { events, catalog, service } = buildService();
+    await seedPublishedFreeEvent(events);
+    const event = await events.getById('evt_1');
+    if (!event) throw new Error('Missing seeded event');
+    await events.save({
+      ...event,
+      isFree: false,
+      startingPricePaise: 50_000,
+      version: event.version + 1,
+    });
+    seedTier(catalog);
+    const result = await service.createRsvp({
+      actor: actor('user_1'),
+      eventId: 'evt_1',
+      tierId: 'tier_1',
+    });
+    expect(result.order.status).toBe('paid');
+    expect(result.order.lines[0]?.quantity).toBe(1);
+    expect(result.entitlements).toHaveLength(1);
+  });
   it('requires an eligibility attestation without collecting attendee demographics', async () => {
     const { events, catalog, service } = buildService();
     await seedPublishedFreeEvent(events);

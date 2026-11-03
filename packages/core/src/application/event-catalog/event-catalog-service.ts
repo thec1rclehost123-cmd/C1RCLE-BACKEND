@@ -17,6 +17,7 @@ import {
   expirePromoterAssignment,
   rejectPromoterAssignment,
   revokePromoterAssignment,
+  updateTicketTier,
   type PromoDiscountType,
   type PromoType,
   type TicketTier,
@@ -170,6 +171,68 @@ export class EventCatalogService {
   async listTiers(actor: ActorContext, eventId: EntityId): Promise<TicketTier[]> {
     await this.assertEventOwned(actor, eventId);
     return this.repo.listTiers(eventId);
+  }
+
+  async updateTierLimits(
+    actor: ActorContext,
+    command: {
+      eventId: EntityId;
+      tierId: EntityId;
+      expectedVersion: number;
+      maxPerOrder: number;
+    },
+  ): Promise<TicketTier> {
+    await this.assertEventOwned(actor, command.eventId);
+    const tier = await this.repo.getTierById(command.tierId);
+    if (!tier || tier.eventId !== command.eventId || tier.organizationId !== actor.organizationId) {
+      throw new EventNotFoundError(command.eventId);
+    }
+    if (tier.version !== command.expectedVersion) {
+      if (
+        tier.version === command.expectedVersion + 1 &&
+        tier.maxPerOrder === command.maxPerOrder
+      ) {
+        await this.recordTierLimitsUpdated(actor, command.eventId, tier);
+        return tier;
+      }
+      throw new VersionConflictError(command.expectedVersion, tier.version);
+    }
+    if (tier.maxPerOrder === command.maxPerOrder) return tier;
+    const updated = updateTicketTier(
+      tier,
+      { maxPerOrder: command.maxPerOrder },
+      this.deps.config.clock.now(),
+    );
+    await this.repo.updateTier(updated);
+    await this.recordTierLimitsUpdated(actor, command.eventId, updated);
+    return updated;
+  }
+
+  private async recordTierLimitsUpdated(
+    actor: ActorContext,
+    eventId: EntityId,
+    tier: TicketTier,
+  ): Promise<void> {
+    await this.deps.outbox.append(
+      domainEvent({
+        id: deterministicDomainEventId(
+          'event.ticket_tier_limits_updated',
+          tier.id,
+          String(tier.version),
+        ),
+        type: 'event.ticket_tier_limits_updated',
+        aggregateId: tier.id,
+        organizationId: actor.organizationId,
+        actorId: actor.userId,
+        payload: {
+          eventId,
+          tierId: tier.id,
+          tierName: tier.name,
+          maxPerOrder: tier.maxPerOrder ?? 1,
+        },
+        occurredAt: this.deps.config.clock.now().getTime(),
+      }),
+    );
   }
 
   async createTicketAddon(

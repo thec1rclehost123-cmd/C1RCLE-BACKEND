@@ -33,7 +33,11 @@ export class FirestoreVenueSlotRepository implements VenueSlotRepository {
     const snap = await this.collection.where('venueId', '==', venueId).limit(MAX_SLOTS_READ).get();
     return snap.docs
       .map((doc) => toVenueSlot(doc.data()))
-      .filter((slot) => slot.startTime >= from && slot.startTime <= to);
+      .filter(
+        (slot) =>
+          Date.parse(slot.startTime) <= Date.parse(to) &&
+          Date.parse(slot.endTime) > Date.parse(from),
+      );
   }
 
   async saveSlots(slots: VenueSlot[], _tx?: TxContext | null): Promise<void> {

@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import { createCoreConfig } from '../../config/index.js';
-import { createEvent } from '../../domain/models/event.js';
+import { createEvent, transitionEvent } from '../../domain/models/event.js';
 import { createOrganization } from '../../domain/models/organization.js';
 import { approvePartnership, createPartnership } from '../../domain/models/partnership.js';
-import { createVenue } from '../../domain/models/venue.js';
+import {
+  createSlotRequest,
+  createVenue,
+  transitionSlotRequest,
+} from '../../domain/models/venue.js';
 import { EchoObjectStorage } from '../../domain/ports/object-storage.js';
 import { MemoryPaymentProvider } from '../../domain/ports/payment-provider.js';
 import {
@@ -152,6 +156,51 @@ describe('VenueService — auto-provisioning resilience', () => {
 
     const list = await service.list(actor, { limit: 10, cursor: null });
     expect(list.items.length).toBe(0);
+  });
+});
+
+describe('VenueSlotRequestService — live event booking protection', () => {
+  it('keeps an accepted booking when its linked event is public', async () => {
+    const deps = createTestDeps();
+    const actor: ActorContext = {
+      userId: 'host-owner',
+      organizationId: 'org_host',
+      role: 'owner',
+      capabilities: ['host'],
+    };
+    const event = createEvent({
+      id: 'evt_live_linked',
+      organizationId: actor.organizationId,
+      venueId: 'venue',
+      title: 'Linked Event',
+      startAt: '2030-11-04T12:30:00.000Z',
+      now: NOW,
+    });
+    await deps.repositories.events.save(event);
+    const reviewed = transitionEvent(event, 'review', NOW);
+    await deps.repositories.events.save(reviewed);
+    const scheduled = transitionEvent(reviewed, 'scheduled', NOW);
+    await deps.repositories.events.save(scheduled);
+    const live = transitionEvent(scheduled, 'published', NOW);
+    await deps.repositories.events.save(live);
+    const pending = createSlotRequest({
+      id: 'slotreq_live_linked',
+      venueId: 'venue',
+      hostId: actor.organizationId,
+      eventId: live.id,
+      now: NOW,
+    });
+    await deps.repositories.slotRequests.save(pending);
+    const accepted = transitionSlotRequest(pending, 'accepted', NOW);
+    await deps.repositories.slotRequests.save(accepted);
+
+    await expect(new VenueSlotRequestService(deps).cancel(actor, accepted.id)).rejects.toThrow(
+      'Cannot cancel a Venue booking with a live or unverifiable linked event',
+    );
+    await expect(deps.repositories.slotRequests.getById(accepted.id)).resolves.toMatchObject({
+      status: 'accepted',
+      eventId: live.id,
+    });
   });
 });
 

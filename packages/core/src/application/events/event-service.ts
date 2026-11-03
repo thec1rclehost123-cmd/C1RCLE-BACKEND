@@ -14,6 +14,7 @@ import {
   type EventCompensation,
   type EventAddressDisclosure,
   type EventEntryRules,
+  type EventMedia,
   type EventVisibilityMode,
 } from '../../domain/models/event.js';
 import { transitionSlotRequest } from '../../domain/models/venue.js';
@@ -37,6 +38,7 @@ export interface CreateEventCommand {
   visibilityMode?: EventVisibilityMode;
   addressDisclosure?: EventAddressDisclosure;
   entryRules?: EventEntryRules;
+  media?: EventMedia;
   slotRequestId?: EntityId | null;
 }
 
@@ -60,6 +62,7 @@ export interface UpdateEventCommand {
     visibilityMode?: EventVisibilityMode;
     addressDisclosure?: EventAddressDisclosure;
     entryRules?: EventEntryRules;
+    media?: EventMedia;
   };
 }
 
@@ -163,7 +166,8 @@ export class EventService {
             JSON.stringify(existingEvent.tags) === JSON.stringify(command.tags ?? []) &&
             JSON.stringify(existingEvent.compensation) ===
               JSON.stringify(command.compensation ?? null) &&
-            JSON.stringify(existingEvent.entryRules) === JSON.stringify(command.entryRules);
+            JSON.stringify(existingEvent.entryRules) === JSON.stringify(command.entryRules) &&
+            JSON.stringify(existingEvent.media) === JSON.stringify(command.media);
           if (sameCreateCommand) return existingEvent;
           throw new InvalidOperationError(
             'The accepted Venue slot request is unavailable for this Host',
@@ -222,6 +226,7 @@ export class EventService {
       visibilityMode: command.visibilityMode ?? 'public',
       addressDisclosure: command.addressDisclosure,
       entryRules: command.entryRules,
+      media: command.media,
       tags: command.tags ?? [],
       compensation: command.compensation ?? null,
       now: this.deps.config.clock.now(),
@@ -470,6 +475,14 @@ export class EventService {
   async publish(actor: ActorContext, eventId: EntityId): Promise<Event> {
     const event = await this.fetchOwned(actor, eventId);
     this.assertPrivateAccessEnabled(event);
+    if (event.status !== 'review' && event.status !== 'scheduled') {
+      return transitionEvent(event, 'published', this.deps.config.clock.now());
+    }
+    if (!event.summary.trim() || !event.description.trim()) {
+      throw new InvalidOperationError(
+        'Add a guest-facing summary and description before publishing',
+      );
+    }
     const tiers = await this.deps.repositories.catalog.listTiers(event.id);
     validateCompensationForPublish(
       event.compensation ?? null,
@@ -713,6 +726,7 @@ export class EventService {
       title: source.title,
       summary: source.summary,
       description: source.description,
+      ...(source.media ? { media: source.media } : {}),
       imageUrl:
         source.visibilityMode === 'code' || source.visibilityMode === 'invited'
           ? null

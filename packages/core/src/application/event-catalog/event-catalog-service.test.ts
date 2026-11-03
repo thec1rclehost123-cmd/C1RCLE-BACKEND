@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createCoreConfig } from '../../config/index.js';
-import { createPromoterAssignment } from '../../domain/models/event-catalog.js';
+import { createPromoterAssignment, createTicketTier } from '../../domain/models/event-catalog.js';
 import { MemoryOutboxStore } from '../../infrastructure/memory/memory-outbox-store.js';
 import { MemoryEventCatalogRepository } from '../../infrastructure/memory/memory-repositories.js';
 
@@ -80,5 +80,128 @@ describe('Promoter assignment expiry worker', () => {
         },
       },
     });
+  });
+});
+
+describe('Host ticket tier limits', () => {
+  async function setupTier(accessType: 'ENTRY' | 'RSVP' = 'ENTRY') {
+    const now = new Date('2026-11-02T00:00:00.000Z');
+    const catalog = new MemoryEventCatalogRepository();
+    const tier = createTicketTier({
+      id: `tier_${accessType}`,
+      eventId: 'event_limits',
+      organizationId: 'host_limits',
+      name: accessType === 'RSVP' ? 'Free RSVP' : 'General Entry',
+      priceInPaise: accessType === 'RSVP' ? undefined : 50_000,
+      quantity: 20,
+      accessType,
+      maxPerOrder: accessType === 'RSVP' ? null : null,
+      now,
+    });
+    await catalog.saveTier(tier);
+    const outbox = new MemoryOutboxStore();
+    const deps = {
+      config: createCoreConfig({
+        redis: { url: 'redis://localhost:6379' },
+        firestore: { projectId: 'tests' },
+        clock: { now: () => now },
+      }),
+      outbox,
+      repositories: {
+        catalog,
+        events: {
+          getById: async (id: string) =>
+            id === 'event_limits'
+              ? { id, organizationId: 'host_limits', title: 'Acceptance event' }
+              : null,
+        },
+      },
+    } as unknown as ServiceDeps;
+    return { service: new EventCatalogService(deps), catalog, outbox, tier };
+  }
+
+  it('updates only the order cap and records a tier-limit audit event', async () => {
+    const { service, catalog, outbox, tier } = await setupTier();
+    const updated = await service.updateTierLimits(
+      {
+        userId: 'host_user',
+        organizationId: 'host_limits',
+        role: 'owner',
+        capabilities: ['host'],
+      },
+      {
+        eventId: 'event_limits',
+        tierId: tier.id,
+        expectedVersion: tier.version,
+        maxPerOrder: 10,
+      },
+    );
+
+    expect(updated).toMatchObject({
+      maxPerOrder: 10,
+      priceInPaise: 50_000,
+      quantity: 20,
+      version: tier.version + 1,
+    });
+    expect(await catalog.getTierById(tier.id)).toEqual(updated);
+    expect(await outbox.listPending()).toContainEqual(
+      expect.objectContaining({
+        type: 'event.ticket_tier_limits_updated',
+        aggregateId: tier.id,
+        payload: expect.objectContaining({
+          payload: expect.objectContaining({
+            maxPerOrder: 10,
+            tierId: tier.id,
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('defaults a newly-created RSVP to one per order and rejects any other RSVP cap', async () => {
+    const { service, tier } = await setupTier('RSVP');
+    expect(tier.maxPerOrder).toBe(1);
+    await expect(
+      service.updateTierLimits(
+        {
+          userId: 'host_user',
+          organizationId: 'host_limits',
+          role: 'owner',
+          capabilities: ['host'],
+        },
+        {
+          eventId: 'event_limits',
+          tierId: tier.id,
+          expectedVersion: tier.version,
+          maxPerOrder: 2,
+        },
+      ),
+    ).rejects.toThrow('Free RSVP tickets are limited to one per order');
+  });
+
+  it('recovers an ambiguous retry after the tier write but before the audit outbox append', async () => {
+    const { service, catalog, outbox, tier } = await setupTier();
+    vi.spyOn(outbox, 'append').mockRejectedValueOnce(new Error('temporary outbox failure'));
+    const actor = {
+      userId: 'host_user',
+      organizationId: 'host_limits',
+      role: 'owner' as const,
+      capabilities: ['host' as const],
+    };
+    const command = {
+      eventId: 'event_limits',
+      tierId: tier.id,
+      expectedVersion: tier.version,
+      maxPerOrder: 9,
+    };
+
+    await expect(service.updateTierLimits(actor, command)).rejects.toThrow(
+      'temporary outbox failure',
+    );
+    const retry = await service.updateTierLimits(actor, command);
+
+    expect(retry).toMatchObject({ maxPerOrder: 9, version: tier.version + 1 });
+    expect(await catalog.getTierById(tier.id)).toEqual(retry);
+    expect(await outbox.listPending()).toHaveLength(1);
   });
 });

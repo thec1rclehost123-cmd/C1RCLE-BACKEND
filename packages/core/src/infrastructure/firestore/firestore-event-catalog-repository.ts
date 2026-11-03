@@ -116,6 +116,16 @@ export class FirestoreEventCatalogRepository implements EventCatalogRepository {
     }
     await this.db.collection(TIERS).doc(tier.id).set(data);
   }
+  async updateTier(tier: TicketTier): Promise<void> {
+    const data = { ...tier } as Record<string, unknown>;
+    if (tier.accessType === 'RSVP') {
+      delete data.priceInPaise;
+      delete data.pricingPhases;
+      delete data.doorPriceInPaise;
+      delete data.commissionEligible;
+    }
+    await compareAndSet(this.db, this.db.collection(TIERS), tier, () => data);
+  }
 
   // ── Promo codes ───────────────────────────────────────────────────────────
   async getPromoById(promoId: EntityId): Promise<PromoCode | null> {

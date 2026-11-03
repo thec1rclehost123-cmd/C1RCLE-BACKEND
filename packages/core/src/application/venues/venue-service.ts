@@ -5,6 +5,7 @@ import {
   VersionConflictError,
   InvalidOperationError,
 } from '../../domain/errors.js';
+import { isPublicStatus } from '../../domain/models/event.js';
 import {
   createVenue,
   updateVenue,
@@ -30,6 +31,7 @@ import type {
   VenueAvailability,
   VenueMenu,
   VenueMenuSection,
+  VenueSlot,
 } from '../../domain/models/venue.js';
 import type {
   VenueRepository,
@@ -55,7 +57,9 @@ export interface UpdateVenueCommand {
 
 export interface CreateSlotRequestCommand {
   venueId: EntityId;
-  slotId: EntityId;
+  slotId?: EntityId;
+  startTime?: string;
+  endTime?: string;
   eventId: EntityId | null;
   message?: string;
 }
@@ -356,10 +360,48 @@ export class VenueCalendarService {
       return computeVenueAvailability({ venueId, from, to, slots });
     }
 
+    const venueEvents = await this.deps.repositories.events.listByVenue(venueId, {
+      cursor: null,
+      limit: 1000,
+    });
+    const eventSlots: VenueSlot[] = venueEvents.items
+      .filter(
+        (event) =>
+          event.status !== 'cancelled' &&
+          event.status !== 'archived' &&
+          event.endAt &&
+          doSlotRangesOverlap(event.startAt, event.endAt, from, to),
+      )
+      .map((event) => ({
+        id: `event-${event.id}`,
+        venueId,
+        label: 'Unavailable',
+        startTime: event.startAt,
+        endTime: event.endAt ?? event.startAt,
+        recurring: false,
+        status: 'booked',
+        capacityFor: null,
+        timezone: 'Asia/Kolkata',
+        notes: null,
+        visibleToHostIds: null,
+        slotRequestId: null,
+        requestingHostId: null,
+        version: event.version,
+        createdAt: event.createdAt,
+        updatedAt: event.updatedAt,
+      }));
     const visibleSlots = slots.filter(
-      (slot) => !slot.visibleToHostIds || slot.visibleToHostIds.includes(actor.organizationId),
+      (slot) =>
+        slot.status !== 'open' ||
+        !slot.visibleToHostIds ||
+        slot.visibleToHostIds.includes(actor.organizationId),
     );
-    const availability = computeVenueAvailability({ venueId, from, to, slots: visibleSlots });
+    const availability = computeVenueAvailability({
+      venueId,
+      from,
+      to,
+      slots: [...visibleSlots, ...eventSlots],
+    });
 
     return {
       ...availability,
@@ -430,7 +472,43 @@ export class VenueSlotRequestService {
     if (partnership?.status !== 'active') {
       throw new InvalidOperationError('An active Host/Venue partnership is required');
     }
-    const slot = await this.deps.repositories.venueSlots.getSlotById(command.slotId);
+    const implicitSlot =
+      !command.slotId && command.startTime && command.endTime
+        ? createVenueAvailabilitySlot({
+            id: this.deps.config.ids(),
+            venueId: command.venueId,
+            label: 'Host requested time',
+            startTime: command.startTime,
+            endTime: command.endTime,
+            timezone: 'Asia/Kolkata',
+            now: this.deps.config.clock.now(),
+          })
+        : undefined;
+    const slot = command.slotId
+      ? await this.deps.repositories.venueSlots.getSlotById(command.slotId)
+      : implicitSlot;
+    if (implicitSlot) {
+      const venueEvents = await this.deps.repositories.events.listByVenue(command.venueId, {
+        cursor: null,
+        limit: 1000,
+      });
+      if (
+        venueEvents.items.some(
+          (event) =>
+            event.id !== command.eventId &&
+            event.status !== 'cancelled' &&
+            event.status !== 'archived' &&
+            doSlotRangesOverlap(
+              event.startAt,
+              event.endAt ?? event.startAt,
+              implicitSlot.startTime,
+              implicitSlot.endTime,
+            ),
+        )
+      ) {
+        throw new InvalidOperationError('The selected time overlaps a Venue event');
+      }
+    }
     if (!slot || slot.venueId !== command.venueId) {
       throw new InvalidOperationError('The requested Venue slot is unavailable');
     }
@@ -494,7 +572,7 @@ export class VenueSlotRequestService {
     const request = createSlotRequest({
       id: this.deps.config.ids(),
       venueId: command.venueId,
-      slotId: command.slotId,
+      slotId: slot.id,
       slotStartTime: slot.startTime,
       slotEndTime: slot.endTime,
       timezone: slot.timezone ?? 'UTC',
@@ -503,7 +581,7 @@ export class VenueSlotRequestService {
       message: command.message,
       now: this.deps.config.clock.now(),
     });
-    await this.repo.createForOpenSlot(request);
+    await this.repo.createForOpenSlot(request, implicitSlot);
     await emit(this.deps, actor, request.id, 'venue.slot_request.created', {
       venueId: request.venueId,
       slotId: request.slotId ?? '',
@@ -602,6 +680,14 @@ export class VenueSlotRequestService {
     const request = await this.repo.getById(slotRequestId);
     if (!request || request.hostId !== actor.organizationId) {
       throw new SlotRequestNotFoundError(slotRequestId);
+    }
+    if (request.eventId) {
+      const event = await this.deps.repositories.events.getById(request.eventId);
+      if (!event || isPublicStatus(event.status)) {
+        throw new InvalidOperationError(
+          'Cannot cancel a Venue booking with a live or unverifiable linked event',
+        );
+      }
     }
     const updated = transitionSlotRequest(request, 'cancelled', this.deps.config.clock.now());
     if (request.slotId) await this.repo.transitionForSlot(request, updated);

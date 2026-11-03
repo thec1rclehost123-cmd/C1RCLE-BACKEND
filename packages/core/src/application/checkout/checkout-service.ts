@@ -961,9 +961,9 @@ export class CheckoutService {
     ) {
       throw new TicketTierNotFoundError(tierId);
     }
-    if (!event.isFree) {
-      throw new InvalidOperationError('RSVP is available only for free events');
-    }
+    // A mixed catalog may offer free RSVP alongside paid entry. The selected
+    // tier's authoritative effective price below determines RSVP eligibility;
+    // the event-level discovery classification does not price this booking.
 
     const tier = await this.deps.repositories.catalog.getTierById(tierId);
     if (!tier || tier.eventId !== event.id || (tier.accessMode ?? 'public') !== 'public') {

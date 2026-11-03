@@ -49,14 +49,14 @@ export class FirestoreSlotRequestRepository implements SlotRequestRepository {
     await compareAndSet(this.db, this.collection, request, toDoc);
   }
 
-  async createForOpenSlot(request: SlotRequest): Promise<void> {
+  async createForOpenSlot(request: SlotRequest, implicitSlot?: VenueSlot): Promise<void> {
     const slotId = request.slotId;
     if (!slotId) throw new InvalidOperationError('A Venue slot is required for this request');
     const slotRef = this.db.collection('v2_venue_slots').doc(slotId);
     const requestRef = this.collection.doc(request.id);
     await this.db.runTransaction(async (tx) => {
       const [slotSnap, requestSnap] = await Promise.all([tx.get(slotRef), tx.get(requestRef)]);
-      const slotData = slotSnap.data();
+      const slotData = slotSnap.data() ?? implicitSlot;
       if (!slotData || slotData.venueId !== request.venueId) {
         throw new SlotRequestNotFoundError(request.id);
       }
@@ -69,6 +69,44 @@ export class FirestoreSlotRequestRepository implements SlotRequestRepository {
         throw new InvalidOperationError('This Venue slot is not available to this Host');
       }
       const slot = toVenueSlot(slotData);
+      {
+        const existing = await tx.get(
+          this.db.collection('v2_venue_slots').where('venueId', '==', request.venueId).limit(2001),
+        );
+        if (existing.size > 2000)
+          throw new InvalidOperationError('Venue calendar requires review before booking');
+        const events = await tx.get(
+          this.db.collection('v2_events').where('venueId', '==', request.venueId).limit(1001),
+        );
+        if (
+          events.size > 1000 ||
+          events.docs.some((doc) => {
+            const event = doc.data();
+            return (
+              event.id !== request.eventId &&
+              event.status !== 'cancelled' &&
+              event.status !== 'archived' &&
+              Date.parse(event.startAt as string) < Date.parse(slot.endTime) &&
+              Date.parse((event.endAt ?? event.startAt) as string) > Date.parse(slot.startTime)
+            );
+          })
+        )
+          throw new InvalidOperationError('The selected time overlaps a Venue event');
+        if (
+          existing.docs.some((doc) => {
+            const existingSlot = toVenueSlot(doc.data());
+            return (
+              existingSlot.id !== slot.id &&
+              existingSlot.status !== 'open' &&
+              existingSlot.status !== 'cancelled' &&
+              Date.parse(existingSlot.startTime) < Date.parse(slot.endTime) &&
+              Date.parse(existingSlot.endTime) > Date.parse(slot.startTime)
+            );
+          })
+        )
+          throw new InvalidOperationError('The selected time is no longer available');
+      }
+
       const pending = setVenueSlotRequestState(
         slot,
         'pending',

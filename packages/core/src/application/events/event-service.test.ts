@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createEvent } from '../../domain/models/event.js';
+import { createEvent, transitionEvent } from '../../domain/models/event.js';
 
 import { EventService } from './event-service.js';
 
@@ -15,10 +15,10 @@ const event = createEvent({
   now: NOW,
 });
 
-function service() {
+function service(input = event) {
   return new EventService({
     config: { features: {}, clock: { now: () => NOW } },
-    repositories: { events: { getById: async () => event } },
+    repositories: { events: { getById: async () => input } },
   } as never);
 }
 
@@ -66,6 +66,23 @@ describe('private event feature gate', () => {
   it('does not publish a private event when private access is disabled', async () => {
     await expect(service().publish(owner, event.id)).rejects.toThrow(
       'Private event access is not enabled',
+    );
+  });
+});
+
+describe('guest-facing copy before publication', () => {
+  it('rejects publishing an event without a nonblank summary and description', async () => {
+    const publicEvent = createEvent({
+      id: 'public-no-copy',
+      organizationId: 'host',
+      venueId: 'venue',
+      title: 'Public Event',
+      startAt: '2026-11-28T20:00:00.000Z',
+      now: NOW,
+    });
+    const reviewedEvent = transitionEvent(publicEvent, 'review', NOW);
+    await expect(service(reviewedEvent).publish(owner, reviewedEvent.id)).rejects.toThrow(
+      'Add a guest-facing summary and description before publishing',
     );
   });
 });

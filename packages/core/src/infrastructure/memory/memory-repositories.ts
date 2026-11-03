@@ -304,14 +304,38 @@ export class MemorySlotRequestRepository implements SlotRequestRepository {
     casSet(this.requests, request);
   }
 
-  async createForOpenSlot(request: SlotRequest): Promise<void> {
+  async createForOpenSlot(request: SlotRequest, implicitSlot?: VenueSlot): Promise<void> {
     const slotId = request.slotId;
     const slotRepo = this.venueSlots;
     if (!slotId || !slotRepo) throw new Error('A Venue slot repository is required');
     const slots = slotRepo.slots.get(request.venueId) ?? [];
-    const index = slots.findIndex((slot) => slot.id === slotId);
-    const slot = slots[index];
+    if (
+      implicitSlot &&
+      slots.some(
+        (slot) =>
+          slot.status !== 'open' &&
+          slot.status !== 'cancelled' &&
+          Date.parse(slot.startTime) < Date.parse(implicitSlot.endTime) &&
+          Date.parse(slot.endTime) > Date.parse(implicitSlot.startTime),
+      )
+    ) {
+      throw new InvalidOperationError('The selected time is no longer available');
+    }
+    const index = implicitSlot ? slots.length : slots.findIndex((slot) => slot.id === slotId);
+    const slot = implicitSlot ?? slots[index];
     if (!slot || slot.status !== 'open') throw new Error('This Venue slot is no longer open');
+    if (
+      slots.some(
+        (existing) =>
+          existing.id !== slot.id &&
+          existing.status !== 'open' &&
+          existing.status !== 'cancelled' &&
+          Date.parse(existing.startTime) < Date.parse(slot.endTime) &&
+          Date.parse(existing.endTime) > Date.parse(slot.startTime),
+      )
+    ) {
+      throw new InvalidOperationError('The selected time is no longer available');
+    }
     if (slot.visibleToHostIds && !slot.visibleToHostIds.includes(request.hostId)) {
       throw new Error('This Venue slot is not available to this Host');
     }
@@ -395,7 +419,8 @@ export class MemoryVenueSlotRepository implements VenueSlotRepository {
 
   async listSlots(venueId: EntityId, from: string, to: string): Promise<VenueSlot[]> {
     return (this.slots.get(venueId) ?? []).filter(
-      (slot) => slot.startTime >= from && slot.startTime <= to,
+      (slot) =>
+        Date.parse(slot.startTime) <= Date.parse(to) && Date.parse(slot.endTime) > Date.parse(from),
     );
   }
 
@@ -483,6 +508,10 @@ export class MemoryEventCatalogRepository implements EventCatalogRepository {
   }
 
   async saveTier(tier: TicketTier, _tx?: TxContext | null): Promise<void> {
+    casSet(this.tiers, tier);
+  }
+
+  async updateTier(tier: TicketTier): Promise<void> {
     casSet(this.tiers, tier);
   }
 
