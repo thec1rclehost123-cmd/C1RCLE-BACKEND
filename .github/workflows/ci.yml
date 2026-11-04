@@ -132,6 +132,10 @@ jobs:
         if: always()
         run: node scripts/check-boundaries.mjs
 
+      - name: Rollback safety regression
+        if: always()
+        run: node --test scripts/ci/render-rollback.test.mjs
+
       # The deployed sidecar runs nginx in front of Fastify. A config error
       # (e.g. a duplicate proxy_* directive) makes the container exit before
       # Render's health gate, which CI never noticed until a merge had already
@@ -805,7 +809,8 @@ jobs:
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           RENDER_SERVICE_ID: ${{ secrets.RENDER_STAGING_SERVICE_ID }}
-        run: node scripts/ci/render-rollback.mjs
+          RENDER_ROLLBACK_SAFE_SHA: ${{ vars.RENDER_ROLLBACK_SAFE_SHA }}
+        run: node scripts/ci/render-rollback.mjs --safe-sha "$RENDER_ROLLBACK_SAFE_SHA"
 
       - name: File a deploy incident
         if: steps.gate.outputs.match == 'true' && failure()

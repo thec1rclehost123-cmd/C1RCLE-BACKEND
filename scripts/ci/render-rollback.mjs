@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * ─── Roll production back to the last known-good deploy ──────────────────────
- * Runs only when post-deploy smoke tests fail on main. Finds the most recent
- * live deploy that is NOT the one under test and asks Render to restore it.
+ * ─── Roll back only to an explicitly approved safe deploy ──────────────────────
+ * Runs when post-deploy smoke tests fail. The operator must approve a full
+ * safe revision before automatic rollback can restore its live deploy.
  *
  *   RENDER_API_KEY=... RENDER_SERVICE_ID=... node scripts/ci/render-rollback.mjs
  *
@@ -24,6 +24,14 @@ const apiKey = process.env.RENDER_API_KEY;
 const serviceId = process.env.RENDER_SERVICE_ID;
 const badSha = arg('sha', process.env.GITHUB_SHA ?? '');
 const dryRun = has('dry-run');
+const safeSha = arg('safe-sha', '');
+
+if (!/^[a-f0-9]{40}$/.test(safeSha) || safeSha === badSha) {
+  console.error(
+    '::error::Rollback refused: --safe-sha must identify an approved safe revision other than the failing commit. Stop the service or diagnose the failure; do not restore an unreviewed old build.',
+  );
+  process.exit(1);
+}
 
 if (!apiKey || !serviceId) {
   console.error('::error::RENDER_API_KEY and RENDER_SERVICE_ID are required to roll back.');
@@ -52,9 +60,7 @@ async function render(path, init = {}) {
 
 const deploys = await render(`/services/${serviceId}/deploys?limit=20`);
 if (!deploys.ok) {
-  console.error(
-    `::error::Render API returned ${deploys.status} listing deploys: ${JSON.stringify(deploys.body)}`,
-  );
+  console.error(`::error::Render API returned ${deploys.status} listing deploys.`);
   process.exit(1);
 }
 
@@ -67,11 +73,10 @@ for (const d of live.slice(0, 6)) {
   console.log(`  ${d.id}  ${String(d.commit?.id ?? '').slice(0, 7)}  ${d.finishedAt ?? ''}`);
 }
 
-const target = live.find((d) => d.commit?.id !== badSha);
+const target = live.find((d) => d.commit?.id === safeSha);
 if (!target) {
   console.error(
-    '::error::No previous live deploy found to roll back to. Roll back manually from the ' +
-      'Render dashboard (Deploys tab -> the last green deploy -> Rollback).',
+    '::error::No live deploy matches the approved safe revision. Rollback refused; stop the service or diagnose the failure.',
   );
   process.exit(1);
 }
@@ -91,9 +96,7 @@ const rollback = await render(`/services/${serviceId}/rollback`, {
 });
 
 if (!rollback.ok) {
-  console.error(
-    `::error::Rollback request failed with ${rollback.status}: ${JSON.stringify(rollback.body)}`,
-  );
+  console.error(`::error::Rollback request failed with ${rollback.status}.`);
   process.exit(1);
 }
 
