@@ -10,6 +10,8 @@ import { FirestoreComplimentaryAllocationRepository } from './firestore-complime
 const EMULATOR = process.env.FIRESTORE_EMULATOR_HOST;
 
 describe.runIf(EMULATOR)('M5 complimentary allocation Firestore transactions', () => {
+  // Concurrent Firestore transactions use SDK retry backoff. Keep the same
+  // bounded budget as the other quota-contention integration tests.
   it('allows only one concurrent claim at quota and replays the winning key', async () => {
     const db = new Firestore({ projectId: 'demo-c1rcle' });
     const repository = new FirestoreComplimentaryAllocationRepository(db);
