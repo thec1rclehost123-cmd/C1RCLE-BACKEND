@@ -68,6 +68,14 @@ describe('client schemas — canonical fixtures', () => {
     });
   });
 
+  it('preserves email verification state and rejects non-boolean claims', () => {
+    for (const emailVerified of [true, false]) {
+      expect(userSchema.parse({ ...VALID_USER, emailVerified }).emailVerified).toBe(emailVerified);
+    }
+    expect(userSchema.safeParse({ ...VALID_USER, emailVerified: 'true' }).success).toBe(false);
+    expect(userSchema.parse(VALID_USER).emailVerified).toBeUndefined();
+  });
+
   it('rejects corrupt fixtures', () => {
     expect(userSchema.safeParse({ ...VALID_USER, email: 'nope' }).success).toBe(false);
     expect(userSchema.safeParse({ ...VALID_USER, avatarUrl: 'nope' }).success).toBe(false);

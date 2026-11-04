@@ -1,5 +1,7 @@
+import { type MemoryUserAccountRepository } from '@c1rcle/core/infrastructure';
 import { describe, expect, it } from 'vitest';
 
+import { createV2Services } from '../../../lib/v2-services.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 
 import partnerOrganizationRoutes from './organizations.js';
@@ -156,12 +158,19 @@ describe('organization invitations', () => {
     });
     const invitationId = created.json().id;
 
-    // The memory driver has a single fixed dev actor, and that actor owns the
-    // organization it just created — so this exercises the already-a-member
-    // path rather than the new-member happy path. Acceptance BY A NEW USER is
-    // covered at the domain level in `packages/core/src/domain/invitation.test.ts`,
-    // which can name a different accepting user; wiring a second real session
-    // here needs the firestore driver (see phase-00 Session Log).
+    // The already-member path still requires the actor's persisted, verified
+    // email to match the invitation recipient. Owning the org is not a bypass.
+    (createV2Services().repos().users as MemoryUserAccountRepository).save({
+      id: 'user_1',
+      email: 'joiner@example.com',
+      emailVerified: true,
+      name: 'Synthetic existing member',
+      image: null,
+      role: 'partner',
+      createdAt: 0,
+      updatedAt: 0,
+    });
+    const membershipBefore = (await createV2Services().repos().organizations.getById(org))?.members;
     const accepted = await server.inject({
       method: 'POST',
       url: `/invitations/${invitationId}/accept`,
@@ -169,6 +178,9 @@ describe('organization invitations', () => {
 
     expect(accepted.statusCode).toBe(200);
     expect(accepted.json()).toMatchObject({ id: org });
+    expect((await createV2Services().repos().organizations.getById(org))?.members).toEqual(
+      membershipBefore,
+    );
 
     const listed = await server.inject({
       method: 'GET',

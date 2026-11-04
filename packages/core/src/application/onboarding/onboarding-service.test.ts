@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createCoreConfig } from '../../config/index.js';
 import { InvalidOperationError, NotFoundError } from '../../domain/errors.js';
@@ -160,7 +160,7 @@ async function submittedRequest(service: OnboardingService) {
     await service.addDocument('user_a', {
       requestId: created.id,
       label,
-      storagePath: `kyc/${label}.jpg`,
+      storagePath: `kyc/user_a/${created.id}/${label}`,
     });
   }
   return service.submit('user_a', created.id);
@@ -177,6 +177,119 @@ describe('OnboardingService — KYC document desk', () => {
 
   beforeEach(() => {
     ctx = buildDeps();
+  });
+
+  const invalidPaths = [
+    ['another applicant', (id: string) => `kyc/user_b/${id}/id_front`],
+    ['another application', () => 'kyc/user_a/other_request/id_front'],
+    ['another label', (id: string) => `kyc/user_a/${id}/selfie`],
+    ['arbitrary namespace', () => 'private/finance/statement'],
+    ['traversal', (id: string) => `kyc/user_a/${id}/../id_front`],
+    ['encoded separator', (id: string) => `kyc/user_a/${id}%2Fid_front`],
+    ['suffix', (id: string) => `kyc/user_a/${id}/id_front/extra`],
+    ['URL', (id: string) => `https://storage.test/kyc/user_a/${id}/id_front`],
+  ] as const;
+
+  it.each(invalidPaths)('rejects attaching a path for %s without saving', async (_name, path) => {
+    const { service, repositories } = ctx;
+    const request = await service.start('user_a', {
+      requestedType: 'venue',
+      plan: 'basic',
+      profile: PROFILE,
+    });
+    const save = vi.spyOn(repositories.onboarding, 'save');
+    await expect(
+      service.addDocument('user_a', {
+        requestId: request.id,
+        label: 'id_front',
+        storagePath: path(request.id),
+      }),
+    ).rejects.toThrow(InvalidOperationError);
+    expect(save).not.toHaveBeenCalled();
+    expect(await repositories.onboarding.getById(request.id)).toEqual(request);
+  });
+
+  it.each(invalidPaths)('refuses signing a persisted path for %s', async (_name, path) => {
+    const { service, repositories, deps } = ctx;
+    await seedAdmin(repositories, 'admin_a');
+    const request = await service.start('user_a', {
+      requestedType: 'venue',
+      plan: 'basic',
+      profile: PROFILE,
+    });
+    await repositories.onboarding.save({
+      ...request,
+      documents: [
+        {
+          label: 'id_front',
+          storagePath: path(request.id),
+          uploadedAt: NOW.toISOString(),
+          status: 'pending',
+          reviewedBy: null,
+          reviewedAt: null,
+          rejectionReason: null,
+        },
+      ],
+    });
+    const sign = vi.spyOn(deps.objectStorage, 'issueReadUrl');
+    await expect(service.issueDocumentReadUrl('admin_a', request.id, 'id_front')).rejects.toThrow(
+      InvalidOperationError,
+    );
+    expect(sign).not.toHaveBeenCalled();
+  });
+
+  it('rejects unknown attachment labels even with a matching path', async () => {
+    const { service } = ctx;
+    const request = await service.start('user_a', {
+      requestedType: 'venue',
+      plan: 'basic',
+      profile: PROFILE,
+    });
+    await expect(
+      service.addDocument('user_a', {
+        requestId: request.id,
+        label: 'passport',
+        storagePath: `kyc/user_a/${request.id}/passport`,
+      }),
+    ).rejects.toThrow(InvalidOperationError);
+  });
+
+  it('attaches and signs every supported label using its upload grant', async () => {
+    const { service, repositories, deps } = ctx;
+    await seedAdmin(repositories, 'admin_a');
+    const request = await service.start('user_a', {
+      requestedType: 'venue',
+      plan: 'basic',
+      profile: PROFILE,
+    });
+    const upload = vi.spyOn(deps.objectStorage, 'issueUploadUrl');
+    const read = vi.spyOn(deps.objectStorage, 'issueReadUrl');
+    for (const label of [
+      'id_front',
+      'id_back',
+      'selfie',
+      'registration_certificate',
+      'sig_id_front',
+      'sig_id_back',
+      'sig_selfie',
+    ]) {
+      const grant = await service.issueDocumentUploadUrl('user_a', {
+        requestId: request.id,
+        label,
+        contentType: 'image/png',
+      });
+      await service.addDocument('user_a', {
+        requestId: request.id,
+        label,
+        storagePath: grant.storagePath,
+      });
+      await service.issueDocumentReadUrl('admin_a', request.id, label);
+      expect(read).toHaveBeenLastCalledWith({
+        key: grant.storagePath,
+        expiresAt: expect.any(Number),
+      });
+      expect(upload.mock.lastCall?.[0].visibility).not.toBe('public');
+    }
   });
 
   it('verifies a document', async () => {
@@ -302,7 +415,7 @@ describe('OnboardingService — KYC document desk', () => {
       await service.addDocument('user_a', {
         requestId: created.id,
         label,
-        storagePath: `kyc/${label}.jpg`,
+        storagePath: `kyc/user_a/${created.id}/${label}`,
       });
     }
     const request = await service.submit('user_a', created.id);

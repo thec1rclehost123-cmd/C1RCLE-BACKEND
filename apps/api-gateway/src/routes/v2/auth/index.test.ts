@@ -5,7 +5,7 @@ import {
 } from '@c1rcle/core/domain';
 import { MemoryInvitationRepository } from '@c1rcle/core/infrastructure';
 import Fastify from 'fastify';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import rateLimitPlugin from '../../../plugins/rate-limit.js';
 import validateV2Plugin from '../../../plugins/validate-v2.js';
@@ -34,7 +34,7 @@ function jsonResponse(status: number, body: unknown): Response {
 function fakeAuth(overrides: {
   signInEmail?: () => Promise<Response>;
   signUpEmail?: () => Promise<Response>;
-  getSession?: () => Promise<{
+  getSession?: (options?: { headers?: Headers }) => Promise<{
     user: { id: string; email: string; name: string; role?: string };
     session: { token: string };
   } | null>;
@@ -75,16 +75,20 @@ function testOrganizations(): {
   return { organizations, invitations };
 }
 
-async function buildTestApp(auth: BetterAuthInstance): Promise<FastifyInstance> {
+async function buildTestApp(
+  auth: BetterAuthInstance,
+  rateLimitEnabled = false,
+  rotationStore = new MemoryStaffRotationStore(),
+): Promise<FastifyInstance> {
   // Fixed request id so two failure responses are byte-comparable.
   const app = Fastify({ genReqId: () => 'req_test', logger: false });
   await app.register(validateV2Plugin);
-  await app.register(rateLimitPlugin, { enabled: false });
+  await app.register(rateLimitPlugin, { enabled: rateLimitEnabled });
   await app.register(
     async (instance) =>
       authRoutes(instance, {
         auth,
-        rotationStore: new MemoryStaffRotationStore(),
+        rotationStore,
         organizations: testOrganizations().organizations,
       }),
     {
@@ -93,6 +97,123 @@ async function buildTestApp(auth: BetterAuthInstance): Promise<FastifyInstance> 
   );
   return app;
 }
+
+describe('signup classification is controlled by the server', () => {
+  it('returns no session credentials when the rotation flag cannot be read', async () => {
+    const rotation = new MemoryStaffRotationStore();
+    vi.spyOn(rotation, 'isRequired').mockRejectedValue(new Error('private rotation details'));
+    const auth = fakeAuth({
+      signInEmail: async () =>
+        new Response('{}', {
+          status: 200,
+          headers: {
+            'set-cookie': 'better-auth.session_token=synthetic; HttpOnly',
+            'set-auth-token': 'synthetic',
+          },
+        }),
+      getSession: async () => sessionFor('staff'),
+    });
+    const app = await buildTestApp(auth, false, rotation);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v2/auth/login',
+      payload: { email: 'staff@example.invalid', password: 'Synthetic-password-16' },
+    });
+    expect(response.statusCode).toBe(503);
+    expect(response.headers['set-cookie']).toBeUndefined();
+    expect(response.json()).not.toHaveProperty('accessToken');
+    expect(response.body).not.toContain('private rotation details');
+    await app.close();
+  });
+
+  const body = { email: 'signup@example.com', password: 'password123', displayName: 'Signup' };
+
+  it.each([
+    ['/signup', 'guest'],
+    ['/partner/signup', 'partner'],
+  ] as const)('%s creates only its intended account classification', async (path, role) => {
+    const create = vi.fn(() => Promise.resolve(jsonResponse(201, {})));
+    const app = await buildTestApp(
+      fakeAuth({
+        signUpEmail: create,
+        getSession: () => Promise.resolve(sessionFor('user_signup', role)),
+      }),
+    );
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v2/auth${path}`,
+        payload: body,
+      });
+      expect(response.statusCode).toBe(201);
+      expect(create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: { email: body.email, password: body.password, name: body.displayName, role },
+        }),
+      );
+      expect(response.json().user.role).toBe(role);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it.each(['/signup', '/partner/signup'])(
+    '%s rejects client-supplied roles before account creation',
+    async (path) => {
+      const create = vi.fn(() => Promise.resolve(jsonResponse(201, {})));
+      const app = await buildTestApp(fakeAuth({ signUpEmail: create }));
+      try {
+        for (const fields of [
+          { role: 'admin' },
+          { role: 'partner' },
+          { platformRole: 'admin' },
+          { organizationRole: 'owner' },
+        ]) {
+          const response = await app.inject({
+            method: 'POST',
+            url: `/api/v2/auth${path}`,
+            payload: { ...body, ...fields },
+          });
+          expect(response.statusCode).toBe(422);
+        }
+        expect(create).not.toHaveBeenCalled();
+      } finally {
+        await app.close();
+      }
+    },
+  );
+
+  it('shares the anonymous signup budget across both registration paths', async () => {
+    const app = await buildTestApp(
+      fakeAuth({
+        signUpEmail: () => Promise.resolve(jsonResponse(201, {})),
+        getSession: () => Promise.resolve(sessionFor('user_signup', 'guest')),
+      }),
+      true,
+    );
+    try {
+      for (let i = 0; i < 10; i += 1) {
+        const path = i % 2 === 0 ? '/signup' : '/partner/signup';
+        expect(
+          (
+            await app.inject({
+              method: 'POST',
+              url: `/api/v2/auth${path}`,
+              payload: body,
+              headers: { 'x-organization-id': `unverified-${i}` },
+            })
+          ).statusCode,
+        ).toBe(201);
+      }
+      expect(
+        (await app.inject({ method: 'POST', url: '/api/v2/auth/partner/signup', payload: body }))
+          .statusCode,
+      ).toBe(429);
+    } finally {
+      await app.close();
+    }
+  });
+});
 
 describe('auth routes — login failure is not an account-existence oracle', () => {
   it('returns a byte-identical body for an unknown email and a wrong password', async () => {
@@ -442,5 +563,42 @@ describe('auth routes — password reset', () => {
     });
     expect(res.statusCode).toBe(422);
     await app.close();
+  });
+});
+
+describe('auth bridge — transaction retry cookies', () => {
+  it('uses and forwards only the final cookie value for a retried session', async () => {
+    const headers = new Headers({ 'content-type': 'application/json' });
+    headers.append('set-cookie', 'better-auth.session_token=aborted; Path=/; HttpOnly');
+    headers.append('set-cookie', 'better-auth.session_token=committed; Path=/; HttpOnly');
+    const app = await buildTestApp(
+      fakeAuth({
+        signUpEmail: async () => new Response('{}', { status: 201, headers }),
+        getSession: async (options) =>
+          options?.headers?.get('cookie') === 'better-auth.session_token=committed'
+            ? sessionFor('signup', 'guest')
+            : null,
+      }),
+    );
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v2/auth/signup',
+        payload: {
+          email: 'synthetic@example.invalid',
+          password: 'password123',
+          displayName: 'Synthetic',
+        },
+      });
+      expect(response.statusCode).toBe(201);
+      expect(response.json().user.role).toBe('guest');
+      expect(response.headers['set-cookie']).not.toContain('aborted');
+      const cookies = response.headers['set-cookie'];
+      expect(Array.isArray(cookies) ? cookies : [cookies]).toEqual([
+        'better-auth.session_token=committed; Path=/; HttpOnly',
+      ]);
+    } finally {
+      await app.close();
+    }
   });
 });

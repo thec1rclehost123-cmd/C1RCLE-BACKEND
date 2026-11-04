@@ -1,7 +1,8 @@
-import { InvalidOperationError } from '../errors.js';
+import { ForbiddenError, InvalidOperationError } from '../errors.js';
 import { newVersionedEntity } from '../identity.js';
 
 import type { EntityId, VersionedEntity } from '../identity.js';
+import type { PlatformUser } from './platform-user.js';
 
 /**
  * ─── Organization aggregate ───────────────────────────────────────────────────
@@ -425,4 +426,24 @@ export function acceptInvitation(
     now: at,
   });
   return { organization, invitation: closed };
+}
+
+/** Must run against the current account in the membership-write transaction. */
+export function acceptInvitationForRecipient(
+  org: Organization,
+  invitation: OrganizationInvitation,
+  userId: EntityId,
+  account: (Pick<PlatformUser, 'id' | 'email'> & { emailVerified: unknown }) | null,
+  now: Date,
+): { organization: Organization; invitation: OrganizationInvitation } {
+  if (
+    !account ||
+    account.id !== userId ||
+    account.emailVerified !== true ||
+    typeof account.email !== 'string' ||
+    normalizeEmail(account.email) !== normalizeEmail(invitation.email)
+  ) {
+    throw new ForbiddenError('Invitation requires the intended verified recipient');
+  }
+  return acceptInvitation(org, invitation, userId, now);
 }

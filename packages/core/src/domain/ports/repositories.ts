@@ -269,6 +269,9 @@ export interface PromoterConnectionRepository {
 }
 
 export interface InvitationRepository {
+  /** Read current account, invitation and org; validate and commit membership
+   * and invitation consumption atomically. Clock is evaluated on each retry. */
+  acceptForUser(invitationId: EntityId, userId: EntityId, now: () => Date): Promise<Organization>;
   getById(invitationId: EntityId): Promise<OrganizationInvitation | null>;
   listByOrganization(
     organizationId: EntityId,
@@ -1675,14 +1678,29 @@ export interface LeaderboardRepository {
 }
 
 /**
- * One doc per recipient, fully replaced on each send — no optimistic-lock
- * version (matches v1's `docRef.set` semantics; the cooldown check in
- * `assertCanResend` is what prevents a resend race, not a version field).
+ * One document per normalized recipient. Read/check/write transitions must
+ * share an atomic boundary so concurrent sends and verifications cannot race.
  */
+export interface EmailOtpTransition<T> {
+  next: EmailOtp | null;
+  result: T;
+  /** Atomically verify the bound account and consume its code, or write neither. */
+  verifyAccountAt?: string;
+}
+
 export interface EmailOtpRepository {
   get(recipient: EntityId): Promise<EmailOtp | null>;
   save(otp: EmailOtp): Promise<void>;
   delete(recipient: EntityId): Promise<void>;
+  /**
+   * The synchronous transition may be retried; it must have no external effects.
+   * A null next state consumes the code. Return expected errors as the result
+   * when an attempt increment must commit before the service rejects verification.
+   */
+  updateAtomically<T>(
+    recipient: EntityId,
+    transition: (current: EmailOtp | null) => EmailOtpTransition<T>,
+  ): Promise<T>;
 }
 // ─── Notifications (V2 partner inbox) ─────────────────────────────────────
 

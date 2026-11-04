@@ -12,6 +12,7 @@ import {
   resetPasswordRequestSchema,
   passwordResetAckSchema,
 } from '@c1rcle/contracts/client';
+import { ServiceUnavailableError } from '@c1rcle/core/domain';
 
 import type { OrganizationService } from '@c1rcle/core/application';
 import type { StaffRotationStore } from '@c1rcle/core/domain';
@@ -48,60 +49,65 @@ export default async function authRoutes(
 
   const invitationListSchema = paginatedSchema(invitationDtoSchema);
 
-  /**
-   * First-login rotation flag for the user. Fail-open on store errors (a
-   * flag-store outage must not lock every user out) — the plugin's request
-   * enforcement fails open the same way.
-   */
+  /** Do not report a temporary credential as unrestricted on a store outage. */
   const readRotationFlag = (userId: string): Promise<boolean> =>
-    rotationStore.isRequired(userId).catch(() => false);
+    rotationStore.isRequired(userId).catch(() => {
+      throw new ServiceUnavailableError('Account access unavailable');
+    });
 
-  fastify.post(
-    '/signup',
-    {
-      config: {
-        rateLimit: {
-          max: 10,
-          timeWindow: '1 minute',
+  function registerSignup(path: '/signup' | '/partner/signup', role: 'guest' | 'partner') {
+    fastify.post(
+      path,
+      {
+        config: {
+          rateLimit: {
+            max: 10,
+            timeWindow: '1 minute',
+          },
         },
+        preHandler: [
+          fastify.validateV2({ body: signupRequestSchema }),
+          fastify.rateLimit('SENSITIVE_COMMAND'),
+        ],
       },
-      preHandler: [
-        fastify.validateV2({ body: signupRequestSchema }),
-        fastify.rateLimit('SENSITIVE_COMMAND'),
-      ],
-    },
-    // codeql[js/missing-rate-limiting] rate limiting IS applied via the
-    // preHandler list (fastify.rateLimit('SENSITIVE_COMMAND')). CodeQL cannot
-    // see through the plugin-decorated preHandler.
-    async (request, reply) => {
-      if (!auth) return sendAuthUnavailable(reply, request);
-      const body = request.body as z.infer<typeof signupRequestSchema>;
-      const result = await runAuthFlow(
-        auth,
-        request,
-        reply,
-        () =>
-          auth.api.signUpEmail({
-            // `role` is a required additional field (better-auth's generated
-            // type confirmed this at typecheck time) — always server-set,
-            // never client-supplied (`signupRequestSchema` has no `role` field).
-            body: {
-              email: body.email,
-              password: body.password,
-              name: body.displayName,
-              role: 'partner',
-            },
-            headers: toWebHeaders(request.headers),
-            asResponse: true,
-          }),
-        { readRotationFlag },
-      );
-      if (result === undefined) return reply;
-      const validated = validateV2Response(reply, request, authBridgeResponseSchema, result);
-      if (validated === undefined) return reply;
-      return reply.status(201).send(validated);
-    },
-  );
+      // codeql[js/missing-rate-limiting] rate limiting IS applied via the
+      // preHandler list (fastify.rateLimit('SENSITIVE_COMMAND')). CodeQL cannot
+      // see through the plugin-decorated preHandler.
+      async (request, reply) => {
+        if (!auth) return sendAuthUnavailable(reply, request);
+        const body = request.body as z.infer<typeof signupRequestSchema>;
+        const result = await runAuthFlow(
+          auth,
+          request,
+          reply,
+          () =>
+            auth.api.signUpEmail({
+              // `role` is a required additional field (better-auth's generated
+              // type confirmed this at typecheck time) — always server-set,
+              // never client-supplied (`signupRequestSchema` has no `role` field).
+              body: {
+                email: body.email,
+                password: body.password,
+                name: body.displayName,
+                role,
+              },
+              headers: toWebHeaders(request.headers),
+              asResponse: true,
+            }),
+          { readRotationFlag },
+        );
+        if (result === undefined) return reply;
+        const validated = validateV2Response(reply, request, authBridgeResponseSchema, result);
+        if (validated === undefined) return reply;
+        return reply.status(201).send(validated);
+      },
+    );
+  }
+
+  // General/public signup is always least-privileged. Partner registration
+  // has its own server-controlled classification; neither body accepts roles.
+  registerSignup('/signup', 'guest');
+  registerSignup('/partner/signup', 'partner');
 
   fastify.post(
     '/login',
@@ -434,27 +440,51 @@ async function runAuthFlow(
     return forwardAuthErrorResponse(reply, request, response, options.genericClientErrorMessage);
   }
 
-  forwardSetCookie(reply, response);
   const accessToken = response.headers.get('set-auth-token');
 
   // Re-read the session through the just-set cookie for a reliably-shaped
   // {session, user} — sidesteps depending on signUpEmail/signInEmail's own
   // (loosely documented) body shape.
   const followUpHeaders = toWebHeaders(request.headers);
-  const cookiePair = response.headers.getSetCookie()[0]?.split(';')[0];
-  if (cookiePair) followUpHeaders.set('cookie', cookiePair);
+  const cookiePairs = latestResponseCookies(response).map((cookie) => cookie.split(';')[0]);
+  if (cookiePairs.length > 0) followUpHeaders.set('cookie', cookiePairs.join('; '));
   const session = await auth.api.getSession({ headers: followUpHeaders }).catch(() => null);
   if (!session?.user) return sendUnauthorized(reply, request);
 
+  let mustChangePassword: boolean;
+  try {
+    mustChangePassword = (await options.readRotationFlag?.(session.user.id)) ?? false;
+  } catch {
+    reply.status(503).send(
+      buildV2ErrorResponse({
+        status: 503,
+        message: 'Account access unavailable',
+        requestId: request.id,
+      }),
+    );
+    return undefined;
+  }
+  forwardSetCookie(reply, response);
   return {
-    user: toUserDto(session.user, (await options.readRotationFlag?.(session.user.id)) ?? false),
+    user: toUserDto(session.user, mustChangePassword),
     accessToken: accessToken ?? session.session.token,
     expiresAt: toUnixMs(session.session.expiresAt),
   };
 }
 
-function forwardSetCookie(reply: FastifyReply, response: Response): void {
+/** Transaction retries may append multiple values for the same cookie.
+ * Browsers retain the last one; use that same committed value server-side. */
+function latestResponseCookies(response: Response): string[] {
+  const cookies = new Map<string, string>();
   for (const cookie of response.headers.getSetCookie()) {
+    const name = cookie.slice(0, cookie.indexOf('='));
+    cookies.set(name, cookie);
+  }
+  return [...cookies.values()];
+}
+
+function forwardSetCookie(reply: FastifyReply, response: Response): void {
+  for (const cookie of latestResponseCookies(response)) {
     void reply.header('set-cookie', cookie);
   }
 }
@@ -559,6 +589,7 @@ function toUserDto(
     name: string;
     image?: string | null;
     role?: string | null;
+    emailVerified?: boolean;
   },
   mustChangePassword: boolean,
 ): {
@@ -568,10 +599,12 @@ function toUserDto(
   role: 'guest' | 'partner' | 'admin';
   avatarUrl: string | null;
   mustChangePassword: boolean;
+  emailVerified: boolean;
 } {
   return {
     id: user.id,
     email: user.email,
+    emailVerified: user.emailVerified === true,
     displayName:
       user.name && user.name.length > 0 ? user.name : (user.email.split('@')[0] ?? 'User'),
     // Better Auth's persisted additional field is the platform-role source.

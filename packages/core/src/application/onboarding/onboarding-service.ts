@@ -230,16 +230,11 @@ export class OnboardingService {
     // `entityType` can still change while the request is a draft, and minting
     // an upload URL has no side effect worth gating more tightly than "is this
     // a real KYC label". Business applicants need the registration/signatory set.
-    if (!ALL_DOCUMENT_LABELS.includes(command.label)) {
-      throw new InvalidOperationError(
-        `Unknown document label — expected one of ${ALL_DOCUMENT_LABELS.join(', ')}`,
-      );
-    }
+    const key = kycObjectKey(request, command.label);
     if (!ALLOWED_UPLOAD_CONTENT_TYPES.includes(command.contentType)) {
       throw new InvalidOperationError('Document must be a JPEG, PNG, or WebP image');
     }
 
-    const key = `kyc/${userId}/${request.id}/${command.label}`;
     const expiresAt = this.deps.config.clock.now().getTime() + UPLOAD_URL_TTL_MS;
     const grant = await this.deps.objectStorage.issueUploadUrl({
       key,
@@ -257,6 +252,7 @@ export class OnboardingService {
 
   async addDocument(userId: EntityId, command: AddDocumentCommand): Promise<OnboardingRequest> {
     const request = await this.requireOwn(userId, command.requestId);
+    assertKycObjectPath(request, command.label, command.storagePath);
     const updated = addOnboardingDocument(
       request,
       {
@@ -365,10 +361,8 @@ export class OnboardingService {
   /**
    * Mints a short-lived signed GET URL so an admin can actually view an
    * uploaded KYC image before deciding on the application — v1 had this
-   * (`kyc/[uid]/route.js`'s signed-URL helper, prefix-allowlisted since it
-   * took an arbitrary key); v2 doesn't need a separate allowlist because the
-   * key is derived from a document already attached to a request this
-   * method loaded, never from caller input.
+   * (`kyc/[uid]/route.js`'s signed-URL helper). Revalidate persisted paths
+   * before signing, including records attached before ownership validation.
    *
    * Any admin may view (matches v1's broader view-vs-decide role split —
    * approval itself stays ONBOARDING_APPROVE/TIER2, viewing isn't a decision).
@@ -382,6 +376,7 @@ export class OnboardingService {
     const request = await this.requireRequest(requestId);
     const document = request.documents.find((doc) => doc.label === label);
     if (!document) throw new NotFoundError('onboarding_document', label);
+    assertKycObjectPath(request, document.label, document.storagePath);
 
     const expiresAt = this.deps.config.clock.now().getTime() + READ_URL_TTL_MS;
     const grant = await this.deps.objectStorage.issueReadUrl({
@@ -673,6 +668,20 @@ export class OnboardingService {
       throw new OnboardingRequestNotFoundError(requestId);
     }
     return request;
+  }
+}
+
+function kycObjectKey(request: OnboardingRequest, label: string): string {
+  if (!ALL_DOCUMENT_LABELS.includes(label)) {
+    throw new InvalidOperationError('Unknown KYC document label');
+  }
+  return `kyc/${request.userId}/${request.id}/${label}`;
+}
+
+function assertKycObjectPath(request: OnboardingRequest, label: string, storagePath: string): void {
+  // Exact equality: do not normalize or decode caller-supplied object keys.
+  if (storagePath !== kycObjectKey(request, label)) {
+    throw new InvalidOperationError('Document path does not belong to this application and label');
   }
 }
 

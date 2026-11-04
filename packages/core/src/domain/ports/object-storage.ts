@@ -80,9 +80,9 @@ export interface ObjectStoragePort {
    * Admin-side signed read — lets a platform admin actually view a KYC
    * document before approving/rejecting an application. v1 had the same
    * idea (`kyc/[uid]/route.js` signed-URL helper) but allowlisted by path
-   * prefix since it took an arbitrary collection field as the key; this
-   * port only ever signs a key the caller derived from an `OnboardingRequest`
-   * it already loaded, so the prefix allowlist has no separate job to do here.
+   * prefix since it took an arbitrary collection field as the key. The
+   * caller must validate the persisted key against the applicant, application
+   * and document label before asking the provider to sign it.
    */
   issueReadUrl(request: ReadUrlRequest): Promise<ReadUrlGrant>;
 }

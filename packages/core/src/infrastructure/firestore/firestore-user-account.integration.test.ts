@@ -9,7 +9,10 @@ const EMULATOR = process.env.FIRESTORE_EMULATOR_HOST;
 
 describe.runIf(EMULATOR)('verified user identity (Firestore emulator)', () => {
   it('reads persisted Better Auth email verification and defaults missing values to false', async () => {
-    const db = new Firestore({ projectId: 'demo-c1rcle' });
+    if (!EMULATOR || !/^(127\.0\.0\.1|localhost):\d+$/.test(EMULATOR)) {
+      throw new Error('User account integration tests require a loopback Firestore emulator');
+    }
+    const db = new Firestore({ projectId: 'c1rcle-v2', host: EMULATOR, ssl: false });
     const suffix = randomUUID();
     const verifiedId = `m5-verified-${suffix}`;
     const unverifiedId = `m5-unverified-${suffix}`;

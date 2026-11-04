@@ -149,9 +149,11 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
   if (isMemory) {
     const financialJournals = new MemoryFinancialJournalRepository();
     const venueSlots = new MemoryVenueSlotRepository();
+    const users = new MemoryUserAccountRepository();
+    const organizations = new MemoryOrganizationRepository();
     return {
-      organizations: new MemoryOrganizationRepository(),
-      invitations: new MemoryInvitationRepository(),
+      organizations,
+      invitations: new MemoryInvitationRepository(organizations, users),
       partnerships: new MemoryPartnershipRepository(),
       referralLinks: new MemoryReferralLinkRepository(),
       promoterConnections: new MemoryPromoterConnectionRepository(),
@@ -191,7 +193,7 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
       bankAccounts: new MemoryBankAccountRepository(),
       disputes: new MemoryDisputeRepository(),
       leaderboard: new MemoryLeaderboardRepository(),
-      emailOtp: new MemoryEmailOtpRepository(),
+      emailOtp: new MemoryEmailOtpRepository(users),
       guestProfiles: new MemoryGuestProfileRepository(),
       // Phase 8
       follows: new MemoryFollowRepository(),
@@ -202,7 +204,7 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
       reconciliations: new MemoryReconciliationRepository(),
       supportTickets: new MemorySupportTicketRepository(),
       safetyReports: new MemorySafetyReportRepository(),
-      users: new MemoryUserAccountRepository(),
+      users,
       userBans: new MemoryUserBanRepository(),
       platformSettings: new MemoryPlatformSettingsRepository(),
       notifications: new MemoryNotificationRepository(),

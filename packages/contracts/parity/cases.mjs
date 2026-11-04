@@ -49,6 +49,28 @@ export async function runParityCases({
 
   /* ── user ─────────────────────────────────────────────────────────────────── */
   agree('userSchema', 'accepts the canonical user', VALID_USER, true);
+  for (const emailVerified of [true, false]) {
+    agree(
+      'userSchema',
+      `accepts emailVerified=${emailVerified}`,
+      { ...VALID_USER, emailVerified },
+      true,
+    );
+    for (const [side, schema] of [
+      ['frontend', frontend.userSchema],
+      ['backend', backend.userSchema],
+    ]) {
+      if (schema.parse({ ...VALID_USER, emailVerified }).emailVerified !== emailVerified) {
+        failures.push(`${side} drops emailVerified=${emailVerified}`);
+      }
+    }
+  }
+  agree(
+    'userSchema',
+    'rejects a non-boolean emailVerified',
+    { ...VALID_USER, emailVerified: 'true' },
+    false,
+  );
   agree(
     'userSchema',
     'accepts an https avatar',

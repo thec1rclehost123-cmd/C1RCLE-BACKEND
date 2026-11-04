@@ -1,10 +1,16 @@
-import { effectiveInvitationStatus, normalizeEmail } from '../../domain/models/organization.js';
+import { OrganizationNotFoundError } from '../../domain/errors.js';
+import {
+  acceptInvitationForRecipient,
+  effectiveInvitationStatus,
+  normalizeEmail,
+} from '../../domain/models/organization.js';
 
 import { compareAndSet } from './compare-and-set.js';
+import { toDoc, toOrganization } from './firestore-organization-repository.js';
 import { paginateQuery } from './pagination.js';
 
 import type { EntityId } from '../../domain/identity.js';
-import type { OrganizationInvitation } from '../../domain/models/organization.js';
+import type { Organization, OrganizationInvitation } from '../../domain/models/organization.js';
 import type {
   InvitationRepository,
   Page,
@@ -24,6 +30,42 @@ export class FirestoreInvitationRepository implements InvitationRepository {
 
   private get collection() {
     return this.db.collection(COLLECTION);
+  }
+
+  async acceptForUser(
+    invitationId: EntityId,
+    userId: EntityId,
+    now: () => Date,
+  ): Promise<Organization> {
+    return this.db.runTransaction(async (tx) => {
+      const invitationRef = this.collection.doc(invitationId);
+      const invitationData = (await tx.get(invitationRef)).data();
+      if (!invitationData) throw new OrganizationNotFoundError(invitationId);
+      const invitation = toInvitation(invitationData);
+      const orgRef = this.db.collection('v2_organizations').doc(invitation.organizationId);
+      const accountRef = this.db.collection('v2_auth_users').doc(userId);
+      const [orgSnap, accountSnap] = await Promise.all([tx.get(orgRef), tx.get(accountRef)]);
+      const orgData = orgSnap.data();
+      if (!orgData) throw new OrganizationNotFoundError(invitation.organizationId);
+      const org = toOrganization(orgData);
+      const account = accountSnap.data();
+      const result = acceptInvitationForRecipient(
+        org,
+        invitation,
+        userId,
+        account
+          ? {
+              id: accountSnap.id,
+              email: account.email as string,
+              emailVerified: account.emailVerified === true,
+            }
+          : null,
+        now(),
+      );
+      if (result.organization !== org) tx.set(orgRef, toDoc(result.organization));
+      tx.set(invitationRef, { ...result.invitation });
+      return result.organization;
+    });
   }
 
   async getById(invitationId: EntityId): Promise<OrganizationInvitation | null> {

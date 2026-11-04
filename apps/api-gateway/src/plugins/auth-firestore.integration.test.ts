@@ -13,7 +13,10 @@ const emulator = process.env.FIRESTORE_EMULATOR_HOST;
 
 describe.runIf(emulator)('Better Auth with the Firestore adapter', () => {
   it('creates an account, signs in, and resolves the session', async () => {
-    const db = new Firestore({ projectId: 'demo-c1rcle' });
+    if (!emulator || !/^(127\.0\.0\.1|localhost):\d+$/.test(emulator)) {
+      throw new Error('Auth integration tests require a loopback Firestore emulator');
+    }
+    const db = new Firestore({ projectId: 'c1rcle-v2', host: emulator, ssl: false });
     let resetUrl = '';
     const sender: EmailSender = {
       name: 'test',

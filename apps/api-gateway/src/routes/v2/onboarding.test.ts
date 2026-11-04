@@ -69,7 +69,7 @@ async function uploadRequiredDocuments(userId: string, requestId: string) {
       method: 'POST',
       url: `/onboarding/applications/${requestId}/documents`,
       headers: asUser(userId),
-      payload: { label, storagePath: `kyc/${userId}/${label}.jpg` },
+      payload: { label, storagePath: `kyc/${userId}/${requestId}/${label}` },
     });
     expect(response.statusCode).toBe(200);
   }
@@ -211,6 +211,35 @@ describe('applicant onboarding', () => {
   });
 
   describe('KYC upload URLs', () => {
+    it('rejects cross-applicant, cross-request and unknown-label attachment paths', async () => {
+      const created = await startApplication('user_a');
+      for (const payload of [
+        { label: 'id_front', storagePath: `kyc/user_b/${created.id}/id_front` },
+        { label: 'id_front', storagePath: 'kyc/user_a/other_request/id_front' },
+        { label: 'passport', storagePath: `kyc/user_a/${created.id}/passport` },
+      ]) {
+        const response = await server.inject({
+          method: 'POST',
+          url: `/onboarding/applications/${created.id}/documents`,
+          headers: asUser('user_a'),
+          payload,
+        });
+        expect(response.statusCode).toBe(400);
+      }
+      expect((await services.repos().onboarding.getById(created.id))?.documents).toEqual([]);
+    });
+
+    it('cannot attach to another applicant even with their canonical path', async () => {
+      const created = await startApplication('user_a');
+      const response = await server.inject({
+        method: 'POST',
+        url: `/onboarding/applications/${created.id}/documents`,
+        headers: asUser('user_b'),
+        payload: { label: 'id_front', storagePath: `kyc/user_a/${created.id}/id_front` },
+      });
+      expect(response.statusCode).toBe(404);
+    });
+
     it('issues a bounded, time-limited PUT grant', async () => {
       const created = await startApplication('user_a');
       const response = await server.inject({
@@ -688,6 +717,34 @@ describe('admin review', () => {
 });
 
 describe('admin document read URLs', () => {
+  it('will not sign a legacy attachment outside its application namespace', async () => {
+    const created = await startApplication('user_a');
+    const request = await services.repos().onboarding.getById(created.id);
+    if (!request) throw new Error('Expected the newly created application');
+    await services.repos().onboarding.save({
+      ...request,
+      documents: [
+        {
+          label: 'id_front',
+          storagePath: 'private/unrelated-document',
+          uploadedAt: new Date().toISOString(),
+          status: 'pending',
+          reviewedBy: null,
+          reviewedAt: null,
+          rejectionReason: null,
+        },
+      ],
+    });
+    await seedAdmin('admin_ops', 'ops');
+    const response = await server.inject({
+      method: 'GET',
+      url: `/admin/onboarding/applications/${created.id}/documents/id_front/read-url`,
+      headers: { 'x-user-id': 'admin_ops' },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).not.toHaveProperty('readUrl');
+  });
+
   async function submittedApplication(): Promise<string> {
     const created = await startApplication('user_a');
     await uploadRequiredDocuments('user_a', created.id);

@@ -722,6 +722,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
 
   const emailOtp = createEmailOtpService({
     emailOtp: repositories.emailOtp,
+    users: repositories.users,
     emailSender,
     config: coreConfig,
   });

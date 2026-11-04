@@ -92,6 +92,7 @@ export async function registerV2Routes(
   await app.register(authContextPlugin, {
     auth,
     organizations: services.repos().organizations,
+    userBans: services.repos().userBans,
     rotationStore: services.rotationStore,
   });
 

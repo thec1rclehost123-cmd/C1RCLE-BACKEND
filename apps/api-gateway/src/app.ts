@@ -158,8 +158,29 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   // Methods and headers are explicit: @fastify/cors v11 defaults to GET,HEAD,POST
   // only, which fails the preflight for the admin console's PUT/DELETE and the
   // partner dashboard's PATCH.
+  const browserOrigins = new Set([...getAllowedOrigins(config), ...allowedBrowserOrigins(config)]);
+  // CORS controls response visibility, not execution. Native auth server-API
+  // calls also skip Better Auth's Request-based CSRF middleware. Reject unsafe
+  // browser requests here; origin-less BFF/provider/native calls remain supported.
+  app.addHook('onRequest', async (request, reply) => {
+    if (['GET', 'HEAD', 'OPTIONS'].includes(request.method)) return;
+    const origin = request.headers.origin;
+    if (
+      (origin !== undefined && !browserOrigins.has(origin)) ||
+      (origin === undefined && request.headers['sec-fetch-site'] === 'cross-site')
+    ) {
+      return reply.status(403).send(
+        buildV2ErrorResponse({
+          status: 403,
+          code: 'forbidden',
+          message: 'Cross-origin request rejected',
+          requestId: request.id,
+        }),
+      );
+    }
+  });
   await app.register(cors, {
-    origin: [...new Set([...getAllowedOrigins(config), ...allowedBrowserOrigins(config)])],
+    origin: [...browserOrigins],
     credentials: true,
     methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: [
