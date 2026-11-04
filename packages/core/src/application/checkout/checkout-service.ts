@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 
 import {
-  ConflictError,
   EventNotFoundError,
   ForbiddenError,
   InvalidOperationError,
@@ -137,7 +136,12 @@ function assertEligibilityAttested(
   attested?: boolean,
   eligibilityRulesEnabled?: boolean,
 ): void {
-  if (requiresEligibilityAttestation(tier) && eligibilityRulesEnabled !== true) {
+  const v1DoorRequirement = ['MALE', 'FEMALE', 'COUPLE'].includes(tier.audienceType ?? '');
+  if (
+    requiresEligibilityAttestation(tier) &&
+    !v1DoorRequirement &&
+    eligibilityRulesEnabled !== true
+  ) {
     throw new ForbiddenError(
       'This eligibility-restricted ticket is unavailable until the required policy and entry controls are approved',
     );
@@ -583,6 +587,7 @@ export class CheckoutService {
     organizationId: EntityId;
     lines: {
       tierId: EntityId;
+      pricingPhaseId?: string | null;
       tierName: string;
       quantity: number;
       unitPricePaise: number;
@@ -619,6 +624,11 @@ export class CheckoutService {
 
     const now = new Date();
     const buyerId = userId ?? input.actor.userId;
+    if (!buyerId || (!isSystemActor(input.actor) && buyerId !== input.actor.userId))
+      throw new UnauthorizedError('A verified account is required to book tickets');
+    const buyer = await this.deps.repositories.users?.getById(buyerId);
+    if (!buyer?.emailVerified)
+      throw new ForbiddenError('A verified account is required to book tickets');
     const event = await this.deps.repositories.events.getById(eventId);
     if (!event) throw new EventNotFoundError(eventId);
 
@@ -974,6 +984,8 @@ export class CheckoutService {
       eligibilityAttested,
       this.deps.config.features.m5EligibilityRulesEnabled,
     );
+    if (tier.audienceType === 'STUDENT' || tier.audienceType === 'MEMBER')
+      throw new InvalidOperationError('This ticket category is unavailable');
     if (tier.status !== 'active') {
       throw new InvalidOperationError(`Tier ${tier.name} is ${tier.status}`);
     }
@@ -994,10 +1006,6 @@ export class CheckoutService {
     // Same rationale as entitlement ids — a retried RSVP collides with itself
     // at the storage layer instead of minting a second ticket.
     const orderId = rsvpOrderId(event.id, actor.userId);
-    const existing = await this.deps.repositories.orders.getById(orderId);
-    if (existing && existing.status === 'paid') {
-      throw new ConflictError('An RSVP already exists for this event');
-    }
 
     // The authenticated Guest profile is the authoritative attendee identity.
     // Keep contact email/phone blank for RSVP; they are not needed to issue the
@@ -1032,10 +1040,8 @@ export class CheckoutService {
       }
     }
 
-    await this.deps.inventory.assertAvailable(event.id, tierId, 1);
-
-    const now = new Date();
-    const order: Order = {
+    const now = this.deps.config.clock.now();
+    let order: Order = {
       id: orderId,
       eventId: event.id,
       organizationId: event.organizationId,
@@ -1088,39 +1094,19 @@ export class CheckoutService {
       updatedAt: now.toISOString(),
     };
 
-    try {
-      await this.deps.repositories.orders.save(order);
-    } catch (error) {
-      // Lost a concurrent race with a double-tap on the same RSVP — converge
-      // on the winner rather than failing the guest.
-      if (error instanceof VersionConflictError) {
-        const winner = await this.deps.repositories.orders.getById(orderId);
-        if (winner) {
-          const winnerEntitlements = await this.deps.repositories.entitlements.getByOrderId(
-            winner.id,
-          );
-          await this.ensureOrderFulfilledEvent(winner);
-          return { order: winner, entitlements: winnerEntitlements };
-        }
-      }
-      throw error;
-    }
-
-    const latestEvent = await this.deps.repositories.events.getById(order.eventId);
-    if (latestEvent?.status === 'cancelled') {
-      await this.ensureOrderFulfilledEvent(order);
-      return {
-        order: (await this.deps.repositories.orders.getById(order.id)) ?? order,
-        entitlements: await this.deps.repositories.entitlements.getByOrderId(order.id),
-      };
-    }
-
-    const issuedEntitlements = issueEntitlements({ order, now });
-    for (const e of issuedEntitlements) {
-      await this.deps.repositories.entitlements.save(e);
-    }
-
-    const entitlements = await this.deps.repositories.entitlements.getByOrderId(orderId);
+    const acquired = await this.deps.repositories.orders.acquireRsvp({
+      order,
+      entitlements: issueEntitlements({
+        order,
+        now,
+        admitsPerUnit: { [tier.id]: admitsForTier(tier) },
+      }),
+      expectedEventVersion: event.version,
+      expectedTierVersion: tier.version,
+      now,
+    });
+    order = acquired.order;
+    const entitlements = acquired.entitlements;
     await this.recordAttributionSale(order);
     await this.financialPostingService.postZeroValueEvidence({
       organizationId: order.organizationId,
@@ -1132,6 +1118,27 @@ export class CheckoutService {
     });
     await this.ensureOrderFulfilledEvent(order);
     return { order, entitlements };
+  }
+
+  async cancelRsvp(orderId: EntityId, actor: ActorContext): Promise<Order> {
+    if (!actor.userId) throw new UnauthorizedError('Sign in to cancel your RSVP');
+    const order = await this.deps.repositories.orders.cancelRsvp(
+      orderId,
+      actor.userId,
+      this.deps.config.clock.now(),
+    );
+    await this.deps.outbox.append(
+      domainEvent({
+        id: deterministicDomainEventId('rsvp.cancelled', order.id),
+        type: 'rsvp.cancelled',
+        aggregateId: order.id,
+        organizationId: order.organizationId,
+        actorId: actor.userId,
+        payload: { orderId: order.id, eventId: order.eventId },
+        occurredAt: Date.parse(order.updatedAt),
+      }),
+    );
+    return order;
   }
 
   private async recordAttributionSale(order: Order): Promise<void> {
@@ -2056,7 +2063,7 @@ export class CheckoutService {
         orderId: order.id,
         eventId: entitlement.eventId,
         purchaserUserId: entitlement.userId,
-        holderUserId: entitlement.currentHolderUserId ?? entitlement.userId,
+        holderUserId: currentEntitlementHolderId(entitlement),
         ...(entitlement.upgradeFromEntitlementId
           ? { upgradeFromEntitlementId: entitlement.upgradeFromEntitlementId }
           : {}),

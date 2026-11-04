@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { InvalidOperationError } from '../errors.js';
 import { bumpVersion, newVersionedEntity } from '../identity.js';
 
@@ -15,6 +17,8 @@ export interface TicketTransfer extends VersionedEntity {
   recipientUserId: EntityId | null;
   /** SHA-256 of the normalized invitation email; allows claim without account lookup. */
   recipientEmailHash?: string | null;
+  /** Server-only delivery address, never part of transfer or management DTOs. */
+  recipientEmail?: string | null;
   status: TicketTransferStatus;
   expiresAt: string;
   acceptedAt: string | null;
@@ -30,11 +34,24 @@ export function createTicketTransfer(input: {
   senderUserId: EntityId;
   recipientUserId?: EntityId | null;
   recipientEmailHash?: string | null;
+  /** Server-only delivery address, never part of transfer or management DTOs. */
+  recipientEmail?: string | null;
   expiresAt: string;
   now?: Date;
 }): TicketTransfer {
   const now = input.now ?? new Date();
   const expiry = Date.parse(input.expiresAt);
+  const recipientEmail = input.recipientEmail?.trim().toLowerCase() ?? null;
+  if (
+    recipientEmail !== null &&
+    (recipientEmail.length > 254 ||
+      !/^[^\s@]+@[^\s@.]+\.[^\s@]+$/.test(recipientEmail) ||
+      createHash('sha256').update(recipientEmail).digest('hex') !== input.recipientEmailHash)
+  ) {
+    throw new InvalidOperationError(
+      'The private delivery address must match the invitation email binding',
+    );
+  }
   if (
     !input.senderUserId ||
     (!input.recipientUserId && !/^[a-f0-9]{64}$/.test(input.recipientEmailHash ?? '')) ||
@@ -59,6 +76,7 @@ export function createTicketTransfer(input: {
     senderUserId: input.senderUserId,
     recipientUserId: input.recipientUserId ?? null,
     recipientEmailHash: input.recipientEmailHash ?? null,
+    recipientEmail,
     status: 'pending',
     expiresAt: new Date(expiry).toISOString(),
     acceptedAt: null,

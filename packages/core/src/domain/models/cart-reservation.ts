@@ -41,6 +41,7 @@ export interface CartReservation extends VersionedEntity {
   lines: {
     tierId: EntityId;
     tierName: string;
+    pricingPhaseId?: string | null;
     quantity: number;
     unitPricePaise: number;
     admissionUnitPricePaise?: number;

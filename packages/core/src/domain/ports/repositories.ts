@@ -75,7 +75,7 @@ import type {
 import type { LedgerEntry, LedgerEntryType } from '../models/ledger.js';
 import type { Notification } from '../models/notification.js';
 import type { OnboardingRequest, OnboardingStatus } from '../models/onboarding.js';
-import type { Order, OrderStatus } from '../models/order.js';
+import type { Order, OrderStatus, RefundedTicketClaim } from '../models/order.js';
 import type {
   Organization,
   OrganizationInvitation,
@@ -376,7 +376,7 @@ export interface EventRepository {
   listPublic(query: PaginationQuery): Promise<Page<Event>>;
   /** Upcoming public events, ordered by start time and bounded at the query. */
   listUpcomingPublic(startAtOrAfter: string, limit: number): Promise<Event[]>;
-  save(event: Event, tx?: TxContext | null): Promise<void>;
+  save(event: Event, tx?: TxContext | null, outboxEvent?: DomainEvent): Promise<void>;
   delete(eventId: EntityId, tx?: TxContext | null): Promise<void>;
 }
 
@@ -394,7 +394,7 @@ export interface EventCatalogRepository {
   findDineInTier(eventId: EntityId): Promise<TicketTier | null>;
   saveTier(tier: TicketTier, tx?: TxContext | null): Promise<void>;
   /** Compare-and-set update; creation remains on saveTier. */
-  updateTier(tier: TicketTier): Promise<void>;
+  updateTier(tier: TicketTier, options?: { now: Date }): Promise<void>;
   // Promo codes
   getPromoById(promoId: EntityId): Promise<PromoCode | null>;
   getPromoByCode(code: string, eventId: EntityId | null): Promise<PromoCode | null>;
@@ -766,13 +766,26 @@ export interface CartReservationRepository {
 /** Order repository — the commerce aggregate. */
 /** One line of an order, as far as seat counting is concerned. */
 export interface SeatClaimLine {
+  pricingPhaseId?: string | null;
   tierId: EntityId;
   quantity: number;
   guestCount?: number;
   admissionMode?: 'bundle' | 'per_person';
 }
 
+export interface RsvpAcquisition {
+  order: Order;
+  entitlements: Entitlement[];
+  expectedEventVersion: number;
+  expectedTierVersion: number;
+  now: Date;
+}
+
 export interface OrderRepository {
+  /** Serializes capacity with paid holds and atomically persists the order and admission. */
+  acquireRsvp(input: RsvpAcquisition): Promise<{ order: Order; entitlements: Entitlement[] }>;
+  /** Owner-only, unused free admission cancellation; release is idempotent. */
+  cancelRsvp(orderId: EntityId, userId: EntityId, now: Date): Promise<Order>;
   /** Fetches by id. */
   getById(orderId: EntityId): Promise<Order | null>;
   /** Fetches by immutable support-safe booking reference. */
@@ -801,7 +814,11 @@ export interface OrderRepository {
    * paging through whole orders, which is what makes counting sold seats scale.
    * Includes orders of every status; the caller decides which ones hold a seat.
    */
-  listSeatClaims(eventId: EntityId): Promise<{ status: OrderStatus; lines: SeatClaimLine[] }[]>;
+  listSeatClaims(
+    eventId: EntityId,
+  ): Promise<
+    { status: OrderStatus; lines: SeatClaimLine[]; refundedTicketClaims?: RefundedTicketClaim[] }[]
+  >;
   /** Lists all orders platform-wide (admin read-only dashboards). */
   listAll(query: PaginationQuery): Promise<Page<Order>>;
   /** Hard-deletes an order (support operation). */
@@ -881,12 +898,14 @@ export interface EntitlementRepository {
     transfer: TicketTransfer,
     expectedCustodianUserId: EntityId,
     outboxEvent?: DomainEvent,
+    policy?: { now: Date },
   ): Promise<TicketTransfer>;
   /** Atomically resolves a pending transfer and, on acceptance, rotates ownership. */
   resolveTicketTransfer(input: {
     transferId: EntityId;
     actorUserId: EntityId;
     recipientEmailHash?: string;
+    requireEventValidation?: boolean;
     action: 'accept' | 'decline' | 'cancel' | 'freeze' | 'expire';
     holderName?: string;
     now?: Date;
@@ -926,6 +945,18 @@ export interface EntitlementRepository {
 export type { AdmissionClaim };
 
 export interface ClaimAdmissionOptions {
+  expectedVenueId?: string | null;
+  admissionAudit?: {
+    operatorUserId: string;
+    deviceId: string;
+    method: 'camera' | 'manual';
+    reason?: string;
+    gate?: string | null;
+    deviceName?: string | null;
+    operatorName?: string | null;
+    operatorRole?: string | null;
+  };
+  requireEventValidation?: boolean;
   /**
    * How many people this one call admits. 1 for an ordinary scan; 2 for a
    * confirmed couple ticket, where both guests walk through together and the
@@ -1643,6 +1674,7 @@ export interface SupportTicketQuery {
 }
 
 export interface SupportTicketRepository {
+  createIfAbsent(ticket: SupportTicket): Promise<boolean>;
   getById(id: EntityId, opts?: { includeDeleted?: boolean }): Promise<SupportTicket | null>;
   /** The ticket a client points at via `mergedInto`. */
   listByMergedInto(ticketId: EntityId): Promise<SupportTicket[]>;

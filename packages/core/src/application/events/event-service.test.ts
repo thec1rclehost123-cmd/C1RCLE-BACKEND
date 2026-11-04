@@ -135,7 +135,11 @@ describe('private event poster privacy', () => {
     expect(updated.visibilityMode).toBe('code');
     expect(updated.imageUrl).toBeNull();
     expect(updated.privateImageStoragePath).toBe('posters/host/poster.webp');
-    expect(save).toHaveBeenCalledWith(updated);
+    expect(save).toHaveBeenCalledWith(
+      updated,
+      null,
+      expect.objectContaining({ type: 'event.updated', aggregateId: updated.id }),
+    );
   });
 
   it('keeps private activation closed for an unowned or external poster URL', async () => {
@@ -233,7 +237,11 @@ describe('Host event rescheduling', () => {
     });
 
     expect(updated.startAt).toBe('2026-11-28T21:00:00.000Z');
-    expect(save).toHaveBeenCalledWith(updated);
+    expect(save).toHaveBeenCalledWith(
+      updated,
+      null,
+      expect.objectContaining({ type: 'event.updated', aggregateId: updated.id }),
+    );
   });
 
   it('rejects moving a Host event outside its approved slot without saving', async () => {
@@ -311,7 +319,11 @@ describe('Host event rescheduling', () => {
       startAt: '2026-11-29T20:00:00.000Z',
       endAt: '2026-11-29T23:00:00.000Z',
     });
-    expect(save).toHaveBeenCalledWith(updated);
+    expect(save).toHaveBeenCalledWith(
+      updated,
+      null,
+      expect.objectContaining({ type: 'event.updated', aggregateId: updated.id }),
+    );
     expect(transitionForSlot).toHaveBeenCalledWith(
       acceptedRequest,
       expect.objectContaining({ status: 'cancelled' }),

@@ -75,6 +75,9 @@ async function build(
     }),
     repositories: {
       events,
+      users: {
+        getById: async (id: string) => ({ id, email: `${id}@example.test`, emailVerified: true }),
+      },
       catalog,
       cartReservations: carts,
       orders,

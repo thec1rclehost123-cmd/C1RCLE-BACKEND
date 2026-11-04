@@ -1,4 +1,5 @@
 import { InvalidOperationError } from '../../domain/errors.js';
+import { committedTierQuantity } from '../../domain/models/tier-inventory.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type { CartReservation } from '../../domain/models/cart-reservation.js';
@@ -52,6 +53,23 @@ export class InventoryService {
    * Gets the effective available quantity for a tier.
    * effective = tier.quantity - sold - activeHolds
    */
+  async getTierInventory(
+    eventId: string,
+    tierId: EntityId,
+  ): Promise<{ soldQuantity: number; heldQuantity: number; availableQuantity: number }> {
+    const tier = await this.deps.eventCatalog.getTierById(tierId);
+    if (!tier || tier.eventId !== eventId) throw new InvalidOperationError('Ticket tier not found');
+    const [soldQuantity, heldQuantity] = await Promise.all([
+      this.getSoldCount(eventId, tierId),
+      this.getActiveHoldsCount(eventId, tierId),
+    ]);
+    return {
+      soldQuantity,
+      heldQuantity,
+      availableQuantity: Math.max(0, tier.quantity - soldQuantity - heldQuantity),
+    };
+  }
+
   async getAvailableQuantity(eventId: string, tierId: EntityId): Promise<number> {
     const tier = await this.deps.eventCatalog.getTierById(tierId);
     if (!tier) throw new InvalidOperationError(`Tier ${tierId} not found`);
@@ -64,6 +82,24 @@ export class InventoryService {
 
     const effective = totalQuantity - sold - activeHolds;
     return Math.max(0, effective);
+  }
+
+  /** Remaining allocations in one quantity-limited pricing phase. */
+  async getAvailablePricingPhaseQuantity(
+    eventId: string,
+    tierId: EntityId,
+    phaseId: string,
+  ): Promise<number> {
+    const tier = await this.deps.eventCatalog.getTierById(tierId);
+    const phase = tier?.pricingPhases?.find((candidate) => candidate.id === phaseId);
+    if (!phase) throw new InvalidOperationError('Pricing phase is unavailable');
+    if (phase.quantity === null) return Number.MAX_SAFE_INTEGER;
+    const now = new Date();
+    const [orders, holds] = await Promise.all([
+      this.deps.order.listSeatClaims(eventId),
+      this.deps.cartReservation.listActiveByEvent(eventId, now),
+    ]);
+    return Math.max(0, phase.quantity - committedTierQuantity(tierId, orders, holds, now, phaseId));
   }
 
   async getAvailableTicketAddonQuantity(addonId: EntityId): Promise<number> {
@@ -100,14 +136,11 @@ export class InventoryService {
    * actually settles, so its seat stays taken; only `refunded` gives it back.
    */
   private async getSoldByTier(eventId: string): Promise<Map<EntityId, number>> {
-    const sold = new Map<EntityId, number>();
-    for (const order of await this.deps.order.listSeatClaims(eventId)) {
-      if (order.status !== 'paid' && order.status !== 'refund_requested') continue;
-      for (const line of order.lines) {
-        sold.set(line.tierId, (sold.get(line.tierId) ?? 0) + unitsForLine(line));
-      }
-    }
-    return sold;
+    const orders = await this.deps.order.listSeatClaims(eventId);
+    const tierIds = new Set(orders.flatMap((order) => order.lines.map((line) => line.tierId)));
+    return new Map(
+      [...tierIds].map((tierId) => [tierId, committedTierQuantity(tierId, orders, [], new Date())]),
+    );
   }
 
   private async getActiveHoldsCount(eventId: string, tierId: EntityId): Promise<number> {
@@ -154,6 +187,18 @@ export class InventoryService {
         }
       }
       if (sold + reserved > capacity) return line.tierId;
+      if (line.pricingPhaseId) {
+        const phase = tier.pricingPhases?.find((candidate) => candidate.id === line.pricingPhaseId);
+        if (!phase) return line.tierId;
+        if (phase.quantity !== null) {
+          const ahead = live.filter(
+            (other) => other.id === hold.id || (other.sequence ?? 0) <= myPosition,
+          );
+          const orders = await this.deps.order.listSeatClaims(hold.eventId);
+          if (committedTierQuantity(tier.id, orders, ahead, new Date(), phase.id) > phase.quantity)
+            return line.tierId;
+        }
+      }
     }
     return null;
   }

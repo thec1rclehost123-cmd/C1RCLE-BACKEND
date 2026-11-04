@@ -20,6 +20,7 @@ export type EventStatus =
   | 'scheduled'
   | 'published'
   | 'sales_paused'
+  | 'postponed'
   | 'started'
   | 'ended'
   | 'archived'
@@ -35,6 +36,7 @@ export const EVENT_STATUSES: readonly EventStatus[] = [
   'scheduled',
   'published',
   'sales_paused',
+  'postponed',
   'started',
   'ended',
   'archived',
@@ -48,10 +50,11 @@ export const EVENT_STATUSES: readonly EventStatus[] = [
 export const EVENT_TRANSITIONS: Readonly<Record<EventStatus, readonly EventStatus[]>> = {
   draft: ['review', 'cancelled'],
   review: ['scheduled', 'draft', 'cancelled'],
-  scheduled: ['published', 'started', 'cancelled'],
-  published: ['sales_paused', 'started', 'cancelled'],
-  sales_paused: ['published', 'started', 'cancelled'],
-  started: ['ended'],
+  scheduled: ['published', 'postponed', 'started', 'cancelled'],
+  published: ['sales_paused', 'postponed', 'started', 'cancelled'],
+  sales_paused: ['published', 'postponed', 'started', 'cancelled'],
+  postponed: ['published', 'cancelled'],
+  started: ['ended', 'postponed', 'cancelled'],
   ended: ['archived'],
   archived: [],
   cancelled: [],
@@ -83,6 +86,20 @@ export interface TicketTierRef {
 
 export type CompensationModel = 'standard' | 'custom' | 'salary';
 export type SalaryPeriod = 'per_event' | 'per_day' | 'per_month';
+
+export interface EventRefundPolicy {
+  kind: 'no_refunds' | 'until_cutoff' | 'organizer_reviewed';
+  cutoffAt?: string | null;
+}
+
+export function assertEventRefundPolicy(policy: EventRefundPolicy | undefined): void {
+  if (!policy) return;
+  if (
+    !['no_refunds', 'until_cutoff', 'organizer_reviewed'].includes(policy.kind) ||
+    (policy.kind === 'until_cutoff' && !Number.isFinite(Date.parse(policy.cutoffAt ?? '')))
+  )
+    throw new InvalidOperationError('A refund-request cutoff must have a valid date');
+}
 
 export interface EventCompensation {
   model: CompensationModel;
@@ -159,6 +176,7 @@ export interface Event extends VersionedEntity {
   /** ISO-8601 timestamps. */
   startAt: string;
   endAt: string | null;
+  lastMaterialChangeAt?: string;
   status: EventStatus;
   /** Missing on legacy records means public. Private modes require a verified grant for detail. */
   visibilityMode?: EventVisibilityMode;
@@ -173,6 +191,14 @@ export interface Event extends VersionedEntity {
   isFree: boolean;
   /** Reason/meta recorded when CANCELLED. */
   cancellationReason: string | null;
+  /** Last postponement; dates remain historical until explicit rescheduling. */
+  postponement?: {
+    reason: string;
+    initiatedBy: 'host' | 'venue';
+    organizationId: EntityId;
+    at: string;
+  } | null;
+  refundPolicy?: EventRefundPolicy;
   compensation?: EventCompensation | null;
   entryRules?: EventEntryRules;
   media?: EventMedia;
@@ -210,6 +236,7 @@ export interface CreateEventInput {
   startAt: string;
   endAt?: string | null;
   tags?: string[];
+  refundPolicy?: EventRefundPolicy;
   compensation?: EventCompensation | null;
   capacity?: number | null;
   visibilityMode?: EventVisibilityMode;
@@ -248,7 +275,10 @@ function trimDashes(value: string): string {
 }
 
 export function createEvent(input: CreateEventInput): Event {
+  assertEventRefundPolicy(input.refundPolicy);
   const now = input.now ?? new Date();
+  if (input.entryRules?.reentryAllowed === true)
+    throw new InvalidOperationError('Automatic re-entry is unavailable in V1');
   assertMediaVisibility(input.media, input.visibilityMode);
   return {
     id: input.id,
@@ -272,6 +302,7 @@ export function createEvent(input: CreateEventInput): Event {
     startingPricePaise: 0,
     isFree: true,
     cancellationReason: null,
+    refundPolicy: input.refundPolicy ?? { kind: 'organizer_reviewed' },
     compensation: input.compensation ?? null,
     ...(input.entryRules === undefined ? {} : { entryRules: input.entryRules }),
     ...(input.media === undefined ? {} : { media: input.media }),
@@ -294,6 +325,7 @@ interface EventChanges {
   tags?: string[];
   startingPricePaise?: number;
   isFree?: boolean;
+  refundPolicy?: EventRefundPolicy;
   compensation?: EventCompensation | null;
   capacity?: number | null;
   visibilityMode?: EventVisibilityMode;
@@ -305,6 +337,9 @@ interface EventChanges {
 /** Controlled attribute update (no status changes here). Bumps version. */
 export function updateEvent(event: Event, changes: EventChanges, now?: Date): Event {
   assertEventMutable(event);
+  assertEventRefundPolicy(changes.refundPolicy);
+  if (changes.entryRules?.reentryAllowed === true)
+    throw new InvalidOperationError('Automatic re-entry is unavailable in V1');
   const stamped = bumpVersion(event, now ?? new Date());
   const updated = { ...stamped, ...changes };
   assertMediaVisibility(updated.media, updated.visibilityMode);
@@ -356,6 +391,30 @@ export function cancelEvent(event: Event, reason: string, now?: Date): Event {
   transitionStatus(event.status, 'cancelled', EVENT_TRANSITIONS);
   const stamped = bumpVersion(event, now ?? new Date());
   return { ...stamped, status: 'cancelled', isPublic: false, cancellationReason: reason };
+}
+
+/** Freeze the canonical event without erasing its last announced schedule. */
+export function postponeEvent(
+  event: Event,
+  reason: string,
+  initiatedBy: 'host' | 'venue',
+  organizationId: EntityId,
+  now: Date,
+): Event {
+  if (!reason.trim()) throw new InvalidOperationError('A postponement reason is required');
+  if (
+    event.status === 'postponed' &&
+    !(initiatedBy === 'venue' && event.postponement?.initiatedBy !== 'venue')
+  )
+    return event;
+  const updated =
+    event.status === 'postponed'
+      ? bumpVersion(event, now)
+      : transitionEvent(event, 'postponed', now);
+  return {
+    ...updated,
+    postponement: { reason: reason.trim(), initiatedBy, organizationId, at: now.toISOString() },
+  };
 }
 
 const PAUSABLE_STATUSES: readonly EventStatus[] = ['published', 'sales_paused'];

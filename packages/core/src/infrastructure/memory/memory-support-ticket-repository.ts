@@ -65,6 +65,12 @@ export class MemorySupportTicketRepository implements SupportTicketRepository {
     return serializeSlice(all, pagination);
   }
 
+  async createIfAbsent(ticket: SupportTicket): Promise<boolean> {
+    if (this.tickets.has(ticket.id)) return false;
+    this.tickets.set(ticket.id, ticket);
+    return true;
+  }
+
   async save(ticket: SupportTicket): Promise<void> {
     const existing = this.tickets.get(ticket.id);
     if (existing && existing.version !== ticket.version - 1) {

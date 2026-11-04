@@ -544,3 +544,83 @@ describe('Venue availability and Host request lifecycle', () => {
     ).rejects.toThrow(/accepted Venue slot request/);
   });
 });
+
+describe('Venue-initiated booking cancellation', () => {
+  it('freezes the linked event before release, preserves initiator and is retry-safe', async () => {
+    const deps = createTestDeps();
+    const venue = createVenue({
+      id: 'venue-cancel',
+      organizationId: 'venue-org',
+      ownerId: 'venue-owner',
+      name: 'Venue',
+      slug: 'venue-cancel',
+      now: NOW,
+    });
+    await deps.repositories.venues.save(venue);
+    let event = createEvent({
+      id: 'cancel-event',
+      organizationId: 'host-org',
+      venueId: venue.id,
+      title: 'Night',
+      startAt: '2030-11-04T20:00:00.000Z',
+      now: NOW,
+    });
+    await deps.repositories.events.save(event);
+    for (const status of ['review', 'scheduled', 'published'] as const) {
+      event = transitionEvent(event, status, NOW);
+      await deps.repositories.events.save(event);
+    }
+    const pending = createSlotRequest({
+      id: 'venue-cancel-request',
+      venueId: venue.id,
+      hostId: 'host-org',
+      eventId: event.id,
+      now: NOW,
+    });
+    await deps.repositories.slotRequests.save(pending);
+    const accepted = transitionSlotRequest(pending, 'accepted', NOW);
+    await deps.repositories.slotRequests.save(accepted);
+    const actor: ActorContext = {
+      userId: 'venue-owner',
+      organizationId: 'venue-org',
+      role: 'owner',
+      capabilities: ['venue'],
+    };
+    const service = new VenueSlotRequestService(deps);
+    await expect(
+      service.cancelByVenue(
+        { ...actor, organizationId: 'stranger' },
+        accepted.id,
+        'Venue unavailable',
+      ),
+    ).rejects.toThrow();
+    await service.cancelByVenue(actor, accepted.id, 'Venue unavailable');
+    const postponed = await deps.repositories.events.getById(event.id);
+    expect(postponed).toMatchObject({
+      status: 'postponed',
+      startAt: event.startAt,
+      postponement: {
+        initiatedBy: 'venue',
+        organizationId: 'venue-org',
+        reason: 'Venue unavailable',
+      },
+    });
+    expect((await deps.repositories.slotRequests.getById(accepted.id))?.status).toBe('cancelled');
+    const cases = await deps.repositories.supportTickets.list({}, { cursor: null, limit: 10 });
+    const supportCase = cases.items.find((item) => item.links.eventId === event.id);
+    expect(supportCase).toMatchObject({
+      priority: 'high',
+      status: 'open',
+      category: 'event',
+      links: { eventId: event.id, venueId: venue.id, organizationId: 'host-org' },
+    });
+    await service.cancelByVenue(actor, accepted.id, 'Venue unavailable');
+    expect((await deps.repositories.events.getById(event.id))?.version).toBe(postponed?.version);
+    expect(await deps.adminAudit.listForTarget(event.id, 10)).toContainEqual(
+      expect.objectContaining({
+        action: 'venue.booking.cancelled',
+        after: expect.objectContaining({ resolutionRequired: true }),
+      }),
+    );
+  });
+});

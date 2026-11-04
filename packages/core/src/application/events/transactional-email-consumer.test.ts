@@ -1500,3 +1500,83 @@ describe('transactional email consumer', () => {
     expect([...emailDeliveries.records.values()]).toHaveLength(3);
   });
 });
+
+describe('new-account group assignment invitation delivery', () => {
+  it('delivers from a purchaser-custodied unassigned admission without requiring a recipient account', async () => {
+    const now = new Date('2026-11-04T12:00:00.000Z');
+    const recipientEmail = 'new-invited-guest@real.test';
+    const recipientEmailHash = createHash('sha256').update(recipientEmail).digest('hex');
+    const transfer = {
+      id: 'TRF-new-user',
+      entitlementId: 'ENT-unassigned',
+      eventId: 'night',
+      senderUserId: 'purchaser',
+      recipientUserId: null,
+      recipientEmail,
+      recipientEmailHash,
+      status: 'pending',
+      expiresAt: new Date(now.getTime() + 3600_000).toISOString(),
+    };
+    const send = vi.fn(async () => ({ providerMessageId: 'mock-only' }));
+    const userLookup = vi.fn();
+    const deliveries = new MemoryEmailDeliveryRepository();
+    const deps = {
+      config: { guestPortalUrl: 'https://guest-staging.example.test', clock: { now: () => now } },
+      emailDeliveries: deliveries,
+      emailSender: { name: 'mock', sendTransactionalEmail: send },
+      repositories: {
+        users: { getById: userLookup },
+        entitlements: {
+          getTicketTransfer: async () => transfer,
+          getById: async () => ({
+            id: transfer.entitlementId,
+            eventId: transfer.eventId,
+            userId: 'purchaser',
+            currentHolderUserId: null,
+            status: 'valid',
+            pendingTransferId: transfer.id,
+          }),
+        },
+        events: { getById: async () => ({ title: 'Group Night' }) },
+      },
+    } as unknown as ServiceDeps;
+    const fact = domainEvent({
+      id: 'new-user-invitation',
+      type: 'ticket.transfer.created',
+      aggregateId: transfer.entitlementId,
+      organizationId: 'host',
+      actorId: 'purchaser',
+      payload: {
+        transferId: transfer.id,
+        entitlementId: transfer.entitlementId,
+        eventId: transfer.eventId,
+        recipientBinding: 'verified_email',
+        expiresAt: transfer.expiresAt,
+      },
+      occurredAt: now.getTime(),
+    });
+    const consumer = createTransactionalEmailConsumer(deps);
+    await consumer(fact);
+    await consumer(fact);
+    expect(send).toHaveBeenCalledOnce();
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        html: expect.stringContaining(
+          'https://guest-staging.example.test/ticket-transfer/TRF-new-user',
+        ),
+      }),
+    );
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: recipientEmail,
+        html: expect.stringContaining('verify this email address'),
+      }),
+    );
+    expect(userLookup).not.toHaveBeenCalled();
+    expect(JSON.stringify(fact)).not.toContain(recipientEmail);
+    expect(JSON.stringify([...deliveries.records.values()])).not.toContain(recipientEmail);
+    transfer.recipientEmail = 'wrong@example.test';
+    await consumer({ ...fact, id: 'mismatched-delivery' });
+    expect(send).toHaveBeenCalledOnce();
+  });
+});

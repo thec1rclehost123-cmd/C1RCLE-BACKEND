@@ -208,7 +208,7 @@ describe('EventCancellationService', () => {
     await context.service.handle(context.cancellation);
 
     expect(await context.orders.getById(order.id)).toMatchObject({
-      status: 'paid',
+      status: 'cancelled',
       eventCancellation: { reason: 'Venue closed' },
     });
     expect([...context.refundRequests.requests.values()]).toHaveLength(0);

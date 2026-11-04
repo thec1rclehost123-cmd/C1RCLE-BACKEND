@@ -26,6 +26,7 @@ import {
   recordRefundProviderFact,
   rejectRefundRequest,
 } from '../../domain/models/refund-request.js';
+import { selectRefundTargets } from '../../domain/models/refund-targets.js';
 import { emit } from '../context.js';
 
 import { FinancialPostingService } from './financial-posting-service.js';
@@ -66,6 +67,7 @@ export interface RequestRefundCommand {
   amountPaise: number;
   reason: string;
   ticketLines?: { tierId: EntityId; quantity: number }[];
+  targetEntitlementIds?: EntityId[];
 }
 
 export class RefundService {
@@ -110,35 +112,18 @@ export class RefundService {
     }
 
     const orderEntitlements = await this.entitlements.getByOrderId(order.id);
-    const ticketLines = command.ticketLines ?? [];
-    const targetEntitlementIds: EntityId[] = [];
-    if (ticketLines.length > 0) {
-      const ordered = [...orderEntitlements].sort((left, right) => left.id.localeCompare(right.id));
-      const seenTiers = new Set<EntityId>();
-      for (const line of ticketLines) {
-        if (seenTiers.has(line.tierId)) {
-          throw new InvalidOperationError(`Refund tier ${line.tierId} was selected twice`);
-        }
-        seenTiers.add(line.tierId);
-        const purchased = order.lines.find((item) => item.tierId === line.tierId)?.quantity ?? 0;
-        if (
-          !Number.isSafeInteger(line.quantity) ||
-          line.quantity <= 0 ||
-          line.quantity > purchased
-        ) {
-          throw new InvalidOperationError(`Invalid refund quantity for tier ${line.tierId}`);
-        }
-        const eligible = ordered.filter(
-          (entitlement) => entitlement.tierId === line.tierId && entitlement.status !== 'void',
-        );
-        if (eligible.length < line.quantity) {
-          throw new InvalidOperationError(`Not enough refundable tickets for tier ${line.tierId}`);
-        }
-        targetEntitlementIds.push(
-          ...eligible.slice(0, line.quantity).map((entitlement) => entitlement.id),
-        );
-      }
+    const { ticketLines, targetEntitlementIds } = selectRefundTargets(orderEntitlements, command);
+    if (
+      ticketLines.length > 0 &&
+      command.amountPaise === remaining &&
+      targetEntitlementIds.length <
+        orderEntitlements.filter((ticket) => ticket.status !== 'void').length
+    ) {
+      throw new InvalidOperationError(
+        'Refunding the full remaining order balance requires selecting every active ticket',
+      );
     }
+
     const coverAccounts = await this.getCoverAccounts(order, orderEntitlements);
     await this.assertCoverRefundScope(
       order,
@@ -466,7 +451,28 @@ export class RefundService {
       });
     }
 
-    const refundedOrder = applyOrderRefund(order, request.amountPaise, now, request.id);
+    const selectedTickets =
+      request.scope === 'ticket_lines'
+        ? await Promise.all(request.targetEntitlementIds.map((id) => this.entitlements.getById(id)))
+        : [];
+    const settledTicketClaims = selectedTickets.map((ticket) => {
+      if (!ticket || ticket.orderId !== order.id)
+        throw new InvalidOperationError('Refund ticket selection no longer matches the order');
+      const line = order.lines.find((row) => row.tierId === ticket.tierId);
+      if (!line) throw new InvalidOperationError('Refund ticket tier no longer matches the order');
+      return {
+        entitlementId: ticket.id,
+        tierId: ticket.tierId,
+        ...(line.pricingPhaseId === undefined ? {} : { pricingPhaseId: line.pricingPhaseId }),
+      };
+    });
+    const refundedOrder = applyOrderRefund(
+      order,
+      request.amountPaise,
+      now,
+      request.id,
+      settledTicketClaims,
+    );
     if (refundedOrder !== order) await this.orders.save(refundedOrder);
     if (refundedOrder.status === 'refunded' || request.scope === 'ticket_lines') {
       const targets =

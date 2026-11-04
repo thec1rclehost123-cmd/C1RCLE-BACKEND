@@ -84,6 +84,23 @@ async function notificationFor(
   organizations: Pick<OrganizationRepository, 'getById'>,
 ): Promise<NotificationForInput | null> {
   switch (event.type) {
+    case 'event.updated': {
+      const cancellation = (event.payload as EventPayloads['event.updated']).venueCancellation;
+      if (!cancellation) return null;
+      return {
+        recipientId: cancellation.hostId,
+        recipientType: 'host',
+        type: 'venue.booking.cancelled',
+        title: 'Venue cancelled an accepted booking',
+        body: `Sales and admission are on hold. Move the event, postpone it, or cancel. ${cancellation.reason}`,
+        data: {
+          eventId: event.aggregateId,
+          venueId: cancellation.venueId,
+          slotRequestId: cancellation.slotRequestId,
+        },
+        dedupeKey: `venue_booking_cancelled:${cancellation.slotRequestId}`,
+      };
+    }
     case 'promoter.assignment.invited': {
       const payload = event.payload as EventPayloads['promoter.assignment.invited'];
       return {

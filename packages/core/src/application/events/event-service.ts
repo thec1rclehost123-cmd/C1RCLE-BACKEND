@@ -4,9 +4,12 @@ import {
   InvalidOperationError,
 } from '../../domain/errors.js';
 import { deterministicDomainEventId, domainEvent } from '../../domain/events.js';
+import { isMaterialEventChange } from '../../domain/models/event-policy.js';
 import {
   createEvent,
   transitionEvent,
+  transitionEventStatus,
+  postponeEvent,
   cancelEvent,
   updateEvent,
   type EventStatus,
@@ -34,6 +37,7 @@ export interface CreateEventCommand {
   startAt: string;
   endAt?: string | null;
   tags?: string[];
+  refundPolicy?: Event['refundPolicy'];
   compensation?: EventCompensation | null;
   visibilityMode?: EventVisibilityMode;
   addressDisclosure?: EventAddressDisclosure;
@@ -43,6 +47,8 @@ export interface CreateEventCommand {
 }
 
 export interface UpdateEventCommand {
+  /** Internal command flag; only the explicit reschedule endpoint sets this. */
+  resumePostponed?: boolean;
   eventId: EntityId;
   expectedVersion: number | null;
   changes: {
@@ -58,6 +64,7 @@ export interface UpdateEventCommand {
     tags?: string[];
     startingPricePaise?: number;
     isFree?: boolean;
+    refundPolicy?: Event['refundPolicy'];
     compensation?: EventCompensation | null;
     visibilityMode?: EventVisibilityMode;
     addressDisclosure?: EventAddressDisclosure;
@@ -167,7 +174,9 @@ export class EventService {
             JSON.stringify(existingEvent.compensation) ===
               JSON.stringify(command.compensation ?? null) &&
             JSON.stringify(existingEvent.entryRules) === JSON.stringify(command.entryRules) &&
-            JSON.stringify(existingEvent.media) === JSON.stringify(command.media);
+            JSON.stringify(existingEvent.media) === JSON.stringify(command.media) &&
+            JSON.stringify(existingEvent.refundPolicy ?? { kind: 'organizer_reviewed' }) ===
+              JSON.stringify(command.refundPolicy ?? { kind: 'organizer_reviewed' });
           if (sameCreateCommand) return existingEvent;
           throw new InvalidOperationError(
             'The accepted Venue slot request is unavailable for this Host',
@@ -228,6 +237,7 @@ export class EventService {
       entryRules: command.entryRules,
       media: command.media,
       tags: command.tags ?? [],
+      refundPolicy: command.refundPolicy,
       compensation: command.compensation ?? null,
       now: this.deps.config.clock.now(),
     });
@@ -391,6 +401,16 @@ export class EventService {
     const nextEndAt = Object.hasOwn(command.changes, 'endAt')
       ? (command.changes.endAt ?? null)
       : event.endAt;
+    if (
+      !actor.capabilities.includes('host') &&
+      (command.changes.startAt !== undefined || Object.hasOwn(command.changes, 'endAt')) &&
+      (!Number.isFinite(Date.parse(nextStartAt)) ||
+        (nextEndAt !== null &&
+          (!Number.isFinite(Date.parse(nextEndAt)) ||
+            Date.parse(nextEndAt) <= Date.parse(nextStartAt))))
+    ) {
+      throw new InvalidOperationError('Event end must be after a valid event start');
+    }
     const nextVenueId = requestedChanges.venueId ?? event.venueId;
     const scheduleChange =
       nextStartAt !== event.startAt ||
@@ -427,15 +447,25 @@ export class EventService {
           privateImageStoragePath,
         }
       : { ...requestedChanges, privateImageStoragePath: null };
-    const updated = updateEvent(event, changes, this.deps.config.clock.now());
+    if (command.resumePostponed) {
+      if (
+        event.status !== 'postponed' ||
+        !command.changes.startAt ||
+        Date.parse(nextStartAt) <= this.deps.config.clock.now().getTime()
+      ) {
+        throw new InvalidOperationError(
+          'Rescheduling requires a postponed event and a future replacement date',
+        );
+      }
+      transitionEventStatus(event.status, 'published');
+    }
+    const changed = updateEvent(event, changes, this.deps.config.clock.now());
+    let updated = command.resumePostponed
+      ? { ...changed, status: 'published' as const, isPublic: nextVisibilityMode === 'public' }
+      : changed;
     if (updated === event) return event;
-    await this.repo.save(updated);
-    if (approvedRequest)
-      await this.releaseSupersededEventSlots(actor, event.id, approvedRequest.id);
     const materialChange =
-      event.title !== updated.title ||
-      event.startAt !== updated.startAt ||
-      event.venueId !== updated.venueId
+      command.resumePostponed || isMaterialEventChange(event, updated)
         ? {
             eventVersion: updated.version,
             previousTitle: event.title,
@@ -444,12 +474,24 @@ export class EventService {
             startAt: updated.startAt,
             previousVenueId: event.venueId,
             venueId: updated.venueId,
+            ...(command.resumePostponed ? { changeType: 'rescheduled' as const } : {}),
           }
         : null;
-    await emit(this.deps, actor, updated.id, 'event.updated', {
-      title: updated.title,
-      materialChange,
+    if (materialChange)
+      updated = { ...updated, lastMaterialChangeAt: this.deps.config.clock.now().toISOString() };
+    const outboxEvent = domainEvent({
+      id: deterministicDomainEventId('event.updated', updated.id, String(updated.version)),
+      type: 'event.updated',
+      aggregateId: updated.id,
+      organizationId: updated.organizationId,
+      actorId: actor.userId,
+      payload: { title: updated.title, materialChange },
+      occurredAt: this.deps.config.clock.now().getTime(),
     });
+    await this.repo.save(updated, null, outboxEvent);
+    if (approvedRequest)
+      await this.releaseSupersededEventSlots(actor, event.id, approvedRequest.id);
+    await this.deps.outbox.append(outboxEvent);
     return updated;
   }
 
@@ -475,6 +517,10 @@ export class EventService {
   async publish(actor: ActorContext, eventId: EntityId): Promise<Event> {
     const event = await this.fetchOwned(actor, eventId);
     this.assertPrivateAccessEnabled(event);
+    if (event.status === 'postponed')
+      throw new InvalidOperationError(
+        'Announce a replacement date before resuming a postponed event',
+      );
     if (event.status !== 'review' && event.status !== 'scheduled') {
       return transitionEvent(event, 'published', this.deps.config.clock.now());
     }
@@ -547,6 +593,10 @@ export class EventService {
   async resumeSales(actor: ActorContext, eventId: EntityId): Promise<Event> {
     const event = await this.fetchOwned(actor, eventId);
     this.assertPrivateAccessEnabled(event);
+    if (event.status === 'postponed')
+      throw new InvalidOperationError(
+        'Announce a replacement date before resuming a postponed event',
+      );
     const updated = transitionEvent(event, 'published', this.deps.config.clock.now());
     if (updated === event) return event;
     await this.repo.save(updated);
@@ -556,27 +606,60 @@ export class EventService {
     return updated;
   }
 
+  async postpone(actor: ActorContext, eventId: EntityId, reason: string): Promise<Event> {
+    const event = await this.fetchOwned(actor, eventId);
+    const updated = postponeEvent(
+      event,
+      reason,
+      'host',
+      actor.organizationId,
+      this.deps.config.clock.now(),
+    );
+    // Deterministic replay closes a failure between persistence and enqueueing.
+    const outboxEvent = domainEvent({
+      id: deterministicDomainEventId('event.postponed', updated.id, String(updated.version)),
+      type: 'event.updated',
+      aggregateId: updated.id,
+      organizationId: updated.organizationId,
+      actorId: actor.userId,
+      payload: {
+        title: updated.title,
+        materialChange: {
+          eventVersion: updated.version,
+          previousTitle: event.title,
+          title: updated.title,
+          previousStartAt: event.startAt,
+          startAt: updated.startAt,
+          previousVenueId: event.venueId,
+          venueId: updated.venueId,
+          changeType: 'postponed',
+        },
+      },
+      occurredAt: this.deps.config.clock.now().getTime(),
+    });
+    if (updated !== event) await this.repo.save(updated, null, outboxEvent);
+    await this.deps.outbox.append(outboxEvent);
+    return updated;
+  }
+
   async cancel(actor: ActorContext, eventId: EntityId, reason: string): Promise<Event> {
     const event = await this.fetchOwned(actor, eventId);
     const updated = cancelEvent(event, reason, this.deps.config.clock.now());
-    if (updated !== event) await this.repo.save(updated);
-    // Stable identity turns a retry into an outbox repair if the process died
-    // after the event CAS but before enqueueing downstream cancellation work.
-    await this.deps.outbox.append(
-      domainEvent({
-        id: deterministicDomainEventId('event.cancelled', updated.id, String(updated.version)),
-        type: 'event.cancelled',
-        aggregateId: updated.id,
-        organizationId: updated.organizationId,
-        actorId: actor.userId,
-        payload: {
-          title: updated.title,
-          reason: updated.cancellationReason ?? reason,
-          eventVersion: updated.version,
-        },
-        occurredAt: this.deps.config.clock.now().getTime(),
-      }),
-    );
+    const outboxEvent = domainEvent({
+      id: deterministicDomainEventId('event.cancelled', updated.id, String(updated.version)),
+      type: 'event.cancelled',
+      aggregateId: updated.id,
+      organizationId: updated.organizationId,
+      actorId: actor.userId,
+      payload: {
+        title: updated.title,
+        reason: updated.cancellationReason ?? reason,
+        eventVersion: updated.version,
+      },
+      occurredAt: this.deps.config.clock.now().getTime(),
+    });
+    if (updated !== event) await this.repo.save(updated, null, outboxEvent);
+    await this.deps.outbox.append(outboxEvent);
     return updated;
   }
 
@@ -740,6 +823,7 @@ export class EventService {
       startAt: source.startAt,
       endAt: source.endAt,
       tags: source.tags,
+      refundPolicy: source.refundPolicy,
       compensation: source.compensation,
       visibilityMode: source.visibilityMode ?? 'public',
       now: this.deps.config.clock.now(),
@@ -770,6 +854,10 @@ export class EventService {
   /** Direct status transition used by idempotent flows (validate-then-transition). */
   async transitionTo(actor: ActorContext, eventId: EntityId, to: EventStatus): Promise<Event> {
     const event = await this.fetchOwned(actor, eventId);
+    if (event.status === 'postponed' && to === 'published')
+      throw new InvalidOperationError(
+        'Announce a replacement date before resuming a postponed event',
+      );
     const updated = transitionEvent(event, to, this.deps.config.clock.now());
     if (updated === event) return event;
     await this.repo.save(updated);

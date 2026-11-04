@@ -50,6 +50,7 @@ const SCAN_LEDGER_TRANSITIONS: Readonly<Record<ScanLedgerStatus, readonly ScanLe
 };
 
 export type ScanDenyReason =
+  | 'event_closed'
   | 'invalid_signature'
   | 'already_used'
   | 'expired'

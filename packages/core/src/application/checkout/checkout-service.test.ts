@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 
 import { createCoreConfig } from '../../config/index.js';
 import {
-  ConflictError,
   ForbiddenError,
   InvalidOperationError,
   TicketTierNotFoundError,
@@ -60,9 +59,10 @@ const actor = (userId: string): ActorContext => ({
 function buildService(serviceConfig = config) {
   const events = new MemoryEventRepository();
   const catalog = new MemoryEventCatalogRepository();
-  const orders = new MemoryOrderRepository();
   const entitlements = new MemoryEntitlementRepository();
   const carts = new MemoryCartReservationRepository();
+  const orders = new MemoryOrderRepository({ catalog, carts, entitlements, events });
+  catalog.inventoryClaims = { orders, carts };
   const guestProfiles = new MemoryGuestProfileRepository();
   const users = new MemoryUserAccountRepository();
   const outbox = new MemoryOutboxStore();
@@ -476,7 +476,7 @@ describe('CheckoutService.createRsvp', () => {
     ).rejects.toBeInstanceOf(TicketTierNotFoundError);
   });
 
-  it('rejects a second RSVP and converges id and slug callers on one order', async () => {
+  it('replays a second RSVP and converges id and slug callers on one order', async () => {
     const { events, catalog, orders, service } = buildService();
     await seedPublishedFreeEvent(events);
     seedTier(catalog);
@@ -490,7 +490,10 @@ describe('CheckoutService.createRsvp', () => {
     // same deterministic order, not a second ticket.
     await expect(
       service.createRsvp({ actor: actor('user_1'), eventId: 'rsvp-night', tierId: 'tier_1' }),
-    ).rejects.toBeInstanceOf(ConflictError);
+    ).resolves.toMatchObject({
+      order: { id: first.order.id },
+      entitlements: [{ id: first.entitlements[0]?.id }],
+    });
 
     const page = await orders.listByUser('user_1', { limit: 100 });
     expect(page.items).toHaveLength(1);
@@ -542,4 +545,187 @@ describe('admitsForTier (D4 — headcount comes from tier metadata, not a defaul
     expect(admitsForTier(undefined)).toBe(1);
     expect(admitsForTier(null)).toBe(1);
   });
+});
+
+describe('M3 RSVP inventory invariants', () => {
+  it('allows only one verified account to acquire the final RSVP', async () => {
+    const { events, catalog, service } = buildService();
+    await seedPublishedFreeEvent(events);
+    seedTier(catalog, { quantity: 1 });
+    const results = await Promise.allSettled(
+      ['user_1', 'user_2'].map((userId) =>
+        service.createRsvp({ actor: actor(userId), eventId: 'evt_1', tierId: 'tier_1' }),
+      ),
+    );
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+  });
+});
+
+describe('M3 RSVP cancellation', () => {
+  it('releases exactly once and another account can acquire the returned seat', async () => {
+    const { events, catalog, service, deps } = buildService();
+    await seedPublishedFreeEvent(events);
+    seedTier(catalog, { quantity: 1 });
+    const first = await service.createRsvp({
+      actor: actor('user_1'),
+      eventId: 'evt_1',
+      tierId: 'tier_1',
+    });
+    await expect(service.cancelRsvp(first.order.id, actor('user_2'))).rejects.toThrow();
+    const cancelled = await service.cancelRsvp(first.order.id, actor('user_1'));
+    expect(cancelled.status).toBe('cancelled');
+    const replay = await service.cancelRsvp(first.order.id, actor('user_1'));
+    expect(replay.version).toBe(cancelled.version);
+    expect(
+      await deps.repositories.entitlements.getById(
+        first.entitlements[0]?.id ?? 'missing-test-ticket',
+      ),
+    ).toMatchObject({ status: 'void', credentialVersion: 2 });
+    const second = await service.createRsvp({
+      actor: actor('user_2'),
+      eventId: 'evt_1',
+      tierId: 'tier_1',
+    });
+    expect(second.order.status).toBe('paid');
+    expect(await deps.inventory.getAvailableQuantity('evt_1', 'tier_1')).toBe(0);
+  });
+});
+
+describe('M3 verified acquisition', () => {
+  it('does not let an unverified account reserve paid checkout inventory', async () => {
+    const { events, catalog, service, users } = buildService();
+    await seedPublishedFreeEvent(events);
+    seedTier(catalog, { accessType: 'ENTRY', priceInPaise: 50000 });
+    const { pricing } = await service.quote({
+      actor: actor('user_1'),
+      eventId: 'evt_1',
+      lines: [{ tierId: 'tier_1', quantity: 1 }],
+    });
+    const user = await users.getById('user_1');
+    if (!user) throw new Error('Verified fixture user missing');
+    users.save({ ...user, emailVerified: false });
+    await expect(
+      service.createHold({
+        actor: actor('user_1'),
+        eventId: 'evt_1',
+        organizationId: 'org_1',
+        lines: pricing.lines,
+        pricing,
+        appliedPromoCode: null,
+        attribution: null,
+        idempotencyKey: 'unverified-checkout',
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+  });
+});
+
+describe('M3 RSVP authoritative sale windows', () => {
+  it.each([
+    { salesStartAt: new Date(NOW.getTime() + 1).toISOString(), salesEndAt: null, allowed: false },
+    {
+      salesStartAt: NOW.toISOString(),
+      salesEndAt: new Date(NOW.getTime() + 1).toISOString(),
+      allowed: true,
+    },
+    { salesStartAt: null, salesEndAt: NOW.toISOString(), allowed: false },
+  ])(
+    'enforces inclusive opening and exclusive closing: $allowed',
+    async ({ allowed, ...window }) => {
+      const { events, catalog, service } = buildService();
+      await seedPublishedFreeEvent(events);
+      seedTier(catalog, window);
+      const result = service.createRsvp({
+        actor: actor('user_1'),
+        eventId: 'evt_1',
+        tierId: 'tier_1',
+      });
+      if (allowed) await expect(result).resolves.toMatchObject({ order: { status: 'paid' } });
+      else await expect(result).rejects.toThrow(/sales are closed/);
+    },
+  );
+  it('does not acquire a stale published event after admission has closed', async () => {
+    const { events, catalog, service } = buildService();
+    await seedPublishedFreeEvent(events);
+    const event = events.events.get('evt_1');
+    if (!event) throw new Error('Published fixture event missing');
+    events.events.set(event.id, {
+      ...event,
+      startAt: new Date(NOW.getTime() - 6 * 3600000).toISOString(),
+    });
+    seedTier(catalog);
+    await expect(
+      service.createRsvp({ actor: actor('user_1'), eventId: 'evt_1', tierId: 'tier_1' }),
+    ).rejects.toThrow(/sales are closed/);
+  });
+});
+
+describe('M3 V1 door requirements without provisional M5 enablement', () => {
+  it.each(['MALE', 'FEMALE'] as const)(
+    'requires acknowledgment for %s but no profile gender or provisional flag',
+    async (audienceType) => {
+      const serviceConfig = createCoreConfig({
+        redis: { url: 'redis://localhost:6379' },
+        firestore: { projectId: 'test-project' },
+        clock: { now: () => NOW },
+        features: { m5EligibilityRulesEnabled: false },
+      });
+      const { events, catalog, service } = buildService(serviceConfig);
+      await seedPublishedFreeEvent(events);
+      seedTier(catalog, { audienceType });
+      await expect(
+        service.createRsvp({ actor: actor('user_1'), eventId: 'evt_1', tierId: 'tier_1' }),
+      ).rejects.toThrow(/Confirm/);
+      const result = await service.createRsvp({
+        actor: actor('user_1'),
+        eventId: 'evt_1',
+        tierId: 'tier_1',
+        eligibilityAttested: true,
+      });
+      expect(result.entitlements).toHaveLength(1);
+      expect(result.entitlements[0]?.scanCountAllowed).toBe(1);
+      expect(result.entitlements[0]?.eligibility?.audienceType).toBe(audienceType);
+    },
+  );
+});
+
+it('supports acknowledged paid Couple checkout with provisional eligibility flags off', async () => {
+  const serviceConfig = createCoreConfig({
+    redis: { url: 'redis://localhost:6379' },
+    firestore: { projectId: 'test-project' },
+    clock: { now: () => NOW },
+    features: { m5EligibilityRulesEnabled: false },
+  });
+  const { events, catalog, service } = buildService(serviceConfig);
+  await seedPublishedFreeEvent(events);
+  seedTier(catalog, {
+    accessType: 'ENTRY',
+    priceInPaise: 50000,
+    audienceType: 'COUPLE',
+    guestCount: 2,
+    admissionMode: 'bundle',
+  });
+  await expect(
+    service.quote({
+      actor: actor('user_1'),
+      eventId: 'evt_1',
+      lines: [{ tierId: 'tier_1', quantity: 1 }],
+    }),
+  ).rejects.toThrow(/Confirm/);
+  const { pricing } = await service.quote({
+    actor: actor('user_1'),
+    eventId: 'evt_1',
+    lines: [{ tierId: 'tier_1', quantity: 1, eligibilityAttested: true }],
+  });
+  const hold = await service.createHold({
+    actor: actor('user_1'),
+    eventId: 'evt_1',
+    organizationId: 'org_1',
+    lines: pricing.lines.map((line) => ({ ...line, eligibilityAttested: true })),
+    pricing,
+    appliedPromoCode: null,
+    attribution: null,
+    idempotencyKey: 'v1-couple',
+  });
+  expect(hold.lines[0]?.guestCount).toBe(2);
+  expect(hold.lines[0]?.eligibility?.audienceType).toBe('COUPLE');
 });

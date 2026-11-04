@@ -95,6 +95,17 @@ export class FirestoreSupportTicketRepository implements SupportTicketRepository
     return { items, total: page.total, nextCursor: page.nextCursor };
   }
 
+  async createIfAbsent(ticket: SupportTicket): Promise<boolean> {
+    try {
+      await this.collection.doc(ticket.id).create(toDoc(ticket));
+      return true;
+    } catch (error: unknown) {
+      if (typeof error === 'object' && error !== null && (error as { code?: number }).code === 6)
+        return false;
+      throw error;
+    }
+  }
+
   async save(ticket: SupportTicket): Promise<void> {
     const ref = this.collection.doc(ticket.id);
     await this.db.runTransaction(async (tx) => {
@@ -127,6 +138,7 @@ function toDoc(ticket: SupportTicket): DocumentData {
     internalNotes: ticket.internalNotes,
     timeline: ticket.timeline,
     links: ticket.links,
+    ...(ticket.refundReview ? { refundReview: ticket.refundReview } : {}),
     sla: ticket.sla,
     mergedInto: ticket.mergedInto,
     mergedFrom: ticket.mergedFrom,
@@ -156,6 +168,9 @@ function toSupportTicket(data: DocumentData): SupportTicket {
     internalNotes: data.internalNotes as SupportTicket['internalNotes'],
     timeline: data.timeline as SupportTicket['timeline'],
     links: data.links as SupportTicket['links'],
+    ...(data.refundReview
+      ? { refundReview: data.refundReview as NonNullable<SupportTicket['refundReview']> }
+      : {}),
     sla: data.sla as SupportTicket['sla'],
     mergedInto: data.mergedInto as string | null,
     mergedFrom: data.mergedFrom as string[],

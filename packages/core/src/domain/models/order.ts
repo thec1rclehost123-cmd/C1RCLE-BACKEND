@@ -76,6 +76,7 @@ const ORDER_TRANSITIONS: Readonly<Record<OrderStatus, readonly OrderStatus[]>> =
 export interface OrderLine {
   tierId: EntityId;
   tierName: string;
+  pricingPhaseId?: string | null;
   quantity: number;
   unitPricePaise: number;
   /** Component snapshot; absent on legacy orders where the tier price was admission only. */
@@ -137,6 +138,13 @@ export interface OrderEventCancellation {
   cancelledAt: string;
 }
 
+export interface RefundedTicketClaim {
+  refundRequestId: EntityId;
+  entitlementId: EntityId;
+  tierId: EntityId;
+  pricingPhaseId?: string | null;
+}
+
 export interface Order extends VersionedEntity {
   id: EntityId;
   /** Stable, support-safe reference shown to guests instead of the internal id. */
@@ -190,6 +198,8 @@ export interface Order extends VersionedEntity {
   refundedPaise: number;
   /** Refund request ids already reflected in `refundedPaise` (retry fence). */
   appliedRefundRequestIds: EntityId[];
+  /** Settled admission releases; original commercial lines remain immutable. */
+  refundedTicketClaims?: RefundedTicketClaim[];
 }
 
 export interface CreateOrderInput {
@@ -396,7 +406,7 @@ export function cancelOrder(order: Order, reason?: string, now?: Date): Order {
 /**
  * Applies event-cancellation state exactly once while preserving financial
  * history. Paid orders may be locked for the deterministic admin-approved
- * refund workflow; free/refunded orders retain their financial status.
+ * refund workflow; zero-value admissions cancel and release their inventory.
  */
 export function markOrderEventCancelled(
   order: Order,
@@ -416,6 +426,9 @@ export function markOrderEventCancelled(
   let status = order.status;
   if (order.status === 'pending' || order.status === 'awaiting_payment') {
     status = transitionStatus(order.status, 'cancelled', ORDER_TRANSITIONS);
+  } else if (order.status === 'paid' && order.grandTotalPaise === 0) {
+    // Only a zero-value admission releases directly; paid money still requires refund review.
+    status = 'cancelled';
   } else if (order.status === 'paid' && input.lockForRefund) {
     status = transitionStatus(order.status, 'refund_requested', ORDER_TRANSITIONS);
   }
@@ -501,6 +514,7 @@ export function applyOrderRefund(
   amountPaise: number,
   now?: Date,
   refundRequestId?: EntityId,
+  settledTicketClaims: readonly Omit<RefundedTicketClaim, 'refundRequestId'>[] = [],
 ): Order {
   if (refundRequestId && order.appliedRefundRequestIds.includes(refundRequestId)) return order;
   if (order.status !== 'refund_requested') {
@@ -513,12 +527,39 @@ export function applyOrderRefund(
   if (refundedPaise > order.grandTotalPaise) {
     throw new InvalidOperationError(`Refund of ${amountPaise} exceeds order ${order.id}'s balance`);
   }
+  if (settledTicketClaims.length && !refundRequestId)
+    throw new InvalidOperationError(
+      'A settled ticket release requires its refund request identity',
+    );
+  const priorClaims = order.refundedTicketClaims ?? [];
+  const allIds = new Set(priorClaims.map((claim) => claim.entitlementId));
+  for (const claim of settledTicketClaims) {
+    if (
+      allIds.has(claim.entitlementId) ||
+      !order.lines.some((line) => line.tierId === claim.tierId)
+    )
+      throw new InvalidOperationError(
+        'Refunded admission release is duplicate or outside this order',
+      );
+    allIds.add(claim.entitlementId);
+  }
+  const nextClaims = [
+    ...priorClaims,
+    ...(refundRequestId ? settledTicketClaims.map((claim) => ({ ...claim, refundRequestId })) : []),
+  ];
+  for (const line of order.lines) {
+    const units =
+      line.quantity * (line.admissionMode === 'per_person' ? (line.guestCount ?? 1) : 1);
+    if (nextClaims.filter((claim) => claim.tierId === line.tierId).length > units)
+      throw new InvalidOperationError('Refunded admission releases exceed purchased tickets');
+  }
   const at = now ?? new Date();
   const nextStatus = refundedPaise === order.grandTotalPaise ? 'refunded' : 'paid';
   return {
     ...bumpVersion(order, at),
     status: transitionStatus(order.status, nextStatus, ORDER_TRANSITIONS),
     refundedPaise,
+    ...(nextClaims.length ? { refundedTicketClaims: nextClaims } : {}),
     appliedRefundRequestIds: refundRequestId
       ? [...order.appliedRefundRequestIds, refundRequestId]
       : order.appliedRefundRequestIds,

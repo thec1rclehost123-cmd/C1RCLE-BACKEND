@@ -97,7 +97,12 @@ export class PublicService {
     const tiers = await this.deps.repositories.catalog.listTiers(event.id);
     const rows: { tier: TicketTier; availableQuantity: number }[] = [];
     for (const tier of tiers) {
-      if (tier.status !== 'active') continue;
+      if (
+        tier.status !== 'active' ||
+        tier.audienceType === 'STUDENT' ||
+        tier.audienceType === 'MEMBER'
+      )
+        continue;
       const accessMode = tier.accessMode ?? 'public';
       if (accessGrantId && !eventGrant && accessMode === 'public') continue;
       if (accessMode !== 'public') {

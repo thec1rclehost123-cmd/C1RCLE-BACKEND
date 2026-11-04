@@ -103,6 +103,7 @@ export function createEventMaterialChangeNoticeConsumer(deps: EventMaterialChang
       orderId: EntityId;
       entitlementId?: EntityId | null;
       eventVersion: number;
+      changeType?: 'postponed' | 'rescheduled';
       previousTitle: string;
       title: string;
       previousStartAt: string;
@@ -140,7 +141,7 @@ export function createEventMaterialChangeNoticeConsumer(deps: EventMaterialChang
     if (holderId) {
       const current = recipients.get(holderId);
       recipients.set(holderId, {
-        canAccept: true,
+        canAccept: payload.changeType !== 'postponed',
         canRequestRefund: current?.canRequestRefund ?? false,
       });
     }
@@ -153,10 +154,17 @@ export function createEventMaterialChangeNoticeConsumer(deps: EventMaterialChang
       entitlementId,
     );
     const title =
-      payload.previousTitle === payload.title
-        ? 'Event details changed'
-        : `Event update: ${payload.title}`;
-    const body = `${payload.previousTitle} was updated. Review the current date, time and venue in your ticket wallet. This notice does not change your ticket or refund rights.`;
+      payload.changeType === 'postponed'
+        ? 'Event postponed — new date to be announced'
+        : payload.changeType === 'rescheduled'
+          ? 'New event date announced'
+          : payload.previousTitle === payload.title
+            ? 'Event details changed'
+            : `Event update: ${payload.title}`;
+    const body =
+      payload.changeType === 'postponed'
+        ? `${payload.title} is postponed. Sales, transfers and admission are on hold. Purchasers may request a refund.`
+        : `${payload.previousTitle} was updated. Review the current date, time and venue in your ticket wallet. Purchasers may request a refund for this material change.`;
 
     await Promise.all(
       [...recipients].map(([userId, actions]) =>

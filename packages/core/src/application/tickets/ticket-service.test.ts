@@ -2,10 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import { createCoreConfig } from '../../config/index.js';
 import { NotFoundError, ServiceUnavailableError } from '../../domain/errors.js';
+import { createEvent } from '../../domain/models/event.js';
 import { createNotification, eventMaterialChangeSubjectId } from '../../domain/models/social.js';
 import { createTicketTransfer } from '../../domain/models/ticket-transfer.js';
 import { MemoryOutboxStore } from '../../infrastructure/memory/memory-outbox-store.js';
-import { MemoryEntitlementRepository } from '../../infrastructure/memory/memory-repositories.js';
+import {
+  MemoryEventRepository,
+  MemoryEntitlementRepository,
+} from '../../infrastructure/memory/memory-repositories.js';
 import { MemorySocialNotificationRepository } from '../../infrastructure/memory/memory-social-repositories.js';
 
 import { TicketService } from './ticket-service.js';
@@ -44,6 +48,8 @@ function service(
   enabled: boolean,
   transferPrerequisites: {
     manifestsDisabled?: boolean;
+    manifestsEnabled?: boolean;
+    startsAt?: string;
     drainComplete?: boolean;
     coverReserved?: boolean;
     verifiedRecipient?: boolean;
@@ -51,6 +57,19 @@ function service(
   purchaserId = ticket.userId,
 ) {
   const entitlements = new MemoryEntitlementRepository();
+  const events = new MemoryEventRepository();
+  events.events.set(ticket.eventId, {
+    ...createEvent({
+      id: ticket.eventId,
+      organizationId: ticket.organizationId,
+      venueId: 'venue-transfer',
+      title: 'Transfer test',
+      startAt: transferPrerequisites.startsAt ?? '2026-12-01T00:00:00.000Z',
+      now: NOW,
+    }),
+    status: 'published',
+  });
+  entitlements.admissionEvents = events;
   const notifications = new MemorySocialNotificationRepository();
   const outbox = new MemoryOutboxStore();
   const deps = {
@@ -61,7 +80,7 @@ function service(
       ids: () => 'TRF-service-1',
       features: {
         m5TicketTransfers: enabled,
-        ...(transferPrerequisites.manifestsDisabled ? { m5OfflineTicketManifests: false } : {}),
+        m5OfflineTicketManifests: transferPrerequisites.manifestsEnabled ?? false,
         ...(transferPrerequisites.drainComplete ? { m5OfflineManifestDrainComplete: true } : {}),
       },
     }),
@@ -74,9 +93,7 @@ function service(
             ? ({ status: 'active', reservedPaise: 100 } as never)
             : null,
       },
-      events: {
-        getById: async () => ({ status: 'published', startAt: '2026-12-01T00:00:00.000Z' }),
-      },
+      events,
       orders: {
         getById: async (id: string) => ({
           id,
@@ -110,7 +127,7 @@ function service(
       guestProfiles: { getByUserId: async () => ({ displayName: 'Recipient Name' }) },
     },
   } as unknown as ServiceDeps;
-  return { entitlements, notifications, outbox, service: new TicketService(deps) };
+  return { entitlements, events, notifications, outbox, service: new TicketService(deps) };
 }
 
 function materialChangeNotice(userId: string, entitlement: Entitlement = ticket) {
@@ -146,22 +163,38 @@ describe('TicketService transfer controls', () => {
     ).rejects.toThrow('A valid recipient email is required for ticket transfer');
   });
 
-  it('keeps transfer endpoints disabled unless the deployment explicitly enables the flag', async () => {
+  it('supports V1 online transfers without enabling provisional M5 flags', async () => {
     const { entitlements, service: tickets } = service(false);
     await entitlements.save(ticket);
+    await expect(
+      tickets.requestTransfer(ticket.id, 'recipient@example.test', actor('USR-sender')),
+    ).resolves.toMatchObject({ status: 'pending' });
+  });
 
+  it('blocks online transfers while offline manifests are active', async () => {
+    const { entitlements, service: tickets } = service(false, { manifestsEnabled: true });
+    await entitlements.save(ticket);
     await expect(
       tickets.requestTransfer(ticket.id, 'recipient@example.test', actor('USR-sender')),
     ).rejects.toBeInstanceOf(ServiceUnavailableError);
   });
 
-  it('keeps transfers unavailable until offline manifests are disabled and drained', async () => {
-    const { entitlements, service: tickets } = service(true, { manifestsDisabled: true });
+  it('closes transfers exactly five minutes before start', async () => {
+    const { entitlements, service: tickets } = service(false, {
+      startsAt: new Date(NOW.getTime() + 5 * 60_000).toISOString(),
+    });
     await entitlements.save(ticket);
-
     await expect(
       tickets.requestTransfer(ticket.id, 'recipient@example.test', actor('USR-sender')),
-    ).rejects.toBeInstanceOf(ServiceUnavailableError);
+    ).rejects.toThrow(/5 minutes/);
+  });
+
+  it('does not grant the purchaser holder-only reads for explicit null', async () => {
+    const { entitlements, service: tickets } = service(false);
+    await entitlements.save({ ...ticket, currentHolderUserId: null });
+    await expect(tickets.getById(ticket.id, actor('USR-sender'))).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
   });
 
   it('blocks transfer while a pending Guest confirmation holds cover funds', async () => {
@@ -510,5 +543,73 @@ describe('TicketService material event-change responses', () => {
     await expect(
       tickets.respondToMaterialEventChange(ticket.id, 2, 'accepted', actor('USR-buyer')),
     ).rejects.toBeInstanceOf(NotFoundError);
+  });
+});
+
+describe('M3 authoritative ticket management projection', () => {
+  it('shows purchaser custody without granting an unassigned QR', async () => {
+    const { entitlements, service: tickets } = service(false);
+    await entitlements.save({ ...ticket, currentHolderUserId: null, holderName: '' });
+    await expect(tickets.getManagement(ticket.id, actor('USR-sender'))).resolves.toMatchObject({
+      ownership: 'unassigned',
+      canPresent: false,
+      holderName: null,
+    });
+  });
+  it('shows a ticket before the QR time window while withholding credentials', async () => {
+    const { entitlements, service: tickets } = service(false);
+    await entitlements.save(ticket);
+    await expect(tickets.getManagement(ticket.id, actor('USR-sender'))).resolves.toMatchObject({
+      ownership: 'you',
+      canPresent: false,
+      qrUnavailableReason: expect.stringContaining('24 hours'),
+    });
+  });
+  it('exposes an eligible holder QR within24h, and conceals management from strangers', async () => {
+    const { entitlements, service: tickets } = service(false, {
+      startsAt: new Date(NOW.getTime() + 23 * 3600000).toISOString(),
+    });
+    await entitlements.save(ticket);
+    await expect(tickets.getManagement(ticket.id, actor('USR-sender'))).resolves.toMatchObject({
+      ownership: 'you',
+      canPresent: true,
+      qrUnavailableReason: null,
+    });
+    await expect(tickets.getManagement(ticket.id, actor('USR-stranger'))).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
+  });
+});
+
+describe('authoritative event lifecycle in ticket management', () => {
+  it('preserves postponed tickets while withholding retained historical dates', async () => {
+    const { events, entitlements, service: tickets } = service(false);
+    await entitlements.save(ticket);
+    const event = events.events.get(ticket.eventId);
+    if (!event) throw new Error('Expected test event');
+    events.events.set(event.id, { ...event, status: 'postponed' });
+    await expect(tickets.getManagement(ticket.id, actor('USR-sender'))).resolves.toMatchObject({
+      eventStatus: 'postponed',
+      status: 'active',
+      startsAt: null,
+      endsAt: null,
+      canPresent: false,
+      canTransfer: false,
+    });
+    expect(events.events.get(event.id)?.startAt).toBe(event.startAt);
+  });
+  it('marks canonical cancellation immediately before downstream ticket voiding', async () => {
+    const { events, entitlements, service: tickets } = service(false);
+    await entitlements.save(ticket);
+    const event = events.events.get(ticket.eventId);
+    if (!event) throw new Error('Expected test event');
+    events.events.set(event.id, { ...event, status: 'cancelled' });
+    await expect(tickets.getManagement(ticket.id, actor('USR-sender'))).resolves.toMatchObject({
+      eventStatus: 'cancelled',
+      status: 'cancelled',
+      canPresent: false,
+      canTransfer: false,
+    });
+    expect((await entitlements.getById(ticket.id))?.status).toBe('valid');
   });
 });

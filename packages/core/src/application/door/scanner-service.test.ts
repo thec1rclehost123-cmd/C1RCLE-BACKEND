@@ -1,12 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { ConflictError, NotFoundError } from '../../domain/errors.js';
+import { createEvent } from '../../domain/models/event.js';
 
 import { createScannerService } from './scanner-service.js';
 
-import type { Entitlement } from '../../domain/models/entitlement.js';
-import type { ActorContext } from '../context.js';
 import type { ScannerServiceDeps } from './scanner-service.js';
+import type { Entitlement } from '../../domain/models/entitlement.js';
+import type { Event } from '../../domain/models/event.js';
+import type { ActorContext } from '../context.js';
 
 const HOLDER: ActorContext = {
   userId: 'guest-1',
@@ -33,7 +35,18 @@ const BASE_ENTITLEMENT: Entitlement = {
   updatedAt: '2026-10-22T00:00:00.000Z',
 };
 
-function serviceFor(entitlement: Entitlement | null) {
+const NOW = new Date('2026-11-04T20:00:00.000Z');
+const EVENT = {
+  ...createEvent({
+    id: 'EVT-1',
+    organizationId: 'ORG-1',
+    venueId: 'VEN-1',
+    title: 'Night',
+    startAt: '2026-11-05T20:00:00.000Z',
+  }),
+  status: 'published' as const,
+};
+function serviceFor(entitlement: Entitlement | null, event: Event = EVENT) {
   const findById = vi.fn(async () => entitlement);
   const deps = {
     scanLedger: {},
@@ -41,8 +54,11 @@ function serviceFor(entitlement: Entitlement | null) {
     scannerSessions: {},
     scannerDevices: {},
     entitlements: { findById },
-    repositories: {},
-    config: { magicTicketSecret: 'test-only-secret-not-used-as-a-real-key' },
+    repositories: { events: { findById: vi.fn(async () => event) } },
+    config: {
+      magicTicketSecret: 'test-only-secret-not-used-as-a-real-key',
+      clock: { now: () => NOW },
+    },
     logger: {},
     outbox: {},
     adminAudit: {},
@@ -108,4 +124,28 @@ describe('generateMagicTicketQr', () => {
       NotFoundError,
     );
   });
+});
+
+describe('M3 authoritative QR gates', () => {
+  it('does not mint an explicitly unassigned QR for the purchaser or tenant staff', async () => {
+    const { scanner } = serviceFor({ ...BASE_ENTITLEMENT, currentHolderUserId: null });
+    await expect(scanner.generateMagicTicketQr('ENT-1', HOLDER)).rejects.toThrow();
+    await expect(
+      scanner.generateMagicTicketQr('ENT-1', { ...HOLDER, organizationId: 'ORG-1' }),
+    ).rejects.toThrow();
+  });
+  it('withholds credentials more than 24 hours before the current event start', async () => {
+    const { scanner } = serviceFor(BASE_ENTITLEMENT, {
+      ...EVENT,
+      startAt: '2026-11-05T20:00:00.001Z',
+    });
+    await expect(scanner.generateMagicTicketQr('ENT-1', HOLDER)).rejects.toThrow();
+  });
+  it.each(['cancelled', 'postponed'] as const)(
+    'withholds credentials for %s events',
+    async (status) => {
+      const { scanner } = serviceFor(BASE_ENTITLEMENT, { ...EVENT, status });
+      await expect(scanner.generateMagicTicketQr('ENT-1', HOLDER)).rejects.toThrow();
+    },
+  );
 });

@@ -1600,6 +1600,128 @@ export async function runParityCases({
     false,
   );
 
+  /* M3 event, custody, refund-review and immutable phase contracts. */
+  agree('eventStatusSchema', 'M3 accepts canonical postponement', 'postponed', true);
+  agree(
+    'updateTicketTierLimitsSchema',
+    'M3 updates inventory and future price',
+    { quantity: 50, priceInPaise: 65000 },
+    true,
+  );
+  agree('updateTicketTierLimitsSchema', 'M3 rejects empty tier edits', {}, false);
+  agree('updateTicketTierLimitsSchema', 'M3 rejects negative inventory', { quantity: -1 }, false);
+  agree(
+    'updateEventSchema',
+    'M3 standardized refund policy',
+    { refundPolicy: { kind: 'no_refunds' } },
+    true,
+  );
+  agree(
+    'updateEventSchema',
+    'M3 cutoff policy requires date',
+    { refundPolicy: { kind: 'until_cutoff' } },
+    false,
+  );
+  agree(
+    'requestRefundSchema',
+    'M3 identifies a specific attendee',
+    {
+      orderId: 'ORD-m3-parity',
+      amountPaise: 50000,
+      reason: 'Selected attendee cannot attend',
+      targetEntitlementIds: ['ENT-m3-riya'],
+    },
+    true,
+  );
+  agree(
+    'requestRefundSchema',
+    'M3 rejects an empty attendee selection',
+    { orderId: 'ORD-m3-parity', amountPaise: 50000, reason: 'No target', targetEntitlementIds: [] },
+    false,
+  );
+  agree(
+    'guestRefundReviewRequestSchema',
+    'M3 Guest requests review only',
+    { reason: 'I cannot attend' },
+    true,
+  );
+  agree(
+    'guestRefundReviewRequestSchema',
+    'M3 Guest cannot inject refund execution amount',
+    { reason: 'Review', amountPaise: 50000 },
+    false,
+  );
+  agree(
+    'guestRefundReviewDtoSchema',
+    'M3 persisted review status',
+    { id: 'SUP-REF-m3-parity', status: 'open', requestedAt: '2026-11-04T20:00:00.000Z' },
+    true,
+  );
+  const m3Managed = {
+    id: 'ENT-m3-parity',
+    orderId: 'ORD-m3-parity',
+    eventId: 'EVT-m3-parity',
+    tierId: 'tier-m3',
+    tierName: 'General',
+    holderName: null,
+    ownership: 'unassigned',
+    unitKind: 'paid',
+    status: 'active',
+    eventTitle: 'NYE-20261231-VIP',
+    eventStatus: 'published',
+    eventSlug: null,
+    startsAt: '2026-12-31T20:00:00.000Z',
+    endsAt: null,
+    posterUrl: null,
+    bookingReference: null,
+    canPresent: false,
+    qrUnavailableReason: 'Accept an assignment first.',
+    venueId: null,
+    venueName: null,
+    venueCity: null,
+    canTransfer: true,
+    transferUnavailableReason: null,
+    pendingTransfer: null,
+    canRequestRefund: true,
+    refundUnavailableReason: null,
+    refundReview: null,
+  };
+  agree('managedTicketSchema', 'M3 explicit unassigned projection', m3Managed, true);
+  for (const [side, schema] of [
+    ['frontend', frontend.managedTicketSchema],
+    ['backend', backend.managedTicketSchema],
+  ]) {
+    const parsed = schema.parse({
+      ...m3Managed,
+      recipientEmail: 'private@example.test',
+      recipientEmailHash: 'private-binding',
+    });
+    checks.push(`${side} M3 managed ticket excludes delivery identity`);
+    if (
+      'recipientEmail' in parsed ||
+      'recipientEmailHash' in parsed ||
+      parsed.eventTitle !== m3Managed.eventTitle
+    )
+      failures.push(
+        `${side} M3 custody projection leaks delivery identity or rewrites event title`,
+      );
+  }
+  for (const pricingPhaseId of ['phase-early-bird', null]) {
+    agree(
+      'pricingLineDtoSchema',
+      `M3 retains phase snapshot ${pricingPhaseId}`,
+      {
+        tierId: 'tier-m3',
+        tierName: 'General',
+        quantity: 1,
+        unitPricePaise: 50000,
+        subtotalPaise: 50000,
+        pricingPhaseId,
+      },
+      true,
+    );
+  }
+
   /* ── error codes: the closed union must match exactly ─────────────────────── */
   {
     const FRONTEND_CODES = [

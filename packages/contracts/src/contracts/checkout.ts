@@ -39,6 +39,7 @@ const checkoutLineRequestSchema = z.object({
 
 /** One priced line, as `CheckoutService.quote`/`createHold` actually return it. */
 export const pricingLineDtoSchema = z.object({
+  pricingPhaseId: z.string().nullable().optional(),
   tierId: opaqueIdSchema,
   tierName: z.string(),
   quantity: z.number().int().positive(),
@@ -223,6 +224,7 @@ const checkoutOrderStatusSchema = z.enum([
 ]);
 
 const checkoutOrderLineDtoSchema = z.object({
+  pricingPhaseId: z.string().nullable().optional(),
   tierId: opaqueIdSchema,
   tierName: z.string(),
   quantity: z.number().int().positive(),

@@ -51,12 +51,15 @@ export function applyPercent(paise: number, percent: number): number {
 
 /** One line of the order: a tier and how many of it. */
 export interface PricingLineInput {
+  pricingPhaseId?: string | null;
   tier: TicketTier;
   quantity: number;
   ticketAddons?: TicketAddonSelection[];
 }
 
 export interface PricingLine {
+  /** Authoritative quantity-priced allocation captured at quote time. */
+  pricingPhaseId?: string | null;
   tierId: EntityId;
   tierName: string;
   quantity: number;
@@ -111,54 +114,59 @@ export function calculatePricing(input: CalculatePricingInput): PricingBreakdown
   }
 
   const currency = input.currency ?? input.lines[0]?.tier.currency ?? 'INR';
-  const lines: PricingLine[] = input.lines.map(({ tier, quantity, ticketAddons = [] }) => {
-    if (!Number.isInteger(quantity) || quantity < 1) {
-      throw new InvalidOperationError(`Quantity for ${tier.name} must be a positive whole number`);
-    }
-    if (tier.currency !== currency) {
-      // Summing paise across currencies produces a number that means nothing.
-      throw new InvalidOperationError('All lines in an order must share one currency');
-    }
-    if (tier.maxPerOrder !== null && quantity > tier.maxPerOrder) {
-      throw new InvalidOperationError(
-        `${tier.name} has a maximum of ${tier.maxPerOrder} per order`,
+  const lines: PricingLine[] = input.lines.map(
+    ({ tier, quantity, ticketAddons = [], pricingPhaseId }) => {
+      if (!Number.isInteger(quantity) || quantity < 1) {
+        throw new InvalidOperationError(
+          `Quantity for ${tier.name} must be a positive whole number`,
+        );
+      }
+      if (tier.currency !== currency) {
+        // Summing paise across currencies produces a number that means nothing.
+        throw new InvalidOperationError('All lines in an order must share one currency');
+      }
+      if (tier.maxPerOrder !== null && quantity > tier.maxPerOrder) {
+        throw new InvalidOperationError(
+          `${tier.name} has a maximum of ${tier.maxPerOrder} per order`,
+        );
+      }
+      const coverUnitPricePaise = tier.coverAmountPaise ?? 0;
+      const coverEntitlementsPerUnit =
+        (tier.admissionMode ?? 'bundle') === 'per_person' ? (tier.guestCount ?? 1) : 1;
+      const addOnUnitSubtotalPaise = ticketAddons.reduce(
+        (sum, addon) => sum + addon.unitPricePaise * addon.quantityPerEntitlement,
+        0,
       );
-    }
-    const coverUnitPricePaise = tier.coverAmountPaise ?? 0;
-    const coverEntitlementsPerUnit =
-      (tier.admissionMode ?? 'bundle') === 'per_person' ? (tier.guestCount ?? 1) : 1;
-    const addOnUnitSubtotalPaise = ticketAddons.reduce(
-      (sum, addon) => sum + addon.unitPricePaise * addon.quantityPerEntitlement,
-      0,
-    );
-    const addOnEntitlementsPerUnit =
-      (tier.admissionMode ?? 'bundle') === 'per_person' ? (tier.guestCount ?? 1) : 1;
-    const addOnSubtotalPaise = addOnUnitSubtotalPaise * addOnEntitlementsPerUnit * quantity;
-    return {
-      tierId: tier.id,
-      tierName: tier.name,
-      quantity,
-      unitPricePaise:
-        tier.priceInPaise +
-        coverUnitPricePaise * coverEntitlementsPerUnit +
-        addOnUnitSubtotalPaise * addOnEntitlementsPerUnit,
-      admissionUnitPricePaise: tier.priceInPaise,
-      coverUnitPricePaise,
-      coverEntitlementsPerUnit,
-      ...(ticketAddons.length > 0
-        ? { ticketAddons: ticketAddons.map((addon) => ({ ...addon })) }
-        : {}),
-      admissionSubtotalPaise: tier.priceInPaise * quantity,
-      coverSubtotalPaise: coverUnitPricePaise * quantity * coverEntitlementsPerUnit,
-      addOnSubtotalPaise,
-      discountedAdmissionSubtotalPaise: tier.priceInPaise * quantity,
-      subtotalPaise:
-        (tier.priceInPaise +
-          coverUnitPricePaise * coverEntitlementsPerUnit +
-          addOnUnitSubtotalPaise * addOnEntitlementsPerUnit) *
+      const addOnEntitlementsPerUnit =
+        (tier.admissionMode ?? 'bundle') === 'per_person' ? (tier.guestCount ?? 1) : 1;
+      const addOnSubtotalPaise = addOnUnitSubtotalPaise * addOnEntitlementsPerUnit * quantity;
+      return {
+        tierId: tier.id,
+        ...(pricingPhaseId === undefined ? {} : { pricingPhaseId }),
+        tierName: tier.name,
         quantity,
-    };
-  });
+        unitPricePaise:
+          tier.priceInPaise +
+          coverUnitPricePaise * coverEntitlementsPerUnit +
+          addOnUnitSubtotalPaise * addOnEntitlementsPerUnit,
+        admissionUnitPricePaise: tier.priceInPaise,
+        coverUnitPricePaise,
+        coverEntitlementsPerUnit,
+        ...(ticketAddons.length > 0
+          ? { ticketAddons: ticketAddons.map((addon) => ({ ...addon })) }
+          : {}),
+        admissionSubtotalPaise: tier.priceInPaise * quantity,
+        coverSubtotalPaise: coverUnitPricePaise * quantity * coverEntitlementsPerUnit,
+        addOnSubtotalPaise,
+        discountedAdmissionSubtotalPaise: tier.priceInPaise * quantity,
+        subtotalPaise:
+          (tier.priceInPaise +
+            coverUnitPricePaise * coverEntitlementsPerUnit +
+            addOnUnitSubtotalPaise * addOnEntitlementsPerUnit) *
+          quantity,
+      };
+    },
+  );
 
   const subtotalPaise = lines.reduce((sum, line) => sum + line.subtotalPaise, 0);
   const admissionSubtotalPaise = lines.reduce(

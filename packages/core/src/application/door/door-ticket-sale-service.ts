@@ -1,6 +1,11 @@
 import { createHash } from 'node:crypto';
 
-import { ForbiddenError, InvalidOperationError, NotFoundError } from '../../domain/errors.js';
+import {
+  ForbiddenError,
+  InvalidOperationError,
+  NotFoundError,
+  ServiceUnavailableError,
+} from '../../domain/errors.js';
 import { issueEntitlements } from '../../domain/models/entitlement.js';
 import { canSessionDoorEntry } from '../../domain/models/event-code.js';
 import { attachPaymentIntent, createOrder, markPaid } from '../../domain/models/order.js';
@@ -128,6 +133,13 @@ function doorPricing(tier: TicketTier, quantity: number): PricingBreakdown {
   return breakdown;
 }
 
+/** V1 requires verified-account acquisition; anonymous paid Door Mode is deferred. */
+function requireDoorTicketSalesAvailability(): void {
+  throw new ServiceUnavailableError(
+    'Ticket sales at the door are unavailable in V1. Use verified Guest checkout.',
+  );
+}
+
 export function createDoorTicketSaleService(
   deps: DoorTicketSaleServiceDeps,
 ): DoorTicketSaleService {
@@ -154,6 +166,10 @@ export function createDoorTicketSaleService(
     if (!canSessionDoorEntry(session)) {
       throw new ForbiddenError('This scanner session may not sell entry at the door');
     }
+
+    // Retain the old implementation below for its separately authorized Door
+    // Mode milestone. No order, inventory, ticket or financial write precedes this boundary.
+    requireDoorTicketSalesAvailability();
 
     const orderId = doorOrderId(command.idempotencyKey);
     const existing = await deps.orders.getById(orderId);

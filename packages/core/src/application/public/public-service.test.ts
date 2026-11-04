@@ -299,3 +299,47 @@ describe('private event visibility', () => {
     await expect(service.getEvent(event.id, 'verified-guest', grant.id)).rejects.toThrow();
   });
 });
+
+describe('V1 active tier exposure', () => {
+  it('keeps legacy Student/Member enum records internal', async () => {
+    const events = new MemoryEventRepository();
+    const catalog = new MemoryEventCatalogRepository();
+    const now = new Date();
+    let event = createEvent({
+      id: 'v1-categories',
+      organizationId: 'host',
+      venueId: 'venue',
+      title: 'V1 categories',
+      startAt: '2027-11-28T20:00:00.000Z',
+      now,
+    });
+    for (const status of ['review', 'scheduled', 'published'] as const)
+      event = transitionEvent(event, status, now);
+    await events.save({ ...event, version: 1 });
+    for (const audienceType of ['GENERAL', 'STUDENT', 'MEMBER'] as const)
+      await catalog.saveTier(
+        createTicketTier({
+          id: audienceType,
+          eventId: event.id,
+          organizationId: 'host',
+          name: audienceType,
+          priceInPaise: 1000,
+          quantity: 10,
+          audienceType,
+          now,
+        }),
+      );
+    const service = new PublicService({
+      repositories: {
+        events,
+        catalog,
+        venues: { getById: async () => null },
+        organizations: { getById: async () => null },
+      },
+      inventory: { getAvailableQuantity: async () => 10 },
+    } as never);
+    expect((await service.listEventTiers(event.id)).map((row) => row.tier.audienceType)).toEqual([
+      'GENERAL',
+    ]);
+  });
+});

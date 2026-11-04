@@ -258,6 +258,7 @@ export const requestRefundSchema = z
     orderId: opaqueIdSchema,
     amountPaise: z.number().int().positive(),
     reason: z.string().min(1).max(2000),
+    targetEntitlementIds: z.array(opaqueIdSchema).min(1).max(100).optional(),
     ticketLines: z
       .array(
         z.object({
@@ -454,3 +455,13 @@ export type LeaderboardStatResponse = z.infer<typeof leaderboardStatResponseSche
 export const leaderboardTopResponseSchema = z.object({
   items: z.array(leaderboardStatResponseSchema),
 });
+
+export const guestRefundReviewRequestSchema = z
+  .object({ reason: z.string().trim().min(1).max(2000) })
+  .strict();
+export const guestRefundReviewDtoSchema = z.object({
+  id: opaqueIdSchema,
+  status: z.enum(['open', 'in_progress', 'waiting_on_customer', 'escalated', 'resolved', 'closed']),
+  requestedAt: z.iso.datetime(),
+});
+export type GuestRefundReviewDto = z.infer<typeof guestRefundReviewDtoSchema>;

@@ -1,3 +1,4 @@
+import { currentEntitlementHolderId } from '../../domain/models/entitlement.js';
 import { ConflictError, InvalidOperationError, NotFoundError } from '../../domain/errors.js';
 import { deterministicDomainEventId, domainEvent } from '../../domain/events.js';
 import { isExecutable } from '../../domain/models/admin-authority.js';
@@ -422,8 +423,7 @@ export class AdminOperationsService {
       after: {
         status: resolved.transfer.status,
         entitlementId: resolved.entitlement.id,
-        currentHolderUserId:
-          resolved.entitlement.currentHolderUserId ?? resolved.entitlement.userId,
+        currentHolderUserId: currentEntitlementHolderId(resolved.entitlement),
         credentialVersion: resolved.entitlement.credentialVersion ?? 1,
       },
       reason: normalizedReason,
@@ -483,7 +483,7 @@ export class AdminOperationsService {
         status: result.transfer.status,
         entitlementId: result.entitlement.id,
         pendingTransferId: null,
-        currentHolderUserId: result.entitlement.currentHolderUserId ?? result.entitlement.userId,
+        currentHolderUserId: currentEntitlementHolderId(result.entitlement),
         credentialVersion: result.entitlement.credentialVersion ?? 1,
       },
       reason: normalizedReason,

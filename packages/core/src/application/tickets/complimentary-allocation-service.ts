@@ -1,3 +1,4 @@
+import { currentEntitlementHolderId } from '../../domain/models/entitlement.js';
 import { createHash } from 'node:crypto';
 
 import { ConflictError, InvalidOperationError, NotFoundError } from '../../domain/errors.js';
@@ -279,7 +280,7 @@ export class ComplimentaryAllocationService {
             orderId: order.id,
             eventId: event.id,
             purchaserUserId: entitlement.userId,
-            holderUserId: entitlement.currentHolderUserId ?? entitlement.userId,
+            holderUserId: currentEntitlementHolderId(entitlement),
           },
           occurredAt: now.getTime(),
         }),

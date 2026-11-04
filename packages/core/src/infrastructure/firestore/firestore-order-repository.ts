@@ -1,11 +1,20 @@
+import { ConflictError, InvalidOperationError } from '../../domain/errors.js';
+import { deterministicDomainEventId, domainEvent } from '../../domain/events.js';
 import { bookingReferenceForOrderId } from '../../domain/models/order.js';
+import { assertRsvpCapacity, cancelledRsvp } from '../../domain/models/rsvp.js';
 
 import { compareAndSet } from './compare-and-set.js';
+import { entitlementToDoc, entitlementFromDoc } from './firestore-entitlement-repository.js';
+import { outboxDocument } from './firestore-outbox-store.js';
 import { paginateQuery, paginateUnordered } from './pagination.js';
 
 import type { EntityId } from '../../domain/identity.js';
+import type { CartReservation } from '../../domain/models/cart-reservation.js';
+import type { TicketTier } from '../../domain/models/event-catalog.js';
+import type { Event } from '../../domain/models/event.js';
 import type { Order, OrderStatus } from '../../domain/models/order.js';
 import type {
+  RsvpAcquisition,
   OrderRepository,
   Page,
   PaginationQuery,
@@ -25,6 +34,116 @@ export class FirestoreOrderRepository implements OrderRepository {
 
   private get collection() {
     return this.db.collection(COLLECTION);
+  }
+
+  async acquireRsvp(input: RsvpAcquisition) {
+    const line = input.order.lines[0];
+    const purchaserId = input.order.userId;
+    if (!line || !purchaserId) throw new InvalidOperationError('Invalid RSVP allocation');
+    const ref = this.collection.doc(input.order.id);
+    const sequence = this.db.collection('v2_hold_sequences').doc(input.order.eventId);
+    return this.db.runTransaction(async (tx) => {
+      const [existing, sequenceSnap, event, tier, orders, holds, tickets] = await Promise.all([
+        tx.get(ref),
+        tx.get(sequence),
+        tx.get(this.db.collection('v2_events').doc(input.order.eventId)),
+        tx.get(this.db.collection('v2_event_catalog_tiers').doc(line.tierId)),
+        tx.get(this.collection.where('eventId', '==', input.order.eventId)),
+        tx.get(
+          this.db.collection('v2_cart_reservations').where('eventId', '==', input.order.eventId),
+        ),
+        tx.get(this.db.collection('v2_entitlements').where('orderId', '==', input.order.id)),
+      ]);
+      const existingData = existing.data();
+      if (existingData) {
+        const order = toOrder(existingData);
+        if (order.userId !== input.order.userId || order.status !== 'paid')
+          throw new ConflictError('This RSVP is no longer available');
+        return { order, entitlements: tickets.docs.map((doc) => entitlementFromDoc(doc.data())) };
+      }
+      assertRsvpCapacity(
+        input,
+        event.exists ? (event.data() as Event) : null,
+        tier.exists ? (tier.data() as TicketTier) : null,
+        orders.docs.map((doc) => toOrder(doc.data())),
+        holds.docs.map((doc) => doc.data() as CartReservation),
+      );
+      tx.set(sequence, { last: Number(sequenceSnap.data()?.last ?? 0) + 1 }, { merge: true });
+      tx.create(ref, toDoc(input.order));
+      const issuedEvents = [
+        domainEvent({
+          id: deterministicDomainEventId('order.fulfilled', input.order.id),
+          type: 'order.fulfilled',
+          aggregateId: input.order.id,
+          organizationId: input.order.organizationId,
+          actorId: purchaserId,
+          payload: { orderId: input.order.id, eventId: input.order.eventId },
+          occurredAt: input.now.getTime(),
+        }),
+        ...input.entitlements.map((ticket) =>
+          domainEvent({
+            id: deterministicDomainEventId('ticket.issued', ticket.id),
+            type: 'ticket.issued',
+            aggregateId: ticket.id,
+            organizationId: ticket.organizationId,
+            actorId: purchaserId,
+            payload: {
+              entitlementId: ticket.id,
+              orderId: input.order.id,
+              eventId: ticket.eventId,
+              purchaserUserId: ticket.userId,
+              holderUserId:
+                ticket.currentHolderUserId === undefined
+                  ? ticket.userId
+                  : ticket.currentHolderUserId,
+            },
+            occurredAt: input.now.getTime(),
+          }),
+        ),
+      ];
+      for (const event of issuedEvents)
+        tx.create(this.db.collection('v2_outbox').doc(event.id), outboxDocument(event));
+
+      for (const ticket of input.entitlements)
+        tx.create(this.db.collection('v2_entitlements').doc(ticket.id), entitlementToDoc(ticket));
+      return { order: input.order, entitlements: input.entitlements };
+    });
+  }
+
+  async cancelRsvp(orderId: EntityId, userId: EntityId, now: Date) {
+    const ref = this.collection.doc(orderId);
+    return this.db.runTransaction(async (tx) => {
+      const [stored, tickets] = await Promise.all([
+        tx.get(ref),
+        tx.get(this.db.collection('v2_entitlements').where('orderId', '==', orderId)),
+      ]);
+      const storedData = stored.data();
+      const order = storedData ? toOrder(storedData) : null;
+      const result = cancelledRsvp(
+        order,
+        tickets.docs.map((doc) => entitlementFromDoc(doc.data())),
+        userId,
+        now,
+      );
+      if (order?.status === 'cancelled') return order;
+      const sequence = this.db.collection('v2_hold_sequences').doc(result.order.eventId);
+      const sequenceSnap = await tx.get(sequence);
+      tx.set(sequence, { last: Number(sequenceSnap.data()?.last ?? 0) + 1 }, { merge: true });
+      const event = domainEvent({
+        id: deterministicDomainEventId('rsvp.cancelled', result.order.id),
+        type: 'rsvp.cancelled',
+        aggregateId: result.order.id,
+        organizationId: result.order.organizationId,
+        actorId: userId,
+        payload: { orderId: result.order.id, eventId: result.order.eventId },
+        occurredAt: now.getTime(),
+      });
+      tx.set(this.db.collection('v2_outbox').doc(event.id), outboxDocument(event));
+      tx.set(ref, toDoc(result.order));
+      for (const ticket of result.entitlements)
+        tx.set(this.db.collection('v2_entitlements').doc(ticket.id), entitlementToDoc(ticket));
+      return result.order;
+    });
   }
 
   async getById(orderId: EntityId): Promise<Order | null> {
@@ -116,20 +235,23 @@ export class FirestoreOrderRepository implements OrderRepository {
   async listSeatClaims(eventId: EntityId) {
     const snap = await this.collection
       .where('eventId', '==', eventId)
-      .select('status', 'lines')
+      .select('status', 'lines', 'refundedTicketClaims')
       .get();
     return snap.docs.map((doc) => {
       const data = doc.data();
       const lines = (data.lines ?? []) as {
         tierId: string;
+        pricingPhaseId?: string | null;
         quantity: number;
         guestCount?: number;
         admissionMode?: 'bundle' | 'per_person';
       }[];
       return {
         status: data.status as OrderStatus,
+        refundedTicketClaims: (data.refundedTicketClaims as Order['refundedTicketClaims']) ?? [],
         lines: lines.map((line) => ({
           tierId: line.tierId,
+          ...(line.pricingPhaseId === undefined ? {} : { pricingPhaseId: line.pricingPhaseId }),
           quantity: line.quantity,
           ...(line.guestCount === undefined ? {} : { guestCount: line.guestCount }),
           ...(line.admissionMode === undefined ? {} : { admissionMode: line.admissionMode }),
@@ -208,6 +330,7 @@ function toDoc(order: Order): DocumentData {
     eventCancellation: order.eventCancellation ?? null,
     refundedPaise: order.refundedPaise,
     appliedRefundRequestIds: order.appliedRefundRequestIds ?? [],
+    refundedTicketClaims: order.refundedTicketClaims ?? [],
     version: order.version,
     createdAt: order.createdAt,
     updatedAt: order.updatedAt,
@@ -248,6 +371,7 @@ function toOrder(data: DocumentData): Order {
     // they predate refunds, so zero is the correct read, not a guess.
     refundedPaise: (data.refundedPaise as number | undefined) ?? 0,
     appliedRefundRequestIds: (data.appliedRefundRequestIds as string[] | undefined) ?? [],
+    refundedTicketClaims: (data.refundedTicketClaims as Order['refundedTicketClaims']) ?? [],
     version: data.version as number,
     createdAt: data.createdAt as string,
     updatedAt: data.updatedAt as string,

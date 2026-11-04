@@ -97,7 +97,14 @@ describe.runIf(EMULATOR)('seat reservation (Firestore emulator)', () => {
         cartReservation: carts,
         order: orders,
       }),
-      repositories: { events, catalog, cartReservations: carts, orders, entitlements },
+      repositories: {
+        users: { getById: async (id: string) => ({ id, emailVerified: true }) },
+        events,
+        catalog,
+        cartReservations: carts,
+        orders,
+        entitlements,
+      },
     } as unknown as ServiceDeps;
     const service = new CheckoutService(deps);
 
@@ -263,7 +270,11 @@ describe.runIf(EMULATOR)('seat reservation (Firestore emulator)', () => {
         { tierId: 'tier_x', quantity: 3 },
       ]);
       // A projection: nothing else about the order comes back.
-      expect(Object.keys(claims[0] ?? {}).sort()).toEqual(['lines', 'status']);
+      expect(Object.keys(claims[0] ?? {}).sort()).toEqual([
+        'lines',
+        'refundedTicketClaims',
+        'status',
+      ]);
     }, 60_000);
 
     it('lets inventory count paid and refund-held seats, but not refunded ones', async () => {

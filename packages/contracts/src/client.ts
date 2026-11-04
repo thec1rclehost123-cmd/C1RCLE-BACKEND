@@ -899,3 +899,13 @@ export {
   waitlistQueueResponseSchema,
   waitlistOfferResponseSchema,
 } from './contracts/waitlist.js';
+
+export {
+  managedTicketSchema,
+  managedTicketListSchema,
+  ticketTransferPreviewSchema,
+} from './contracts/guest-ticket-management.js';
+export type { ManagedTicket, TicketTransferPreview } from './contracts/guest-ticket-management.js';
+
+export { guestRefundReviewRequestSchema, guestRefundReviewDtoSchema } from './contracts/phase6.js';
+export type { GuestRefundReviewDto } from './contracts/phase6.js';

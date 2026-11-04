@@ -91,7 +91,14 @@ describe.runIf(EMULATOR)('Firestore ticket add-on inventory', () => {
           cartReservation: carts,
           order: orders,
         }),
-        repositories: { events, catalog, cartReservations: carts, orders, entitlements },
+        repositories: {
+          users: { getById: async (id: string) => ({ id, emailVerified: true }) },
+          events,
+          catalog,
+          cartReservations: carts,
+          orders,
+          entitlements,
+        },
       } as unknown as ServiceDeps;
       const checkout = new CheckoutService(deps);
       const hold = async (userId: string): Promise<CartReservation> => {

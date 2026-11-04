@@ -27,6 +27,7 @@ import {
   totalUnits,
 } from './models/order.js';
 import { calculatePricing } from './models/pricing.js';
+import { committedTierQuantity } from './models/tier-inventory.js';
 
 import type { TicketTier } from './models/event-catalog.js';
 import type { Order } from './models/order.js';
@@ -470,5 +471,62 @@ describe('admin refunds', () => {
     ord = lockOrderForRefund(ord, T0);
     ord = applyOrderRefund(ord, ord.grandTotalPaise, T0);
     expect(ord.status).toBe('refunded');
+  });
+});
+
+describe('settled attendee inventory releases', () => {
+  it('releases exactly the selected ticket once while preserving original purchase lines', () => {
+    const paid = paidOrder();
+    const locked = lockOrderForRefund(paid, T0);
+    const released = applyOrderRefund(locked, 1000, T0, 'refund-riya', [
+      { entitlementId: 'riya', tierId: 'tier_1', pricingPhaseId: null },
+    ]);
+    expect(released.lines).toEqual(paid.lines);
+    expect(released.lines[0]?.quantity).toBe(2);
+    expect(committedTierQuantity('tier_1', [released], [], T0)).toBe(1);
+    const replay = applyOrderRefund(released, 1000, T0, 'refund-riya', [
+      { entitlementId: 'riya', tierId: 'tier_1', pricingPhaseId: null },
+    ]);
+    expect(replay).toBe(released);
+    expect(committedTierQuantity('tier_1', [replay], [], T0)).toBe(1);
+    expect(() =>
+      applyOrderRefund(lockOrderForRefund(released, T0), 1000, T0, 'another-refund', [
+        { entitlementId: 'riya', tierId: 'tier_1' },
+      ]),
+    ).toThrow('duplicate');
+  });
+  it('counts independent group attendees but releases a Couple bundle as one ticket unit', () => {
+    const base = paidOrder();
+    const originalLine = base.lines[0];
+    if (!originalLine) throw new Error('Missing order fixture line');
+    const group = {
+      ...base,
+      lines: [
+        { ...originalLine, quantity: 1, guestCount: 3, admissionMode: 'per_person' as const },
+      ],
+    };
+    const groupRefund = applyOrderRefund(lockOrderForRefund(group, T0), 1000, T0, 'group-refund', [
+      { entitlementId: 'riya', tierId: 'tier_1' },
+    ]);
+    expect(committedTierQuantity('tier_1', [groupRefund], [], T0)).toBe(2);
+    const couple = {
+      ...base,
+      lines: [{ ...originalLine, quantity: 1, guestCount: 2, admissionMode: 'bundle' as const }],
+    };
+    const coupleRefund = applyOrderRefund(
+      lockOrderForRefund(couple, T0),
+      1000,
+      T0,
+      'couple-refund',
+      [{ entitlementId: 'couple', tierId: 'tier_1' }],
+    );
+    expect(committedTierQuantity('tier_1', [coupleRefund], [], T0)).toBe(0);
+  });
+  it('does not subtract ticket releases again from fully refunded orders', () => {
+    const locked = lockOrderForRefund(paidOrder(), T0);
+    const full = applyOrderRefund(locked, locked.grandTotalPaise, T0, 'full-refund', [
+      { entitlementId: 'riya', tierId: 'tier_1' },
+    ]);
+    expect(committedTierQuantity('tier_1', [full], [], T0)).toBe(0);
   });
 });

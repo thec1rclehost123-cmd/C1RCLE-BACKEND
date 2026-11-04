@@ -230,7 +230,7 @@ export function createTicketTier(input: CreateTicketTierInput): TicketTier {
     );
   if (accessType !== 'RSVP' && priceInPaise <= 0)
     throw new InvalidOperationError('Paid tickets require a positive price');
-  if (input.quantity < 0)
+  if (!Number.isSafeInteger(input.quantity) || input.quantity < 0)
     throw new InvalidOperationError('Ticket tier quantity cannot be negative');
   if (priceInPaise < 0) throw new InvalidOperationError('Ticket tier price cannot be negative');
   if (
@@ -242,10 +242,15 @@ export function createTicketTier(input: CreateTicketTierInput): TicketTier {
   if (accessType === 'RSVP' && (input.coverAmountPaise ?? 0) > 0) {
     throw new InvalidOperationError('Free RSVPs cannot include paid event cover');
   }
-  const guestCount = input.guestCount ?? 1;
+  const guestCount = input.guestCount ?? (input.audienceType === 'COUPLE' ? 2 : 1);
   if (!Number.isInteger(guestCount) || guestCount < 1)
     throw new InvalidOperationError('Guest count must be at least 1');
   const admissionMode = input.admissionMode ?? 'bundle';
+  if (input.audienceType === 'COUPLE' && (guestCount !== 2 || admissionMode !== 'bundle')) {
+    throw new InvalidOperationError(
+      'Couple tickets require two guests entering together on one ticket',
+    );
+  }
   if (admissionMode === 'per_person' && guestCount < 2)
     throw new InvalidOperationError('Per-person group admission requires at least two guests');
   if (accessType === 'RSVP' && guestCount > 1)
@@ -266,7 +271,11 @@ export function createTicketTier(input: CreateTicketTierInput): TicketTier {
   )
     throw new InvalidOperationError('Ticket sales must start before they end');
   for (const phase of phases) {
-    if (phase.priceInPaise <= 0 || (phase.quantity !== null && phase.quantity < 0))
+    if (
+      !Number.isSafeInteger(phase.priceInPaise) ||
+      phase.priceInPaise <= 0 ||
+      (phase.quantity !== null && (!Number.isSafeInteger(phase.quantity) || phase.quantity < 0))
+    )
       throw new InvalidOperationError(
         'Paid phase prices must be positive and quantities cannot be negative',
       );
@@ -360,8 +369,21 @@ export function updateTicketTier(
   ) {
     throw new InvalidOperationError('Free RSVP tickets are limited to one per order');
   }
-  if (changes.priceInPaise !== undefined && changes.priceInPaise < 0) {
-    throw new InvalidOperationError('Ticket tier price cannot be negative');
+  if (
+    changes.quantity !== undefined &&
+    (!Number.isSafeInteger(changes.quantity) || changes.quantity < 0)
+  ) {
+    throw new InvalidOperationError('Ticket tier quantity must be a nonnegative whole number');
+  }
+  if (
+    changes.priceInPaise !== undefined &&
+    (!Number.isSafeInteger(changes.priceInPaise) ||
+      changes.priceInPaise <= 0 ||
+      tier.accessType === 'RSVP')
+  ) {
+    throw new InvalidOperationError(
+      'Paid ticket prices must be positive whole paise; RSVP prices cannot be changed',
+    );
   }
   if (
     changes.coverAmountPaise !== undefined &&
@@ -375,7 +397,18 @@ export function updateTicketTier(
   ) {
     throw new InvalidOperationError('RSVP tiers cannot include paid event cover');
   }
-  return bumpVersion({ ...tier, ...changes }, now ?? new Date());
+  return bumpVersion(
+    {
+      ...tier,
+      ...changes,
+      ...(tier.status === 'sold_out' &&
+      changes.quantity !== undefined &&
+      changes.quantity > tier.quantity
+        ? { status: 'active' as const }
+        : {}),
+    },
+    now ?? new Date(),
+  );
 }
 
 /**

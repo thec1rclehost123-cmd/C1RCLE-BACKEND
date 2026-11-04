@@ -204,4 +204,44 @@ describe('Host ticket tier limits', () => {
     expect(await catalog.getTierById(tier.id)).toEqual(retry);
     expect(await outbox.listPending()).toHaveLength(1);
   });
+  it('updates inventory and future price without rewriting commercial snapshots', async () => {
+    const { service, catalog, tier } = await setupTier();
+    const actor = {
+      userId: 'host_user',
+      organizationId: 'host_limits',
+      role: 'owner' as const,
+      capabilities: ['host' as const],
+    };
+    const updated = await service.updateTierLimits(actor, {
+      eventId: 'event_limits',
+      tierId: tier.id,
+      expectedVersion: tier.version,
+      quantity: 40,
+      priceInPaise: 70_000,
+    });
+    expect(updated).toMatchObject({ quantity: 40, priceInPaise: 70_000, maxPerOrder: null });
+    expect(tier).toMatchObject({ quantity: 20, priceInPaise: 50_000 });
+    expect(await catalog.getTierById(tier.id)).toEqual(updated);
+  });
+
+  it.each(['STUDENT', 'MEMBER'] as const)('rejects new V1 %s tiers', async (audienceType) => {
+    const { service } = await setupTier();
+    await expect(
+      service.createTier(
+        {
+          userId: 'host_user',
+          organizationId: 'host_limits',
+          role: 'owner',
+          capabilities: ['host'],
+        },
+        {
+          eventId: 'event_limits',
+          name: audienceType,
+          quantity: 20,
+          priceInPaise: 50_000,
+          audienceType,
+        },
+      ),
+    ).rejects.toThrow('not available in V1');
+  });
 });

@@ -1,6 +1,7 @@
 import { ConflictError, InvalidOperationError, NotFoundError } from '../../domain/errors.js';
 import { deterministicDomainEventId, domainEvent } from '../../domain/events.js';
 import { newVersionedEntity } from '../../domain/identity.js';
+import { currentEntitlementHolderId } from '../../domain/models/entitlement.js';
 import {
   confirmEventCoverRedemptionChallenge,
   consumeEventCoverRedemptionChallenge,
@@ -18,6 +19,7 @@ import {
   refundUnusedEventCover,
 } from '../../domain/models/event-cover.js';
 
+import { entitlementFromDoc } from './firestore-entitlement-repository.js';
 import { outboxDocument } from './firestore-outbox-store.js';
 import { paginateUnordered } from './pagination.js';
 
@@ -156,7 +158,7 @@ export class FirestoreEventCoverAccountRepository implements EventCoverAccountRe
       const entitlement = entitlementSnapshot.data();
       if (
         !entitlement ||
-        (entitlement.currentHolderUserId ?? entitlement.userId) !== challenge.guestUserId ||
+        currentEntitlementHolderId(entitlementFromDoc(entitlement)) !== challenge.guestUserId ||
         entitlement.status !== 'valid' ||
         entitlement.pendingTransferId
       ) {

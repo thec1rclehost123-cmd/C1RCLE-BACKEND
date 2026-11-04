@@ -42,7 +42,7 @@ export class FirestoreScanLedgerRepository implements ScanLedgerRepository {
    */
   async create(input: ScanLedgerCreateInput): Promise<ScanLedger> {
     const scan = createScanLedger(input);
-    await this.collection.doc(scan.id).set(toDoc(scan));
+    await this.collection.doc(scan.id).set(scanLedgerToDoc(scan));
     return scan;
   }
 
@@ -138,7 +138,7 @@ export class FirestoreScanLedgerRepository implements ScanLedgerRepository {
       // Throws on an illegal transition (e.g. already consumed) — the FSM
       // guard lives in the domain function, not duplicated here.
       const updated = overrideScan(toScanLedger(data), overriddenBy, reason);
-      tx.set(ref, toDoc(updated));
+      tx.set(ref, scanLedgerToDoc(updated));
       return updated;
     });
   }
@@ -229,7 +229,7 @@ export class FirestoreScanLedgerRepository implements ScanLedgerRepository {
   }
 }
 
-function toDoc(scan: ScanLedger): DocumentData {
+export function scanLedgerToDoc(scan: ScanLedger): DocumentData {
   return {
     id: scan.id,
     eventId: scan.eventId,

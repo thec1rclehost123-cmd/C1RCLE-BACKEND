@@ -12,6 +12,7 @@ export const eventStatusSchema = z.enum([
   'scheduled',
   'published',
   'sales_paused',
+  'postponed',
   'started',
   'ended',
   'archived',
@@ -104,6 +105,12 @@ export const eventMediaSchema = z
   .strict();
 export type EventMediaDto = z.infer<typeof eventMediaSchema>;
 
+export const eventRefundPolicySchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('no_refunds') }).strict(),
+  z.object({ kind: z.literal('organizer_reviewed') }).strict(),
+  z.object({ kind: z.literal('until_cutoff'), cutoffAt: z.iso.datetime() }).strict(),
+]);
+
 export const eventDtoSchema = z.object({
   id: opaqueIdSchema,
   organizationId: opaqueIdSchema,
@@ -127,6 +134,16 @@ export const eventDtoSchema = z.object({
   startingPricePaise: z.number().int().nonnegative().nullable(),
   isFree: z.boolean(),
   cancellationReason: z.string().max(1000).nullable(),
+  postponement: z
+    .object({
+      reason: z.string(),
+      initiatedBy: z.enum(['host', 'venue']),
+      organizationId: opaqueIdSchema,
+      at: z.iso.datetime(),
+    })
+    .nullable()
+    .optional(),
+  refundPolicy: eventRefundPolicySchema.optional(),
   compensation: eventCompensationSchema.nullable().optional(),
   entryRules: eventEntryRulesSchema.optional(),
   media: eventMediaSchema.optional(),
@@ -167,6 +184,7 @@ export const createEventSchema = z.object({
   startAt: z.iso.datetime(),
   endAt: z.iso.datetime().nullable().optional(),
   tags: z.array(z.string().min(1).max(40)).max(50).default([]),
+  refundPolicy: eventRefundPolicySchema.optional(),
   compensation: eventCompensationSchema.nullable().optional(),
   visibilityMode: eventVisibilityModeValueSchema.optional(),
   addressDisclosure: eventAddressDisclosureSchema.optional(),
@@ -223,6 +241,7 @@ export const updateEventSchema = z
     tags: z.array(z.string().min(1).max(40)).max(50).optional(),
     startingPricePaise: z.number().int().nonnegative().optional(),
     isFree: z.boolean().optional(),
+    refundPolicy: eventRefundPolicySchema.optional(),
     compensation: eventCompensationSchema.nullable().optional(),
     visibilityMode: eventVisibilityModeValueSchema.optional(),
     addressDisclosure: eventAddressDisclosureSchema.optional(),
@@ -300,6 +319,9 @@ export const ticketTierDtoSchema = z.object({
   priceInPaise: z.number().int().nonnegative(),
   coverAmountPaise: z.number().int().nonnegative().optional(),
   quantity: z.number().int().nonnegative(),
+  soldQuantity: z.number().int().nonnegative().optional(),
+  heldQuantity: z.number().int().nonnegative().optional(),
+  availableQuantity: z.number().int().nonnegative().optional(),
   status: ticketTierStatusSchema,
   salesStartAt: z.iso.datetime().nullable(),
   salesEndAt: z.iso.datetime().nullable(),
@@ -405,8 +427,13 @@ export const createTicketTierSchema = createTicketTierBaseSchema.superRefine((ti
 export type CreateTicketTierRequest = z.infer<typeof createTicketTierSchema>;
 
 export const updateTicketTierLimitsSchema = z
-  .object({ maxPerOrder: z.number().int().min(1).max(10) })
-  .strict();
+  .object({
+    maxPerOrder: z.number().int().min(1).max(10).optional(),
+    quantity: z.number().int().nonnegative().optional(),
+    priceInPaise: z.number().int().positive().optional(),
+  })
+  .strict()
+  .refine((value) => Object.keys(value).length > 0, 'A tier change is required');
 export type UpdateTicketTierLimitsRequest = z.infer<typeof updateTicketTierLimitsSchema>;
 
 export const ticketAddonDtoSchema = z.object({

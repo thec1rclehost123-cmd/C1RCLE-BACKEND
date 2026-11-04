@@ -25,6 +25,16 @@ export interface DomainEvent<TPayload extends Record<string, unknown> = Record<s
 }
 
 export interface EventPayloads {
+  'ticket.admitted': {
+    entitlementId: EntityId;
+    eventId: EntityId;
+    deviceId: string;
+    method: 'camera' | 'manual';
+    reason: string | null;
+    admittedCount: number;
+    scansUsed: number;
+  };
+  'rsvp.cancelled': { orderId: EntityId; eventId: EntityId };
   'organization.created': { name: string; slug: string };
   'organization.updated': { name?: string; slug?: string };
   'venue.created': { name: string; slug: string };
@@ -41,9 +51,16 @@ export interface EventPayloads {
   'venue.slot_request.cancelled': { venueId: EntityId; slotId: EntityId | null };
   'event.created': { title: string; venueId: EntityId };
   'event.updated': {
+    venueCancellation?: {
+      hostId: EntityId;
+      venueId: EntityId;
+      slotRequestId: EntityId;
+      reason: string;
+    };
     title?: string;
     venueId?: EntityId;
     materialChange?: {
+      changeType?: 'postponed' | 'rescheduled';
       eventVersion: number;
       previousTitle: string;
       title: string;
@@ -57,9 +74,12 @@ export interface EventPayloads {
     eventId: EntityId;
     tierId: EntityId;
     tierName: string;
-    maxPerOrder: number;
+    maxPerOrder: number | null;
+    quantity?: number;
+    priceInPaise?: number;
   };
   'event.material_change.batch_requested': {
+    changeType?: 'postponed' | 'rescheduled';
     eventId: EntityId;
     eventVersion: number;
     previousTitle: string;
@@ -71,6 +91,7 @@ export interface EventPayloads {
     cursor: string | null;
   };
   'event.material_change.order_affected': {
+    changeType?: 'postponed' | 'rescheduled';
     eventId: EntityId;
     orderId: EntityId;
     /** One representative entitlement for this current-holder notification. */

@@ -13,6 +13,7 @@ import { createTicketTier } from '../../domain/models/event-catalog.js';
 import { createEvent, transitionEvent } from '../../domain/models/event.js';
 import { MemoryPaymentProvider } from '../../domain/ports/payment-provider.js';
 import { MemoryOutboxStore } from '../memory/memory-outbox-store.js';
+import { MemoryUserAccountRepository } from '../memory/memory-user-account-repository.js';
 import { buildRepositories } from '../utils.js';
 
 import { FirestoreCartReservationRepository } from './firestore-cart-reservation-repository.js';
@@ -189,6 +190,19 @@ describe.runIf(EMULATOR)('late payment vs a new buyer (Firestore emulator)', () 
     const service = new CheckoutService(deps);
 
     const hold = async (userId: string, ttlMs?: number) => {
+      const users = repositories.users;
+      if (!(users instanceof MemoryUserAccountRepository))
+        throw new Error('Expected memory account fixture');
+      users.save({
+        id: userId,
+        email: `${userId}@example.test`,
+        name: userId,
+        image: null,
+        emailVerified: true,
+        role: 'guest',
+        createdAt: NOW.getTime(),
+        updatedAt: NOW.getTime(),
+      });
       const { pricing } = await service.quote({
         actor: actor(userId),
         eventId,

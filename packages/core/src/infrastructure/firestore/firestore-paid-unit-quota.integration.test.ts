@@ -16,6 +16,7 @@ import {
   MemoryOrderRepository,
   MemoryPromoRedemptionRepository,
 } from '../memory/memory-repositories.js';
+import { MemoryUserAccountRepository } from '../memory/memory-user-account-repository.js';
 
 import { FirestoreCartReservationRepository } from './firestore-cart-reservation-repository.js';
 import { FirestoreEntitlementRepository } from './firestore-entitlement-repository.js';
@@ -78,6 +79,17 @@ describe.runIf(EMULATOR)('Firestore active paid-unit quota', () => {
         firestore: { projectId: 'demo-c1rcle' },
         clock: { now: () => new Date() },
       });
+      const users = new MemoryUserAccountRepository();
+      users.save({
+        id: userId,
+        email: `${userId}@example.test`,
+        name: userId,
+        image: null,
+        emailVerified: true,
+        role: 'guest',
+        createdAt: now.getTime(),
+        updatedAt: now.getTime(),
+      });
       const deps = {
         config,
         outbox: new MemoryOutboxStore(),
@@ -92,6 +104,7 @@ describe.runIf(EMULATOR)('Firestore active paid-unit quota', () => {
           order: orders,
         }),
         repositories: {
+          users,
           events: eventRepo,
           catalog,
           cartReservations: carts,
