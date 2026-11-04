@@ -79,15 +79,15 @@ describe('evaluateAdmission', () => {
 
 describe('admitSeats', () => {
   it('spends exactly one seat by default and returns the post-state to persist', () => {
-    const claim = admitSeats(ticket({ scanCountAllowed: 2 }), 'evt_1', { now: T0 });
+    const claim = admitSeats(ticket(), 'evt_1', { now: T0 });
     expect(claim.admitted).toBe(true);
     expect(claim.entitlement?.scanCount).toBe(1);
-    expect(claim.entitlement?.status).toBe('valid');
+    expect(claim.entitlement?.status).toBe('redeemed');
     expect(claim.entitlement?.scannedAt).toEqual([T0.toISOString()]);
   });
 
   it('redeems the ticket when the last seat is spent', () => {
-    const claim = admitSeats(ticket({ scanCountAllowed: 2, scanCount: 1 }), 'evt_1', { now: T0 });
+    const claim = admitSeats(ticket(), 'evt_1', { now: T0 });
     expect(claim.entitlement?.status).toBe('redeemed');
   });
 
@@ -95,10 +95,32 @@ describe('admitSeats', () => {
     // Not a loop of two claims: claiming twice would let the halves land
     // either side of a concurrent scan and admit three people on a
     // two-person ticket.
-    const claim = admitSeats(ticket({ scanCountAllowed: 2 }), 'evt_1', { seats: 2, now: T0 });
+    const claim = admitSeats(ticket({ scanCountAllowed: 2 }), 'evt_1', {
+      seats: 2,
+      eligibilityVerified: true,
+      now: T0,
+    });
     expect(claim.admitted).toBe(true);
     expect(claim.entitlement?.scanCount).toBe(2);
     expect(claim.entitlement?.status).toBe('redeemed');
+  });
+
+  it('refuses an unconfirmed or partially consumed Couple ticket without spending seats', () => {
+    for (const original of [
+      ticket({ scanCountAllowed: 2 }),
+      ticket({ scanCountAllowed: 2, scanCount: 1 }),
+    ]) {
+      const claim = admitSeats(original, 'evt_1', { now: T0, eligibilityVerified: true });
+      expect(claim).toMatchObject({ admitted: false, denyReason: 'override_required' });
+      expect(claim.entitlement?.scanCount).toBe(original.scanCount);
+    }
+    expect(
+      admitSeats(ticket({ scanCountAllowed: 2 }), 'evt_1', { seats: 2, now: T0 }),
+    ).toMatchObject({
+      admitted: false,
+      denyReason: 'eligibility_required',
+      entitlement: { scanCount: 0 },
+    });
   });
 
   it('requires staff eligibility verification for restricted tickets', () => {
@@ -155,27 +177,33 @@ describe('admitSeats', () => {
   });
 
   it('refuses a multi-seat claim that would overrun, spending nothing', () => {
-    const original = ticket({ scanCountAllowed: 2, scanCount: 1 });
+    const original = ticket();
     const claim = admitSeats(original, 'evt_1', { seats: 2 });
     expect(claim).toMatchObject({ admitted: false, denyReason: 'already_used' });
     // The caller must be able to persist nothing on a refusal.
-    expect(claim.entitlement?.scanCount).toBe(1);
+    expect(claim.entitlement?.scanCount).toBe(0);
   });
 
   it('refuses when the ticket moved since the confirmation was requested', () => {
     // The couple-confirmation token is minted against a state a staff member
     // saw. If anything consumed a seat in between, confirming must fail
     // rather than admit against a moved target.
-    const claim = admitSeats(ticket({ scanCountAllowed: 2, scanCount: 1 }), 'evt_1', {
-      seats: 1,
-      expectedScansUsed: 0,
-    });
+    const claim = admitSeats(
+      ticket({ scanCountAllowed: 2, scanCount: 2, status: 'redeemed' }),
+      'evt_1',
+      {
+        seats: 2,
+        eligibilityVerified: true,
+        expectedScansUsed: 0,
+      },
+    );
     expect(claim).toMatchObject({ admitted: false, denyReason: 'already_used' });
   });
 
   it('admits when the expected state still holds', () => {
     const claim = admitSeats(ticket({ scanCountAllowed: 2 }), 'evt_1', {
       seats: 2,
+      eligibilityVerified: true,
       expectedScansUsed: 0,
     });
     expect(claim.admitted).toBe(true);
