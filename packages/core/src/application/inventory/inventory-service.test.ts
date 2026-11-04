@@ -111,7 +111,12 @@ describe('InventoryService quantity-priced allocations', () => {
       1,
     );
     // A partial settlement leaves the commercial line immutable and releases one allocation.
-    const refundClaim = { entitlementId: 'ENT-returned', tierId: tier.id, pricingPhaseId: 'early' };
+    const refundClaim = {
+      refundRequestId: 'refund-settled',
+      entitlementId: 'ENT-returned',
+      tierId: tier.id,
+      pricingPhaseId: 'early',
+    };
     orders.orders.set(paid.id, { ...paid, refundedTicketClaims: [refundClaim, refundClaim] });
     expect(await inventory.getAvailablePricingPhaseQuantity(tier.eventId, tier.id, 'early')).toBe(
       2,

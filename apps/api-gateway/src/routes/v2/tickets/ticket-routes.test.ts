@@ -309,7 +309,7 @@ describe('M3 authoritative HTTP ticket management', () => {
           url: `/wallet/booking-tickets?limit=1${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`,
         });
         expect(page.statusCode, page.body).toBe(200);
-        const body = page.json<{ items: { id: string }[]; nextCursor: string | null }>();
+        const body: { items: { id: string }[]; nextCursor: string | null } = page.json();
         allIds.push(...body.items.map((item) => item.id));
         if (body.nextCursor) {
           expect(seenCursors.has(body.nextCursor)).toBe(false);
