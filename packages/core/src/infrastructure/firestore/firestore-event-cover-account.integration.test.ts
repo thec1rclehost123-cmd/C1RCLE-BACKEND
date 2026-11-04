@@ -191,6 +191,8 @@ describe.runIf(EMULATOR)('M5 event cover account Firestore transactions', () => 
     }
   });
 
+  // Locked Firestore SDK permits five attempts; retry waits alone can exceed 12s,
+  // before RPCs and fixture setup/cleanup. Keep the concurrent claims intact.
   it('consumes a confirmed guest challenge once under concurrent Venue retries', async () => {
     const db = new Firestore({ projectId: 'demo-c1rcle' });
     const repository = new FirestoreEventCoverAccountRepository(db);
@@ -261,7 +263,7 @@ describe.runIf(EMULATOR)('M5 event cover account Firestore transactions', () => 
       await deleteCoverRecords(db, account.id, batch);
       await db.terminate();
     }
-  });
+  }, 30_000);
 
   it('voids the exact preauthorization once when an unconfirmed challenge expires', async () => {
     const db = new Firestore({ projectId: 'demo-c1rcle' });
