@@ -32,6 +32,8 @@ Because the stamping happens on our own Cloudflare zone, this does not depend on
 
 `NGINX_ORIGIN_LOCKED_SERVER_NAMES` lists hostnames that are **refused with 403** unless they carry a valid `X-Origin-Verify`. That closes the bypass where someone resolves Render's origin and sends `Host: api-staging.thec1rcle.com` directly, skipping Cloudflare (and its WAF, rate limiting and access control). Hosts not listed behave exactly as before, so the legacy `onrender.com` name keeps working during a migration.
 
+**The one exception: the platform health probe.** `GET` and `HEAD` of exactly `/api/v2/internal/health` are served on a locked host even without the secret. Render's health checker probes the service through its custom domain (so the `Host` is a locked name) and cannot send a secret it does not know. Before this exception, turning the lock on made every deploy fail: the new instance started, Render's probe was answered `403` every 10 seconds, and after about 15 minutes the deploy ended `update_failed` while the previous version kept running (2026-11-04). The path returns only `{ok, uptime}`. `/api/v2/internal/readiness` and `/api/v2/internal/version` keep their own token, and every other path, and every other method on the health path, is still refused. The rule lives in the `$c1rcle_origin_blocked` map in `deploy/nginx/templates/client-ip.conf.template` and is tested in `deploy/nginx/tests/run-local-validation.sh`. If a deploy ever shows `update_failed` with a stream of `403` health checks in the logs (`userAgent: Render/1.0`), this is the first thing to check.
+
 ## Configuration
 
 | Variable | Required | Notes |

@@ -182,12 +182,45 @@ if [ "$extra_host_status" != "200" ]; then
 fi
 echo "Checking the origin lock and the verified client IP..."
 for lock_headers in "" "X-Origin-Verify: wrong-secret-wrong-secret-wrong-secret-xx"; do
-    locked_status=$(curl -sS -o /dev/null -w '%{http_code}' -H 'Host: extra.localhost.test' \
-        ${lock_headers:+-H "$lock_headers"} http://localhost:18081/api/v2/internal/health)
-    if [ "$locked_status" != "403" ]; then
-        echo "Expected a locked host without a valid secret to return 403, got $locked_status" >&2
-        exit 1
-    fi
+    # The platform health probe is the one request a locked host serves without the
+    # secret (Render probes through the custom domain and cannot send it). GET and
+    # HEAD of exactly /api/v2/internal/health only.
+    for health_method in GET HEAD; do
+        # curl must be told HEAD with --head: `-X HEAD` waits for a body that a HEAD
+        # response never has and fails with "transfer closed" (curl error 18).
+        health_method_flag="-X GET"
+        if [ "$health_method" = "HEAD" ]; then health_method_flag="--head"; fi
+        # shellcheck disable=SC2086 # the flag is intentionally split into words
+        health_status=$(curl -sS -o /dev/null -w '%{http_code}' $health_method_flag \
+            -H 'Host: extra.localhost.test' ${lock_headers:+-H "$lock_headers"} \
+            http://localhost:18081/api/v2/internal/health)
+        if [ "$health_status" != "200" ]; then
+            echo "Expected $health_method of the health path on a locked host to be served without the secret, got $health_status" >&2
+            exit 1
+        fi
+    done
+    # Everything else on a locked host stays refused without a valid secret: other
+    # internal paths, the API itself, an unknown path, a different method on the
+    # health path, a trailing slash, and a traversal that normalises to readiness.
+    for locked_probe in \
+        'GET /api/v2/internal/readiness' \
+        'GET /api/v2/internal/version' \
+        'GET /api/v2/auth/session' \
+        'GET /api/v2/anything-else' \
+        'GET /' \
+        'POST /api/v2/internal/health' \
+        'GET /api/v2/internal/health/' \
+        'GET /api/v2/internal/health/../readiness'; do
+        probe_method="${locked_probe%% *}"
+        probe_path="${locked_probe#* }"
+        locked_status=$(curl -sS --path-as-is -o /dev/null -w '%{http_code}' -X "$probe_method" \
+            -H 'Host: extra.localhost.test' ${lock_headers:+-H "$lock_headers"} \
+            "http://localhost:18081$probe_path")
+        if [ "$locked_status" != "403" ]; then
+            echo "Expected $locked_probe on a locked host without a valid secret to return 403, got $locked_status" >&2
+            exit 1
+        fi
+    done
 done
 # A forged address with no secret must be ignored; a proven one must be used.
 curl -sS -o /dev/null -H 'X-C1-Client-IP: 198.51.100.66' http://localhost:18081/api/v2/internal/health
