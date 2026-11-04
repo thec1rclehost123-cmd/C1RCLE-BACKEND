@@ -1,10 +1,12 @@
 import {
   opaqueIdSchema,
   organizationOverviewDtoSchema,
+  organizationSalesBreakdownDtoSchema,
   organizationTrendsDtoSchema,
   organizationCalendarDtoSchema,
   organizationEventCardListResponseSchema,
   eventAnalyticsDtoSchema,
+  eventPromoterAnalyticsDtoSchema,
   trendGranularitySchema,
 } from '@c1rcle/contracts/client';
 import { z } from 'zod';
@@ -25,9 +27,12 @@ import type { FastifyInstance } from 'fastify';
  * zeroes (see `AnalyticsService`'s doc comment). A dashboard load is still
  * cheap — the fallback is bounded by a per-collection scan cap.
  *
- * Both routes are cached: the read model is already slightly behind by design,
- * so a short TTL costs nothing in freshness that the projection lag has not
- * already spent.
+ * Organization analytics use the short-lived ORGANIZATION response cache to
+ * avoid repeating bounded scans. Successful authenticated writes flush this
+ * cache in-process so event and relationship changes are visible on refresh;
+ * the TTL remains a fallback for external writes or missed invalidation. The
+ * cache is process-local, so multi-instance deployments need shared
+ * invalidation or must accept up to one TTL of cross-instance staleness.
  *
  * `/trends` and `/calendar` are also cached, on the same reasoning — and both
  * are *derived* from the same bounded scan rather than read from a projection,
@@ -92,6 +97,34 @@ export default async function partnerAnalyticsRoutes(fastify: FastifyInstance) {
       // An organization with no history returns real zeroes, not an error —
       // an empty dashboard is a legitimate state, not a failure.
       const validated = validateV2Response(reply, request, organizationOverviewDtoSchema, overview);
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  fastify.get(
+    '/organizations/:organizationId/analytics/sales-breakdown',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({ params: organizationIdParam, headers: analyticsHeaders }),
+        fastify.requirePermission('organization.read'),
+        fastify.cached('ORGANIZATION'),
+      ],
+    },
+    async (request, reply) => {
+      const { organizationId } = request.params as z.infer<typeof organizationIdParam>;
+      const actor = services.actor(request);
+      const breakdown = await services.analytics
+        .getOrganizationSalesBreakdown(actor)
+        .catch((error: unknown) => mapDomainError(reply, request, organizationId, error));
+      if (breakdown === undefined) return reply;
+      const validated = validateV2Response(
+        reply,
+        request,
+        organizationSalesBreakdownDtoSchema,
+        breakdown,
+      );
       if (validated === undefined) return reply;
       return reply.send(validated);
     },
@@ -216,6 +249,36 @@ export default async function partnerAnalyticsRoutes(fastify: FastifyInstance) {
       if (analytics === undefined) return reply;
 
       const validated = validateV2Response(reply, request, eventAnalyticsDtoSchema, analytics);
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  fastify.get(
+    '/events/:eventId/promoter-analytics',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({ params: eventIdParam, headers: analyticsHeaders }),
+        fastify.requirePermission('event.read'),
+      ],
+    },
+    async (request, reply) => {
+      const { eventId } = request.params as z.infer<typeof eventIdParam>;
+      const actor = services.actor(request);
+      const analytics = await services.analytics
+        .getEventPromoterAnalytics(actor, eventId)
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, eventId, error, { hideForbidden: true }),
+        );
+      if (analytics === undefined) return reply;
+
+      const validated = validateV2Response(
+        reply,
+        request,
+        eventPromoterAnalyticsDtoSchema,
+        analytics,
+      );
       if (validated === undefined) return reply;
       return reply.send(validated);
     },

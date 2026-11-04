@@ -38,6 +38,7 @@ export class InProcessEventBus implements OutboxWriter {
   private readonly baseRetryDelayMs: number;
   private readonly maxRetryDelayMs: number;
   private readonly now: () => number;
+  private readonly queuedEventIds = new Set<EntityId>();
   private draining = false;
 
   constructor(store: OutboxStore, options: EventBusOptions = {}) {
@@ -50,10 +51,10 @@ export class InProcessEventBus implements OutboxWriter {
     this.now = options.now ?? Date.now;
   }
 
-  /** OutboxWriter contract: write the event, then drain in the same call. */
+  /** Persist and dispatch this event without claiming unrelated backlog. */
   async append(event: DomainEvent): Promise<void> {
     await this.store.append(event);
-    await this.drain();
+    await this.drain(event.id);
   }
 
   /** Delegates to the store so the bus honours the full OutboxWriter port. */
@@ -89,14 +90,18 @@ export class InProcessEventBus implements OutboxWriter {
   }
 
   /** Pulls pending rows and dispatches. Returns count of rows processed. */
-  async drain(): Promise<number> {
-    if (this.draining) return 0;
+  async drain(eventId?: EntityId): Promise<number> {
+    if (this.draining) {
+      if (eventId !== undefined) this.queuedEventIds.add(eventId);
+      return 0;
+    }
     this.draining = true;
     try {
       const pending = await this.store.claimPending({
         workerId: this.workerId,
         now: this.now(),
         leaseMs: this.leaseMs,
+        ...(eventId === undefined ? {} : { eventId }),
       });
       let processed = 0;
       for (const row of pending) {
@@ -106,6 +111,9 @@ export class InProcessEventBus implements OutboxWriter {
       return processed;
     } finally {
       this.draining = false;
+      const queuedEventIds = [...this.queuedEventIds];
+      this.queuedEventIds.clear();
+      for (const queuedEventId of queuedEventIds) await this.drain(queuedEventId);
     }
   }
 

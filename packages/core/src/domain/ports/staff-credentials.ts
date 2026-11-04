@@ -45,12 +45,6 @@ export interface StaffCredentialProvisioner {
    * without touching anything.
    */
   provisionLogin(email: string, displayName: string): Promise<StaffCredentialProvision>;
-  /**
-   * Revokes and removes the provisioned credentials and login for the staff member.
-   * Invalidates password and removes the account so subsequent invitations issue
-   * fresh temporary credentials requiring first-login rotation.
-   */
-  revokeLogin?(userId: string, email?: string): Promise<void>;
 }
 
 export interface StaffUserDirectory {
@@ -136,22 +130,13 @@ export class MemoryStaffCredentialProvisioner implements StaffCredentialProvisio
     const existingId = await this.directory.findUserIdByEmail(normalized);
     const temporaryPassword = generateTemporaryPassword();
     if (existingId) {
-      this.passwords.set(existingId, temporaryPassword);
-      return { userId: existingId, created: true, temporaryPassword };
+      return { userId: existingId, created: false, temporaryPassword: null };
     }
     this.idSeq += 1;
     const userId = `memory-user-${this.idSeq}`;
     this.directory.seed(normalized, userId);
     this.passwords.set(userId, temporaryPassword);
     return { userId, created: true, temporaryPassword };
-  }
-
-  async revokeLogin(userId: string, email?: string): Promise<void> {
-    this.passwords.delete(userId);
-    if (email) {
-      this.directory.remove(email);
-    }
-    this.directory.removeById(userId);
   }
 
   getPassword(userId: string): string | null {

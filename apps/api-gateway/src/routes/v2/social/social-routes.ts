@@ -109,6 +109,7 @@ export default async function socialRoutes(fastify: FastifyInstance) {
       ],
     },
     async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
       const actor = actorOrReply(request, reply);
       if (actor === undefined) return reply;
       const query = request.query as z.infer<typeof listMyFollowsQuerySchema>;
@@ -166,6 +167,7 @@ export default async function socialRoutes(fastify: FastifyInstance) {
       ],
     },
     async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
       const actor = actorOrReply(request, reply);
       if (actor === undefined) return reply;
       const query = request.query as z.infer<typeof listNotificationsQuerySchema>;
@@ -194,6 +196,7 @@ export default async function socialRoutes(fastify: FastifyInstance) {
     '/notifications/me/unread-count',
     { preHandler: [fastify.rateLimit('AUTH_READ')] },
     async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
       const actor = actorOrReply(request, reply);
       if (actor === undefined) return reply;
 
@@ -287,5 +290,16 @@ export function toNotificationDto(notification: SocialNotification) {
     subjectId: notification.subjectId,
     createdAt: notification.createdAt,
     readAt: notification.readAt,
+    ...(notification.eventChange ? { eventChange: notification.eventChange } : {}),
+    ...(notification.eventChangeResponse !== undefined
+      ? {
+          eventChangeResponse: notification.eventChangeResponse
+            ? {
+                response: notification.eventChangeResponse.response,
+                respondedAt: notification.eventChangeResponse.respondedAt,
+              }
+            : null,
+        }
+      : {}),
   };
 }

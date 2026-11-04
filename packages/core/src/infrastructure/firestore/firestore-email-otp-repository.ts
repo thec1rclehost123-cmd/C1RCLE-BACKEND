@@ -1,8 +1,9 @@
+import { InvalidOperationError } from '../../domain/errors.js';
 import { normalizeEmailRecipient } from '../../domain/models/email-otp.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type { EmailOtp } from '../../domain/models/email-otp.js';
-import type { EmailOtpRepository } from '../../domain/ports/repositories.js';
+import type { EmailOtpRepository, EmailOtpTransition } from '../../domain/ports/repositories.js';
 import type { DocumentData, Firestore } from 'firebase-admin/firestore';
 
 /**
@@ -31,11 +32,44 @@ export class FirestoreEmailOtpRepository implements EmailOtpRepository {
   async delete(recipient: EntityId): Promise<void> {
     await this.collection.doc(normalizeEmailRecipient(recipient)).delete();
   }
+
+  async updateAtomically<T>(
+    recipient: EntityId,
+    transition: (current: EmailOtp | null) => EmailOtpTransition<T>,
+  ): Promise<T> {
+    const ref = this.collection.doc(normalizeEmailRecipient(recipient));
+    return this.db.runTransaction(async (tx) => {
+      const data = (await tx.get(ref)).data();
+      const current = data ? toEmailOtp(data) : null;
+      const { next, result, verifyAccountAt } = transition(current);
+      if (verifyAccountAt !== undefined) {
+        if (next !== null || !current?.userId) {
+          throw new InvalidOperationError(
+            'Verification account no longer matches. Request a new code.',
+          );
+        }
+        const userRef = this.db.collection('v2_auth_users').doc(current.userId);
+        const account = (await tx.get(userRef)).data();
+        if (!account || account.email !== normalizeEmailRecipient(recipient)) {
+          throw new InvalidOperationError(
+            'Verification account no longer matches. Request a new code.',
+          );
+        }
+        tx.update(userRef, { emailVerified: true, updatedAt: new Date(verifyAccountAt) });
+      }
+      if (next !== current) {
+        if (next) tx.set(ref, toDoc(next));
+        else if (current) tx.delete(ref);
+      }
+      return result;
+    });
+  }
 }
 
 function toDoc(otp: EmailOtp): DocumentData {
   return {
     recipient: otp.recipient,
+    ...(otp.userId ? { userId: otp.userId } : {}),
     codeHash: otp.codeHash,
     expiresAt: otp.expiresAt,
     lastSentAt: otp.lastSentAt,
@@ -46,6 +80,7 @@ function toDoc(otp: EmailOtp): DocumentData {
 function toEmailOtp(data: DocumentData): EmailOtp {
   return {
     recipient: data.recipient as string,
+    ...(typeof data.userId === 'string' ? { userId: data.userId } : {}),
     codeHash: data.codeHash as string,
     expiresAt: data.expiresAt as string,
     lastSentAt: data.lastSentAt as string,

@@ -6,6 +6,8 @@ import {
 } from '@c1rcle/contracts/client';
 import { type z } from 'zod';
 
+import type { EmailOtpService } from '@c1rcle/core/application';
+
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
 
@@ -28,7 +30,11 @@ const services = createV2Services();
 
 const GENERIC_ACK = { message: 'If valid, a code has been sent.' };
 
-export default async function otpRoutes(fastify: FastifyInstance) {
+export default async function otpRoutes(
+  fastify: FastifyInstance,
+  options: { emailOtp?: EmailOtpService } = {},
+) {
+  const emailOtp = options.emailOtp ?? services.emailOtp;
   fastify.post(
     '/otp/send',
     {
@@ -39,12 +45,12 @@ export default async function otpRoutes(fastify: FastifyInstance) {
     },
     async (request, reply) => {
       const body = request.body as z.infer<typeof otpSendRequestSchema>;
-      const outcome = await services.emailOtp
+      const outcome = await emailOtp
         .send(body.email)
         .then(() => 'sent' as const)
         .catch((error: unknown) => {
-          // The only domain error here is the 60s resend cooldown. Swallow
-          // it into the same generic ack rather than a distinct status —
+          // Missing accounts and the 60s resend cooldown use the same generic
+          // acknowledgement rather than a distinct status —
           // surfacing "you already requested one" as a different response
           // would let an attacker probe whether a code was recently sent to
           // an address they don't own. A genuinely unexpected error still
@@ -79,7 +85,7 @@ export default async function otpRoutes(fastify: FastifyInstance) {
     },
     async (request, reply) => {
       const body = request.body as z.infer<typeof otpVerifyRequestSchema>;
-      const result = await services.emailOtp
+      const result = await emailOtp
         .verify(body.email, body.code)
         .then(() => true as const)
         .catch((error: unknown) => {

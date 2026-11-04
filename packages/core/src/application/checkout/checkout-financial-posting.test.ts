@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { createCoreConfig } from '../../config/index.js';
 import { journalTotals } from '../../domain/models/financial-journal.js';
+import { MemoryOutboxStore } from '../../infrastructure/memory/memory-outbox-store.js';
 import { buildRepositories } from '../../infrastructure/utils.js';
 
 import { CheckoutService } from './checkout-service.js';
@@ -22,7 +23,11 @@ describe('CheckoutService canonical financial posting', () => {
       firestore: { projectId: 'test-project' },
       clock: { now: () => NOW },
     });
-    const service = new CheckoutService({ config, repositories } as unknown as ServiceDeps);
+    const service = new CheckoutService({
+      config,
+      repositories,
+      outbox: new MemoryOutboxStore(),
+    } as unknown as ServiceDeps);
     const order: Order = {
       id: 'order_finance_1',
       eventId: 'event_finance_1',

@@ -9,7 +9,7 @@ import {
 } from '../../domain/models/email-otp.js';
 
 import type { EmailSender } from '../../domain/ports/email-sender.js';
-import type { EmailOtpRepository } from '../../domain/ports/repositories.js';
+import type { EmailOtpRepository, UserAccountRepository } from '../../domain/ports/repositories.js';
 import type { ServiceDeps } from '../context.js';
 
 /**
@@ -25,6 +25,7 @@ import type { ServiceDeps } from '../context.js';
 
 export interface EmailOtpServiceDeps {
   emailOtp: EmailOtpRepository;
+  users: UserAccountRepository;
   emailSender: EmailSender;
   config: ServiceDeps['config'];
 }
@@ -35,45 +36,52 @@ export interface EmailOtpService {
 }
 
 export function createEmailOtpService(deps: EmailOtpServiceDeps): EmailOtpService {
-  const { emailOtp, emailSender, config } = deps;
+  const { emailOtp, users, emailSender, config } = deps;
 
   async function send(recipient: string): Promise<void> {
-    const now = config.clock.now();
     const normalized = normalizeEmailRecipient(recipient);
-    const existing = await emailOtp.get(normalized);
-    assertCanResend(existing, now);
-
+    const account = await users.getByEmail(normalized);
+    if (!account) throw new InvalidOperationError('No account available for verification.');
     const code = generateEmailOtpCode();
-    const otp = createEmailOtp(normalized, code, config.emailOtpSecret, now);
-    await emailOtp.save(otp);
+    await emailOtp.updateAtomically(normalized, (existing) => {
+      const now = config.clock.now();
+      assertCanResend(existing, now);
+      return {
+        next: createEmailOtp(normalized, code, config.emailOtpSecret, now, account.id),
+        result: undefined,
+      };
+    });
+    // Provider calls must never run inside a retryable transaction.
     await emailSender.sendOtpEmail(normalized, code);
   }
 
   async function verify(recipient: string, code: string): Promise<void> {
-    const now = config.clock.now();
     const normalized = normalizeEmailRecipient(recipient);
-    const otp = await emailOtp.get(normalized);
-    if (!otp) {
-      throw new InvalidOperationError('No verification in progress for this address.');
-    }
-
-    try {
-      verifyEmailOtpCode(otp, code, config.emailOtpSecret, now);
-    } catch (error) {
-      // A wrong code (not expiry/lockout, which need no attempt bump) still
-      // counts against the lockout — persist the incremented attempt before
-      // re-throwing, mirroring v1's `docRef.update` on mismatch.
-      if (
-        error instanceof InvalidOperationError &&
-        error.message === 'Invalid authorization code.'
-      ) {
-        await emailOtp.save(recordFailedEmailOtpAttempt(otp));
-      }
-      throw error;
-    }
-
-    // Single-use: delete on success so a replayed code can never verify twice.
-    await emailOtp.delete(normalized);
+    const failure = await emailOtp.updateAtomically<InvalidOperationError | null>(
+      normalized,
+      (otp) => {
+        if (!otp) {
+          throw new InvalidOperationError('No verification in progress for this address.');
+        }
+        const now = config.clock.now();
+        try {
+          // Re-evaluate time on every transaction retry, not just request arrival.
+          verifyEmailOtpCode(otp, code, config.emailOtpSecret, now);
+        } catch (error) {
+          if (!(error instanceof InvalidOperationError)) throw error;
+          return {
+            next:
+              error.message === 'Invalid authorization code.'
+                ? recordFailedEmailOtpAttempt(otp)
+                : otp,
+            result: error,
+          };
+        }
+        return { next: null, result: null, verifyAccountAt: now.toISOString() };
+      },
+    );
+    // Throw only after the failed-attempt increment has committed.
+    if (failure) throw failure;
   }
 
   return { send, verify };

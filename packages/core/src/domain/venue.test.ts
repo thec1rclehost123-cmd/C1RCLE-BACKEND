@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { createVenue, reinstateVenue, suspendVenue } from './models/venue.js';
+import {
+  cancelVenueBlock,
+  createVenue,
+  createVenueBlock,
+  reinstateVenue,
+  suspendVenue,
+} from './models/venue.js';
 
 import type { Venue } from './models/venue.js';
 
@@ -43,5 +49,23 @@ describe('suspendVenue / reinstateVenue', () => {
     const before = venue({ status: 'active' });
     const after = reinstateVenue(before, new Date());
     expect(after).toBe(before);
+  });
+});
+
+describe('cancelVenueBlock', () => {
+  it('cancels a block once and treats repeated cancellation as an idempotent no-op', () => {
+    const blocked = createVenueBlock({
+      id: 'block_1',
+      venueId: 'venue_1',
+      label: 'M3 test block',
+      startTime: '2026-11-30T19:00:00.000Z',
+      endTime: '2026-11-30T23:00:00.000Z',
+      now: new Date('2026-10-22T00:00:00.000Z'),
+    });
+    const cancelled = cancelVenueBlock(blocked, new Date('2026-10-23T00:00:00.000Z'));
+
+    expect(cancelled.status).toBe('cancelled');
+    expect(cancelled.version).toBe(blocked.version + 1);
+    expect(cancelVenueBlock(cancelled, new Date('2026-10-24T00:00:00.000Z'))).toBe(cancelled);
   });
 });

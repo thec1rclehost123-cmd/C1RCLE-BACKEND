@@ -123,6 +123,7 @@ export default async function adminDirectoryRoutes(fastify: FastifyInstance) {
       ],
     },
     async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
       const userId = requireUserId(request, reply);
       if (userId === undefined) return reply;
       const query = request.query as z.infer<typeof directoryQuerySchema>;
@@ -152,6 +153,7 @@ export default async function adminDirectoryRoutes(fastify: FastifyInstance) {
       ],
     },
     async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
       const userId = requireUserId(request, reply);
       if (userId === undefined) return reply;
       const query = request.query as z.infer<typeof directoryQuerySchema>;
@@ -181,6 +183,7 @@ export default async function adminDirectoryRoutes(fastify: FastifyInstance) {
       ],
     },
     async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
       const userId = requireUserId(request, reply);
       if (userId === undefined) return reply;
       const query = request.query as z.infer<typeof directoryQuerySchema>;
@@ -210,6 +213,7 @@ export default async function adminDirectoryRoutes(fastify: FastifyInstance) {
       ],
     },
     async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
       const userId = requireUserId(request, reply);
       if (userId === undefined) return reply;
       const query = request.query as z.infer<typeof directoryQuerySchema>;
@@ -239,6 +243,7 @@ export default async function adminDirectoryRoutes(fastify: FastifyInstance) {
       ],
     },
     async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
       const userId = requireUserId(request, reply);
       if (userId === undefined) return reply;
       const query = request.query as z.infer<typeof lookupQuerySchema>;
@@ -266,6 +271,7 @@ export default async function adminDirectoryRoutes(fastify: FastifyInstance) {
       preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({})],
     },
     async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
       const userId = requireUserId(request, reply);
       if (userId === undefined) return reply;
 
@@ -311,6 +317,7 @@ export default async function adminDirectoryRoutes(fastify: FastifyInstance) {
       preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({})],
     },
     async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
       const userId = requireUserId(request, reply);
       if (userId === undefined) return reply;
 
@@ -364,6 +371,7 @@ export default async function adminDirectoryRoutes(fastify: FastifyInstance) {
       preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({})],
     },
     async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
       const userId = requireUserId(request, reply);
       if (userId === undefined) return reply;
 
@@ -414,6 +422,7 @@ export default async function adminDirectoryRoutes(fastify: FastifyInstance) {
       preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({})],
     },
     async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
       const userId = requireUserId(request, reply);
       if (userId === undefined) return reply;
 
@@ -449,6 +458,7 @@ export default async function adminDirectoryRoutes(fastify: FastifyInstance) {
       preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({})],
     },
     async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
       const userId = requireUserId(request, reply);
       if (userId === undefined) return reply;
 

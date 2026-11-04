@@ -287,6 +287,7 @@ describe('admin reconciliation routes', () => {
     });
     expect(exported.statusCode).toBe(200);
     expect(exported.headers['content-type']).toContain('text/csv');
+    expect(exported.headers['cache-control']).toContain('no-store');
     expect(exported.body).toContain(discrepancy.id);
   });
 });

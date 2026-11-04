@@ -190,7 +190,17 @@ export class FirestoreCartReservationRepository implements CartReservationReposi
       const r = toCartReservation(doc.data());
       if (r.eventId !== eventId || r.status !== 'active') return sum;
       if (Date.parse(r.expiresAt) <= now.getTime()) return sum;
-      return sum + r.lines.reduce((s, line) => s + (line.tierId === tierId ? line.quantity : 0), 0);
+      return (
+        sum +
+        r.lines.reduce(
+          (s, line) =>
+            s +
+            (line.tierId === tierId
+              ? line.quantity * (line.admissionMode === 'per_person' ? (line.guestCount ?? 1) : 1)
+              : 0),
+          0,
+        )
+      );
     }, 0);
   }
 }
@@ -210,6 +220,7 @@ function toDoc(reservation: CartReservation): DocumentData {
     convertedOrderId: reservation.convertedOrderId,
     providerOrderId: reservation.providerOrderId ?? null,
     attendee: reservation.attendee ?? null,
+    ...(reservation.upgrade ? { upgrade: reservation.upgrade } : {}),
     sequence: reservation.sequence ?? null,
     idempotencyKey: reservation.idempotencyKey,
     version: reservation.version,
@@ -233,6 +244,7 @@ function toCartReservation(data: DocumentData): CartReservation {
     convertedOrderId: data.convertedOrderId as string | null,
     providerOrderId: (data.providerOrderId as string | null | undefined) ?? null,
     attendee: (data.attendee as CartReservation['attendee'] | undefined) ?? null,
+    ...(data.upgrade ? { upgrade: data.upgrade as CartReservation['upgrade'] } : {}),
     sequence: (data.sequence as number | null | undefined) ?? null,
     idempotencyKey: data.idempotencyKey as string,
     version: data.version as number,

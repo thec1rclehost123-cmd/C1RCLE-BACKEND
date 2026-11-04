@@ -91,7 +91,12 @@ describe('rotating QR verified as of a scan time', () => {
 
   it('round-trips the format `id:window:signature`', () => {
     expect(qr).toBe(`${ID}:${windowStartFor(issuedAtMs)}:${rotatingQrSignature(key, ID, WINDOW)}`);
-    expect(parsed).toEqual({ entitlementId: ID, windowStart: WINDOW, signature: KAT.signature });
+    expect(parsed).toEqual({
+      entitlementId: ID,
+      credentialVersion: 1,
+      windowStart: WINDOW,
+      signature: KAT.signature,
+    });
   });
 
   it('accepts the code at the time it was scanned, however long ago that was', () => {
@@ -134,6 +139,20 @@ describe('rotating QR verified as of a scan time', () => {
     expect(parseRotatingQr('ENT-1')).toBeNull();
     expect(parseRotatingQr('a:b')).toBeNull();
     expect(parseRotatingQr('a::c')).toBeNull();
+  });
+});
+
+describe('versioned rotating credentials', () => {
+  it('binds a credential to its ownership version and rejects a prior version key', () => {
+    const oldKey = deriveTicketKey(SECRET, ID, 1);
+    const currentKey = deriveTicketKey(SECRET, ID, 2);
+    const issuedAtMs = 1_700_000_015_000;
+    const qr = buildRotatingQr(currentKey, ID, issuedAtMs, 2);
+    const parsed = must(parseRotatingQr(qr));
+
+    expect(parsed.credentialVersion).toBe(2);
+    expect(checkRotatingQr({ ticketKey: currentKey, parsed, atMs: issuedAtMs })).toBe(true);
+    expect(checkRotatingQr({ ticketKey: oldKey, parsed, atMs: issuedAtMs })).toBe(false);
   });
 });
 

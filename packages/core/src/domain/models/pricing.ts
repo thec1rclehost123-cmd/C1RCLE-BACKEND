@@ -3,6 +3,7 @@ import { InvalidOperationError } from '../errors.js';
 import type { EntityId } from '../identity.js';
 import type { PromoCode, TicketTier } from './event-catalog.js';
 import type { DiscountFundingOwner } from './financial-journal.js';
+import type { TicketAddonSelection } from './ticket-addon.js';
 
 /**
  * ─── Pricing engine (Phase 4) ────────────────────────────────────────────────
@@ -52,6 +53,7 @@ export function applyPercent(paise: number, percent: number): number {
 export interface PricingLineInput {
   tier: TicketTier;
   quantity: number;
+  ticketAddons?: TicketAddonSelection[];
 }
 
 export interface PricingLine {
@@ -60,6 +62,16 @@ export interface PricingLine {
   quantity: number;
   /** The tier's price at quote time, captured so a later edit cannot rewrite it. */
   unitPricePaise: number;
+  admissionUnitPricePaise?: number;
+  coverUnitPricePaise?: number;
+  coverEntitlementsPerUnit?: number;
+  admissionSubtotalPaise?: number;
+  coverSubtotalPaise?: number;
+  ticketAddons?: TicketAddonSelection[];
+  addOnSubtotalPaise?: number;
+  discountedAdmissionSubtotalPaise?: number;
+  /** Exact accepted Venue policy captured with this cover-bearing quote. */
+  coverPolicy?: { proposalId: EntityId; policyVersion: string; termsDigest: string };
   subtotalPaise: number;
 }
 
@@ -67,6 +79,10 @@ export interface PricingBreakdown {
   lines: PricingLine[];
   /** Σ(unit × qty), before any discount. */
   subtotalPaise: number;
+  admissionSubtotalPaise?: number;
+  coverSubtotalPaise?: number;
+  addOnSubtotalPaise?: number;
+  discountedAdmissionSubtotalPaise?: number;
   discountPaise: number;
   discountFundingOwner?: DiscountFundingOwner | null;
   /** `subtotal - discount`, never below zero. */
@@ -95,7 +111,7 @@ export function calculatePricing(input: CalculatePricingInput): PricingBreakdown
   }
 
   const currency = input.currency ?? input.lines[0]?.tier.currency ?? 'INR';
-  const lines: PricingLine[] = input.lines.map(({ tier, quantity }) => {
+  const lines: PricingLine[] = input.lines.map(({ tier, quantity, ticketAddons = [] }) => {
     if (!Number.isInteger(quantity) || quantity < 1) {
       throw new InvalidOperationError(`Quantity for ${tier.name} must be a positive whole number`);
     }
@@ -108,18 +124,65 @@ export function calculatePricing(input: CalculatePricingInput): PricingBreakdown
         `${tier.name} has a maximum of ${tier.maxPerOrder} per order`,
       );
     }
+    const coverUnitPricePaise = tier.coverAmountPaise ?? 0;
+    const coverEntitlementsPerUnit =
+      (tier.admissionMode ?? 'bundle') === 'per_person' ? (tier.guestCount ?? 1) : 1;
+    const addOnUnitSubtotalPaise = ticketAddons.reduce(
+      (sum, addon) => sum + addon.unitPricePaise * addon.quantityPerEntitlement,
+      0,
+    );
+    const addOnEntitlementsPerUnit =
+      (tier.admissionMode ?? 'bundle') === 'per_person' ? (tier.guestCount ?? 1) : 1;
+    const addOnSubtotalPaise = addOnUnitSubtotalPaise * addOnEntitlementsPerUnit * quantity;
     return {
       tierId: tier.id,
       tierName: tier.name,
       quantity,
-      unitPricePaise: tier.priceInPaise,
-      subtotalPaise: tier.priceInPaise * quantity,
+      unitPricePaise:
+        tier.priceInPaise +
+        coverUnitPricePaise * coverEntitlementsPerUnit +
+        addOnUnitSubtotalPaise * addOnEntitlementsPerUnit,
+      admissionUnitPricePaise: tier.priceInPaise,
+      coverUnitPricePaise,
+      coverEntitlementsPerUnit,
+      ...(ticketAddons.length > 0
+        ? { ticketAddons: ticketAddons.map((addon) => ({ ...addon })) }
+        : {}),
+      admissionSubtotalPaise: tier.priceInPaise * quantity,
+      coverSubtotalPaise: coverUnitPricePaise * quantity * coverEntitlementsPerUnit,
+      addOnSubtotalPaise,
+      discountedAdmissionSubtotalPaise: tier.priceInPaise * quantity,
+      subtotalPaise:
+        (tier.priceInPaise +
+          coverUnitPricePaise * coverEntitlementsPerUnit +
+          addOnUnitSubtotalPaise * addOnEntitlementsPerUnit) *
+        quantity,
     };
   });
 
   const subtotalPaise = lines.reduce((sum, line) => sum + line.subtotalPaise, 0);
-  const discountPaise = input.promo ? discountFor(input.promo, lines, subtotalPaise) : 0;
-  const discountedSubtotalPaise = Math.max(0, subtotalPaise - discountPaise);
+  const admissionSubtotalPaise = lines.reduce(
+    (sum, line) => sum + (line.admissionSubtotalPaise ?? line.subtotalPaise),
+    0,
+  );
+  const coverSubtotalPaise = lines.reduce((sum, line) => sum + (line.coverSubtotalPaise ?? 0), 0);
+  const addOnSubtotalPaise = lines.reduce((sum, line) => sum + (line.addOnSubtotalPaise ?? 0), 0);
+  const discountPaise = input.promo ? discountFor(input.promo, lines) : 0;
+  let remainingDiscountPaise = discountPaise;
+  for (const line of lines) {
+    const eligible = Boolean(
+      input.promo &&
+      (input.promo.tierIds.length === 0 || input.promo.tierIds.includes(line.tierId)),
+    );
+    const admissionLineSubtotal = line.admissionSubtotalPaise ?? line.subtotalPaise;
+    const eligibleAdmission = eligible ? admissionLineSubtotal : 0;
+    const allocated = Math.min(eligibleAdmission, remainingDiscountPaise);
+    line.discountedAdmissionSubtotalPaise = admissionLineSubtotal - allocated;
+    remainingDiscountPaise -= allocated;
+  }
+  const discountedAdmissionSubtotalPaise = admissionSubtotalPaise - discountPaise;
+  const discountedSubtotalPaise =
+    discountedAdmissionSubtotalPaise + coverSubtotalPaise + addOnSubtotalPaise;
 
   // Fees are charged on what the guest actually pays for tickets, not on the
   // pre-discount figure — otherwise a promo costs the guest less but the
@@ -131,7 +194,11 @@ export function calculatePricing(input: CalculatePricingInput): PricingBreakdown
   const breakdown: PricingBreakdown = {
     lines,
     subtotalPaise,
+    admissionSubtotalPaise,
+    coverSubtotalPaise,
+    addOnSubtotalPaise,
     discountPaise,
+    discountedAdmissionSubtotalPaise,
     discountFundingOwner: discountPaise > 0 ? (input.promo?.discountFundingOwner ?? null) : null,
     discountedSubtotalPaise,
     platformFeePaise,
@@ -154,13 +221,13 @@ export function calculatePricing(input: CalculatePricingInput): PricingBreakdown
  * ₹300 and not a paisa more — a negative subtotal would become a refund the
  * platform never agreed to.
  */
-function discountFor(promo: PromoCode, lines: PricingLine[], subtotalPaise: number): number {
+function discountFor(promo: PromoCode, lines: PricingLine[]): number {
   const eligibleSubtotal =
     promo.tierIds.length === 0
-      ? subtotalPaise
+      ? lines.reduce((sum, line) => sum + (line.admissionSubtotalPaise ?? line.subtotalPaise), 0)
       : lines
           .filter((line) => promo.tierIds.includes(line.tierId))
-          .reduce((sum, line) => sum + line.subtotalPaise, 0);
+          .reduce((sum, line) => sum + (line.admissionSubtotalPaise ?? line.subtotalPaise), 0);
 
   if (eligibleSubtotal === 0) return 0;
 
@@ -182,6 +249,30 @@ export function assertReconciles(breakdown: PricingBreakdown): void {
   const lineSum = breakdown.lines.reduce((sum, line) => sum + line.subtotalPaise, 0);
   if (lineSum !== breakdown.subtotalPaise) {
     throw new InvalidOperationError('Pricing does not reconcile: lines do not sum to the subtotal');
+  }
+  if (
+    breakdown.admissionSubtotalPaise !== undefined &&
+    breakdown.coverSubtotalPaise !== undefined &&
+    breakdown.admissionSubtotalPaise +
+      breakdown.coverSubtotalPaise +
+      (breakdown.addOnSubtotalPaise ?? 0) !==
+      breakdown.subtotalPaise
+  ) {
+    throw new InvalidOperationError(
+      'Pricing does not reconcile: admission, cover and add-ons do not sum',
+    );
+  }
+  if (
+    breakdown.discountedAdmissionSubtotalPaise !== undefined &&
+    breakdown.coverSubtotalPaise !== undefined &&
+    breakdown.discountedAdmissionSubtotalPaise +
+      breakdown.coverSubtotalPaise +
+      (breakdown.addOnSubtotalPaise ?? 0) !==
+      breakdown.discountedSubtotalPaise
+  ) {
+    throw new InvalidOperationError(
+      'Pricing does not reconcile: discounted admission and cover do not sum',
+    );
   }
   const expectedTotal =
     breakdown.discountedSubtotalPaise +
@@ -209,5 +300,8 @@ export function platformRevenuePaise(breakdown: PricingBreakdown): number {
 
 /** What is owed to the partner before commission: the discounted ticket value. */
 export function partnerGrossPaise(breakdown: PricingBreakdown): number {
-  return breakdown.discountedSubtotalPaise;
+  return (
+    (breakdown.discountedAdmissionSubtotalPaise ?? breakdown.discountedSubtotalPaise) +
+    (breakdown.addOnSubtotalPaise ?? 0)
+  );
 }

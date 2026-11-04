@@ -32,6 +32,8 @@ import { FinancialPostingService } from './financial-posting-service.js';
 import { ProviderPaymentService } from './provider-payment-service.js';
 
 import type { EntityId } from '../../domain/identity.js';
+import type { Entitlement } from '../../domain/models/entitlement.js';
+import type { EventCoverAccount } from '../../domain/models/event-cover.js';
 import type { Order } from '../../domain/models/order.js';
 import type { AdminRefundRequest } from '../../domain/models/refund-request.js';
 import type { AuditRequestMeta } from '../../domain/ports/audit.js';
@@ -137,7 +139,18 @@ export class RefundService {
         );
       }
     }
-    const hasRedeemedEntitlement = orderEntitlements.some((e) => e.status === 'redeemed');
+    const coverAccounts = await this.getCoverAccounts(order, orderEntitlements);
+    await this.assertCoverRefundScope(
+      order,
+      command.amountPaise,
+      ticketLines.length > 0,
+      coverAccounts,
+    );
+    const hasRedeemedEntitlement = orderEntitlements.some(
+      (entitlement) =>
+        entitlement.status === 'redeemed' ||
+        entitlement.ticketAddons?.some((addon) => addon.status === 'redeemed'),
+    );
 
     const now = this.deps.config.clock.now();
     const platformSettings = await this.deps.repositories.platformSettings.get();
@@ -229,6 +242,19 @@ export class RefundService {
     await this.orders.save(restored);
     await this.releaseSelectedTickets(request, now);
 
+    await emit(
+      this.deps,
+      {
+        userId: admin.id,
+        organizationId: order.organizationId,
+        role: 'owner',
+        capabilities: [],
+      },
+      request.id,
+      'finance.refund.finalized',
+      { refundRequestId: request.id, orderId: order.id, status: 'rejected' },
+    );
+
     await this.authority.record(admin, {
       action: 'FINANCIAL_REFUND.reject',
       targetType: 'refund_request',
@@ -259,6 +285,25 @@ export class RefundService {
     let request = await this.requireRefundRequest(refundRequestId);
     let order = await this.requireOrder(request.orderId);
     if (request.status === 'settled') return { request, order };
+    // Recheck and freeze at execution: an approved request may predate delayed
+    // cover issuance, and a Venue redemption must not race provider movement.
+    const orderEntitlements = await this.entitlements.getByOrderId(order.id);
+    const coverAccounts = await this.getCoverAccounts(order, orderEntitlements);
+    await this.assertCoverRefundScope(
+      order,
+      request.amountPaise,
+      request.scope === 'ticket_lines',
+      coverAccounts,
+      request.id,
+    );
+    const coverAccountsToFreeze = coverAccounts.filter((account) => account.status !== 'refunded');
+    if (coverAccountsToFreeze.length > 0) {
+      await this.deps.repositories.eventCoverAccounts.freezeForRefund(
+        coverAccountsToFreeze.map((account) => account.entitlementId),
+        request.id,
+        this.deps.config.clock.now(),
+      );
+    }
 
     const now = this.deps.config.clock.now();
     if (request.status === 'executing' && request.providerRefundId === null) {
@@ -277,6 +322,9 @@ export class RefundService {
         if (!(error instanceof VersionConflictError)) throw error;
         const winner = await this.requireRefundRequest(refundRequestId);
         if (winner.status === 'settled') return { request: winner, order };
+        if (winner.status === 'rejected' || winner.status === 'failed') {
+          await this.releaseCoverRefundFreeze(order.id, request.id, this.deps.config.clock.now());
+        }
         throw new ConflictError('Refund execution is already in progress');
       }
     } else if (request.status !== 'executing') {
@@ -315,8 +363,21 @@ export class RefundService {
           );
           await this.refundRequests.save(failed);
           await this.releaseSelectedTickets(failed, now);
+          await this.releaseCoverRefundFreeze(order.id, request.id, now);
           const restored = restoreOrderAfterRefundFailure(order, now);
           await this.orders.save(restored);
+          await emit(
+            this.deps,
+            {
+              userId: admin.id,
+              organizationId: order.organizationId,
+              role: 'owner',
+              capabilities: [],
+            },
+            request.id,
+            'finance.refund.finalized',
+            { refundRequestId: request.id, orderId: order.id, status: 'failed' },
+          );
           return { request: failed, order: restored };
         }
         // A network/timeout error can occur after the provider accepted the
@@ -332,14 +393,33 @@ export class RefundService {
       // refund failed and reopening an order after money may have moved.
       request = recordRefundProviderFact(request, response.id, response.status, now);
       await this.refundRequests.save(request);
-      if (response.status === 'failed') {
-        const failed = markRefundFailed(request, 'Provider definitively rejected the refund', now);
-        await this.refundRequests.save(failed);
-        await this.releaseSelectedTickets(failed, now);
-        const restored = restoreOrderAfterRefundFailure(order, now);
-        await this.orders.save(restored);
-        return { request: failed, order: restored };
+    }
+    if (request.providerStatus === 'failed') {
+      const recorded = await this.deps.repositories.providerPayments.findByPaymentId(
+        order.paymentId,
+      );
+      if (request.providerRefundId && recorded?.refunds[request.providerRefundId] !== undefined) {
+        throw new ConflictError('Provider refund conflicts with a recorded processed refund');
       }
+      const failed = markRefundFailed(request, 'Provider definitively rejected the refund', now);
+      await this.refundRequests.save(failed);
+      await this.releaseSelectedTickets(failed, now);
+      await this.releaseCoverRefundFreeze(order.id, request.id, now);
+      const restored = restoreOrderAfterRefundFailure(order, now);
+      await this.orders.save(restored);
+      await emit(
+        this.deps,
+        {
+          userId: admin.id,
+          organizationId: order.organizationId,
+          role: 'owner',
+          capabilities: [],
+        },
+        request.id,
+        'finance.refund.finalized',
+        { refundRequestId: request.id, orderId: order.id, status: 'failed' },
+      );
+      return { request: failed, order: restored };
     }
     if (request.providerStatus !== 'processed' && request.providerRefundId) {
       const providerPayment = await this.deps.repositories.providerPayments.findByPaymentId(
@@ -377,6 +457,15 @@ export class RefundService {
       postedAt: now,
     });
 
+    for (const account of coverAccounts) {
+      await this.deps.repositories.eventCoverAccounts.refundUnused(account.id, {
+        operationId: request.id,
+        refundRequestId: request.id,
+        actorUserId: admin.id,
+        now,
+      });
+    }
+
     const refundedOrder = applyOrderRefund(order, request.amountPaise, now, request.id);
     if (refundedOrder !== order) await this.orders.save(refundedOrder);
     if (refundedOrder.status === 'refunded' || request.scope === 'ticket_lines') {
@@ -389,6 +478,15 @@ export class RefundService {
       for (const entitlement of targets) {
         if (!entitlement || entitlement.orderId !== order.id) {
           throw new InvalidOperationError('Refund ticket selection no longer matches the order');
+        }
+        if (refundedOrder.status === 'refunded' && entitlement.upgradeFromEntitlementId) {
+          await this.entitlements.restoreForUpgradeRefund({
+            sourceEntitlementId: entitlement.upgradeFromEntitlementId,
+            replacementEntitlementId: entitlement.id,
+            refundRequestId: request.id,
+            now,
+          });
+          continue;
         }
         const voided = voidEntitlement(entitlement, now, request.id);
         if (voided !== entitlement) await this.entitlements.save(voided);
@@ -426,6 +524,97 @@ export class RefundService {
     return { request: settled, order: refundedOrder };
   }
 
+  /** Records fetched evidence only; existing execute handles internal convergence. */
+  async reconcileRefund(
+    adminUserId: EntityId,
+    refundRequestId: EntityId,
+    command: { providerRefundId: string; reason: string },
+    meta?: AuditRequestMeta,
+  ): Promise<{ request: AdminRefundRequest; order: Order }> {
+    const admin = await this.authority.authorize(adminUserId, 'FINANCIAL_REFUND');
+    const request = await this.requireRefundRequest(refundRequestId);
+    const order = await this.requireOrder(request.orderId);
+    if (!command.reason.trim() || command.reason.length > 2000) {
+      throw new InvalidOperationError('Refund reconciliation requires an operator reason');
+    }
+    if (request.providerRefundId && request.providerRefundId !== command.providerRefundId) {
+      throw new ConflictError('A different provider refund is already linked');
+    }
+    if (request.status === 'settled') return { request, order };
+    if (
+      request.status !== 'executing' ||
+      !order.paymentId ||
+      order.organizationId !== request.organizationId
+    ) {
+      throw new ConflictError('Only an executing refund can be reconciled');
+    }
+    const audit = {
+      targetType: 'refund_request',
+      targetId: request.id,
+      reason: command.reason.trim(),
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
+    };
+    await this.authority.record(admin, {
+      ...audit,
+      action: 'FINANCIAL_REFUND.reconcile.requested',
+      before: { status: request.status, providerRefundId: request.providerRefundId },
+      after: { candidateProviderRefundId: command.providerRefundId },
+    });
+    const fact = await this.deps.paymentProvider.getRefund(
+      order.paymentId,
+      command.providerRefundId,
+    );
+    if (
+      fact.id !== command.providerRefundId ||
+      fact.paymentId !== order.paymentId ||
+      fact.amountPaise !== request.amountPaise ||
+      fact.currency !== order.currency ||
+      fact.receipt !== request.executionIdempotencyKey ||
+      !['pending', 'processed', 'failed'].includes(fact.status)
+    ) {
+      throw new ConflictError('Provider refund does not match the original execution');
+    }
+    if (
+      (request.providerStatus === 'processed' || request.providerStatus === 'failed') &&
+      request.providerStatus !== fact.status
+    ) {
+      throw new ConflictError('Provider refund conflicts with a saved terminal fact');
+    }
+    const payment = await this.deps.repositories.providerPayments.findByPaymentId(order.paymentId);
+    const processedAmount = payment?.refunds[fact.id];
+    if (
+      processedAmount !== undefined &&
+      (fact.status !== 'processed' || processedAmount !== fact.amountPaise)
+    ) {
+      throw new ConflictError('Provider refund conflicts with a recorded processed refund');
+    }
+    await this.authority.record(admin, {
+      ...audit,
+      action: 'FINANCIAL_REFUND.reconcile.observed',
+      before: {
+        providerRefundId: request.providerRefundId,
+        providerStatus: request.providerStatus,
+      },
+      after: {
+        providerRefundId: fact.id,
+        providerStatus: fact.status,
+        amountPaise: fact.amountPaise,
+      },
+    });
+    if (request.providerRefundId === fact.id && request.providerStatus === fact.status) {
+      return { request, order };
+    }
+    const reconciled = recordRefundProviderFact(
+      request,
+      fact.id,
+      fact.status,
+      this.deps.config.clock.now(),
+    );
+    await this.refundRequests.save(reconciled);
+    return { request: reconciled, order };
+  }
+
   async listRefunds(
     adminUserId: EntityId,
     status: AdminRefundRequest['status'] | null,
@@ -450,6 +639,93 @@ export class RefundService {
     const request = await this.refundRequests.getById(id);
     if (!request) throw new NotFoundError('refund_request', id);
     return request;
+  }
+
+  private async getCoverAccounts(
+    order: Order,
+    entitlements: readonly Entitlement[],
+  ): Promise<EventCoverAccount[]> {
+    const coverAccounts = await Promise.all(
+      entitlements.map((entitlement) =>
+        this.deps.repositories.eventCoverAccounts.getByEntitlement(entitlement.id),
+      ),
+    );
+    const linked = coverAccounts.filter(
+      (account): account is EventCoverAccount => account !== null,
+    );
+    const expectedCoverCount = order.lines.reduce((count, line) => {
+      if ((line.coverUnitPricePaise ?? 0) <= 0) return count;
+      const attendeeUnits = line.admissionMode === 'per_person' ? (line.guestCount ?? 1) : 1;
+      return count + line.quantity * attendeeUnits;
+    }, 0);
+    if (linked.length !== expectedCoverCount) {
+      throw new InvalidOperationError(
+        'Cover refund is unavailable until every purchased cover entitlement has its ledger account',
+      );
+    }
+    for (const account of linked) {
+      const entitlement = entitlements.find((item) => item.id === account.entitlementId);
+      const line = order.lines.find((item) => item.tierId === entitlement?.tierId);
+      if (
+        !entitlement ||
+        account.orderId !== order.id ||
+        account.eventId !== order.eventId ||
+        (line?.coverUnitPricePaise ?? 0) !== account.issuedPaise
+      ) {
+        throw new InvalidOperationError('Cover account provenance does not match the refund order');
+      }
+    }
+    return linked;
+  }
+
+  private async assertCoverRefundScope(
+    order: Order,
+    amountPaise: number,
+    ticketLines: boolean,
+    accounts: readonly EventCoverAccount[],
+    refundRequestId?: EntityId,
+  ): Promise<void> {
+    if (accounts.length === 0) return;
+    const eligible =
+      !ticketLines &&
+      order.refundedPaise === 0 &&
+      amountPaise === refundableBalance(order) &&
+      (await Promise.all(
+        accounts.map(async (account) => {
+          const alreadyRefunded =
+            refundRequestId !== undefined &&
+            account.status === 'refunded' &&
+            account.refundedPaise === account.issuedPaise &&
+            account.remainingPaise === 0 &&
+            (await this.deps.repositories.eventCoverAccounts.listEntries(account.id)).some(
+              (entry) => entry.type === 'refund' && entry.operationId === refundRequestId,
+            );
+          return (
+            account.refundPolicy === 'unused_full_before_redemption' &&
+            (alreadyRefunded ||
+              (account.remainingPaise === account.issuedPaise &&
+                account.reservedPaise === 0 &&
+                account.redeemedPaise === 0 &&
+                account.refundedPaise === 0 &&
+                (account.status === 'active' ||
+                  (account.status === 'frozen' && account.refundRequestId === refundRequestId))))
+          );
+        }),
+      ).then((results) => results.every(Boolean)));
+    if (!eligible) {
+      throw new InvalidOperationError(
+        'Event cover refunds require the full unused balance, an eligible saved Venue policy, and a full-order refund',
+      );
+    }
+  }
+
+  private async releaseCoverRefundFreeze(orderId: EntityId, requestId: EntityId, now: Date) {
+    const orderEntitlements = await this.entitlements.getByOrderId(orderId);
+    await this.deps.repositories.eventCoverAccounts.releaseRefundFreeze(
+      orderEntitlements.map((entitlement) => entitlement.id),
+      requestId,
+      now,
+    );
   }
 
   private async ensureSelectedTicketsFrozen(request: AdminRefundRequest, now: Date): Promise<void> {

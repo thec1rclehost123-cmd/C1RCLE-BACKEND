@@ -18,9 +18,8 @@ import { InvalidOperationError } from '../errors.js';
  *    constant-time (`timingSafeEqual`) so a leaked response-time difference
  *    can't be used to narrow the search either.
  *
- * One doc per recipient, fully replaced on each send (no optimistic-lock
- * version — matches v1's `docRef.set` semantics; the cooldown check is what
- * prevents a resend race, not a version field).
+ * One doc per recipient. Repository transactions serialize the cooldown
+ * check and replacement, failed attempts, and successful consumption.
  */
 
 export const EMAIL_OTP_EXPIRY_MINUTES = 10;
@@ -30,6 +29,8 @@ export const MAX_EMAIL_OTP_ATTEMPTS = 5;
 export interface EmailOtp {
   /** Normalized (lower-cased, trimmed) recipient email — the doc key. */
   recipient: string;
+  /** Bound at issuance; absent on legacy codes, which must be resent. */
+  userId?: string;
   codeHash: string;
   expiresAt: string;
   lastSentAt: string;
@@ -60,9 +61,11 @@ export function createEmailOtp(
   code: string,
   secret: string,
   now: Date,
+  userId?: string,
 ): EmailOtp {
   return {
     recipient: normalizeEmailRecipient(recipient),
+    ...(userId ? { userId } : {}),
     codeHash: hashEmailOtpCode(code, secret),
     expiresAt: new Date(now.getTime() + EMAIL_OTP_EXPIRY_MINUTES * 60_000).toISOString(),
     lastSentAt: now.toISOString(),
@@ -81,7 +84,7 @@ export function assertCanResend(existing: EmailOtp | null, now: Date): void {
 }
 
 export function isEmailOtpExpired(otp: EmailOtp, now: Date): boolean {
-  return now.getTime() > Date.parse(otp.expiresAt);
+  return now.getTime() >= Date.parse(otp.expiresAt);
 }
 
 export function isEmailOtpLocked(otp: EmailOtp): boolean {

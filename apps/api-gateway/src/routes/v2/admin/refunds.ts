@@ -7,6 +7,7 @@ import {
   orderDtoSchema,
   paginationQuerySchema,
   rejectRefundRequestSchema,
+  reconcileRefundRequestSchema,
   requestRefundSchema,
 } from '@c1rcle/contracts/client';
 import { z } from 'zod';
@@ -296,6 +297,60 @@ export default async function adminRefundRoutes(fastify: FastifyInstance) {
     },
   );
 
+  /* Fetch and correlate provider evidence; never initiates another refund. */
+  fastify.post(
+    '/admin/refunds/:refundRequestId/reconcile',
+    {
+      preHandler: [
+        fastify.rateLimit('SENSITIVE_COMMAND'),
+        fastify.validateV2({
+          params: refundIdParam,
+          headers: commandHeaders,
+          body: reconcileRefundRequestSchema,
+        }),
+      ],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+      const { refundRequestId } = request.params as z.infer<typeof refundIdParam>;
+      const body = request.body as z.infer<typeof reconcileRefundRequestSchema>;
+      const v2Headers = request.v2Headers ?? {};
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: userId,
+        commandName: 'admin.refund.reconcile',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { refundRequestId }, body },
+        run: async () => {
+          const outcome = await services.refund.reconcileRefund(
+            userId,
+            refundRequestId,
+            body,
+            requestMeta(request),
+          );
+          const validated = validateV2Response(
+            reply,
+            request,
+            refundOutcomeSchema,
+            toOutcomeDto(outcome),
+          );
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
+        },
+      }).catch((error: unknown) =>
+        isIdempotencyConflict(error)
+          ? mapDomainError(reply, request, refundRequestId, error, {
+              conflictId: v2Headers['idempotency-key'],
+            })
+          : mapDomainError(reply, request, refundRequestId, error),
+      );
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
+
   /* ─── Reads ──────────────────────────────────────────────────────────────── */
 
   fastify.get(
@@ -339,6 +394,7 @@ export default async function adminRefundRoutes(fastify: FastifyInstance) {
       preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({})],
     },
     async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
       const userId = requireUserId(request, reply);
       if (userId === undefined) return reply;
 

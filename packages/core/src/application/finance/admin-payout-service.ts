@@ -8,6 +8,7 @@ import {
 } from '../../domain/models/payout.js';
 
 import { FinancialPostingService } from './financial-posting-service.js';
+import { appendPayoutStatusEvent } from './payout-events.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type { Payout, PayoutTransferEvidence } from '../../domain/models/payout.js';
@@ -64,6 +65,7 @@ export class AdminPayoutService {
     const now = this.deps.config.clock.now();
     const frozen = freezePayout(payout, now);
     await this.payouts.save(frozen);
+    await appendPayoutStatusEvent(this.deps.outbox, frozen, adminUserId, now);
     await this.authority.record(admin, {
       action: 'PAYOUT_FREEZE',
       targetType: 'payout',
@@ -95,6 +97,7 @@ export class AdminPayoutService {
     const now = this.deps.config.clock.now();
     const released = releasePayout(payout, now);
     await this.payouts.save(released);
+    await appendPayoutStatusEvent(this.deps.outbox, released, adminUserId, now);
     await this.authority.record(admin, {
       action: 'PAYOUT_RELEASE',
       targetType: 'payout',
@@ -139,6 +142,7 @@ export class AdminPayoutService {
       }
       const started = beginProcessing(payout, now);
       await this.payouts.save(started);
+      await appendPayoutStatusEvent(this.deps.outbox, started, adminUserId, now);
       processed.push(started);
     }
 
@@ -176,6 +180,12 @@ export class AdminPayoutService {
       postedAt: this.deps.config.clock.now(),
     });
     await this.payouts.save(paid);
+    await appendPayoutStatusEvent(
+      this.deps.outbox,
+      paid,
+      adminUserId,
+      this.deps.config.clock.now(),
+    );
     await this.authority.record(admin, {
       action: 'PAYOUT_COMPLETE',
       targetType: 'payout',

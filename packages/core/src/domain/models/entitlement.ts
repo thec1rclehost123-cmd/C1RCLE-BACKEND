@@ -4,9 +4,12 @@ import { InvalidOperationError } from '../errors.js';
 import { transitionStatus } from '../fsm.js';
 import { bumpVersion, newVersionedEntity } from '../identity.js';
 
+import { issueTicketAddonEntitlements } from './ticket-addon.js';
+
 import type { EntityId, VersionedEntity } from '../identity.js';
 import type { Order } from './order.js';
 import type { ScanDenyReason } from './scan-ledger.js';
+import type { TicketAddonEntitlement } from './ticket-addon.js';
 
 /**
  * ─── Entitlements (Phase 4) ──────────────────────────────────────────────────
@@ -48,6 +51,30 @@ export type EntitlementStatus =
   /** Voided by a refund or an admin. */
   | 'void';
 
+/** Admission source used for active purchase caps and financial reporting. */
+export type EntitlementUnitKind = 'paid' | 'free_rsvp' | 'complimentary';
+
+export function requiresEligibilityVerification(policy: {
+  audienceType?: string;
+  minAge?: number | null;
+  maxAge?: number | null;
+}): boolean {
+  return (
+    (policy.audienceType !== undefined &&
+      policy.audienceType !== 'GENERAL' &&
+      policy.audienceType !== 'GROUP') ||
+    policy.minAge != null ||
+    policy.maxAge != null
+  );
+}
+
+export function entitlementRequiresEligibilityVerification(entitlement: Entitlement): boolean {
+  return (
+    entitlement.eligibility !== undefined &&
+    requiresEligibilityVerification(entitlement.eligibility)
+  );
+}
+
 const ENTITLEMENT_TRANSITIONS: Readonly<Record<EntitlementStatus, readonly EntitlementStatus[]>> = {
   valid: ['redeemed', 'void'],
   // A fully-scanned entitlement can still be voided (refund after entry).
@@ -65,6 +92,34 @@ export interface Entitlement extends VersionedEntity {
   tierName: string;
   /** Null for a guest checkout with no account. */
   userId: EntityId | null;
+  /** Legacy records infer RSVP from their order id; new records persist this classification. */
+  unitKind?: EntitlementUnitKind;
+  /**
+   * Current admission holder, distinct from the original purchaser in `userId`.
+   * Optional only for pre-M5 Firestore documents; use
+   * `currentEntitlementHolderId` to apply the legacy purchaser fallback.
+   * Explicit `null` means the unit is still under purchaser custody and has
+   * not been claimed by an attendee.
+   */
+  currentHolderUserId?: EntityId | null;
+  /** Version included in online admission credentials; increments on claim or transfer. */
+  credentialVersion?: number;
+  /** Set on a replacement admission created by a paid upgrade. */
+  upgradeFromEntitlementId?: EntityId;
+  /** Set when this admission is atomically retired by a paid upgrade. */
+  upgradedToEntitlementId?: EntityId;
+  /** Identifies the full settled refund that restored this upgraded source pass. */
+  upgradeRefundRequestId?: EntityId;
+  /** The single pending transfer, if any; changed in the same transaction as transfer state. */
+  pendingTransferId?: EntityId | null;
+  /** Immutable sold eligibility rule and purchaser attestation; contains no attendee demographics. */
+  eligibility?: {
+    audienceType: string;
+    minAge: number | null;
+    maxAge: number | null;
+    attested: true;
+    attestedAt: string;
+  };
   /** Name on the ticket, for door staff. */
   holderName: string;
   status: EntitlementStatus;
@@ -85,6 +140,8 @@ export interface Entitlement extends VersionedEntity {
     refundRequestId: EntityId;
     frozenAt: string;
   } | null;
+  /** Non-cover add-on claims owned by this admission entitlement. */
+  ticketAddons?: TicketAddonEntitlement[];
 }
 
 /**
@@ -106,6 +163,8 @@ export interface IssueEntitlementsInput {
    * 1. A couple tier passes 2 here.
    */
   admitsPerUnit?: Record<EntityId, number>;
+  /** Explicit non-provider origin, used only by the controlled comp issuer. */
+  unitKind?: EntitlementUnitKind;
   now?: Date;
 }
 
@@ -128,12 +187,20 @@ export function issueEntitlements(input: IssueEntitlementsInput): Entitlement[] 
 
   const entitlements: Entitlement[] = [];
   for (const line of order.lines) {
-    const admits = input.admitsPerUnit?.[line.tierId] ?? 1;
+    const perPerson = line.admissionMode === 'per_person';
+    const admits = perPerson ? 1 : (input.admitsPerUnit?.[line.tierId] ?? 1);
     if (!Number.isInteger(admits) || admits < 1) {
       throw new InvalidOperationError(`Invalid admit count for tier ${line.tierId}`);
     }
-    // One entitlement per unit sold — NOT per admitted person.
-    for (let index = 0; index < line.quantity; index++) {
+    const guestCount = line.guestCount ?? admits;
+    if (!Number.isInteger(guestCount) || guestCount < 1) {
+      throw new InvalidOperationError(`Invalid guest count for tier ${line.tierId}`);
+    }
+    const entitlementCount = line.quantity * (perPerson ? guestCount : 1);
+    // Legacy bundles keep one multi-admit entitlement. New per-person group
+    // products mint one independent, deterministic credential per attendee.
+    for (let index = 0; index < entitlementCount; index++) {
+      const purchaserAssigned = !perPerson || index % guestCount === 0;
       entitlements.push({
         id: entitlementId(order.id, line.tierId, index),
         orderId: order.id,
@@ -142,7 +209,21 @@ export function issueEntitlements(input: IssueEntitlementsInput): Entitlement[] 
         tierId: line.tierId,
         tierName: line.tierName,
         userId: order.userId,
-        holderName: order.contact.name,
+        unitKind: input.unitKind ?? (order.id.startsWith('RSVP-') ? 'free_rsvp' : 'paid'),
+        currentHolderUserId: purchaserAssigned ? order.userId : null,
+        credentialVersion: 1,
+        ...(line.eligibility ? { eligibility: { ...line.eligibility } } : {}),
+        holderName: purchaserAssigned ? order.contact.name : '',
+        ...(line.ticketAddons?.length
+          ? {
+              ticketAddons: issueTicketAddonEntitlements({
+                orderId: order.id,
+                entitlementId: entitlementId(order.id, line.tierId, index),
+                selections: line.ticketAddons,
+                now,
+              }),
+            }
+          : {}),
         status: 'valid',
         scanCountAllowed: admits,
         scanCount: 0,
@@ -153,6 +234,57 @@ export function issueEntitlements(input: IssueEntitlementsInput): Entitlement[] 
     }
   }
   return entitlements;
+}
+
+/** The current admission holder; old documents fall back to their purchaser. */
+export function currentEntitlementHolderId(entitlement: Entitlement): EntityId | null {
+  return entitlement.currentHolderUserId === undefined
+    ? entitlement.userId
+    : entitlement.currentHolderUserId;
+}
+
+/** Legacy tickets predate credential rotation and start at version one. */
+export function entitlementCredentialVersion(entitlement: Entitlement): number {
+  return entitlement.credentialVersion ?? 1;
+}
+
+/**
+ * Assigns an unused ticket unit to a new holder and invalidates previously
+ * minted credentials by advancing its version. Callers must separately
+ * authorize the claim/transfer and persist its audit/outbox record.
+ */
+export function changeEntitlementHolder(
+  entitlement: Entitlement,
+  input: {
+    expectedCurrentHolderUserId: EntityId | null;
+    nextHolderUserId: EntityId | null;
+    holderName: string;
+    now?: Date;
+  },
+): Entitlement {
+  if (entitlement.status !== 'valid' || entitlement.scanCount > 0 || entitlement.refundLock) {
+    throw new InvalidOperationError('Only an unused, unlocked ticket can change holders');
+  }
+  if (currentEntitlementHolderId(entitlement) !== input.expectedCurrentHolderUserId) {
+    throw new InvalidOperationError('Ticket holder changed before this operation completed');
+  }
+  if (input.nextHolderUserId === input.expectedCurrentHolderUserId) {
+    throw new InvalidOperationError('The new holder must differ from the current holder');
+  }
+  const holderName = input.holderName.trim();
+  if (input.nextHolderUserId !== null && holderName.length === 0) {
+    throw new InvalidOperationError('A named holder is required for an assigned ticket');
+  }
+  const version = entitlementCredentialVersion(entitlement);
+  if (!Number.isSafeInteger(version) || version < 1 || version >= Number.MAX_SAFE_INTEGER) {
+    throw new InvalidOperationError('Ticket credential version is invalid');
+  }
+  return {
+    ...bumpVersion(entitlement, input.now ?? new Date()),
+    currentHolderUserId: input.nextHolderUserId,
+    credentialVersion: version + 1,
+    holderName: holderName.length > 0 ? holderName : entitlement.holderName,
+  };
 }
 
 /**
@@ -201,7 +333,122 @@ export function voidEntitlement(
   return {
     ...bumpVersion(entitlement, now ?? new Date()),
     status: transitionStatus(entitlement.status, 'void', ENTITLEMENT_TRANSITIONS),
+    ...(entitlement.ticketAddons?.length
+      ? {
+          ticketAddons: entitlement.ticketAddons.map((addon) => ({
+            ...addon,
+            ...(addon.status === 'active' ? { status: 'void' as const } : {}),
+          })),
+        }
+      : {}),
     refundLock: null,
+  };
+}
+
+/** Redeems one purchased non-cover add-on exactly once without consuming admission. */
+export function redeemTicketAddonEntitlement(
+  entitlement: Entitlement,
+  addonEntitlementId: EntityId,
+  now = new Date(),
+): Entitlement {
+  if (entitlement.status === 'void') {
+    throw new InvalidOperationError('Ticket extras on a void ticket cannot be redeemed');
+  }
+  const addon = entitlement.ticketAddons?.find((item) => item.id === addonEntitlementId);
+  if (!addon) throw new InvalidOperationError('Ticket extra was not found on this admission');
+  if (addon.status !== 'active') {
+    throw new InvalidOperationError('Ticket extra has already been used or voided');
+  }
+  return {
+    ...bumpVersion(entitlement, now),
+    ticketAddons: entitlement.ticketAddons?.map((item) =>
+      item.id === addonEntitlementId
+        ? { ...item, status: 'redeemed', redeemedAt: now.toISOString() }
+        : item,
+    ),
+  };
+}
+
+/**
+ * Retires an unused paid admission as part of the atomic ticket-upgrade swap.
+ * The repository must persist this and the replacement entitlement together.
+ */
+export function supersedeEntitlementForUpgrade(
+  entitlement: Entitlement,
+  replacementEntitlementId: EntityId,
+  now?: Date,
+): Entitlement {
+  if (
+    entitlement.status !== 'valid' ||
+    (entitlement.unitKind ?? (entitlement.orderId.startsWith('RSVP-') ? 'free_rsvp' : 'paid')) !==
+      'paid' ||
+    entitlement.scanCount !== 0 ||
+    entitlement.refundLock ||
+    entitlement.pendingTransferId ||
+    entitlement.ticketAddons?.some((addon) => addon.status !== 'void')
+  ) {
+    throw new InvalidOperationError('Only an unused, unlocked paid ticket can be upgraded');
+  }
+  if (replacementEntitlementId === entitlement.id) {
+    throw new InvalidOperationError('An upgrade must issue a replacement ticket');
+  }
+  return {
+    ...bumpVersion(entitlement, now ?? new Date()),
+    status: transitionStatus(entitlement.status, 'void', ENTITLEMENT_TRANSITIONS),
+    ...(entitlement.ticketAddons?.length
+      ? {
+          ticketAddons: entitlement.ticketAddons.map((addon) => ({
+            ...addon,
+            ...(addon.status === 'active' ? { status: 'void' as const } : {}),
+          })),
+        }
+      : {}),
+    upgradedToEntitlementId: replacementEntitlementId,
+    refundLock: null,
+  };
+}
+
+/**
+ * Restores the old pass only after a full refund of an untouched replacement.
+ * The repository must persist both transitions atomically and make retries
+ * idempotent by refund request ID.
+ */
+export function restoreEntitlementAfterUpgradeRefund(input: {
+  source: Entitlement;
+  replacement: Entitlement;
+  refundRequestId: EntityId;
+  now?: Date;
+}): { source: Entitlement; replacement: Entitlement } {
+  const { source, replacement, refundRequestId } = input;
+  if (
+    source.upgradeRefundRequestId === refundRequestId &&
+    source.status === 'valid' &&
+    replacement.status === 'void'
+  ) {
+    return { source, replacement };
+  }
+  if (
+    source.status !== 'void' ||
+    source.upgradedToEntitlementId !== replacement.id ||
+    replacement.upgradeFromEntitlementId !== source.id ||
+    replacement.status !== 'valid' ||
+    replacement.scanCount !== 0 ||
+    replacement.pendingTransferId ||
+    replacement.refundLock?.refundRequestId !== refundRequestId ||
+    currentEntitlementHolderId(source) !== currentEntitlementHolderId(replacement) ||
+    !refundRequestId
+  ) {
+    throw new InvalidOperationError('The upgraded pass cannot be restored for this refund');
+  }
+  const now = input.now ?? new Date();
+  return {
+    source: {
+      ...bumpVersion(source, now),
+      status: 'valid',
+      upgradeRefundRequestId: refundRequestId,
+      refundLock: null,
+    },
+    replacement: voidEntitlement(replacement, now, refundRequestId),
   };
 }
 
@@ -342,7 +589,12 @@ export interface AdmissionClaim {
 
 export interface AdmitSeatsOptions {
   seats?: number;
+  /** A scanner operator's explicit entry check; no attendee evidence is collected. */
+  eligibilityVerified?: boolean;
+  /** Current tier-policy fallback for legacy entitlements without a snapshot. */
+  eligibilityRequired?: boolean;
   expectedScansUsed?: number;
+  expectedCredentialVersion?: number;
   now?: Date;
 }
 
@@ -365,6 +617,20 @@ export function admitSeats(
   options: AdmitSeatsOptions = {},
 ): AdmissionClaim {
   const seats = options.seats ?? 1;
+  if (
+    entitlement &&
+    options.expectedCredentialVersion !== undefined &&
+    entitlementCredentialVersion(entitlement) !== options.expectedCredentialVersion
+  ) {
+    return {
+      admitted: false,
+      denyReason: 'invalid_signature',
+      denyMessage: 'This ticket credential has been replaced',
+      entitlement,
+      scansUsed: entitlement.scanCount,
+      scansAllowed: entitlement.scanCountAllowed,
+    };
+  }
   const decision = evaluateAdmission(entitlement, eventId);
   if (!decision.admitted || !entitlement) {
     return {
@@ -374,6 +640,20 @@ export function admitSeats(
       entitlement,
       scansUsed: decision.scansUsed,
       scansAllowed: decision.scansAllowed,
+    };
+  }
+  if (
+    (entitlementRequiresEligibilityVerification(entitlement) ||
+      options.eligibilityRequired === true) &&
+    options.eligibilityVerified !== true
+  ) {
+    return {
+      admitted: false,
+      denyReason: 'eligibility_required',
+      denyMessage: 'Staff must verify this attendee meets the ticket eligibility policy',
+      entitlement,
+      scansUsed: entitlement.scanCount,
+      scansAllowed: entitlement.scanCountAllowed,
     };
   }
   // The confirmation token was minted against a state a staff member saw. If

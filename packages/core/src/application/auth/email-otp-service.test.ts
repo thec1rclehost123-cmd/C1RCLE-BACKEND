@@ -1,6 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import * as otpModel from '../../domain/models/email-otp.js';
 import { MemoryEmailOtpRepository } from '../../infrastructure/memory/memory-email-otp-repository.js';
+import { MemoryUserAccountRepository } from '../../infrastructure/memory/memory-user-account-repository.js';
 
 import { createEmailOtpService } from './email-otp-service.js';
 
@@ -34,25 +36,165 @@ class CapturingEmailSender implements EmailSender {
   }
 }
 
-function firstSent(sender: CapturingEmailSender): { recipient: string; code: string } {
-  const [first] = sender.sent;
+function firstSent(sender: CapturingEmailSender, index = 0): { recipient: string; code: string } {
+  const first = sender.sent[index];
   if (!first) throw new Error('expected sendOtpEmail to have been called');
   return first;
 }
 
 function build() {
   const clock = new FakeClock(new Date('2026-09-08T00:00:00.000Z'));
-  const emailOtp = new MemoryEmailOtpRepository();
+  const users = new MemoryUserAccountRepository();
+  users.save({
+    id: 'account-foo',
+    email: 'foo@example.com',
+    name: 'Test account',
+    image: null,
+    role: 'guest',
+    emailVerified: false,
+    createdAt: clock.now().getTime(),
+    updatedAt: clock.now().getTime(),
+  });
+  const emailOtp = new MemoryEmailOtpRepository(users);
   const emailSender = new CapturingEmailSender();
   const service = createEmailOtpService({
     emailOtp,
+    users,
     emailSender,
     config: { clock, emailOtpSecret: 'test-email-otp-secret' } as never,
   });
-  return { service, clock, emailOtp, emailSender };
+  return { service, clock, emailOtp, emailSender, users };
 }
 
 describe('EmailOtpService', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('persists verification only for the account bound to the sent code', async () => {
+    const { service, emailSender, users, emailOtp } = build();
+    const account = await users.getById('account-foo');
+    if (!account) throw new Error('Expected account');
+    users.save({ ...account, id: 'account-other', email: 'other@example.com' });
+    await service.send(' FOO@example.com ');
+    await service.verify('foo@example.com', firstSent(emailSender).code);
+    expect(await users.getById('account-foo')).toMatchObject({ emailVerified: true });
+    expect(await users.getById('account-other')).toMatchObject({ emailVerified: false });
+    expect(await emailOtp.get('foo@example.com')).toBeNull();
+  });
+
+  it('leaves the OTP usable when the account write fails', async () => {
+    const { service, emailSender, users, emailOtp } = build();
+    await service.send('foo@example.com');
+    const code = firstSent(emailSender).code;
+    vi.spyOn(users, 'save').mockImplementationOnce(() => {
+      throw new Error('account write unavailable');
+    });
+    await expect(service.verify('foo@example.com', code)).rejects.toThrow(
+      /account write unavailable/,
+    );
+    expect(await emailOtp.get('foo@example.com')).not.toBeNull();
+    expect(await users.getById('account-foo')).toMatchObject({ emailVerified: false });
+    await service.verify('foo@example.com', code);
+    expect(await users.getById('account-foo')).toMatchObject({ emailVerified: true });
+  });
+
+  it('rejects a code if its account email changed and was reassigned', async () => {
+    const { service, emailSender, users, emailOtp } = build();
+    await service.send('foo@example.com');
+    const account = await users.getById('account-foo');
+    if (!account) throw new Error('Expected account');
+    users.save({ ...account, email: 'changed@example.com' });
+    users.save({ ...account, id: 'replacement-account' });
+    await expect(service.verify('foo@example.com', firstSent(emailSender).code)).rejects.toThrow();
+    expect(await users.getById('replacement-account')).toMatchObject({ emailVerified: false });
+    expect(await users.getById('account-foo')).toMatchObject({ emailVerified: false });
+    expect(await emailOtp.get('foo@example.com')).not.toBeNull();
+  });
+
+  it('does not send codes for a missing account', async () => {
+    const { service, emailSender } = build();
+    await expect(service.send('missing@example.com')).rejects.toThrow();
+    expect(emailSender.sent).toHaveLength(0);
+  });
+
+  it('allows only one concurrent send for a normalized recipient', async () => {
+    const { service, emailSender } = build();
+    const results = await Promise.allSettled([
+      service.send(' Foo@Example.com '),
+      service.send('foo@example.com'),
+      service.send('FOO@example.com'),
+    ]);
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(emailSender.sent).toHaveLength(1);
+  });
+
+  it('counts concurrent wrong codes exactly and locks out at five attempts', async () => {
+    const { service, emailSender, emailOtp } = build();
+    await service.send('foo@example.com');
+    const { code } = firstSent(emailSender);
+    const wrong = code === '000000' ? '111111' : '000000';
+    const results = await Promise.allSettled(
+      Array.from({ length: 8 }, () => service.verify('foo@example.com', wrong)),
+    );
+    expect(results.every((result) => result.status === 'rejected')).toBe(true);
+    expect((await emailOtp.get('foo@example.com'))?.attempts).toBe(5);
+    await expect(service.verify('foo@example.com', code)).rejects.toThrow(/Too many attempts/);
+  });
+
+  it('allows only one concurrent consumption of a valid code', async () => {
+    const { service, emailSender, emailOtp } = build();
+    await service.send('foo@example.com');
+    const { code } = firstSent(emailSender);
+    const results = await Promise.allSettled([
+      service.verify('foo@example.com', code),
+      service.verify('FOO@example.com', code),
+    ]);
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(await emailOtp.get('foo@example.com')).toBeNull();
+  });
+
+  it('does not let an old verification delete a concurrently resent code', async () => {
+    vi.spyOn(otpModel, 'generateEmailOtpCode')
+      .mockReturnValueOnce('123456')
+      .mockReturnValueOnce('654321');
+    const { service, clock, emailSender, emailOtp } = build();
+    await service.send('foo@example.com');
+    const { code } = firstSent(emailSender);
+    clock.advance(60_000);
+    await Promise.allSettled([
+      service.send('foo@example.com'),
+      service.verify('foo@example.com', code),
+    ]);
+    expect(emailSender.sent).toHaveLength(2);
+    expect(await emailOtp.get('foo@example.com')).not.toBeNull();
+    await expect(
+      service.verify('foo@example.com', firstSent(emailSender, 1).code),
+    ).resolves.toBeUndefined();
+  });
+
+  it('rechecks expiry if the repository retries a verification transition', async () => {
+    const { service, clock, emailSender, emailOtp } = build();
+    await service.send('foo@example.com');
+    const { code } = firstSent(emailSender);
+    const current = await emailOtp.get('foo@example.com');
+    const update = emailOtp.updateAtomically.bind(emailOtp);
+    vi.spyOn(emailOtp, 'updateAtomically').mockImplementationOnce((recipient, transition) => {
+      transition(current); // Simulate a valid first attempt that loses a write conflict.
+      clock.advance(10 * 60_000);
+      return update(recipient, transition);
+    });
+    await expect(service.verify('foo@example.com', code)).rejects.toThrow(/expired/);
+    expect(await emailOtp.get('foo@example.com')).toEqual(current);
+  });
+
+  it('rejects a code at its exact expiry without incrementing attempts', async () => {
+    const { service, clock, emailSender, emailOtp } = build();
+    await service.send('foo@example.com');
+    const { code } = firstSent(emailSender);
+    clock.advance(10 * 60_000);
+    await expect(service.verify('foo@example.com', code)).rejects.toThrow(/expired/);
+    expect((await emailOtp.get('foo@example.com'))?.attempts).toBe(0);
+  });
+
   it('sends a code and verifies it successfully', async () => {
     const { service, emailSender } = build();
     await service.send('Foo@Example.com');
@@ -83,6 +225,16 @@ describe('EmailOtpService', () => {
     await expect(service.verify('foo@example.com', code)).rejects.toThrow(
       /No verification in progress/,
     );
+  });
+
+  it('requires an unbound legacy code to be resent before verifying an account', async () => {
+    const { service, emailOtp, clock, users } = build();
+    await emailOtp.save(
+      otpModel.createEmailOtp('foo@example.com', '123456', 'test-email-otp-secret', clock.now()),
+    );
+    await expect(service.verify('foo@example.com', '123456')).rejects.toThrow(/Request a new code/);
+    expect(await users.getById('account-foo')).toMatchObject({ emailVerified: false });
+    expect(await emailOtp.get('foo@example.com')).not.toBeNull();
   });
 
   it('enforces the 60s resend cooldown', async () => {

@@ -77,6 +77,29 @@ async function seedEventWithTiers() {
 }
 
 describe('V2 door sales slice — walk-in / dine-in / sales list', () => {
+  it('refuses a new walk-in sale after event cancellation', async () => {
+    const server = await buildServer();
+    const { event } = await seedEventWithTiers();
+    await createV2Services().events.cancel(ACTOR, event.id, 'weather');
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/door/walk-in',
+      headers: HEADERS,
+      payload: {
+        eventId: event.id,
+        guestName: 'Late Guest',
+        totalGuests: 1,
+        paymentMode: 'cash',
+        idempotencyKey: 'idem-cancelled-walkin',
+      },
+    });
+
+    expect(response.statusCode, response.body).toBe(400);
+    expect(response.json()).toMatchObject({ code: 'validation' });
+    await server.close();
+  });
+
   it('creates a walk-in sale priced server-side from the walk-in tier', async () => {
     const server = await buildServer();
     const { event, walkInTier } = await seedEventWithTiers();

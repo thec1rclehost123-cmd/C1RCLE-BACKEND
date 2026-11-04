@@ -1,7 +1,14 @@
-import { effectiveInvitationStatus, normalizeEmail } from '../../domain/models/organization.js';
+import { OrganizationNotFoundError } from '../../domain/errors.js';
+import {
+  acceptInvitationForRecipient,
+  effectiveInvitationStatus,
+  normalizeEmail,
+} from '../../domain/models/organization.js';
 
+import type { MemoryOrganizationRepository } from './memory-repositories.js';
+import type { MemoryUserAccountRepository } from './memory-user-account-repository.js';
 import type { EntityId } from '../../domain/identity.js';
-import type { OrganizationInvitation } from '../../domain/models/organization.js';
+import type { Organization, OrganizationInvitation } from '../../domain/models/organization.js';
 import type {
   InvitationRepository,
   Page,
@@ -16,6 +23,37 @@ import type {
  */
 export class MemoryInvitationRepository implements InvitationRepository {
   invitations = new Map<EntityId, OrganizationInvitation>();
+
+  constructor(
+    private readonly organizations?: MemoryOrganizationRepository,
+    private readonly users?: MemoryUserAccountRepository,
+  ) {}
+
+  async acceptForUser(
+    invitationId: EntityId,
+    userId: EntityId,
+    now: () => Date,
+  ): Promise<Organization> {
+    // No await between snapshot, validation and writes: one event-loop turn.
+    const invitation = this.invitations.get(invitationId);
+    if (!invitation) throw new OrganizationNotFoundError(invitationId);
+    const organizations = this.organizations;
+    const org = organizations?.organizations.get(invitation.organizationId);
+    if (!org || !organizations) throw new OrganizationNotFoundError(invitation.organizationId);
+    const result = acceptInvitationForRecipient(
+      org,
+      invitation,
+      userId,
+      this.users?.users.get(userId) ?? null,
+      now(),
+    );
+    organizations.organizations.set(org.id, result.organization);
+    for (const member of result.organization.members) {
+      organizations.members.set(`${org.id}|${member.userId}`, member);
+    }
+    this.invitations.set(invitation.id, result.invitation);
+    return result.organization;
+  }
 
   async getById(invitationId: EntityId): Promise<OrganizationInvitation | null> {
     return this.invitations.get(invitationId) ?? null;

@@ -343,10 +343,10 @@ function defineRoute(
   options: RouteOptions = {},
 ): V2RouteDefinition {
   const isRead = method === 'GET';
-  const auth = options.auth || 'PARTNER';
-  const rateLimit = options.rateLimit || deriveRateLimit(method, path, auth);
-  const pathway = options.pathway || derivePathway(auth, domain);
-  const dataPolicy = DOMAIN_DATA_POLICIES[domain] || firestoreDomain(domain);
+  const auth = options.auth ?? 'PARTNER';
+  const rateLimit = options.rateLimit ?? deriveRateLimit(method, path, auth);
+  const pathway = options.pathway ?? derivePathway(auth, domain);
+  const dataPolicy = DOMAIN_DATA_POLICIES[domain] ?? firestoreDomain(domain);
   const ratePolicy = RATE_LIMIT_POLICIES[rateLimit];
   const isWebhook = auth === 'WEBHOOK';
   const isOrganizationScoped = path.includes(':organizationId');
@@ -804,6 +804,19 @@ export const API_V2_ROUTES: readonly V2RouteDefinition[] = [
         },
       ),
     ],
+  ),
+
+  defineRoute(
+    'event-ticket-tiers.update-limits',
+    'PATCH',
+    '/api/v2/events/:eventId/ticket-tiers/:tierId',
+    'event-catalog',
+    {
+      permission: 'event.update',
+      scope: 'Event and tier organization with expected version',
+      idempotency: 'REQUIRED',
+      expectedVersion: 'REQUIRED',
+    },
   ),
 
   publicRead('public.events.list', '/api/v2/public/events', 'public'),

@@ -143,6 +143,9 @@ export function createDoorTicketSaleService(
     const event = await deps.events.findById(command.eventId);
     if (!event) throw new NotFoundError('Event', command.eventId);
     requireOrgAccess(actor, event.organizationId);
+    if (event.status === 'cancelled') {
+      throw new InvalidOperationError('Door sales are closed because this event was cancelled');
+    }
 
     // Selling entry is a stronger right than scanning it: a `scan_only`
     // handset at the entrance must not be able to take money.
@@ -173,6 +176,11 @@ export function createDoorTicketSaleService(
     }
     if (tier.status !== 'active') {
       throw new InvalidOperationError('That ticket type is not on sale');
+    }
+    if (tier.admissionMode === 'per_person') {
+      throw new InvalidOperationError(
+        'Per-person group tickets must be completed through the guest checkout flow',
+      );
     }
 
     // The door is the last place that should oversell a room.

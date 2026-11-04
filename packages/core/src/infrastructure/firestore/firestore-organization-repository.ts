@@ -96,7 +96,7 @@ export class FirestoreOrganizationRepository implements OrganizationRepository {
   }
 }
 
-function toDoc(org: Organization): DocumentData {
+export function toDoc(org: Organization): DocumentData {
   return {
     id: org.id,
     name: org.name,
@@ -113,7 +113,7 @@ function toDoc(org: Organization): DocumentData {
   };
 }
 
-function toOrganization(data: DocumentData): Organization {
+export function toOrganization(data: DocumentData): Organization {
   return {
     id: data.id as string,
     name: data.name as string,

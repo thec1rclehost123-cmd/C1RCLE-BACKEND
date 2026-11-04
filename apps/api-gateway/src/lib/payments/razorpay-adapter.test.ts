@@ -85,6 +85,8 @@ describe('RazorpayPaymentProvider — signature primitives', () => {
       status: 'captured',
       captured: true,
       order_id: VECTOR.orderId,
+      fee: 25,
+      tax: 5,
     };
     const verify = (signature: string, overrides: { orderId?: string; paymentId?: string } = {}) =>
       vectorProvider().verifyPayment({
@@ -99,6 +101,8 @@ describe('RazorpayPaymentProvider — signature primitives', () => {
         captured: true,
         orderId: VECTOR.orderId,
         currency: 'INR',
+        feePaise: 25,
+        taxOnFeePaise: 5,
       });
     });
 
@@ -281,6 +285,8 @@ describe('RazorpayPaymentProvider — verifyPayment', () => {
           currency: 'INR',
           status: 'captured',
           captured: true,
+          fee: 0,
+          tax: 0,
         }),
       ),
     );
@@ -316,6 +322,8 @@ describe('RazorpayPaymentProvider — capturePayment', () => {
           currency: 'INR',
           status: 'captured',
           captured: true,
+          fee: 0,
+          tax: 0,
         }),
       ),
     );
@@ -339,6 +347,8 @@ describe('RazorpayPaymentProvider — capturePayment', () => {
         currency: 'INR',
         status: 'captured',
         captured: true,
+        fee: 0,
+        tax: 0,
       }),
     );
     vi.stubGlobal('fetch', fetchMock);
@@ -383,7 +393,11 @@ describe('RazorpayPaymentProvider — refundPayment', () => {
   it('throws the provider error description on failure', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue(jsonError({ error: { description: 'Refund too large' } })),
+      vi
+        .fn()
+        .mockResolvedValue(
+          jsonError({ error: { code: 'BAD_REQUEST_ERROR', description: 'Refund too large' } }),
+        ),
     );
     await expect(
       provider().refundPayment({
@@ -417,6 +431,8 @@ describe('RazorpayPaymentProvider — getPayment', () => {
           currency: 'INR',
           status: 'captured',
           captured: true,
+          fee: 0,
+          tax: 0,
         }),
       ),
     );
@@ -508,6 +524,8 @@ describe('RazorpayPaymentProvider — payment id validation', () => {
       currency: 'INR',
       status: 'captured',
       captured: true,
+      fee: 0,
+      tax: 0,
     });
     const fetchMock = vi.fn().mockResolvedValue(captured);
     vi.stubGlobal('fetch', fetchMock);
@@ -567,6 +585,8 @@ describe('RazorpayPaymentProvider — order amount integrity and payment mapping
           status: 'captured',
           captured: true,
           order_id: 'order_9',
+          fee: 0,
+          tax: 0,
         }),
       ),
     );
@@ -586,6 +606,8 @@ describe('RazorpayPaymentProvider — order amount integrity and payment mapping
           currency: 'INR',
           status: 'captured',
           captured: true,
+          fee: 0,
+          tax: 0,
         }),
       ),
     );

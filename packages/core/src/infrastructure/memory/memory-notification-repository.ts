@@ -20,6 +20,12 @@ export class MemoryNotificationRepository implements NotificationRepository {
     this.entries.set(notification.id, notification);
   }
 
+  async createIfAbsent(notification: Notification): Promise<boolean> {
+    if (this.entries.has(notification.id)) return false;
+    this.entries.set(notification.id, notification);
+    return true;
+  }
+
   async save(notification: Notification, _tx?: TxContext | null): Promise<void> {
     this.entries.set(notification.id, notification);
   }

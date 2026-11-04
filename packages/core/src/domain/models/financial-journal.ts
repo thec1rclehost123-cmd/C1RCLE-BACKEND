@@ -15,6 +15,8 @@ export type DiscountFundingOwner = 'platform' | 'venue' | 'host' | 'promoter' | 
 
 export interface FinancialComponentBreakdown {
   readonly ticketFaceValuePaise: number;
+  /** Cover proceeds remain a separate liability until redeemed or refunded. */
+  readonly eventCoverLiabilityPaise?: number;
   readonly discountPaise: number;
   readonly discountFundingOwner: DiscountFundingOwner | null;
   readonly netTicketRevenuePaise: number;
@@ -67,6 +69,8 @@ export type AccountCode =
   | 'platform_fee_revenue'
   | 'platform_commission_revenue'
   | 'ticket_collection_control'
+  | 'event_cover_liability'
+  | 'event_cover_venue_payable_held'
   | 'provider_fee_expense'
   | 'refund_clearing'
   | 'chargeback_loss_receivable'
@@ -105,6 +109,8 @@ export type PostingSourceType =
   | 'payout_reservation'
   | 'payout_completion'
   | 'payout_failure_reversal'
+  | 'event_cover_redemption'
+  | 'event_cover_redemption_reversal'
   | 'manual_adjustment'
   | 'legacy_backfill';
 
@@ -114,6 +120,10 @@ export interface PostingSource {
   readonly orderId: EntityId | null;
   readonly paymentId: string | null;
   readonly eventId: EntityId | null;
+  /** Promoter commission provenance; absent on records created before M4. */
+  readonly assignmentId?: EntityId | null;
+  readonly commissionPolicyVersion?: string | null;
+  readonly commercialPolicyVersion?: string | null;
 }
 
 export interface FinancialJournal {

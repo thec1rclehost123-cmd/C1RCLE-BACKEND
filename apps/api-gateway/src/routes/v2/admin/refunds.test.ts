@@ -3,10 +3,11 @@ import {
   DefiniteProviderFailureError,
   MemoryPaymentProvider,
 } from '@c1rcle/core/domain';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AdminRole } from '@c1rcle/core/domain';
 
+import { RazorpayPaymentProvider } from '../../../lib/payments/razorpay-adapter.js';
 import { createV2Services } from '../../../lib/v2-services.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 import { publishEventForTest } from '../../../test-utils/publish-event.js';
@@ -122,6 +123,11 @@ async function seedPaidOrder(
 }
 
 let server: FastifyInstance;
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 beforeEach(async () => {
   const repos = services.repos();
@@ -586,6 +592,91 @@ describe('executing an approved refund', () => {
     }
   });
 
+  it.each([400, 500, 409, 429])(
+    'applies the correct refund lock decision after adapter HTTP %i',
+    async (status) => {
+      await seedAdmin('admin_a', 'finance');
+      const { orderId, tierId } = await seedPaidOrder(server, 100_000, 2);
+      const requested = await server.inject({
+        method: 'POST',
+        url: '/admin/refunds',
+        headers: asUser('admin_a'),
+        payload: {
+          orderId,
+          amountPaise: 40_000,
+          reason: 'Classification regression',
+          ticketLines: [{ tierId, quantity: 1 }],
+        },
+      });
+      expect(requested.statusCode).toBe(201);
+      const requestId = requested.json().request.id as string;
+      const provider = memoryProvider();
+      const originalRefund = provider.refundPayment.bind(provider);
+      const adapter = new RazorpayPaymentProvider({
+        keyId: 'rzp_test_synthetic',
+        keySecret: 'synthetic',
+        webhookSecret: 'synthetic',
+      });
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue(
+          Response.json(
+            { error: { code: 'BAD_REQUEST_ERROR', description: 'Synthetic provider failure' } },
+            { status },
+          ),
+        );
+      vi.stubGlobal('fetch', fetchMock);
+      provider.refundPayment = adapter.refundPayment.bind(adapter);
+      try {
+        const response = await server.inject({
+          method: 'POST',
+          url: `/admin/refunds/${requestId}/execute`,
+          headers: asUser('admin_a'),
+        });
+        if (status === 400) {
+          expect(response.statusCode).toBe(200);
+          expect(await services.repos().orders.getById(orderId)).toMatchObject({
+            status: 'paid',
+            refundedPaise: 0,
+          });
+          expect(await services.repos().refundRequests.getById(requestId)).toMatchObject({
+            status: 'failed',
+            providerRefundId: null,
+          });
+          const tickets = await services.repos().entitlements.getByOrderId(orderId);
+          expect(tickets.every((ticket) => !ticket.refundLock && ticket.status === 'valid')).toBe(
+            true,
+          );
+          expect(fetchMock).toHaveBeenCalledTimes(1);
+          return;
+        }
+        expect(response.statusCode).toBe(409);
+        expect(await services.repos().orders.getById(orderId)).toMatchObject({
+          status: 'refund_requested',
+          refundedPaise: 0,
+        });
+        expect(await services.repos().refundRequests.getById(requestId)).toMatchObject({
+          status: 'executing',
+          providerRefundId: null,
+        });
+        const tickets = await services.repos().entitlements.getByOrderId(orderId);
+        expect(
+          tickets.filter((ticket) => ticket.refundLock?.refundRequestId === requestId),
+        ).toHaveLength(1);
+        const retry = await server.inject({
+          method: 'POST',
+          url: `/admin/refunds/${requestId}/execute`,
+          headers: asUser('admin_a'),
+        });
+        expect(retry.statusCode).toBe(409);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+      } finally {
+        provider.refundPayment = originalRefund;
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
   it('does not reapply an order refund after a crash before request settlement', async () => {
     await seedAdmin('admin_a', 'finance');
     const { orderId } = await seedPaidOrder(server);
@@ -680,5 +771,281 @@ describe('reads', () => {
       headers: asUser('admin_a'),
     });
     expect(response.statusCode).toBe(404);
+  });
+});
+
+describe('uncertain refund recovery', () => {
+  async function uncertain() {
+    await seedAdmin('admin_recovery', 'finance');
+    const { orderId, tierId } = await seedPaidOrder(server, 100_000, 2);
+    const created = await server.inject({
+      method: 'POST',
+      url: '/admin/refunds',
+      headers: asUser('admin_recovery'),
+      payload: {
+        orderId,
+        amountPaise: 40_000,
+        reason: 'Synthetic recovery test',
+        ticketLines: [{ tierId, quantity: 1 }],
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const requestId = created.json().request.id as string;
+    const provider = memoryProvider();
+    const refundPost = vi
+      .spyOn(provider, 'refundPayment')
+      .mockRejectedValue(new Error('lost provider response'));
+    const executed = await server.inject({
+      method: 'POST',
+      url: `/admin/refunds/${requestId}/execute`,
+      headers: asUser('admin_recovery'),
+    });
+    expect(executed.statusCode).toBe(409);
+    const saved = await services.repos().refundRequests.getById(requestId);
+    const order = await services.repos().orders.getById(orderId);
+    if (!saved || !order?.paymentId) throw new Error('Expected uncertain execution');
+    const candidate = `rfnd_recovered_${++keySeq}`;
+    const fact = {
+      id: candidate,
+      payment_id: order.paymentId,
+      currency: order.currency,
+      amount: saved.amountPaise,
+      receipt: saved.executionIdempotencyKey,
+      status: 'processed',
+    };
+    const adapter = new RazorpayPaymentProvider({
+      keyId: 'rzp_test_synthetic',
+      keySecret: 'synthetic',
+      webhookSecret: 'synthetic',
+    });
+    const lookup = vi
+      .spyOn(provider, 'getRefund')
+      .mockImplementation(adapter.getRefund.bind(adapter));
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(Response.json(fact)));
+    vi.stubGlobal('fetch', fetchMock);
+    const reconcile = (
+      payload: Record<string, unknown> = {
+        providerRefundId: candidate,
+        reason: 'Provider record found during approved review',
+      },
+      headers = asUser('admin_recovery'),
+    ) =>
+      server.inject({
+        method: 'POST',
+        url: `/admin/refunds/${requestId}/reconcile`,
+        headers,
+        payload,
+      });
+    return { requestId, orderId, candidate, fact, fetchMock, lookup, refundPost, reconcile, saved };
+  }
+
+  it.each(['processed', 'failed', 'pending'])(
+    'recovers missing refund id with provider state %s, then safely converges',
+    async (status) => {
+      const f = await uncertain();
+      f.fetchMock.mockImplementation(() => Promise.resolve(Response.json({ ...f.fact, status })));
+      const headers = asUser('admin_recovery');
+      const response = await f.reconcile(undefined, headers);
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        request: { status: 'executing', providerRefundId: f.candidate, providerStatus: status },
+        order: { status: 'refund_requested', refundedPaise: 0 },
+      });
+      const audits = await services.adminAudits().listForTarget(f.requestId, 100);
+      expect(audits).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            action: 'FINANCIAL_REFUND.reconcile.requested',
+            adminId: 'admin_recovery',
+          }),
+          expect.objectContaining({
+            action: 'FINANCIAL_REFUND.reconcile.observed',
+            after: expect.objectContaining({
+              providerRefundId: f.candidate,
+              providerStatus: status,
+            }),
+          }),
+        ]),
+      );
+      const replay = await f.reconcile(undefined, headers);
+      expect(replay.statusCode).toBe(200);
+      expect(f.lookup).toHaveBeenCalledTimes(1);
+      const version = (await services.repos().refundRequests.getById(f.requestId))?.version;
+      expect((await f.reconcile()).statusCode).toBe(200);
+      expect((await services.repos().refundRequests.getById(f.requestId))?.version).toBe(version);
+      const execute = () =>
+        server.inject({
+          method: 'POST',
+          url: `/admin/refunds/${f.requestId}/execute`,
+          headers: asUser('admin_recovery'),
+        });
+      const completed = await execute();
+      const tickets = await services.repos().entitlements.getByOrderId(f.orderId);
+      if (status === 'pending') {
+        expect(completed.statusCode).toBe(409);
+        expect(
+          tickets.filter((ticket) => ticket.refundLock?.refundRequestId === f.requestId),
+        ).toHaveLength(1);
+        f.fetchMock.mockImplementation(() => Promise.resolve(Response.json(f.fact)));
+        expect((await f.reconcile()).statusCode).toBe(200);
+        const settled = await execute();
+        expect(settled.statusCode).toBe(200);
+        expect(settled.json().request.status).toBe('settled');
+        expect(settled.json().order.refundedPaise).toBe(40_000);
+      } else {
+        expect(completed.statusCode).toBe(200);
+        expect(completed.json().request.status).toBe(status === 'processed' ? 'settled' : 'failed');
+        expect(completed.json().order.refundedPaise).toBe(status === 'processed' ? 40_000 : 0);
+        expect(tickets.every((ticket) => !ticket.refundLock)).toBe(true);
+        if (status === 'processed') {
+          expect(tickets.filter((ticket) => ticket.status === 'void')).toHaveLength(1);
+          expect((await execute()).json().order.refundedPaise).toBe(40_000);
+        }
+      }
+      expect(f.refundPost).toHaveBeenCalledTimes(1); // only the original ambiguous call
+    },
+  );
+
+  it.each([
+    { payment_id: 'pay_wrong' },
+    { amount: 1 },
+    { currency: 'USD' },
+    { receipt: 'another-request' },
+    { receipt: null },
+  ])('rejects mismatched provider evidence without releasing locks: %j', async (patch) => {
+    const f = await uncertain();
+    f.fetchMock.mockResolvedValue(Response.json({ ...f.fact, ...patch }));
+    const response = await f.reconcile();
+    expect(response.statusCode).toBeGreaterThanOrEqual(400);
+    expect(await services.repos().refundRequests.getById(f.requestId)).toEqual(f.saved);
+    expect((await services.repos().orders.getById(f.orderId))?.status).toBe('refund_requested');
+    expect(
+      (await services.repos().entitlements.getByOrderId(f.orderId)).some(
+        (ticket) => ticket.refundLock?.refundRequestId === f.requestId,
+      ),
+    ).toBe(true);
+    expect(f.refundPost).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([404, 500])(
+    'keeps no-id uncertainty locked when provider lookup returns %i',
+    async (status) => {
+      const f = await uncertain();
+      f.fetchMock.mockResolvedValue(new Response(null, { status }));
+      expect((await f.reconcile()).statusCode).toBeGreaterThanOrEqual(400);
+      expect(await services.repos().refundRequests.getById(f.requestId)).toEqual(f.saved);
+      expect(f.refundPost).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('denies non-finance identities before lookup and rejects operator-supplied status/amount', async () => {
+    const f = await uncertain();
+    await seedAdmin('admin_support_recovery', 'support');
+    expect((await f.reconcile(undefined, asUser('not_an_admin'))).statusCode).toBe(401);
+    expect((await f.reconcile(undefined, asUser('admin_support_recovery'))).statusCode).toBe(403);
+    expect(
+      (
+        await f.reconcile({
+          providerRefundId: f.candidate,
+          reason: 'Synthetic review',
+          status: 'processed',
+          amountPaise: 40_000,
+        })
+      ).statusCode,
+    ).toBe(422);
+    expect((await f.reconcile({ providerRefundId: f.candidate, reason: ' ' })).statusCode).toBe(
+      422,
+    );
+    expect(f.lookup).not.toHaveBeenCalled();
+  });
+
+  it('fails closed before provider lookup if the audit store is unavailable', async () => {
+    const f = await uncertain();
+    vi.spyOn(services.adminAudits(), 'append').mockRejectedValue(
+      new Error('synthetic audit outage'),
+    );
+    expect((await f.reconcile()).statusCode).toBe(500);
+    expect(f.lookup).not.toHaveBeenCalled();
+    expect(await services.repos().refundRequests.getById(f.requestId)).toEqual(f.saved);
+  });
+
+  it('retains uncertainty when observation auditing fails after a successful lookup', async () => {
+    const f = await uncertain();
+    const audit = services.adminAudits();
+    const append = audit.append.bind(audit);
+    vi.spyOn(audit, 'append')
+      .mockImplementationOnce(append)
+      .mockRejectedValue(new Error('synthetic audit outage'));
+    expect((await f.reconcile()).statusCode).toBe(500);
+    expect(f.lookup).toHaveBeenCalledTimes(1);
+    expect(await services.repos().refundRequests.getById(f.requestId)).toEqual(f.saved);
+  });
+
+  it('rejects contradictory processed webhook evidence instead of unlocking', async () => {
+    const f = await uncertain();
+    await services.providerPayments.recordEvent({
+      type: 'refund_processed',
+      paymentId: f.fact.payment_id,
+      refundId: f.candidate,
+      amountPaise: f.fact.amount,
+      currency: f.fact.currency,
+    });
+    f.fetchMock.mockImplementation(() =>
+      Promise.resolve(Response.json({ ...f.fact, status: 'failed' })),
+    );
+    expect((await f.reconcile()).statusCode).toBe(409);
+    expect(await services.repos().refundRequests.getById(f.requestId)).toEqual(f.saved);
+  });
+
+  it('refuses a replacement id or downgrade of an already recorded terminal fact', async () => {
+    const f = await uncertain();
+    expect((await f.reconcile()).statusCode).toBe(200);
+    const saved = await services.repos().refundRequests.getById(f.requestId);
+    expect(
+      (await f.reconcile({ providerRefundId: 'rfnd_other', reason: 'Wrong candidate' })).statusCode,
+    ).toBe(409);
+    expect(f.lookup).toHaveBeenCalledTimes(1);
+    f.fetchMock.mockImplementation(() =>
+      Promise.resolve(Response.json({ ...f.fact, status: 'pending' })),
+    );
+    expect((await f.reconcile()).statusCode).toBe(409);
+    expect(await services.repos().refundRequests.getById(f.requestId)).toEqual(saved);
+  });
+
+  it('keeps a recovered failed refund locked if a processed webhook arrives before finalization', async () => {
+    const f = await uncertain();
+    f.fetchMock.mockImplementation(() =>
+      Promise.resolve(Response.json({ ...f.fact, status: 'failed' })),
+    );
+    expect((await f.reconcile()).statusCode).toBe(200);
+    await services.providerPayments.recordEvent({
+      type: 'refund_processed',
+      paymentId: f.fact.payment_id,
+      refundId: f.candidate,
+      amountPaise: f.fact.amount,
+      currency: f.fact.currency,
+    });
+    const executed = await server.inject({
+      method: 'POST',
+      url: `/admin/refunds/${f.requestId}/execute`,
+      headers: asUser('admin_recovery'),
+    });
+    expect(executed.statusCode).toBe(409);
+    expect((await services.repos().orders.getById(f.orderId))?.status).toBe('refund_requested');
+    expect((await services.repos().refundRequests.getById(f.requestId))?.status).toBe('executing');
+    expect(f.refundPost).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers after a fact persistence failure without resending money', async () => {
+    const f = await uncertain();
+    const repo = services.repos().refundRequests;
+    const save = vi
+      .spyOn(repo, 'save')
+      .mockRejectedValueOnce(new Error('synthetic persistence outage'));
+    expect((await f.reconcile()).statusCode).toBe(500);
+    expect(await repo.getById(f.requestId)).toEqual(f.saved);
+    save.mockRestore();
+    expect((await f.reconcile()).statusCode).toBe(200);
+    expect(f.refundPost).toHaveBeenCalledTimes(1);
   });
 });

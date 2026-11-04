@@ -1,4 +1,5 @@
 import { VersionConflictError, NotFoundError } from '../../domain/errors.js';
+import { deterministicDomainEventId, domainEvent } from '../../domain/events.js';
 import {
   createProviderFinancialEvent,
   hashProviderEventPayload,
@@ -7,6 +8,7 @@ import {
   applyProviderPaymentEvent,
   reconcileOrderWithProvider,
 } from '../../domain/models/provider-payment.js';
+import { SYSTEM_ACTOR, type ServiceDeps } from '../context.js';
 
 import { FinancialPostingService } from './financial-posting-service.js';
 
@@ -16,7 +18,6 @@ import type {
   ProviderPaymentEvent,
   ReconciliationResult,
 } from '../../domain/models/provider-payment.js';
-import type { ServiceDeps } from '../context.js';
 
 /** Webhooks for one payment can land together; a handful of retries is plenty. */
 const MAX_ATTEMPTS = 5;
@@ -89,6 +90,7 @@ export class ProviderPaymentService {
       let result = await this.applyEvent(event);
       if (event.type === 'dispute') {
         result = `${result}:${await this.applyDisputeFinancialPolicy(event)}`;
+        await this.emitPromoterChargebackUpdate(event);
       }
       await this.deps.repositories.providerFinancialEvents.markProcessed(
         ingested.id,
@@ -151,6 +153,28 @@ export class ProviderPaymentService {
     }
     await this.posting.releaseChargebackHold(posting);
     return 'chargeback_hold_released';
+  }
+
+  private async emitPromoterChargebackUpdate(
+    event: Extract<ProviderPaymentEvent, { type: 'dispute' }>,
+  ): Promise<void> {
+    const payment = await this.providerPayments.findByPaymentId(event.paymentId);
+    if (!payment?.orderId) return;
+    const order = await this.orders.getById(payment.orderId);
+    if (!order?.attribution || order.attribution.promoterCommissionPaise <= 0) return;
+    const type = 'finance.chargeback.updated' as const;
+    const now = this.deps.config.clock.now().getTime();
+    await this.deps.outbox.append(
+      domainEvent({
+        id: deterministicDomainEventId(type, event.disputeId, event.status),
+        type,
+        aggregateId: order.id,
+        organizationId: order.organizationId,
+        actorId: SYSTEM_ACTOR.userId,
+        payload: { orderId: order.id, disputeId: event.disputeId, status: event.status },
+        occurredAt: now,
+      }),
+    );
   }
 
   async reconcileOrder(orderId: EntityId): Promise<ReconciliationResult> {

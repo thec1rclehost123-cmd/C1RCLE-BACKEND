@@ -11,7 +11,6 @@ import {
   updateMemberRole,
   removeMember,
   suspendOrganization,
-  acceptInvitation,
   createInvitation,
   effectiveInvitationStatus,
   normalizeEmail,
@@ -227,22 +226,6 @@ export class OrganizationService {
           };
           await this.deps.repositories.invitations.save(revokedInvite);
         }
-
-        // Revoke credentials and clear rotation requirement if no other org memberships remain
-        let hasOtherOrgs = false;
-        try {
-          const memberOrgs = await this.repo.listForMember(userId, { limit: 2 });
-          hasOtherOrgs = memberOrgs.items.some((item) => item.id !== organizationId);
-        } catch {
-          // fail safe: proceed to revoke if lookup fails or unsupported
-        }
-
-        if (!hasOtherOrgs) {
-          if (this.deps.credentialProvisioner.revokeLogin) {
-            await this.deps.credentialProvisioner.revokeLogin(userId, email ?? undefined);
-          }
-          await this.deps.rotationStore.setRequired(userId, false);
-        }
       } catch (error: unknown) {
         this.deps.logger.warn('organization.revoke_invitation_save_failed', {
           organizationId,
@@ -391,61 +374,27 @@ export class OrganizationService {
     const revoked = revokeInvitation(invitation, this.deps.config.clock.now());
     await this.deps.repositories.invitations.save(revoked);
 
-    try {
-      let provisionedUserId: string | null = null;
-      if (this.deps.userDirectory) {
-        provisionedUserId = await this.deps.userDirectory.findUserIdByEmail(invitation.email);
-      }
-      if (this.deps.credentialProvisioner.revokeLogin) {
-        await this.deps.credentialProvisioner.revokeLogin(
-          provisionedUserId ?? '',
-          invitation.email,
-        );
-      }
-      if (provisionedUserId) {
-        await this.deps.rotationStore.setRequired(provisionedUserId, false);
-      }
-    } catch (error: unknown) {
-      this.deps.logger.warn('organization.revoke_invitation_credential_failed', {
-        organizationId: invitation.organizationId,
-        invitationId: invitation.id,
-        email: invitation.email,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-
     return revoked;
   }
 
-  /**
-   * Accepts an invitation, adding the member and closing the invitation
-   * together. The two writes are ordered so a failure leaves the invitation
-   * still pending (retryable) rather than a member with no record of joining.
-   * When the accepter is already a member the domain returns the org by
-   * reference (no state changed) — repositories enforce compare-and-set, so
-   * a no-op save would 409 and must be skipped.
-   */
+  /** Identity comes from the authenticated actor, never the command alone. */
   async acceptInvitation(
     actor: ActorContext,
     command: AcceptInvitationCommand,
   ): Promise<Organization> {
-    const invitation = await this.deps.repositories.invitations.getById(command.invitationId);
-    // Cross-tenant and missing collapse to the same answer — no oracle.
-    if (!invitation) throw new OrganizationNotFoundError(command.invitationId);
-
-    const org = await this.repo.getById(invitation.organizationId);
-    if (!org) throw new OrganizationNotFoundError(invitation.organizationId);
-
-    const result = acceptInvitation(org, invitation, command.userId, this.deps.config.clock.now());
-    if (result.organization !== org) {
-      await this.repo.save(result.organization);
+    if (command.userId !== actor.userId) {
+      throw new ForbiddenError('Invitation recipient must be the authenticated user');
     }
-    await this.deps.repositories.invitations.save(result.invitation);
+    const org = await this.deps.repositories.invitations.acceptForUser(
+      command.invitationId,
+      actor.userId,
+      () => this.deps.config.clock.now(),
+    );
     this.deps.logger.info('organization.invitation_accepted', {
       organizationId: org.id,
-      invitationId: invitation.id,
+      invitationId: command.invitationId,
     });
-    return result.organization;
+    return org;
   }
 
   private async fetchOwnedInvitation(

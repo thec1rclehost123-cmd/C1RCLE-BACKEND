@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { FieldValue } from 'firebase-admin/firestore';
 
 import { normalizeReferralCode } from '../../domain/models/referral-link.js';
@@ -18,7 +20,14 @@ import type { DocumentData, Firestore } from 'firebase-admin/firestore';
 const COLLECTION = 'v2_promoter_links';
 const CODE_COLLECTION = 'v2_promoter_tracking_codes';
 const PROMOTER_CODE_COLLECTION = 'v2_promoter_codes';
+const ASSIGNMENT_CODE_COLLECTION = 'v2_promoter_assignment_codes';
+const EVENT_CODE_CLAIM_COLLECTION = 'v2_promoter_event_code_claims';
 const VANITY_COLLECTION = 'v2_promoter_vanity_aliases';
+
+interface RecentClickKey {
+  key: string;
+  expiresAt: number;
+}
 
 /** Firestore adapter for `ReferralLinkRepository`. */
 export class FirestoreReferralLinkRepository implements ReferralLinkRepository {
@@ -116,12 +125,90 @@ export class FirestoreReferralLinkRepository implements ReferralLinkRepository {
     });
   }
 
-  async recordClick(linkId: EntityId): Promise<boolean> {
+  async getOrCreateAssignmentCode(
+    assignmentId: EntityId,
+    eventId: EntityId,
+    promoterId: EntityId,
+    proposedCode: string,
+  ): Promise<string | null> {
+    const assignmentRef = this.db.collection(ASSIGNMENT_CODE_COLLECTION).doc(assignmentId);
+    return this.db.runTransaction(async (tx) => {
+      const assignmentSnap = await tx.get(assignmentRef);
+      const storedAssignmentId = assignmentSnap.get('assignmentId') as string | undefined;
+      const storedEventId = assignmentSnap.get('eventId') as string | undefined;
+      const storedPromoterId = assignmentSnap.get('promoterId') as string | undefined;
+      if (
+        assignmentSnap.exists &&
+        (storedAssignmentId !== assignmentId ||
+          storedEventId !== eventId ||
+          storedPromoterId !== promoterId)
+      ) {
+        return null;
+      }
+
+      const normalized = normalizeReferralCode(proposedCode);
+      const selected = (assignmentSnap.get('code') as string | undefined) ?? normalized;
+      const codeRef = this.db.collection(CODE_COLLECTION).doc(selected);
+      const eventCodeClaimId = createHash('sha256')
+        .update(`${eventId}\u0000${selected}`)
+        .digest('hex');
+      const eventCodeClaimRef = this.db
+        .collection(EVENT_CODE_CLAIM_COLLECTION)
+        .doc(eventCodeClaimId);
+      const [codeSnap, claimSnap] = await Promise.all([tx.get(codeRef), tx.get(eventCodeClaimRef)]);
+      const codeOwner = codeSnap.get('promoterId') as string | undefined;
+      const assignmentOwner = claimSnap.get('assignmentId') as string | undefined;
+      if (
+        (codeOwner && codeOwner !== promoterId) ||
+        (assignmentOwner && assignmentOwner !== assignmentId)
+      ) {
+        return null;
+      }
+
+      const createdAt = new Date().toISOString();
+      if (!assignmentSnap.exists) {
+        tx.create(assignmentRef, { assignmentId, eventId, promoterId, code: selected, createdAt });
+      }
+      if (!codeOwner) {
+        tx.create(codeRef, { code: selected, promoterId, createdAt });
+      }
+      if (!assignmentOwner) {
+        tx.create(eventCodeClaimRef, { assignmentId, eventId, code: selected, createdAt });
+      }
+      return selected;
+    });
+  }
+
+  async recordClick(linkId: EntityId, clickId: string, now = new Date()): Promise<boolean> {
     const ref = this.collection.doc(linkId);
     return this.db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
       if (!snap.exists || snap.get('isActive') !== true) return false;
-      tx.update(ref, { clicks: FieldValue.increment(1), updatedAt: new Date().toISOString() });
+      const clickedAt = now.toISOString();
+      const nowMs = now.getTime();
+      const rawRecentClickKeys: unknown = snap.get('recentClickKeys');
+      const recentClickKeyRecords: unknown[] = Array.isArray(rawRecentClickKeys)
+        ? rawRecentClickKeys
+        : [];
+      const retained = recentClickKeyRecords.filter((entry): entry is RecentClickKey => {
+        if (typeof entry !== 'object' || entry === null || !('key' in entry)) return false;
+        if (!('expiresAt' in entry)) return false;
+        return (
+          typeof entry.key === 'string' &&
+          typeof entry.expiresAt === 'number' &&
+          Number.isFinite(entry.expiresAt) &&
+          entry.expiresAt > nowMs
+        );
+      });
+      const clickKey = createHash('sha256').update(clickId).digest('hex');
+      if (retained.some((entry) => entry.key === clickKey)) return false;
+      retained.push({ key: clickKey, expiresAt: nowMs + 60_000 });
+      tx.update(ref, {
+        clicks: FieldValue.increment(1),
+        lastClickedAt: clickedAt,
+        updatedAt: clickedAt,
+        recentClickKeys: retained,
+      });
       return true;
     });
   }
@@ -176,6 +263,9 @@ function toLink(data: DocumentData): ReferralLink {
     assignmentId: (data.assignmentId ?? null) as string | null,
     assignmentVersion: (data.assignmentVersion ?? null) as number | null,
     termsSnapshot: (data.termsSnapshot ?? null) as ReferralLink['termsSnapshot'],
+    commissionPolicyVersion: (data.commissionPolicyVersion ?? null) as string | null,
+    commercialPolicyVersion: (data.commercialPolicyVersion ?? null) as string | null,
+    eligibleTierIds: (data.eligibleTierIds ?? null) as string[] | null,
     attributionSignature: (data.attributionSignature ?? null) as string | null,
     eventTitle: (data.eventTitle ?? '') as string,
     campaignLabel: (data.campaignLabel ?? data.label ?? 'organic') as string,
@@ -185,6 +275,7 @@ function toLink(data: DocumentData): ReferralLink {
     label: data.label as string,
     isActive: data.isActive as boolean,
     clicks: (data.clicks ?? 0) as number,
+    lastClickedAt: (data.lastClickedAt ?? null) as string | null,
     conversions: (data.conversions ?? 0) as number,
     revenuePaise: (data.revenuePaise ?? 0) as number,
     commissionPaise: (data.commissionPaise ?? 0) as number,

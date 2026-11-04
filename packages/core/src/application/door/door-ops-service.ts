@@ -81,6 +81,7 @@ export interface StartShiftResult {
 }
 
 export type DoorGuestSource = 'online' | 'door';
+export type DoorGuestOwnershipStatus = 'purchaser' | 'unassigned' | 'assigned';
 
 export interface DoorGuest {
   /** Entitlement id for an online ticket; door-sale id for a door guest. */
@@ -91,6 +92,8 @@ export interface DoorGuest {
   /** People this row admits (a couple ticket is one row admitting 2). */
   quantity: number;
   source: DoorGuestSource;
+  /** Online admission custody, without exposing purchaser or holder account IDs. */
+  ownershipStatus?: DoorGuestOwnershipStatus | null;
   status: 'entered' | 'not_entered';
   enteredAt: string | null;
   /** Only present for online tickets — door guests are entered by definition. */
@@ -741,6 +744,12 @@ function toTierSummary(tier: TicketTier): DoorTierSummary {
 
 function toOnlineGuest(entitlement: Entitlement): DoorGuest {
   const entered = entitlement.scanCount > 0;
+  const ownershipStatus: DoorGuestOwnershipStatus =
+    entitlement.currentHolderUserId === null
+      ? 'unassigned'
+      : (entitlement.currentHolderUserId ?? entitlement.userId) === entitlement.userId
+        ? 'purchaser'
+        : 'assigned';
   return {
     id: entitlement.id,
     name: entitlement.holderName,
@@ -748,6 +757,7 @@ function toOnlineGuest(entitlement: Entitlement): DoorGuest {
     entryType: entitlement.scanCountAllowed > 1 ? 'couple' : 'general',
     quantity: entitlement.scanCountAllowed,
     source: 'online',
+    ownershipStatus,
     status: entered ? 'entered' : 'not_entered',
     enteredAt: entitlement.scannedAt[entitlement.scannedAt.length - 1] ?? null,
     scansUsed: entitlement.scanCount,
@@ -763,6 +773,7 @@ function toDoorGuest(sale: DoorSale): DoorGuest {
     entryType: sale.category,
     quantity: sale.totalGuests,
     source: 'door',
+    ownershipStatus: null,
     // A door sale IS an entry — the guest is standing there paying.
     status: 'entered',
     enteredAt: sale.createdAt,

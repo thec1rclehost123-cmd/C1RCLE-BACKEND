@@ -45,6 +45,27 @@ describe('safeHexEqual', () => {
 });
 
 describe('MemoryPaymentProvider signs like the real adapter', () => {
+  it('returns only recorded refund facts and scopes them to the payment', async () => {
+    const provider = new MemoryPaymentProvider('synthetic');
+    provider.simulateCapture('pay_1', 1000, 'order_1');
+    const refund = await provider.refundPayment({
+      paymentId: 'pay_1',
+      amountPaise: 500,
+      idempotencyKey: 'refund_test',
+    });
+    await expect(provider.getRefund('pay_1', refund.id)).resolves.toMatchObject({
+      paymentId: 'pay_1',
+      currency: 'INR',
+      amountPaise: 500,
+      receipt: 'refund_test',
+    });
+    await expect(provider.getRefund('pay_other', refund.id)).rejects.toThrow(
+      'Provider refund not found',
+    );
+    await expect(provider.getRefund('pay_1', 'rfnd_unknown')).rejects.toThrow(
+      'Provider refund not found',
+    );
+  });
   it('uses the key secret, separately from the webhook secret', async () => {
     const provider = new MemoryPaymentProvider('webhook_secret', VECTOR.keySecret);
     const signature = provider.generateSignature({

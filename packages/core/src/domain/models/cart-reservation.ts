@@ -2,8 +2,10 @@ import { InvalidOperationError } from '../errors.js';
 import { bumpVersion, newVersionedEntity } from '../identity.js';
 
 import type { EntityId, VersionedEntity } from '../identity.js';
+import type { TicketAdmissionMode } from './event-catalog.js';
 import type { OrderAttribution, OrderContact } from './order.js';
 import type { PricingBreakdown } from './pricing.js';
+import type { TicketAddonSelection } from './ticket-addon.js';
 
 /**
  * ─── Cart Reservation (Phase 4) ────────────────────────────────────────────────
@@ -19,6 +21,17 @@ import type { PricingBreakdown } from './pricing.js';
 
 export type CartReservationStatus = 'active' | 'converted' | 'released';
 
+export interface TicketUpgradeSnapshot {
+  sourceEntitlementId: EntityId;
+  sourceEntitlementVersion: number;
+  sourceOrderId: EntityId;
+  sourceTierId: EntityId;
+  targetTierId: EntityId;
+  priorAdmissionPaidPaise: number;
+  replacementAdmissionPaise: number;
+  incrementalAdmissionPaise: number;
+}
+
 export interface CartReservation extends VersionedEntity {
   /** Deterministic id from idempotency key: `HOLD-{idempotencyKey}`. */
   id: EntityId;
@@ -30,6 +43,24 @@ export interface CartReservation extends VersionedEntity {
     tierName: string;
     quantity: number;
     unitPricePaise: number;
+    admissionUnitPricePaise?: number;
+    coverUnitPricePaise?: number;
+    coverPolicy?: { proposalId: EntityId; policyVersion: string; termsDigest: string };
+    /** Server-priced non-cover products attached to each admission entitlement. */
+    ticketAddons?: TicketAddonSelection[];
+    /** Access grant accepted during quote/hold for private events or tiers. */
+    accessGrantId?: EntityId;
+    /** Snapshot of group shape at hold time; absent on legacy holds. */
+    guestCount?: number;
+    admissionMode?: TicketAdmissionMode;
+    /** Policy and acknowledgement snapshot; never contains attendee demographics. */
+    eligibility?: {
+      audienceType: string;
+      minAge: number | null;
+      maxAge: number | null;
+      attested: true;
+      attestedAt: string;
+    };
   }[];
   pricing: PricingBreakdown;
   appliedPromoCode: string | null;
@@ -48,6 +79,8 @@ export interface CartReservation extends VersionedEntity {
   providerOrderId?: string | null;
   /** Who the tickets are for, captured at hold time; becomes the order contact. */
   attendee?: OrderContact | null;
+  /** Present only for the bounded one-ticket paid upgrade flow. */
+  upgrade?: TicketUpgradeSnapshot;
   /**
    * Position in the event's strict order of hold creation, assigned by the
    * repository inside a transaction (so no two holds for an event share one).
@@ -70,6 +103,8 @@ export interface CreateCartReservationInput {
     tierName: string;
     quantity: number;
     unitPricePaise: number;
+    guestCount?: number;
+    admissionMode?: TicketAdmissionMode;
   }[];
   pricing: PricingBreakdown;
   appliedPromoCode: string | null;

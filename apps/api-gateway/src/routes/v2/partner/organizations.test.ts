@@ -1,5 +1,7 @@
+import { type MemoryUserAccountRepository } from '@c1rcle/core/infrastructure';
 import { describe, expect, it } from 'vitest';
 
+import { createV2Services } from '../../../lib/v2-services.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 
 import partnerOrganizationRoutes from './organizations.js';
@@ -7,6 +9,19 @@ import partnerOrganizationRoutes from './organizations.js';
 const buildServer = () => buildPartnerTestServer({ routes: [partnerOrganizationRoutes] });
 
 const VALID_HEADERS = { 'x-organization-id': 'org_1' };
+function seedRecipient(id: string, email: string, emailVerified = true) {
+  (createV2Services().repos().users as MemoryUserAccountRepository).save({
+    id,
+    email,
+    emailVerified,
+    name: 'Synthetic invitee',
+    image: null,
+    role: 'partner',
+    createdAt: 0,
+    updatedAt: 0,
+  });
+}
+
 const CREATE_HEADERS = { 'x-organization-id': 'org_1', 'idempotency-key': 'idem-org-1' };
 
 describe('V2 partners organizations slice', () => {
@@ -281,6 +296,7 @@ describe('V2 partners organizations slice — invitations', () => {
     });
     expect(created.statusCode).toBe(201);
 
+    seedRecipient('user_2', 'joining@acme.test');
     const accepted = await server.inject({
       method: 'POST',
       url: `/invitations/${created.json().id}/accept`,
@@ -302,6 +318,7 @@ describe('V2 partners organizations slice — invitations', () => {
     });
     expect(created.statusCode).toBe(201);
 
+    seedRecipient('user_3', 'again@acme.test');
     const first = await server.inject({
       method: 'POST',
       url: `/invitations/${created.json().id}/accept`,
@@ -312,10 +329,50 @@ describe('V2 partners organizations slice — invitations', () => {
     const second = await server.inject({
       method: 'POST',
       url: `/invitations/${created.json().id}/accept`,
-      headers: { 'x-user-id': 'user_4' },
+      headers: { 'x-user-id': 'user_3' },
     });
     expect(second.statusCode).toBe(400);
     expect(second.json()).toMatchObject({ code: 'validation', status: 400 });
     await server.close();
   });
+});
+
+describe('invitation acceptance recipient authorization', () => {
+  it.each([false, true])(
+    'rejects wrong or unverified recipient (verified=%s)',
+    async (verified) => {
+      const server = await buildServer();
+      try {
+        const { id } = await createOrg(server);
+        const created = await server.inject({
+          method: 'POST',
+          url: `/organizations/${id}/invitations`,
+          headers: { 'x-organization-id': id, 'idempotency-key': nextOrgKey() },
+          payload: { email: 'bound@example.invalid', role: 'manager' },
+        });
+        expect(created.statusCode).toBe(201);
+        seedRecipient(
+          'wrong-recipient',
+          verified ? 'wrong@example.invalid' : 'bound@example.invalid',
+          verified,
+        );
+        const denied = await server.inject({
+          method: 'POST',
+          url: `/invitations/${created.json().id}/accept`,
+          headers: { 'x-user-id': 'wrong-recipient' },
+          payload: { userId: 'intended', email: 'bound@example.invalid', emailVerified: true },
+        });
+        expect(denied.statusCode).toBe(403);
+        expect(denied.json()).toMatchObject({ code: 'forbidden', status: 403 });
+        expect(
+          (await createV2Services().repos().invitations.getById(created.json().id))?.status,
+        ).toBe('pending');
+        expect(
+          await createV2Services().repos().organizations.getMember(id, 'wrong-recipient'),
+        ).toBeNull();
+      } finally {
+        await server.close();
+      }
+    },
+  );
 });

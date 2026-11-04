@@ -14,6 +14,8 @@ export const userSchema = z.object({
   displayName: z.string().min(1),
   role: roleSchema,
   avatarUrl: z.url().nullable(),
+  /** Older gateways may omit this field. Only explicit true means verified. */
+  emailVerified: z.boolean().optional(),
   /**
    * True when the account is still on its staff-invitation temporary
    * password. The client must route to the password-change screen; the

@@ -97,6 +97,36 @@ describe('FinancialPostingService', () => {
     expect(repository.journals.size).toBe(3);
   });
 
+  it('posts event cover to a separate liability without increasing distributable ticket revenue', async () => {
+    const journals = buildTicketSaleJournals({
+      ...saleInput(),
+      eventCoverLiabilityPaise: 5_000,
+    });
+    const collection = journals[0];
+    expect(collection?.lines).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          account: 'event_cover_liability',
+          side: 'credit',
+          amountPaise: 5_000,
+        }),
+        expect.objectContaining({
+          account: 'provider_clearing',
+          side: 'debit',
+          amountPaise: 122_200,
+        }),
+      ]),
+    );
+    expect(collection?.components).toMatchObject({
+      ticketFaceValuePaise: 100_000,
+      eventCoverLiabilityPaise: 5_000,
+      netTicketRevenuePaise: 90_000,
+    });
+    expect(journals[1]?.lines.find((entry) => entry.account === 'host_payable')?.amountPaise).toBe(
+      70_000,
+    );
+  });
+
   it('rejects reuse of an idempotency key for changed financial content', async () => {
     const repository = new MemoryFinancialJournalRepository();
     const first = buildTicketSaleJournals(saleInput())[0];
@@ -175,10 +205,10 @@ describe('FinancialPostingService', () => {
     const service = new FinancialPostingService(repository);
     await service.postTicketSale({
       ...saleInput(),
-      ticketFaceValuePaise: 7,
+      ticketFaceValuePaise: 8,
       discountPaise: 0,
       discountFundingOwner: null,
-      netTicketRevenuePaise: 7,
+      netTicketRevenuePaise: 8,
       gstPaise: 0,
       platformFeePaise: 0,
       paymentFeePaise: 0,
@@ -189,8 +219,8 @@ describe('FinancialPostingService', () => {
         hostPaise: 3,
         venueOrganizationId: 'org_venue',
         venuePaise: 3,
-        promoterOrganizationId: null,
-        promoterPaise: 0,
+        promoterOrganizationId: 'org_promoter',
+        promoterPaise: 1,
       },
     });
 
@@ -203,7 +233,7 @@ describe('FinancialPostingService', () => {
     };
     const posted = [];
     let previouslyRefundedPaise = 0;
-    for (const [index, amountPaise] of [1, 2, 1, 3].entries()) {
+    for (const [index, amountPaise] of [1, 2, 1, 4].entries()) {
       posted.push(
         ...(await service.postRefund({
           ...common,
@@ -228,6 +258,7 @@ describe('FinancialPostingService', () => {
       platform_commission_revenue: 1,
       host_payable: 3,
       venue_payable: 3,
+      promoter_payable: 1,
     });
   });
 

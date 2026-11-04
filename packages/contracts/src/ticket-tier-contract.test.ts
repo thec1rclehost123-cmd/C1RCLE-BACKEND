@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { createTicketTierSchema, ticketTierDtoSchema } from './contracts/event.js';
+import {
+  createTicketTierSchema,
+  ticketTierDtoSchema,
+  updateTicketTierLimitsSchema,
+} from './contracts/event.js';
 
 const phase = {
   id: 'PHASE-1',
@@ -79,5 +83,41 @@ describe('ticket-tier wire contracts', () => {
     });
 
     expect(result.success).toBe(true);
+  });
+
+  it('limits paid ticket caps to ten and requires RSVP cap one when supplied', () => {
+    expect(
+      createTicketTierSchema.safeParse({
+        name: 'General Entry',
+        priceInPaise: 50_000,
+        quantity: 20,
+        maxPerOrder: 10,
+      }).success,
+    ).toBe(true);
+    expect(
+      createTicketTierSchema.safeParse({
+        name: 'Too many',
+        priceInPaise: 50_000,
+        quantity: 20,
+        maxPerOrder: 11,
+      }).success,
+    ).toBe(false);
+    expect(
+      createTicketTierSchema.safeParse({
+        name: 'Free RSVP',
+        quantity: 20,
+        accessType: 'RSVP',
+        maxPerOrder: 2,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('accepts only the safe maxPerOrder update field', () => {
+    expect(updateTicketTierLimitsSchema.safeParse({ maxPerOrder: 10 }).success).toBe(true);
+    expect(updateTicketTierLimitsSchema.safeParse({ maxPerOrder: 11 }).success).toBe(false);
+    expect(updateTicketTierLimitsSchema.safeParse({ maxPerOrder: 2.5 }).success).toBe(false);
+    expect(updateTicketTierLimitsSchema.safeParse({ maxPerOrder: 10, quantity: 100 }).success).toBe(
+      false,
+    );
   });
 });

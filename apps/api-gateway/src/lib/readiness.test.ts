@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { getGatewayConfig } from '../config/index.js';
 
@@ -16,6 +16,63 @@ function testConfig(overrides: Record<string, string> = {}) {
 }
 
 describe('dependency readiness', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('shares unfinished probes across concurrent requests and timeout retries', async () => {
+    vi.useFakeTimers();
+    let finish!: (ready: boolean) => void;
+    const dependency = vi.fn(() => new Promise<boolean>((resolve) => (finish = resolve)));
+    const check = createReadinessChecks(testConfig(), {
+      redisCheck: dependency,
+      timeoutMs: 10,
+    }).redis;
+    if (!check) throw new Error('Redis readiness check missing');
+
+    const first = check();
+    const concurrent = check();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(await first).toBe(false);
+    expect(await concurrent).toBe(false);
+    expect(dependency).toHaveBeenCalledTimes(1);
+
+    const retry = check();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(await retry).toBe(false);
+    expect(dependency).toHaveBeenCalledTimes(1);
+
+    // Late success must not become a cached green response for future probes.
+    finish(true);
+    await vi.advanceTimersByTimeAsync(0);
+    dependency.mockResolvedValue(false);
+    expect(await check()).toBe(false);
+    expect(dependency).toHaveBeenCalledTimes(2);
+  });
+
+  it('allows a fresh check after a rejected dependency call', async () => {
+    const dependency = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('unavailable'))
+      .mockResolvedValue(true);
+    const check = createReadinessChecks(testConfig(), { redisCheck: dependency }).redis;
+    if (!check) throw new Error('Redis readiness check missing');
+    await expect(check()).rejects.toThrow('unavailable');
+    await expect(check()).resolves.toBe(true);
+    expect(dependency).toHaveBeenCalledTimes(2);
+  });
+
+  it('allows a fresh check after a synchronous dependency failure', async () => {
+    const dependency = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error('initialization failed');
+      })
+      .mockReturnValue(true);
+    const check = createReadinessChecks(testConfig(), { redisCheck: dependency }).redis;
+    if (!check) throw new Error('Redis readiness check missing');
+    await expect(check()).rejects.toThrow('initialization failed');
+    await expect(check()).resolves.toBe(true);
+  });
+
   it('does not invent external checks for the memory driver', () => {
     expect(createReadinessChecks(testConfig())).toEqual({});
   });

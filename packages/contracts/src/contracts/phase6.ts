@@ -279,6 +279,15 @@ export const rejectRefundRequestSchema = z
   .strict();
 export type RejectRefundRequestInput = z.infer<typeof rejectRefundRequestSchema>;
 
+/** Candidate id is only a hint; the server fetches and validates provider evidence. */
+export const reconcileRefundRequestSchema = z
+  .object({
+    providerRefundId: z.string().regex(/^rfnd_[A-Za-z0-9_]{1,59}$/),
+    reason: z.string().trim().min(1).max(2000),
+  })
+  .strict();
+export type ReconcileRefundRequestInput = z.infer<typeof reconcileRefundRequestSchema>;
+
 export const adminRefundApprovalDtoSchema = z.object({
   adminId: opaqueIdSchema,
   approvedAt: z.iso.datetime(),

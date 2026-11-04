@@ -75,6 +75,7 @@ export default async function notificationRoutes(fastify: FastifyInstance) {
           total: page.total,
           hasNextPage: page.nextCursor !== null,
         },
+        nextCursor: page.nextCursor,
         unreadCount: page.unreadCount,
       };
       const validated = validateV2Response(

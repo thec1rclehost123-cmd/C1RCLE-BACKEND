@@ -69,6 +69,22 @@ export function computeSettlementSplit(
   return { platformFee, venueShare, promoterCommission, hostPayout };
 }
 
+/** Fail closed if a frozen Promoter amount would overdraw the ticket allocation. */
+export function promoterCommissionFitsDistributableValue(
+  ticketValuePaise: number,
+  promoterCommissionPaise: number,
+  platformFeeRate: number,
+  venueShareRate: number,
+): boolean {
+  const split = computeSettlementSplit(ticketValuePaise, platformFeeRate, venueShareRate, null);
+  return (
+    Number.isSafeInteger(ticketValuePaise) &&
+    Number.isSafeInteger(promoterCommissionPaise) &&
+    promoterCommissionPaise >= 0 &&
+    promoterCommissionPaise <= ticketValuePaise - split.platformFee - split.venueShare
+  );
+}
+
 export function createLedgerEntry(input: {
   id: EntityId;
   organizationId: EntityId;

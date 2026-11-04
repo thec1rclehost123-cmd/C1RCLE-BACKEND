@@ -1,6 +1,22 @@
 {
   "indexes": [
     {
+      "collectionGroup": "v2_event_cover_redemption_challenges",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "expiresAt", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "v2_waitlist_entries",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "offerExpiresAt", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "v2_onboarding_requests",
       "queryScope": "COLLECTION",
       "fields": [
@@ -330,6 +346,20 @@
         },
         {
           "fieldPath": "createdAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "v2_entitlements",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "userId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "eventId",
           "order": "ASCENDING"
         }
       ]
@@ -937,6 +967,20 @@
       ]
     },
     {
+      "collectionGroup": "v2_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "eventId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "attribution.promoterId",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "v2_scan_ledger",
       "queryScope": "COLLECTION",
       "fields": [
@@ -1033,6 +1077,20 @@
       "queryScope": "COLLECTION",
       "fields": [
         {
+          "fieldPath": "eventChange.entitlementId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "eventChange.eventVersion",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "v2_social_notifications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
           "fieldPath": "userId",
           "order": "ASCENDING"
         },
@@ -1103,6 +1161,20 @@
       ]
     },
     {
+      "collectionGroup": "v2_event_catalog_promoter_assignments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "expiresAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "v2_outbox",
       "queryScope": "COLLECTION",
       "fields": [
@@ -1128,6 +1200,33 @@
           "fieldPath": "leaseExpiresAt",
           "order": "ASCENDING"
         }
+      ]
+    },
+    {
+      "collectionGroup": "v2_waitlist_entries",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "eventId", "order": "ASCENDING" },
+        { "fieldPath": "tierId", "order": "ASCENDING" },
+        { "fieldPath": "sequence", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "v2_waitlist_entries",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "eventId", "order": "ASCENDING" },
+        { "fieldPath": "tierId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "sequence", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "v2_ticket_transfers",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "expiresAt", "order": "ASCENDING" }
       ]
     }
   ],

@@ -8,6 +8,29 @@ import type {
   OrderRepository,
 } from '../../domain/ports/repositories.js';
 
+function unitsForLine(line: {
+  quantity: number;
+  guestCount?: number;
+  admissionMode?: 'bundle' | 'per_person';
+}): number {
+  return line.quantity * (line.admissionMode === 'per_person' ? (line.guestCount ?? 1) : 1);
+}
+
+function addonUnitsForLine(line: {
+  quantity: number;
+  guestCount?: number;
+  admissionMode?: 'bundle' | 'per_person';
+  ticketAddons?: { addonId: EntityId; quantityPerEntitlement: number }[];
+}): Map<EntityId, number> {
+  const entitlements = unitsForLine(line);
+  return new Map(
+    (line.ticketAddons ?? []).map((addon) => [
+      addon.addonId,
+      entitlements * addon.quantityPerEntitlement,
+    ]),
+  );
+}
+
 /**
  * ─── InventoryService (Phase 4) ────────────────────────────────────────────────
  * Calculates effective available inventory for ticket tiers.
@@ -43,6 +66,24 @@ export class InventoryService {
     return Math.max(0, effective);
   }
 
+  async getAvailableTicketAddonQuantity(addonId: EntityId): Promise<number> {
+    const addon = await this.deps.eventCatalog.getTicketAddonById(addonId);
+    if (!addon) throw new InvalidOperationError(`Ticket add-on ${addonId} not found`);
+    let sold = 0;
+    for (const order of await this.deps.order.listSeatClaims(addon.eventId)) {
+      if (order.status !== 'paid' && order.status !== 'refund_requested') continue;
+      for (const line of order.lines) sold += addonUnitsForLine(line).get(addonId) ?? 0;
+    }
+    let held = 0;
+    for (const reservation of await this.deps.cartReservation.listActiveByEvent(
+      addon.eventId,
+      new Date(),
+    )) {
+      for (const line of reservation.lines) held += addonUnitsForLine(line).get(addonId) ?? 0;
+    }
+    return Math.max(0, addon.quantity - sold - held);
+  }
+
   /**
    * Gets the number of tickets sold for a tier (from paid orders). Was
    * previously a hardcoded `return 0` — oversell protection did not actually
@@ -63,7 +104,7 @@ export class InventoryService {
     for (const order of await this.deps.order.listSeatClaims(eventId)) {
       if (order.status !== 'paid' && order.status !== 'refund_requested') continue;
       for (const line of order.lines) {
-        sold.set(line.tierId, (sold.get(line.tierId) ?? 0) + line.quantity);
+        sold.set(line.tierId, (sold.get(line.tierId) ?? 0) + unitsForLine(line));
       }
     }
     return sold;
@@ -74,7 +115,7 @@ export class InventoryService {
     let count = 0;
     for (const hold of holds) {
       for (const line of hold.lines) {
-        if (line.tierId === tierId) count += line.quantity;
+        if (line.tierId === tierId) count += unitsForLine(line);
       }
     }
     return count;
@@ -109,10 +150,44 @@ export class InventoryService {
         const ahead = other.id === hold.id || (other.sequence ?? 0) <= myPosition;
         if (!ahead) continue;
         for (const otherLine of other.lines) {
-          if (otherLine.tierId === line.tierId) reserved += otherLine.quantity;
+          if (otherLine.tierId === line.tierId) reserved += unitsForLine(otherLine);
         }
       }
       if (sold + reserved > capacity) return line.tierId;
+    }
+    return null;
+  }
+
+  /** Applies hold sequence fairness to add-on stock just as it does to tickets. */
+  async firstOverbookedTicketAddon(hold: CartReservation): Promise<EntityId | null> {
+    const requested = new Map<EntityId, number>();
+    for (const line of hold.lines) {
+      for (const [addonId, quantity] of addonUnitsForLine(line)) {
+        requested.set(addonId, (requested.get(addonId) ?? 0) + quantity);
+      }
+    }
+    if (requested.size === 0) return null;
+
+    const live = await this.deps.cartReservation.listActiveByEvent(hold.eventId, new Date());
+    const myPosition = hold.sequence ?? Number.MAX_SAFE_INTEGER;
+    const orders = await this.deps.order.listSeatClaims(hold.eventId);
+    for (const [addonId] of requested) {
+      const addon = await this.deps.eventCatalog.getTicketAddonById(addonId);
+      if (!addon || addon.eventId !== hold.eventId) {
+        throw new InvalidOperationError(`Ticket add-on ${addonId} is no longer available`);
+      }
+      let sold = 0;
+      for (const order of orders) {
+        if (order.status !== 'paid' && order.status !== 'refund_requested') continue;
+        for (const line of order.lines) sold += addonUnitsForLine(line).get(addonId) ?? 0;
+      }
+      let reserved = 0;
+      for (const other of live) {
+        const ahead = other.id === hold.id || (other.sequence ?? 0) <= myPosition;
+        if (!ahead) continue;
+        for (const line of other.lines) reserved += addonUnitsForLine(line).get(addonId) ?? 0;
+      }
+      if (sold + reserved > addon.quantity) return addonId;
     }
     return null;
   }

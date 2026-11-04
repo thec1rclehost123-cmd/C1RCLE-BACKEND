@@ -1,13 +1,18 @@
 import {
   adminPromoterAssignmentListResponseSchema,
   adminPromoterActionResponseSchema,
+  adminPromoterReferralLinkListResponseSchema,
+  adminPromoterRiskFlagsResponseSchema,
+  adminPromoterReferralLinkActionResponseSchema,
+  adminPromoterSuspendRequestSchema,
   idempotencyKeySchema,
   opaqueIdSchema,
   paginationQuerySchema,
 } from '@c1rcle/contracts/client';
+import { promoterAssignmentStatusAt } from '@c1rcle/core/domain';
 import { z } from 'zod';
 
-import type { PromoterAssignment } from '@c1rcle/core/domain';
+import type { PromoterAssignment, ReferralLink } from '@c1rcle/core/domain';
 
 import { csvEscape } from '../../../lib/csv.js';
 import { isIdempotencyConflict, runIdempotent } from '../../../lib/v2-idempotency.js';
@@ -36,7 +41,9 @@ import type { FastifyInstance } from 'fastify';
 const services = createV2Services();
 
 const promotersQuerySchema = paginationQuerySchema;
+const promoterLinksResponseSchema = adminPromoterReferralLinkListResponseSchema;
 const promoterIdParam = z.object({ promoterId: opaqueIdSchema });
+const promoterLinkIdParam = z.object({ linkId: opaqueIdSchema });
 const commandHeaders = z.looseObject({ 'idempotency-key': idempotencyKeySchema });
 
 function listResponse<T>(items: T[], total: number, limit: number, nextCursor: string | null) {
@@ -56,16 +63,161 @@ function assignmentToDto(assignment: PromoterAssignment) {
     id: assignment.id,
     eventId: assignment.eventId,
     promoterId: assignment.promoterId,
-    status: assignment.status,
+    status: promoterAssignmentStatusAt(assignment, services.config().clock.now()),
     ratePercent: assignment.terms.ratePercent,
     flatPaise: assignment.terms.flatPaise,
+    termsVersion: assignment.terms.version,
+    ...(assignment.terms.tierRates ? { tierRates: assignment.terms.tierRates } : {}),
+    startsAt: assignment.startsAt,
+    expiresAt: assignment.expiresAt,
+    eligibleTierIds: assignment.eligibleTierIds,
     createdAt: assignment.createdAt,
+    invitedAt: assignment.invitedAt,
+    invitedBy: assignment.invitedBy,
+    acceptedAt: assignment.acceptedAt,
+    respondedBy: assignment.respondedBy,
     endedAt: assignment.endedAt,
+    revokedAt: assignment.revokedAt,
+    revokedBy: assignment.revokedBy,
+    revocationReason: assignment.revocationReason,
     suspendedAt: assignment.suspendedAt,
   };
 }
 
+function referralLinkToDto(link: ReferralLink) {
+  return {
+    id: link.id,
+    eventId: link.eventId,
+    assignmentId: link.assignmentId,
+    eventTitle: link.eventTitle,
+    code: link.code,
+    label: link.label,
+    isActive: link.isActive,
+    clicks: link.clicks,
+    lastClickedAt: link.lastClickedAt ?? null,
+    conversions: link.conversions,
+    createdAt: link.createdAt,
+    updatedAt: link.updatedAt,
+  };
+}
+
 export default async function adminPromotersRoutes(fastify: FastifyInstance) {
+  fastify.post(
+    '/admin/promoter-links/:linkId/deactivate',
+    {
+      preHandler: [
+        fastify.rateLimit('SENSITIVE_COMMAND'),
+        fastify.validateV2({
+          params: promoterLinkIdParam,
+          headers: commandHeaders,
+          body: adminPromoterSuspendRequestSchema,
+        }),
+      ],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+      const { linkId } = request.params as z.infer<typeof promoterLinkIdParam>;
+      const { reason } = request.body as z.infer<typeof adminPromoterSuspendRequestSchema>;
+      const v2Headers = request.v2Headers ?? {};
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: userId,
+        commandName: 'admin.promoter-link.deactivate',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { linkId }, body: { reason } },
+        run: async () => {
+          const outcome = await services.adminOps.deactivatePromoterReferralLink(
+            userId,
+            linkId,
+            reason,
+            requestMeta(request),
+          );
+          const validated = validateV2Response(
+            reply,
+            request,
+            adminPromoterReferralLinkActionResponseSchema,
+            {
+              linkId,
+              action: 'deactivated',
+              changed: outcome.changed,
+              at: outcome.at.toISOString(),
+            },
+          );
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
+        },
+      }).catch((error: unknown) =>
+        isIdempotencyConflict(error)
+          ? mapDomainError(reply, request, linkId, error, {
+              conflictId: v2Headers['idempotency-key'],
+            })
+          : mapDomainError(reply, request, linkId, error),
+      );
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
+
+  fastify.get(
+    '/admin/promoters/:promoterId/referral-links',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({ params: promoterIdParam, querystring: promotersQuerySchema }),
+      ],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+      const { promoterId } = request.params as z.infer<typeof promoterIdParam>;
+      const query = request.query as z.infer<typeof promotersQuerySchema>;
+      const page = await services.adminOps
+        .listPromoterReferralLinks(userId, promoterId, {
+          limit: query.limit,
+          cursor: query.cursor ?? null,
+        })
+        .catch((error: unknown) => mapDomainError(reply, request, userId, error));
+      if (page === undefined) return reply;
+      const validated = validateV2Response(reply, request, promoterLinksResponseSchema, {
+        items: page.items.map(referralLinkToDto),
+        pageInfo: {
+          page: 1,
+          pageSize: query.limit,
+          total: page.total,
+          hasNextPage: page.nextCursor !== null,
+        },
+      });
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  fastify.get(
+    '/admin/promoters/:promoterId/risk-flags',
+    {
+      preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({ params: promoterIdParam })],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+      const { promoterId } = request.params as z.infer<typeof promoterIdParam>;
+      const result = await services.adminOps
+        .listPromoterRiskFlags(userId, promoterId)
+        .catch((error: unknown) => mapDomainError(reply, request, promoterId, error));
+      if (result === undefined) return reply;
+      const validated = validateV2Response(
+        reply,
+        request,
+        adminPromoterRiskFlagsResponseSchema,
+        result,
+      );
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
   fastify.get(
     '/admin/promoters',
     {
@@ -101,6 +253,7 @@ export default async function adminPromotersRoutes(fastify: FastifyInstance) {
       preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({})],
     },
     async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
       const userId = requireUserId(request, reply);
       if (userId === undefined) return reply;
 
@@ -143,13 +296,18 @@ export default async function adminPromotersRoutes(fastify: FastifyInstance) {
     {
       preHandler: [
         fastify.rateLimit('SENSITIVE_COMMAND'),
-        fastify.validateV2({ params: promoterIdParam, headers: commandHeaders }),
+        fastify.validateV2({
+          params: promoterIdParam,
+          headers: commandHeaders,
+          body: adminPromoterSuspendRequestSchema,
+        }),
       ],
     },
     async (request, reply) => {
       const userId = requireUserId(request, reply);
       if (userId === undefined) return reply;
       const { promoterId } = request.params as z.infer<typeof promoterIdParam>;
+      const { reason } = request.body as z.infer<typeof adminPromoterSuspendRequestSchema>;
       const v2Headers = request.v2Headers ?? {};
 
       const result = await runIdempotent({
@@ -158,11 +316,12 @@ export default async function adminPromotersRoutes(fastify: FastifyInstance) {
         actorId: userId,
         commandName: 'admin.promoter.suspend',
         idempotencyKey: v2Headers['idempotency-key'],
-        context: { path: { promoterId }, body: {} },
+        context: { path: { promoterId }, body: { reason } },
         run: async () => {
           const outcome = await services.adminOps.suspendPromoter(
             userId,
             promoterId,
+            reason,
             requestMeta(request),
           );
           const validated = validateV2Response(reply, request, adminPromoterActionResponseSchema, {
@@ -191,13 +350,18 @@ export default async function adminPromotersRoutes(fastify: FastifyInstance) {
     {
       preHandler: [
         fastify.rateLimit('SENSITIVE_COMMAND'),
-        fastify.validateV2({ params: promoterIdParam, headers: commandHeaders }),
+        fastify.validateV2({
+          params: promoterIdParam,
+          headers: commandHeaders,
+          body: adminPromoterSuspendRequestSchema,
+        }),
       ],
     },
     async (request, reply) => {
       const userId = requireUserId(request, reply);
       if (userId === undefined) return reply;
       const { promoterId } = request.params as z.infer<typeof promoterIdParam>;
+      const { reason } = request.body as z.infer<typeof adminPromoterSuspendRequestSchema>;
       const v2Headers = request.v2Headers ?? {};
 
       const result = await runIdempotent({
@@ -206,11 +370,12 @@ export default async function adminPromotersRoutes(fastify: FastifyInstance) {
         actorId: userId,
         commandName: 'admin.promoter.reinstate',
         idempotencyKey: v2Headers['idempotency-key'],
-        context: { path: { promoterId }, body: {} },
+        context: { path: { promoterId }, body: { reason } },
         run: async () => {
           const outcome = await services.adminOps.reinstatePromoter(
             userId,
             promoterId,
+            reason,
             requestMeta(request),
           );
           const validated = validateV2Response(reply, request, adminPromoterActionResponseSchema, {

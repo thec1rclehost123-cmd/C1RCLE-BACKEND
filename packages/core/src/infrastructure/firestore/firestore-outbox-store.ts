@@ -18,22 +18,7 @@ export class FirestoreOutboxStore implements OutboxStore {
     const reference = this.collection.doc(event.id);
     await this.db.runTransaction(async (transaction) => {
       if ((await transaction.get(reference)).exists) return;
-      transaction.create(reference, {
-        id: event.id,
-        type: event.type,
-        aggregateId: event.aggregateId,
-        payload: event,
-        status: 'pending',
-        attempts: 0,
-        createdAt: event.occurredAt,
-        processedAt: null,
-        nextAttemptAt: event.occurredAt,
-        leaseOwner: null,
-        leaseToken: null,
-        leaseExpiresAt: null,
-        lastError: null,
-        updatedAt: event.occurredAt,
-      } satisfies OutboxRecord);
+      transaction.create(reference, outboxDocument(event));
     });
   }
 
@@ -115,29 +100,38 @@ export class FirestoreOutboxStore implements OutboxStore {
     now: number;
     leaseMs: number;
     limit?: number;
+    eventId?: EntityId;
   }): Promise<OutboxRecord[]> {
     return this.db.runTransaction(async (transaction) => {
       const limit = input.limit ?? 100;
-      const [pendingSnapshot, processingSnapshot] = await Promise.all([
-        transaction.get(
-          this.collection
-            .where('status', '==', 'pending')
-            .where('nextAttemptAt', '<=', input.now)
-            .orderBy('nextAttemptAt', 'asc')
-            .limit(limit),
-        ),
-        transaction.get(
-          this.collection
-            .where('status', '==', 'processing')
-            .where('leaseExpiresAt', '<=', input.now)
-            .orderBy('leaseExpiresAt', 'asc')
-            .limit(limit),
-        ),
-      ]);
-      const candidates = [...pendingSnapshot.docs, ...processingSnapshot.docs]
-        .map((document) => toRecord(document.data()))
+      const records =
+        input.eventId === undefined
+          ? await Promise.all([
+              transaction.get(
+                this.collection
+                  .where('status', '==', 'pending')
+                  .where('nextAttemptAt', '<=', input.now)
+                  .orderBy('nextAttemptAt', 'asc')
+                  .limit(limit),
+              ),
+              transaction.get(
+                this.collection
+                  .where('status', '==', 'processing')
+                  .where('leaseExpiresAt', '<=', input.now)
+                  .orderBy('leaseExpiresAt', 'asc')
+                  .limit(limit),
+              ),
+            ]).then(([pendingSnapshot, processingSnapshot]) => [
+              ...pendingSnapshot.docs.map((document) => toRecord(document.data())),
+              ...processingSnapshot.docs.map((document) => toRecord(document.data())),
+            ])
+          : await transaction
+              .get(this.collection.doc(input.eventId))
+              .then((snapshot) => (snapshot.exists ? [toRecord(snapshot.data() ?? {})] : []));
+      const candidates = records
         .filter(
           (record) =>
+            (input.eventId === undefined || record.id === input.eventId) &&
             record.attempts < OUTBOX_MAX_ATTEMPTS &&
             ((record.status === 'pending' && record.nextAttemptAt <= input.now) ||
               (record.status === 'processing' &&
@@ -186,6 +180,26 @@ export class FirestoreOutboxStore implements OutboxStore {
       if (data) update(transaction, toRecord(data));
     });
   }
+}
+
+/** Shared serializer for domain transactions that atomically enqueue events. */
+export function outboxDocument(event: DomainEvent): OutboxRecord {
+  return {
+    id: event.id,
+    type: event.type,
+    aggregateId: event.aggregateId,
+    payload: event,
+    status: 'pending',
+    attempts: 0,
+    createdAt: event.occurredAt,
+    processedAt: null,
+    nextAttemptAt: event.occurredAt,
+    leaseOwner: null,
+    leaseToken: null,
+    leaseExpiresAt: null,
+    lastError: null,
+    updatedAt: event.occurredAt,
+  };
 }
 
 function toDoc(record: OutboxRecord): DocumentData {

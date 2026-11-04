@@ -14,6 +14,7 @@ import type { InventoryService } from './inventory/inventory-service.js';
 import type { PricingService } from './pricing/pricing-service.js';
 import type { OrganizationRole, Capability } from '../domain/models/organization.js';
 import type { AdminAuditRepository } from '../domain/ports/audit.js';
+import type { EmailDeliveryRepository } from '../domain/ports/email-delivery.js';
 import type { EmailSender } from '../domain/ports/email-sender.js';
 import type { ObjectStoragePort } from '../domain/ports/object-storage.js';
 import type { OutboxWriter } from '../domain/ports/outbox.js';
@@ -40,12 +41,17 @@ import type {
   PromoRedemptionRepository,
   ScanLedgerRepository,
   EventCodeRepository,
+  TicketAccessRepository,
   ScannerSessionRepository,
   ScannerDeviceRepository,
   DoorSaleRepository,
   CoverWalletRepository,
   CoverWalletTxnRepository,
   CoverWalletReconciliationRepository,
+  EventCoverPolicyRepository,
+  EventCoverAccountRepository,
+  ComplimentaryAllocationRepository,
+  WaitlistRepository,
   LedgerRepository,
   FinancialJournalRepository,
   JournalTransitionRepository,
@@ -114,6 +120,8 @@ export interface ServiceDeps {
    * notifying an applicant their onboarding request needs changes).
    */
   emailSender: EmailSender;
+  /** Durable idempotency/evidence for domain-triggered transactional email. */
+  emailDeliveries: EmailDeliveryRepository;
   /**
    * Resolves a `userId` to an email, or finds a user by email.
    * `NullUserDirectory` / `MemoryStaffUserDirectory` on memory; `FirestoreUserDirectory` on firestore.
@@ -156,6 +164,7 @@ export interface ServiceDeps {
     // Phase 5
     scanLedger: ScanLedgerRepository;
     eventCodes: EventCodeRepository;
+    ticketAccess: TicketAccessRepository;
     scannerSessions: ScannerSessionRepository;
     /** Phase 5: handsets a venue has authorized to work its door. */
     scannerDevices: ScannerDeviceRepository;
@@ -163,6 +172,11 @@ export interface ServiceDeps {
     coverWallets: CoverWalletRepository;
     coverWalletTxns: CoverWalletTxnRepository;
     coverWalletReconciliations: CoverWalletReconciliationRepository;
+    /** M5: immutable exact-version cover proposals and Venue approvals. */
+    eventCoverPolicies: EventCoverPolicyRepository;
+    eventCoverAccounts: EventCoverAccountRepository;
+    complimentaryAllocations: ComplimentaryAllocationRepository;
+    waitlist: WaitlistRepository;
     // Phase 6
     ledger: LedgerRepository;
     /** Immutable balanced journals for the Milestone 2 accounting engine. */

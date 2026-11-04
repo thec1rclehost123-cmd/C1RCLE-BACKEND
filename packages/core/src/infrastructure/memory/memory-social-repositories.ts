@@ -1,3 +1,5 @@
+import { ConflictError, NotFoundError } from '../../domain/errors.js';
+
 import type { EntityId } from '../../domain/identity.js';
 import type { Follow, FollowTargetType, Notification } from '../../domain/models/social.js';
 import type {
@@ -79,6 +81,56 @@ export class MemorySocialNotificationRepository implements SocialNotificationRep
     if (this.entries.has(notification.id)) return false;
     this.entries.set(notification.id, notification);
     return true;
+  }
+
+  async getById(notificationId: EntityId): Promise<Notification | null> {
+    return this.entries.get(notificationId) ?? null;
+  }
+
+  async listEventChangesForEntitlement(entitlementId: EntityId): Promise<Notification[]> {
+    return [...this.entries.values()]
+      .filter(
+        (notification) =>
+          notification.type === 'event.material_change' &&
+          notification.eventChange?.entitlementId === entitlementId,
+      )
+      .sort(
+        (left, right) =>
+          (right.eventChange?.eventVersion ?? 0) - (left.eventChange?.eventVersion ?? 0),
+      )
+      .slice(0, 100);
+  }
+
+  async respondToMaterialChange(
+    userId: EntityId,
+    notificationId: EntityId,
+    response: 'accepted' | 'refund_requested',
+    respondedAt: string,
+  ): Promise<{ notification: Notification; replayed: boolean }> {
+    const notification = this.entries.get(notificationId);
+    if (
+      !notification ||
+      notification.userId !== userId ||
+      notification.type !== 'event.material_change' ||
+      !notification.eventChange
+    ) {
+      throw new NotFoundError('Event change notice', notificationId);
+    }
+    if (notification.eventChangeResponse) {
+      if (
+        notification.eventChangeResponse.respondedBy !== userId ||
+        notification.eventChangeResponse.response !== response
+      ) {
+        throw new ConflictError('A different response is already recorded for this event change');
+      }
+      return { notification, replayed: true };
+    }
+    const updated: Notification = {
+      ...notification,
+      eventChangeResponse: { response, respondedAt, respondedBy: userId },
+    };
+    this.entries.set(notificationId, updated);
+    return { notification: updated, replayed: false };
   }
 
   async listForUser(

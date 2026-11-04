@@ -13,7 +13,9 @@
  * actually enforced.
  */
 import { buildV2ErrorResponse } from '@c1rcle/contracts';
+import { FirestoreUserBanRepository } from '@c1rcle/core/infrastructure/firestore';
 import { betterAuth } from 'better-auth';
+import { APIError } from 'better-auth/api';
 import { bearer } from 'better-auth/plugins';
 import { firestoreAdapter } from 'better-auth-firestore';
 import fp from 'fastify-plugin';
@@ -24,6 +26,7 @@ import type {
   OrganizationRepository,
   OrganizationRole,
   StaffRotationStore,
+  UserBanRepository,
 } from '@c1rcle/core/domain';
 import type { Firestore } from '@c1rcle/core/infrastructure';
 
@@ -60,7 +63,21 @@ export type BetterAuthInstance = ReturnType<typeof buildBetterAuth>;
  * a test proves a default diverges from the above.
  */
 export function buildBetterAuth(gw: GatewayConfig, db: Firestore, emailSender: EmailSender) {
+  const userBans = new FirestoreUserBanRepository(db);
   return betterAuth({
+    databaseHooks: {
+      session: {
+        create: {
+          before: async (session) => {
+            const ban = await userBans.getByUserId(session.userId).catch(() => {
+              throw new APIError('SERVICE_UNAVAILABLE', { message: 'Account access unavailable' });
+            });
+            if (ban?.isBanned)
+              throw new APIError('FORBIDDEN', { message: 'Account access denied' });
+          },
+        },
+      },
+    },
     secret: gw.BETTER_AUTH_SECRET,
     baseURL: gw.BETTER_AUTH_URL,
     database: firestoreAdapter({
@@ -74,6 +91,8 @@ export function buildBetterAuth(gw: GatewayConfig, db: Firestore, emailSender: E
     }),
     emailAndPassword: {
       enabled: true,
+      // Resetting a compromised password must also invalidate existing cookies/bearers.
+      revokeSessionsOnPasswordReset: true,
       // Wires the forgot-password flow. Without this callback Better Auth throws
       // RESET_PASSWORD_DISABLED on `requestPasswordReset` (verified against
       // better-auth 1.6.26: `dist/api/routes/password.mjs`). The callback
@@ -104,6 +123,7 @@ export interface AuthContextPluginOptions {
   auth: BetterAuthInstance | null;
   organizations: OrganizationRepository;
   rotationStore: StaffRotationStore;
+  userBans: UserBanRepository;
 }
 
 /**
@@ -114,6 +134,7 @@ export interface AuthContextPluginOptions {
 const PASSWORD_ROTATION_ALLOWLIST = [
   '/api/v2/auth/login',
   '/api/v2/auth/signup',
+  '/api/v2/auth/partner/signup',
   '/api/v2/auth/refresh',
   '/api/v2/auth/session',
   '/api/v2/auth/logout',
@@ -148,19 +169,55 @@ export function toWebHeaders(headers: Record<string, string | string[] | undefin
  * (memory driver).
  */
 export default fp(async (fastify: FastifyInstance, options: AuthContextPluginOptions) => {
-  const { auth, organizations, rotationStore } = options;
+  const { auth, organizations, rotationStore, userBans } = options;
   if (!auth) return;
 
-  fastify.addHook('onRequest', async (request) => {
+  fastify.addHook('onRequest', async (request, reply) => {
     const sessionResult = await auth.api
       .getSession({ headers: toWebHeaders(request.headers) })
       .catch(() => null);
     if (!sessionResult?.user?.id) return;
     const user = sessionResult.user as { id: string; role?: string | null };
-    // First-login rotation flag: fail-open on store errors (a flag-store
-    // outage must not lock every user out) — the login/session responses
-    // still surface the flag when readable.
-    const mustChangePassword = await rotationStore.isRequired(user.id).catch(() => false);
+    const route = request.routeOptions.url;
+    const isLogout = request.method === 'POST' && route === '/api/v2/auth/logout';
+    if (!isLogout) {
+      let banned: boolean;
+      try {
+        banned = (await userBans.getByUserId(user.id))?.isBanned === true;
+      } catch {
+        return reply.status(503).send(
+          buildV2ErrorResponse({
+            status: 503,
+            message: 'Account access unavailable',
+            requestId: request.id,
+          }),
+        );
+      }
+      if (banned)
+        return reply.status(403).send(
+          buildV2ErrorResponse({
+            status: 403,
+            code: 'forbidden',
+            message: 'Account access denied',
+            requestId: request.id,
+          }),
+        );
+    }
+    // An unavailable security flag must not make a temporary credential unrestricted.
+    let mustChangePassword = false;
+    if (!isLogout) {
+      try {
+        mustChangePassword = await rotationStore.isRequired(user.id);
+      } catch {
+        return reply.status(503).send(
+          buildV2ErrorResponse({
+            status: 503,
+            message: 'Account access unavailable',
+            requestId: request.id,
+          }),
+        );
+      }
+    }
     request.user = { uid: user.id };
     // Also populated for plugins/rbac.ts + plugins/rate-limit.ts + plugins/cache.ts
     // (ported from Sagar's parallel B10 work), which read `request.authUser`/
@@ -183,6 +240,9 @@ export default fp(async (fastify: FastifyInstance, options: AuthContextPluginOpt
       platformRole: user.role ?? 'guest',
     };
 
+    // Sign-out and independently authorized platform-admin recovery do not
+    // require access to the selected organization. Account bans still apply.
+    if (isLogout || route?.startsWith('/api/v2/admin/')) return;
     const organizationId = request.headers['x-organization-id'];
     // Matches `opaqueIdSchema` (packages/contracts). This hook is a global
     // `onRequest` — it runs before any route's `validateV2` preHandler, so an
@@ -200,13 +260,30 @@ export default fp(async (fastify: FastifyInstance, options: AuthContextPluginOpt
       return;
     }
 
-    const member = await organizations
-      .getMember(organizationId, user.id)
-      .catch((error: unknown) => {
-        fastify.log.warn({ err: error, organizationId }, 'organization membership lookup failed');
-        return null;
-      });
+    let organization;
+    try {
+      organization = await organizations.getById(organizationId);
+    } catch {
+      return reply.status(503).send(
+        buildV2ErrorResponse({
+          status: 503,
+          message: 'Organization access unavailable',
+          requestId: request.id,
+        }),
+      );
+    }
+    const member = organization?.members.find((member) => member.userId === user.id);
     if (!member) return;
+    if (organization?.status !== 'active') {
+      return reply.status(403).send(
+        buildV2ErrorResponse({
+          status: 403,
+          code: 'forbidden',
+          message: 'Organization access denied',
+          requestId: request.id,
+        }),
+      );
+    }
     request.authContext = {
       activeMembership: {
         organizationId,

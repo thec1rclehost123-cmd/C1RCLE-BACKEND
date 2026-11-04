@@ -153,8 +153,13 @@ export const venueSlotDtoSchema = z.object({
   startTime: z.iso.datetime(),
   endTime: z.iso.datetime(),
   recurring: z.boolean(),
-  status: z.enum(['open', 'booked', 'blocked', 'cancelled']),
+  status: z.enum(['open', 'pending', 'booked', 'blocked', 'cancelled']),
   capacityFor: z.number().int().nonnegative().nullable(),
+  timezone: z.string().min(1).max(100).nullable().optional(),
+  notes: z.string().max(2000).nullable().optional(),
+  visibleToHostIds: z.array(opaqueIdSchema).nullable().optional(),
+  slotRequestId: opaqueIdSchema.nullable().optional(),
+  requestingHostId: opaqueIdSchema.nullable().optional(),
   version: z.number().int().positive(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
@@ -174,9 +179,29 @@ export const createVenueBlockSchema = z
   });
 export type CreateVenueBlockInput = z.infer<typeof createVenueBlockSchema>;
 
+export const publishVenueAvailabilitySchema = z
+  .object({
+    label: z.string().trim().min(1).max(200),
+    startTime: z.iso.datetime(),
+    endTime: z.iso.datetime(),
+    timezone: z.string().trim().min(1).max(100),
+    notes: z.string().trim().max(2000).nullable().optional(),
+    visibleToHostIds: z.array(opaqueIdSchema).max(100).nullable().optional(),
+  })
+  .strict()
+  .refine((value) => new Date(value.endTime) > new Date(value.startTime), {
+    message: 'End time must be after its start time',
+    path: ['endTime'],
+  });
+export type PublishVenueAvailabilityInput = z.infer<typeof publishVenueAvailabilitySchema>;
+
 export const slotRequestDtoSchema = z.object({
   id: opaqueIdSchema,
   venueId: opaqueIdSchema,
+  slotId: opaqueIdSchema.nullable().optional(),
+  slotStartTime: z.iso.datetime().nullable().optional(),
+  slotEndTime: z.iso.datetime().nullable().optional(),
+  timezone: z.string().max(100).nullable().optional(),
   eventId: opaqueIdSchema.nullable(),
   hostId: opaqueIdSchema,
   status: z.enum(['pending', 'accepted', 'rejected', 'cancelled']),
@@ -189,10 +214,25 @@ export type SlotRequestDto = z.infer<typeof slotRequestDtoSchema>;
 
 export const createSlotRequestSchema = z
   .object({
+    slotId: opaqueIdSchema.optional(),
+    startTime: z.iso.datetime().optional(),
+    endTime: z.iso.datetime().optional(),
     eventId: opaqueIdSchema.nullable().optional(),
     message: z.string().max(2000).optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (input) => Boolean(input.slotId) !== (Boolean(input.startTime) || Boolean(input.endTime)),
+    'Choose a slot or a time interval.',
+  )
+  .refine(
+    (input) =>
+      Boolean(input.slotId) ||
+      Boolean(
+        input.startTime && input.endTime && Date.parse(input.endTime) > Date.parse(input.startTime),
+      ),
+    'Enter a valid start and end time.',
+  );
 export type CreateSlotRequestInput = z.infer<typeof createSlotRequestSchema>;
 
 /** `GET /venues/:venueId/slot-requests` and `GET /organizations/:organizationId/slot-requests`. */
@@ -260,8 +300,11 @@ export const venueAvailabilitySlotSchema = z.object({
   label: z.string(),
   startTime: z.iso.datetime(),
   endTime: z.iso.datetime(),
-  status: z.enum(['open', 'booked', 'blocked', 'cancelled']),
+  status: z.enum(['open', 'pending', 'booked', 'blocked', 'cancelled']),
   capacityFor: z.number().int().nonnegative().nullable(),
+  timezone: z.string().min(1).max(100).nullable().optional(),
+  notes: z.string().max(2000).nullable().optional(),
+  requestable: z.boolean().optional(),
 });
 
 export const venueAvailabilityDtoSchema = z.object({
@@ -269,6 +312,7 @@ export const venueAvailabilityDtoSchema = z.object({
   from: z.iso.datetime(),
   to: z.iso.datetime(),
   openSlots: z.number().int().nonnegative(),
+  pendingRequests: z.number().int().nonnegative().default(0),
   bookedSlots: z.number().int().nonnegative(),
   blockedSlots: z.number().int().nonnegative(),
   openMinutes: z.number().int().nonnegative(),

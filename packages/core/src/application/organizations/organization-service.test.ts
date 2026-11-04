@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { createCoreConfig, type CoreConfig } from '../../config/index.js';
+import { createInvitation } from '../../domain/models/organization.js';
 import { EchoObjectStorage } from '../../domain/ports/object-storage.js';
 import { MemoryPaymentProvider } from '../../domain/ports/payment-provider.js';
 import {
@@ -10,7 +11,9 @@ import {
 } from '../../domain/ports/staff-credentials.js';
 import { FormatCheckVerificationProvider } from '../../domain/ports/verification.js';
 import { MemoryAdminAuditRepository } from '../../infrastructure/memory/memory-audit-repository.js';
+import { MemoryEmailDeliveryRepository } from '../../infrastructure/memory/memory-email-delivery-repository.js';
 import { MemoryOutboxStore } from '../../infrastructure/memory/memory-outbox-store.js';
+import { type MemoryUserAccountRepository } from '../../infrastructure/memory/memory-user-account-repository.js';
 import { buildRepositories } from '../../infrastructure/utils.js';
 import { noopLogger } from '../../telemetry/logger.js';
 import { InventoryService } from '../inventory/inventory-service.js';
@@ -85,6 +88,7 @@ function makeDeps(
     config,
     logger: noopLogger,
     outbox: new MemoryOutboxStore(),
+    emailDeliveries: new MemoryEmailDeliveryRepository(),
     adminAudit: new MemoryAdminAuditRepository(),
     verification: new FormatCheckVerificationProvider(),
     objectStorage: new EchoObjectStorage(),
@@ -175,16 +179,17 @@ describe('OrganizationService.createInvitation emails', () => {
     expect(email?.temporaryPassword).toMatch(/^[A-Za-z2-9]{16}$/);
     expect(email?.acceptUrl).toContain(`?email=${encodeURIComponent('newbie@example.com')}`);
     const provision = await provisioner.provisionLogin('newbie@example.com');
-    expect(provision.created).toBe(true);
-    expect(provision.temporaryPassword).toBeTruthy();
+    expect(provision.created).toBe(false);
+    expect(provision.temporaryPassword).toBeNull();
+    expect(provisioner.getPassword(provision.userId ?? '')).toBe(email?.temporaryPassword);
     expect(await rotationStore.isRequired(provision.userId ?? '')).toBe(true);
   });
 
-  it('emails fresh credentials and requires rotation when inviting previously existing accounts', async () => {
+  it('preserves existing credentials and does not require rotation when inviting an existing account', async () => {
     const sender = new CapturingEmailSender();
     const rotationStore = new MemoryStaffRotationStore();
     const provisioner = new MemoryStaffCredentialProvisioner();
-    await provisioner.provisionLogin('veteran@example.com');
+    const original = await provisioner.provisionLogin('veteran@example.com');
     const deps = makeDeps(sender, 'https://partners.example.com', provisioner, rotationStore);
     const service = new OrganizationService(deps);
     const { orgId, owner } = await seedOrg(service);
@@ -196,9 +201,9 @@ describe('OrganizationService.createInvitation emails', () => {
     });
 
     const email = sender.sent[0];
-    expect(email?.temporaryPassword).toMatch(/^[A-Za-z2-9]{16}$/);
-    const provision = await provisioner.provisionLogin('veteran@example.com');
-    expect(await rotationStore.isRequired(provision.userId ?? '')).toBe(true);
+    expect(email?.temporaryPassword).toBeUndefined();
+    expect(provisioner.getPassword(original.userId ?? '')).toBe(original.temporaryPassword);
+    expect(await rotationStore.isRequired(original.userId ?? '')).toBe(false);
   });
 
   it('still creates the invitation when provisioning fails (fail-open)', async () => {
@@ -286,7 +291,35 @@ describe('OrganizationService.createInvitation emails', () => {
     expect(sender.sent).toHaveLength(0);
   });
 
-  it('revokes credentials when member is removed and re-provisions on re-invite', async () => {
+  it('revokes an invitation without changing the recipient account or rotation state', async () => {
+    const provisioner = new MemoryStaffCredentialProvisioner();
+    const rotation = new MemoryStaffRotationStore();
+    const original = await provisioner.provisionLogin('existing@example.invalid');
+    if (!original.userId) throw new Error('Expected account');
+    await rotation.setRequired(original.userId, true);
+    const deps = makeDeps(
+      new CapturingEmailSender(),
+      'https://partners.example.com',
+      provisioner,
+      rotation,
+      provisioner.directory,
+    );
+    const service = new OrganizationService(deps);
+    const { orgId, owner } = await seedOrg(service);
+    const invitation = await service.createInvitation(owner, {
+      organizationId: orgId,
+      email: 'existing@example.invalid',
+      role: 'member',
+    });
+    expect((await service.revokeInvitation(owner, invitation.id)).status).toBe('revoked');
+    expect(await provisioner.directory.findUserIdByEmail('existing@example.invalid')).toBe(
+      original.userId,
+    );
+    expect(provisioner.getPassword(original.userId)).toBe(original.temporaryPassword);
+    expect(await rotation.isRequired(original.userId)).toBe(true);
+  });
+
+  it('removes membership without deleting credentials or resetting them on re-invite', async () => {
     const sender = new CapturingEmailSender();
     const rotationStore = new MemoryStaffRotationStore();
     const provisioner = new MemoryStaffCredentialProvisioner();
@@ -313,18 +346,36 @@ describe('OrganizationService.createInvitation emails', () => {
     const initialPassword = provisioner.getPassword(provisionedId);
     expect(initialPassword).toBeTruthy();
 
-    await service.acceptInvitation(owner, {
-      invitationId: invite.id,
-      userId: provisionedId,
+    (deps.repositories.users as MemoryUserAccountRepository).save({
+      id: provisionedId,
+      email: 'staff@example.com',
+      emailVerified: true,
+      name: 'Synthetic staff',
+      image: null,
+      role: 'partner',
+      createdAt: 0,
+      updatedAt: 0,
     });
+    await service.acceptInvitation(
+      { ...owner, userId: provisionedId },
+      {
+        invitationId: invite.id,
+        userId: provisionedId,
+      },
+    );
 
     // 2. Remove member (revoke access)
     await service.removeMember(owner, orgId, provisionedId);
 
-    // Credentials and rotation flag must be revoked/removed
-    expect(provisioner.getPassword(provisionedId)).toBeNull();
-    expect(await userDirectory.findUserIdByEmail('staff@example.com')).toBeNull();
-    expect(await rotationStore.isRequired(provisionedId)).toBe(false);
+    // Organization access is revoked; account security state remains intact.
+    expect(provisioner.getPassword(provisionedId)).toBe(initialPassword);
+    expect(await userDirectory.findUserIdByEmail('staff@example.com')).toBe(provisionedId);
+    expect(await rotationStore.isRequired(provisionedId)).toBe(true);
+    expect(
+      (await deps.repositories.organizations.getById(orgId))?.members.some(
+        (member) => member.userId === provisionedId,
+      ),
+    ).toBe(false);
 
     // Revoked invite must exist in invitations
     const invitations = await service.listInvitations(owner, orgId, { limit: 20, cursor: null });
@@ -343,12 +394,119 @@ describe('OrganizationService.createInvitation emails', () => {
     expect(reInvite.status).toBe('pending');
     expect(sender.sent).toHaveLength(1);
     const newEmail = sender.sent[0];
-    expect(newEmail?.temporaryPassword).toMatch(/^[A-Za-z2-9]{16}$/);
-    expect(newEmail?.temporaryPassword).not.toBe(initialPassword);
+    expect(newEmail?.temporaryPassword).toBeUndefined();
+    expect(provisioner.getPassword(provisionedId)).toBe(initialPassword);
 
     const newUserId = await userDirectory.findUserIdByEmail('staff@example.com');
-    expect(newUserId).not.toBeNull();
+    expect(newUserId).toBe(provisionedId);
     if (!newUserId) throw new Error('Expected newUserId');
     expect(await rotationStore.isRequired(newUserId)).toBe(true);
+  });
+});
+
+describe('invitation recipient binding and atomic acceptance', () => {
+  async function fixture() {
+    const deps = makeDeps(new CapturingEmailSender());
+    const service = new OrganizationService(deps);
+    const { orgId, owner } = await seedOrg(service);
+    const users = deps.repositories.users as MemoryUserAccountRepository;
+    function account(id: string, email: string, emailVerified = true) {
+      users.save({
+        id,
+        email,
+        emailVerified,
+        name: 'Synthetic',
+        image: null,
+        role: 'partner',
+        createdAt: 0,
+        updatedAt: 0,
+      });
+      return { ...owner, userId: id, organizationId: '' };
+    }
+    async function invite(id: string, email: string) {
+      const invitation = createInvitation({
+        id,
+        organizationId: orgId,
+        email,
+        role: 'manager',
+        invitedBy: owner.userId,
+      });
+      await deps.repositories.invitations.save(invitation);
+      return invitation;
+    }
+    return { deps, service, orgId, owner, account, invite };
+  }
+  it.each(['wrong-email', 'unverified', 'missing', 'forged-user-id'])(
+    'refuses %s without consuming the invitation or adding membership',
+    async (scenario) => {
+      const f = await fixture();
+      const actor = f.account(
+        'recipient',
+        scenario === 'wrong-email' ? 'other@example.invalid' : 'invitee@example.invalid',
+        scenario !== 'unverified',
+      );
+      if (scenario === 'missing')
+        (f.deps.repositories.users as MemoryUserAccountRepository).users.delete(actor.userId);
+      const invitation = await f.invite('binding', 'invitee@example.invalid');
+      await expect(
+        f.service.acceptInvitation(actor, {
+          invitationId: invitation.id,
+          userId: scenario === 'forged-user-id' ? f.owner.userId : actor.userId,
+        }),
+      ).rejects.toThrow();
+      expect((await f.deps.repositories.invitations.getById(invitation.id))?.status).toBe(
+        'pending',
+      );
+      expect((await f.deps.repositories.organizations.getById(f.orgId))?.members).toHaveLength(1);
+    },
+  );
+  it('accepts a normalized verified recipient and preserves both concurrent memberships', async () => {
+    const f = await fixture();
+    const actors = [
+      f.account('one', 'ONE@example.invalid'),
+      f.account('two', 'two@example.invalid'),
+    ];
+    const invitations = await Promise.all([
+      f.invite('one-invite', 'one@example.invalid'),
+      f.invite('two-invite', 'two@example.invalid'),
+    ]);
+    await Promise.all(
+      actors.map((actor, index) =>
+        f.service.acceptInvitation(actor, {
+          invitationId: invitations[index]?.id ?? 'missing-invitation',
+          userId: actor.userId,
+        }),
+      ),
+    );
+    expect(
+      (await f.deps.repositories.organizations.getById(f.orgId))?.members
+        .map((member) => member.userId)
+        .sort(),
+    ).toEqual(['one', 'two', f.owner.userId].sort());
+    for (const actor of actors)
+      expect(
+        await f.deps.repositories.organizations.getMember(f.orgId, actor.userId),
+      ).toMatchObject({ userId: actor.userId, role: 'manager' });
+    for (const invitation of invitations)
+      expect((await f.deps.repositories.invitations.getById(invitation.id))?.status).toBe(
+        'accepted',
+      );
+  });
+  it('consumes a matching existing member invitation without changing role or organization version', async () => {
+    const f = await fixture();
+    const actor = f.account(f.owner.userId, 'owner@example.invalid');
+    const invitation = await f.invite('existing-member', 'owner@example.invalid');
+    const before = await f.deps.repositories.organizations.getById(f.orgId);
+    await f.service.acceptInvitation(actor, { invitationId: invitation.id, userId: actor.userId });
+    expect(await f.deps.repositories.organizations.getById(f.orgId)).toEqual(before);
+    expect((await f.deps.repositories.invitations.getById(invitation.id))?.acceptedBy).toBe(
+      actor.userId,
+    );
+    await expect(
+      f.service.acceptInvitation(actor, { invitationId: invitation.id, userId: actor.userId }),
+    ).rejects.toThrow('accepted');
+    expect((await f.deps.repositories.organizations.getMember(f.orgId, actor.userId))?.role).toBe(
+      'owner',
+    );
   });
 });

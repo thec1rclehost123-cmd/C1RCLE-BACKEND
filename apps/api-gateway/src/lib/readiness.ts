@@ -9,17 +9,29 @@ export const DEFAULT_READINESS_TIMEOUT_MS = 2_000;
 export interface ReadinessOptions {
   /** Provide this only when an active Redis client owns the connection. */
   redisCheck?: ReadinessCheck;
-  /** Gates the Razorpay provider probe — payment/checkout/webhook routes are live now, so the gateway enables this check in its config. */
+  /** Check Razorpay configuration presence only; this does not contact the provider. */
   paymentProviderActive?: boolean;
   timeoutMs?: number;
 }
 
 function withTimeout(check: ReadinessCheck, timeoutMs: number): ReadinessCheck {
+  let inFlight: Promise<boolean> | undefined;
   return async () => {
+    // Timing out the waiter does not cancel an SDK request. Keep sharing it
+    // until it settles so repeated/concurrent health probes cannot accumulate
+    // background RPCs during an outage. Never cache the result after settlement.
+    if (!inFlight) {
+      const operation = Promise.resolve().then(check).then(Boolean);
+      inFlight = operation;
+      const clear = () => {
+        if (inFlight === operation) inFlight = undefined;
+      };
+      void operation.then(clear, clear);
+    }
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
-        Promise.resolve(check()).then(Boolean),
+        inFlight,
         new Promise<boolean>((resolve) => {
           timer = setTimeout(() => resolve(false), timeoutMs);
         }),
@@ -44,8 +56,7 @@ function firestoreCredentials(config: GatewayConfig) {
 /**
  * Build dependency probes without performing network I/O during app creation.
  * Firestore and Storage are probed only for the Firestore driver. Redis is
- * intentionally injectable because this repository currently has configuration
- * for Redis but no Redis client or active Redis-owned runtime path.
+ * injected by the app only when its rate limiter owns an active Redis client.
  */
 export function createReadinessChecks(
   config: GatewayConfig,

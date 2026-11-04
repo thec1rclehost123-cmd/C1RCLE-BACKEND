@@ -8,7 +8,10 @@ import {
 } from '../../infrastructure/memory/memory-social-repositories.js';
 import { InProcessEventBus } from '../events/event-bus.js';
 
-import { createFollowerFanOutConsumer } from './notification-consumers.js';
+import {
+  createEventMaterialChangeNoticeConsumer,
+  createFollowerFanOutConsumer,
+} from './notification-consumers.js';
 import { SocialService } from './social-service.js';
 
 import type { DomainEvent } from '../../domain/events.js';
@@ -183,6 +186,84 @@ describe('event.published → follower fan-out (subscriber side)', () => {
     for (let i = 0; i < 230; i += 1) await service.follow(guest(`u${i}`), 'host', 'org_1');
     await publish();
     expect(notifications.entries.size).toBe(230);
+  });
+});
+
+describe('material event change → ticket owner notifications', () => {
+  it('notifies the purchaser and current holder once, without treating read as consent', async () => {
+    const notifications = new MemorySocialNotificationRepository();
+    const handler = createEventMaterialChangeNoticeConsumer({
+      orders: {
+        getById: async () => ({
+          id: 'order_1',
+          eventId: 'event_1',
+          status: 'paid',
+          userId: 'purchaser_1',
+        }),
+      } as never,
+      entitlements: {
+        getById: async () => ({
+          id: 'entitlement_1',
+          orderId: 'order_1',
+          eventId: 'event_1',
+          currentHolderUserId: 'holder_1',
+          status: 'valid',
+        }),
+      } as never,
+      notifications,
+      config: { clock: { now: () => NOW } },
+    });
+    const event = domainEvent({
+      id: 'material-change-order-1',
+      type: 'event.material_change.order_affected',
+      aggregateId: 'order_1',
+      organizationId: 'host_1',
+      actorId: 'host_user_1',
+      payload: {
+        eventId: 'event_1',
+        orderId: 'order_1',
+        entitlementId: 'entitlement_1',
+        eventVersion: 3,
+        previousTitle: 'Before',
+        title: 'After',
+        previousStartAt: '2026-10-30T20:00:00.000Z',
+        startAt: '2026-10-31T20:00:00.000Z',
+      },
+      occurredAt: NOW.getTime(),
+    });
+
+    await handler(event);
+    await handler(event);
+
+    expect([...notifications.entries.values()]).toHaveLength(2);
+    expect([...notifications.entries.values()]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          userId: 'purchaser_1',
+          type: 'event.material_change',
+          link: '/tickets',
+          readAt: null,
+          eventChange: {
+            eventVersion: 3,
+            entitlementId: 'entitlement_1',
+            canAccept: false,
+            canRequestRefund: true,
+          },
+        }),
+        expect.objectContaining({
+          userId: 'holder_1',
+          type: 'event.material_change',
+          link: '/tickets',
+          readAt: null,
+          eventChange: {
+            eventVersion: 3,
+            entitlementId: 'entitlement_1',
+            canAccept: true,
+            canRequestRefund: false,
+          },
+        }),
+      ]),
+    );
   });
 });
 

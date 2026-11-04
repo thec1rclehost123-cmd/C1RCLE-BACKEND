@@ -122,6 +122,9 @@ function createDoorServiceImpl(deps: DoorServiceDeps): DoorService {
     const event = await events.findById(input.eventId);
     if (!event) throw new NotFoundError('Event', input.eventId);
     requireOrgAccess(actor, event.organizationId);
+    if (event.status === 'cancelled') {
+      throw new InvalidOperationError('Door sales are closed because this event was cancelled');
+    }
 
     // Check idempotency
     const existing = await doorSales.findByIdempotencyKey(input.idempotencyKey);
@@ -189,6 +192,9 @@ function createDoorServiceImpl(deps: DoorServiceDeps): DoorService {
     const event = await events.findById(input.eventId);
     if (!event) throw new NotFoundError('Event', input.eventId);
     requireOrgAccess(actor, event.organizationId);
+    if (event.status === 'cancelled') {
+      throw new InvalidOperationError('Door sales are closed because this event was cancelled');
+    }
 
     // Check idempotency
     const existing = await doorSales.findByIdempotencyKey(input.idempotencyKey);

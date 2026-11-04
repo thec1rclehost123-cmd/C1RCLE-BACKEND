@@ -41,6 +41,10 @@ import {
   FirestoreCoverWalletRepository,
   FirestoreCoverWalletTxnRepository,
   FirestoreCoverWalletReconciliationRepository,
+  FirestoreEventCoverPolicyRepository,
+  FirestoreEventCoverAccountRepository,
+  FirestoreComplimentaryAllocationRepository,
+  FirestoreWaitlistRepository,
   FirestoreLedgerRepository,
   FirestoreFinancialJournalRepository,
   FirestoreJournalTransitionRepository,
@@ -62,6 +66,7 @@ import {
   FirestoreUserBanRepository,
   FirestorePlatformSettingsRepository,
   FirestoreNotificationRepository,
+  FirestoreTicketAccessRepository,
 } from './firestore/index.js';
 import {
   MemoryOrganizationRepository,
@@ -91,6 +96,10 @@ import {
   MemoryCoverWalletRepository,
   MemoryCoverWalletTxnRepository,
   MemoryCoverWalletReconciliationRepository,
+  MemoryEventCoverPolicyRepository,
+  MemoryEventCoverAccountRepository,
+  MemoryComplimentaryAllocationRepository,
+  MemoryWaitlistRepository,
   MemoryLedgerRepository,
   MemoryFinancialJournalRepository,
   MemoryJournalTransitionRepository,
@@ -112,6 +121,7 @@ import {
   MemoryUserBanRepository,
   MemoryPlatformSettingsRepository,
   MemoryNotificationRepository,
+  MemoryTicketAccessRepository,
 } from './memory/index.js';
 import { MemoryIdempotencyStore } from './memory/memory-idempotency-store.js';
 
@@ -138,15 +148,18 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
 
   if (isMemory) {
     const financialJournals = new MemoryFinancialJournalRepository();
+    const venueSlots = new MemoryVenueSlotRepository();
+    const users = new MemoryUserAccountRepository();
+    const organizations = new MemoryOrganizationRepository();
     return {
-      organizations: new MemoryOrganizationRepository(),
-      invitations: new MemoryInvitationRepository(),
+      organizations,
+      invitations: new MemoryInvitationRepository(organizations, users),
       partnerships: new MemoryPartnershipRepository(),
       referralLinks: new MemoryReferralLinkRepository(),
       promoterConnections: new MemoryPromoterConnectionRepository(),
       venues: new MemoryVenueRepository(),
-      slotRequests: new MemorySlotRequestRepository(),
-      venueSlots: new MemoryVenueSlotRepository(),
+      slotRequests: new MemorySlotRequestRepository(venueSlots),
+      venueSlots,
       events: new MemoryEventRepository(),
       catalog: new MemoryEventCatalogRepository(),
       analytics: new MemoryAnalyticsReadModelRepository(),
@@ -161,12 +174,17 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
       // Phase 5 repositories
       scanLedger: new MemoryScanLedgerRepository(),
       eventCodes: new MemoryEventCodeRepository(),
+      ticketAccess: new MemoryTicketAccessRepository(),
       scannerSessions: new MemoryScannerSessionRepository(),
       scannerDevices: new MemoryScannerDeviceRepository(),
       doorSales: new MemoryDoorSaleRepository(),
       coverWallets: new MemoryCoverWalletRepository(),
       coverWalletTxns: new MemoryCoverWalletTxnRepository(),
       coverWalletReconciliations: new MemoryCoverWalletReconciliationRepository(),
+      eventCoverPolicies: new MemoryEventCoverPolicyRepository(),
+      eventCoverAccounts: new MemoryEventCoverAccountRepository(),
+      complimentaryAllocations: new MemoryComplimentaryAllocationRepository(),
+      waitlist: new MemoryWaitlistRepository(),
       // Phase 6
       ledger: new MemoryLedgerRepository(),
       financialJournals,
@@ -175,7 +193,7 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
       bankAccounts: new MemoryBankAccountRepository(),
       disputes: new MemoryDisputeRepository(),
       leaderboard: new MemoryLeaderboardRepository(),
-      emailOtp: new MemoryEmailOtpRepository(),
+      emailOtp: new MemoryEmailOtpRepository(users),
       guestProfiles: new MemoryGuestProfileRepository(),
       // Phase 8
       follows: new MemoryFollowRepository(),
@@ -186,7 +204,7 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
       reconciliations: new MemoryReconciliationRepository(),
       supportTickets: new MemorySupportTicketRepository(),
       safetyReports: new MemorySafetyReportRepository(),
-      users: new MemoryUserAccountRepository(),
+      users,
       userBans: new MemoryUserBanRepository(),
       platformSettings: new MemoryPlatformSettingsRepository(),
       notifications: new MemoryNotificationRepository(),
@@ -227,12 +245,17 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
     // Phase 5 repositories
     scanLedger: new FirestoreScanLedgerRepository(db),
     eventCodes: new FirestoreEventCodeRepository(db),
+    ticketAccess: new FirestoreTicketAccessRepository(db),
     scannerSessions: new FirestoreScannerSessionRepository(db),
     scannerDevices: new FirestoreScannerDeviceRepository(db),
     doorSales: new FirestoreDoorSaleRepository(db),
     coverWallets: new FirestoreCoverWalletRepository(db),
     coverWalletTxns: new FirestoreCoverWalletTxnRepository(db),
     coverWalletReconciliations: new FirestoreCoverWalletReconciliationRepository(db),
+    eventCoverPolicies: new FirestoreEventCoverPolicyRepository(db),
+    eventCoverAccounts: new FirestoreEventCoverAccountRepository(db),
+    complimentaryAllocations: new FirestoreComplimentaryAllocationRepository(db),
+    waitlist: new FirestoreWaitlistRepository(db),
     // Phase 6
     ledger: new FirestoreLedgerRepository(db),
     financialJournals: new FirestoreFinancialJournalRepository(db),

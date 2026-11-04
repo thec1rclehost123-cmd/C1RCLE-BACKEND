@@ -40,3 +40,17 @@ work again.
 DNS changes and certificate revocation are not first-line rollback tools. Use
 them only under the approved incident procedure because propagation and
 certificate state are harder to reverse safely.
+
+## Approved Render rollback revision
+
+Automatic rollback requires the repository variable `RENDER_ROLLBACK_SAFE_SHA`
+to name an explicitly reviewed full commit SHA. The rollback script restores only
+a live deploy for that exact revision. Missing, invalid, failing, or unavailable
+revisions refuse rollback. Never select a revision merely because it was live.
+
+For the M1/M2 transition, the previous staging build lacks the workers-OFF guard
+and is not an approved rollback target. Leave the variable unset until a guarded
+build has passed hosted acceptance. If deployment fails, retain the incident
+evidence and stop the service or diagnose and deploy a reviewed fix; do not
+restore the known unsafe build. Reassess approval after configuration or data
+compatibility changes.

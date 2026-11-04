@@ -55,7 +55,7 @@ export const followStatusDtoSchema = z.object({
 });
 export type FollowStatusDto = z.infer<typeof followStatusDtoSchema>;
 
-export const notificationTypeSchema = z.enum(['event.new_from_followed']);
+export const notificationTypeSchema = z.enum(['event.new_from_followed', 'event.material_change']);
 
 export const notificationDtoSchema = z.object({
   id: z.string().min(1).max(256),
@@ -66,8 +66,38 @@ export const notificationDtoSchema = z.object({
   subjectId: z.string().min(1).max(128),
   createdAt: z.iso.datetime(),
   readAt: z.iso.datetime().nullable(),
+  eventChange: z
+    .object({
+      eventVersion: z.number().int().positive(),
+      entitlementId: opaqueIdSchema,
+      canAccept: z.boolean(),
+      canRequestRefund: z.boolean(),
+    })
+    .optional(),
+  eventChangeResponse: z
+    .object({
+      response: z.enum(['accepted', 'refund_requested']),
+      respondedAt: z.iso.datetime(),
+    })
+    .nullable()
+    .optional(),
 });
 export type NotificationDto = z.infer<typeof notificationDtoSchema>;
+
+/** `POST /api/v2/tickets/:id/event-changes/:eventVersion/respond` */
+export const eventChangeResponseRequestSchema = z
+  .object({ response: z.enum(['accepted', 'refund_requested']) })
+  .strict();
+export type EventChangeResponseRequest = z.infer<typeof eventChangeResponseRequestSchema>;
+export const eventChangeResponseDtoSchema = z.object({
+  entitlementId: opaqueIdSchema,
+  eventVersion: z.number().int().positive(),
+  response: z.enum(['accepted', 'refund_requested']),
+  respondedAt: z.iso.datetime(),
+  replayed: z.boolean(),
+  refundCreated: z.literal(false),
+});
+export type EventChangeResponseDto = z.infer<typeof eventChangeResponseDtoSchema>;
 
 /** `GET /api/v2/notifications/me` */
 export const listNotificationsQuerySchema = z.object({

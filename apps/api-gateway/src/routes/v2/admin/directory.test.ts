@@ -121,6 +121,7 @@ describe('GET /admin/venues', () => {
     });
 
     expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toContain('no-store');
     const body = response.json();
     expect(body.items).toHaveLength(2);
     expect(body.items[0]).toMatchObject({
@@ -178,6 +179,7 @@ describe('GET /admin/events', () => {
     });
 
     expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toContain('no-store');
     const body = response.json();
     expect(body.items).toHaveLength(1);
     expect(body.items[0]).toMatchObject({
@@ -187,6 +189,19 @@ describe('GET /admin/events', () => {
       isPublic: false,
       isFree: true,
     });
+  });
+
+  it('marks the private event CSV export as non-cacheable', async () => {
+    await seedAdmin('admin_a', 'ops');
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/admin/events/export.csv',
+      headers: { 'x-user-id': 'admin_a' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toContain('no-store');
   });
 });
 
@@ -386,6 +401,7 @@ describe('GET /admin/users/export.csv', () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toContain('text/csv');
+    expect(response.headers['cache-control']).toContain('no-store');
     expect(response.body).toContain('[redacted]');
     expect(response.body).not.toContain('usr_1@c1rcle.test');
   });
@@ -400,6 +416,7 @@ describe('GET /admin/users/export.csv', () => {
       headers: { 'x-user-id': 'admin_super' },
     });
     expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toContain('no-store');
     expect(response.body).toContain('usr_1@c1rcle.test');
 
     const audit = await server.inject({
@@ -500,6 +517,7 @@ describe('GET /admin/audit/export.csv', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toContain('text/csv');
+    expect(response.headers['cache-control']).toContain('no-store');
     expect(response.body).toContain(
       '"adminId","adminRole","action","targetType","targetId","targetName","reason","occurredAt"',
     );

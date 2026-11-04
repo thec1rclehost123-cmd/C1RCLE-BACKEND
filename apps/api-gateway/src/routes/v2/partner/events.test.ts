@@ -1,15 +1,98 @@
+import { createEvent as makeEvent } from '@c1rcle/core/domain';
 import { describe, expect, it } from 'vitest';
 
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 
-import partnerEventRoutes from './events.js';
+import partnerEventRoutes, { eventToDto } from './events.js';
 
 const buildServer = () => buildPartnerTestServer({ routes: [partnerEventRoutes] });
 
 const VALID_HEADERS = { 'x-organization-id': 'org_1' };
 const CREATE_HEADERS = { 'x-organization-id': 'org_1', 'idempotency-key': 'idem-event-1' };
 
-const CREATE_BODY = { title: 'Sky Night', venueId: 'ven_1', startAt: '2026-08-01T18:00:00Z' };
+const CREATE_BODY = {
+  title: 'Sky Night',
+  venueId: 'ven_1',
+  startAt: '2026-08-01T18:00:00Z',
+  summary: 'An evening of music and dancing.',
+  description: 'Join us for live music, dancing, and a night out with friends.',
+};
+
+describe('restricted event projection privacy', () => {
+  it.each(['code', 'invited'] as const)('omits historical poster URLs for %s events', (mode) => {
+    const event = makeEvent({
+      id: 'evt_private',
+      organizationId: 'org_1',
+      venueId: 'ven_1',
+      title: 'Private',
+      startAt: '2026-08-01T18:00:00Z',
+      visibilityMode: mode,
+      imageUrl: 'https://storage.example.test/legacy-public-poster.jpg',
+    });
+
+    expect(eventToDto(event).imageUrl).toBeNull();
+  });
+});
+
+describe('event media', () => {
+  const media = {
+    youtubeUrl: 'https://www.youtube.com/watch?v=abc123',
+    gallery: [{ url: 'https://example.test/gallery.jpg', alt: 'Dance floor' }],
+    spotlights: [
+      {
+        id: 'artist-1',
+        title: 'Artist One',
+        link: 'https://example.test/artist',
+        imageUrl: null,
+        description: 'Live set',
+        startTime: '23:00',
+        endTime: '01:00',
+      },
+    ],
+  };
+  it('persists media through the authenticated create and read projection', async () => {
+    const server = await buildServer();
+    const response = await server.inject({
+      method: 'POST',
+      url: '/organizations/org_1/events',
+      headers: { ...VALID_HEADERS, 'idempotency-key': 'media-create-1' },
+      payload: { ...CREATE_BODY, media },
+    });
+    expect(response.statusCode).toBe(201);
+    const event = response.json();
+    expect(event.media).toEqual(media);
+    const read = await server.inject({
+      method: 'GET',
+      url: `/events/${event.id}`,
+      headers: VALID_HEADERS,
+    });
+    expect(read.statusCode).toBe(200);
+    expect(read.json().media).toEqual(media);
+    await server.close();
+  });
+  it('rejects unsafe video URLs at the API boundary', async () => {
+    const server = await buildServer();
+    const response = await server.inject({
+      method: 'POST',
+      url: '/organizations/org_1/events',
+      headers: { ...VALID_HEADERS, 'idempotency-key': 'media-invalid' },
+      payload: { ...CREATE_BODY, media: { ...media, youtubeUrl: 'https://attacker.test/video' } },
+    });
+    expect(response.statusCode).toBe(422);
+    await server.close();
+  });
+  it('does not expose media from historical restricted records', () => {
+    const event = makeEvent({
+      id: 'private-media',
+      organizationId: 'org_1',
+      venueId: 'ven_1',
+      title: 'Private',
+      startAt: CREATE_BODY.startAt,
+      visibilityMode: 'code',
+    });
+    expect(eventToDto({ ...event, media }).media).toBeUndefined();
+  });
+});
 
 // The services (and their idempotency store) are memoized per test file, so
 // every test needs a unique idempotency-key — reusing one replays a previous
@@ -109,8 +192,24 @@ describe('V2 partners events slice — validation layers', () => {
     const response = await server.inject({
       method: 'POST',
       url: '/organizations/org_1/events',
-      headers: CREATE_HEADERS,
-      payload: { title: 'Sky Night', venueId: 'ven_1', startAt: '2026-08-01T18:00:00Z' },
+      headers: { 'x-organization-id': 'org_1', 'idempotency-key': nextEventKey() },
+      payload: {
+        title: 'Sky Night',
+        venueId: 'ven_1',
+        startAt: '2026-08-01T18:00:00Z',
+        entryRules: {
+          doorsOpenAt: '2026-08-01T17:00:00.000Z',
+          lastEntryAt: null,
+          reentryAllowed: false,
+          minimumAge: 21,
+          idRequired: true,
+          accessibilityNotes: null,
+          dressCode: null,
+          alcoholPolicy: null,
+          prohibitedItems: [],
+          supportDetails: null,
+        },
+      },
     });
     expect(response.statusCode).toBe(201);
     const body = response.json();
@@ -120,6 +219,7 @@ describe('V2 partners events slice — validation layers', () => {
       status: 'draft',
       isPublic: false,
       version: 1,
+      entryRules: { reentryAllowed: false, minimumAge: 21, idRequired: true },
     });
     expect(typeof body.id).toBe('string');
     await server.close();
@@ -203,8 +303,33 @@ describe('V2 partners events slice — listing and update', () => {
     expect(response.statusCode).toBe(200);
     const body = response.json();
     expect(body.items.map((item: { id: string }) => item.id)).toContain(id);
-    expect(body.pageInfo).toMatchObject({ page: 1, pageSize: 10 });
+    expect(body.pageInfo).toMatchObject({ page: 1, pageSize: 10, nextCursor: null });
+    expect(body.items.find((item: { id: string }) => item.id === id)).toMatchObject({
+      capacity: null,
+      venueName: null,
+      ticketsSold: 0,
+      salesCountComplete: true,
+    });
     expect(body.pageInfo.total).toBeGreaterThanOrEqual(1);
+    await server.close();
+  });
+
+  it('returns bounded sales and capacity evidence on tenant-scoped event detail', async () => {
+    const server = await buildServer();
+    const { id } = await createEvent(server);
+    const response = await server.inject({
+      method: 'GET',
+      url: `/events/${id}`,
+      headers: VALID_HEADERS,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      id,
+      capacity: null,
+      venueName: null,
+      ticketsSold: 0,
+      salesCountComplete: true,
+    });
     await server.close();
   });
 
@@ -231,7 +356,23 @@ describe('V2 partners events slice — listing and update', () => {
         'idempotency-key': nextEventKey(),
         'if-match': '1',
       },
-      payload: { title: 'Sky Night Reloaded', tags: ['party'], startingPricePaise: 19900 },
+      payload: {
+        title: 'Sky Night Reloaded',
+        tags: ['party'],
+        startingPricePaise: 19900,
+        entryRules: {
+          doorsOpenAt: null,
+          lastEntryAt: null,
+          reentryAllowed: false,
+          minimumAge: 21,
+          idRequired: true,
+          accessibilityNotes: 'Step-free entrance',
+          dressCode: null,
+          alcoholPolicy: null,
+          prohibitedItems: [],
+          supportDetails: null,
+        },
+      },
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
@@ -240,6 +381,11 @@ describe('V2 partners events slice — listing and update', () => {
       tags: ['party'],
       startingPricePaise: 19900,
       version: 2,
+      entryRules: {
+        reentryAllowed: false,
+        minimumAge: 21,
+        accessibilityNotes: 'Step-free entrance',
+      },
     });
     await server.close();
   });
@@ -353,6 +499,7 @@ describe('V2 partners events slice — previews and lifecycle', () => {
       headers: VALID_HEADERS,
     });
     expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toContain('no-store');
     expect(response.json()).toMatchObject({
       event: { id, status: 'draft' },
       isPublic: false,
@@ -429,6 +576,19 @@ describe('V2 partners events slice — previews and lifecycle', () => {
     });
     expect(response.statusCode).toBe(409);
     expect(response.json()).toMatchObject({ code: 'conflict', status: 409 });
+    await server.close();
+  });
+
+  it('rejects blank cancellation reasons before starting a cancellation workflow', async () => {
+    const server = await buildServer();
+    const { id } = await createEvent(server);
+    const response = await server.inject({
+      method: 'POST',
+      url: `/events/${id}/cancel`,
+      headers: { ...VALID_HEADERS, 'idempotency-key': nextEventKey() },
+      payload: { reason: '   ' },
+    });
+    expect(response.statusCode).toBe(422);
     await server.close();
   });
 

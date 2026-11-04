@@ -63,6 +63,8 @@ export interface OutboxReader {
     now: number;
     leaseMs: number;
     limit?: number;
+    /** Claim only the newly appended event, leaving unrelated backlog untouched. */
+    eventId?: EntityId;
   }): Promise<OutboxRecord[]>;
 }
 

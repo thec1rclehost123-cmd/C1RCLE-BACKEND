@@ -159,7 +159,10 @@ describe('GET /payments/attempts/:holdId/status', () => {
     const { paymentIntentId } = await attemptFor(server, holdId, 'recover-fulfilled');
     const paymentId = 'pay_recovery_fulfilled';
     const provider = memoryProvider();
-    provider.simulateCapture(paymentId, grandTotalPaise, paymentIntentId);
+    provider.simulateCapture(paymentId, grandTotalPaise, paymentIntentId, 'INR', {
+      feePaise: 2_360,
+      taxOnFeePaise: 425,
+    });
     const verified = await verifyPayment(server, { paymentId, holdId, paymentIntentId });
     expect(verified.statusCode).toBe(200);
 
@@ -174,6 +177,76 @@ describe('GET /payments/attempts/:holdId/status', () => {
       status: 'fulfilled',
       orderId: verified.json().order.id,
     });
+    await server.close();
+  });
+});
+
+describe('POST /payments/attempts/:holdId/reconcile', () => {
+  it('re-reads a captured payment and fulfills one expired hold after a lost redirect callback', async () => {
+    const server = await buildServer();
+    const { holdId, grandTotalPaise } = await seedHold(server);
+    const { paymentIntentId } = await attemptFor(server, holdId, 'recover-lost-callback');
+    const paymentId = 'pay_recovery_lost_callback';
+    memoryProvider().simulateCapture(paymentId, grandTotalPaise, paymentIntentId, 'INR', {
+      feePaise: 20,
+      taxOnFeePaise: 4,
+    });
+    const services = createV2Services();
+    await services.providerPayments.recordEvent(
+      {
+        type: 'captured',
+        paymentId,
+        providerOrderId: paymentIntentId,
+        orderId: null,
+        correlated: true,
+        amountPaise: grandTotalPaise,
+        currency: 'INR',
+        feePaise: 20,
+        taxOnFeePaise: 4,
+        occurredAt: new Date().toISOString(),
+      },
+      { trustedIngestion: 'signature_verified' },
+    );
+    await services.repos().cartReservations.release(holdId);
+
+    const response = await server.inject({
+      method: 'POST',
+      url: `/payments/attempts/${holdId}/reconcile`,
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      holdId,
+      status: 'fulfilled',
+      orderId: `ORD-${paymentId}`,
+    });
+    const repos = createV2Services().repos();
+    const order = await repos.orders.getById(`ORD-${paymentId}`);
+    expect(order).toMatchObject({ status: 'paid', paymentId, grandTotalPaise });
+    expect(await repos.entitlements.getByOrderId(`ORD-${paymentId}`)).toHaveLength(1);
+    expect(await repos.cartReservations.getById(holdId)).toMatchObject({
+      status: 'converted',
+      convertedOrderId: `ORD-${paymentId}`,
+    });
+    expect(await repos.providerPayments.findByPaymentId(paymentId)).toMatchObject({
+      processingState: 'fulfilled',
+      orderId: `ORD-${paymentId}`,
+    });
+
+    const duplicate = await server.inject({
+      method: 'POST',
+      url: `/payments/attempts/${holdId}/reconcile`,
+      payload: {},
+    });
+    expect(duplicate.statusCode).toBe(200);
+    expect(duplicate.json()).toMatchObject({
+      holdId,
+      status: 'fulfilled',
+      orderId: `ORD-${paymentId}`,
+    });
+    if (!order) throw new Error('Expected recovered order');
+    expect((await repos.orders.listByEvent(order.eventId, { limit: 100 })).items).toHaveLength(1);
     await server.close();
   });
 });
@@ -194,7 +267,10 @@ describe('POST /payments/:id/verify', () => {
     const provider = memoryProvider();
     // Stands in for "the guest paid at Razorpay's hosted page" — the one
     // fact a memory adapter cannot derive on its own.
-    provider.simulateCapture(paymentId, grandTotalPaise, paymentIntentId);
+    provider.simulateCapture(paymentId, grandTotalPaise, paymentIntentId, 'INR', {
+      feePaise: 2_360,
+      taxOnFeePaise: 425,
+    });
     const signature = provider.generateSignature({ paymentId, orderId: paymentIntentId });
 
     const response = await server.inject({
@@ -211,6 +287,20 @@ describe('POST /payments/:id/verify', () => {
       grandTotalPaise,
     });
     expect(body.entitlements.length).toBeGreaterThan(0);
+    const repositories = createV2Services().repos();
+    await expect(repositories.providerPayments.findByPaymentId(paymentId)).resolves.toMatchObject({
+      providerOrderId: paymentIntentId,
+      orderId: body.order.id,
+      processingState: 'fulfilled',
+      capturedPaise: grandTotalPaise,
+      currency: 'INR',
+      feePaise: 2_360,
+      taxOnFeePaise: 425,
+    });
+    const journal = (
+      await repositories.financialJournals.findBySource('online_payment_capture', body.order.id)
+    ).find((entry) => entry.idempotencyKey.endsWith(':provider-fee'));
+    expect(journal?.components?.providerFeePaise).toBe(2_785);
     await server.close();
   });
 

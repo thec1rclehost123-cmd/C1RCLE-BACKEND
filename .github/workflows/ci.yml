@@ -22,6 +22,11 @@ on:
         description: Skip the Docker build and image scan
         type: boolean
         default: false
+      frontend_ref:
+        description: Frontend branch to compare contracts with
+        type: string
+        required: false
+        default: staging
 
 # Cancel superseded PR runs; never cancel a pushed run on main/staging — its
 # tail end gates, triggers and verifies the production deploy, so cancelling it
@@ -96,7 +101,7 @@ jobs:
     # PR-gate only. A push to main/staging is always a merge of a PR that
     # already ran this — re-running it on the merge commit is the exact
     # duplication this workflow used to have (same job, same diff, twice).
-    if: needs.changes.outputs.code == 'true' && github.event_name != 'push'
+    if: (github.event_name == 'workflow_dispatch' || needs.changes.outputs.code == 'true') && github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -126,6 +131,10 @@ jobs:
         id: boundaries
         if: always()
         run: node scripts/check-boundaries.mjs
+
+      - name: Rollback safety regression
+        if: always()
+        run: node --test scripts/ci/render-rollback.test.mjs
 
       # The deployed sidecar runs nginx in front of Fastify. A config error
       # (e.g. a duplicate proxy_* directive) makes the container exit before
@@ -197,7 +206,7 @@ jobs:
     # that's the one branch whose coverage baseline this job records below,
     # so it can't simply be skipped there. A push to staging is always an
     # already-tested PR merge, so it's skipped like the other gates.
-    if: needs.changes.outputs.code == 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
+    if: (github.event_name == 'workflow_dispatch' || needs.changes.outputs.code == 'true') && (github.event_name != 'push' || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -287,7 +296,7 @@ jobs:
   scenario:
     name: Scenario suite (merge only)
     needs: changes
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging') && needs.changes.outputs.code == 'true'
+    if: (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging'))) && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.code == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -309,7 +318,7 @@ jobs:
   firestore-emulator:
     name: Firestore emulator tests
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -326,14 +335,14 @@ jobs:
           java -version
           npx --yes firebase-tools@15.34.0 emulators:exec \
             --only firestore --project demo-c1rcle \
-            "pnpm --filter @c1rcle/core exec vitest run src/infrastructure/firestore"
+            "pnpm --filter @c1rcle/core exec vitest run src/infrastructure/firestore && pnpm --filter api-gateway exec vitest run src/plugins/auth-firestore.integration.test.ts"
 
   # ── The image that actually ships ──────────────────────────────────────────
   docker:
     name: Docker build & scan
     needs: changes
     # PR-gate only — see `static`'s comment above for why push is excluded.
-    if: needs.changes.outputs.docker == 'true' && !inputs.skip_docker && github.event_name != 'push'
+    if: (github.event_name == 'workflow_dispatch' || needs.changes.outputs.docker == 'true') && !inputs.skip_docker && github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
@@ -486,7 +495,7 @@ jobs:
     name: Contract parity (frontend)
     needs: changes
     # PR-gate only — see `static`'s comment above for why push is excluded.
-    if: vars.CONTRACT_PARITY_ENABLED != 'false' && needs.changes.outputs.contracts == 'true' && github.event_name != 'push'
+    if: vars.CONTRACT_PARITY_ENABLED != 'false' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.contracts == 'true') && github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -497,7 +506,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           repository: ${{ vars.FRONTEND_REPO || 'thec1rclehost123-cmd/C1RCLE-FRONTEND' }}
-          ref: ${{ vars.FRONTEND_REF || github.base_ref || 'main' }}
+          ref: ${{ inputs.frontend_ref || vars.FRONTEND_REF || github.base_ref || 'main' }}
           token: ${{ secrets.FRONTEND_REPO_TOKEN || github.token }}
           path: frontend
           persist-credentials: false
@@ -529,6 +538,11 @@ jobs:
 
       # Exit 0 = agree, 1 = drift, 2 = cannot check (missing dists). All three
       # are meaningful; only 0 passes.
+      - name: Record exact paired commits
+        run: |
+          git -C backend rev-parse HEAD
+          git -C frontend rev-parse HEAD
+
       - name: Compare contracts
         working-directory: backend
         run: node scripts/contract-parity.mjs --frontend "$GITHUB_WORKSPACE/frontend"
@@ -537,7 +551,7 @@ jobs:
   actionlint:
     name: Actionlint
     needs: changes
-    if: needs.changes.outputs.workflows == 'true'
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.workflows == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -795,7 +809,8 @@ jobs:
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           RENDER_SERVICE_ID: ${{ secrets.RENDER_STAGING_SERVICE_ID }}
-        run: node scripts/ci/render-rollback.mjs
+          RENDER_ROLLBACK_SAFE_SHA: ${{ vars.RENDER_ROLLBACK_SAFE_SHA }}
+        run: node scripts/ci/render-rollback.mjs --safe-sha "$RENDER_ROLLBACK_SAFE_SHA"
 
       - name: File a deploy incident
         if: steps.gate.outputs.match == 'true' && failure()

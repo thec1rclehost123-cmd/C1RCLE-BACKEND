@@ -13,8 +13,14 @@ import type {
 export class MemoryReferralLinkRepository implements ReferralLinkRepository {
   links = new Map<EntityId, ReferralLink>();
   private recordedSales = new Set<string>();
+  private recentClickIds = new Map<EntityId, Map<string, number>>();
   private globalCodes = new Map<string, EntityId>();
   private promoterCodes = new Map<EntityId, string>();
+  private assignmentCodes = new Map<
+    EntityId,
+    { eventId: EntityId; promoterId: EntityId; code: string }
+  >();
+  private eventCodeClaims = new Map<string, EntityId>();
   private vanityAliases = new Map<string, EntityId>();
 
   async getById(linkId: EntityId): Promise<ReferralLink | null> {
@@ -78,13 +84,50 @@ export class MemoryReferralLinkRepository implements ReferralLinkRepository {
     return wanted;
   }
 
-  async recordClick(linkId: EntityId): Promise<boolean> {
+  async getOrCreateAssignmentCode(
+    assignmentId: EntityId,
+    eventId: EntityId,
+    promoterId: EntityId,
+    proposedCode: string,
+  ): Promise<string | null> {
+    const existing = this.assignmentCodes.get(assignmentId);
+    if (existing) {
+      return existing.eventId === eventId && existing.promoterId === promoterId
+        ? existing.code
+        : null;
+    }
+
+    const code = normalizeReferralCode(proposedCode);
+    const globalOwner = this.globalCodes.get(code);
+    const claimKey = `${eventId}\u0000${code}`;
+    const assignmentOwner = this.eventCodeClaims.get(claimKey);
+    if (
+      (globalOwner && globalOwner !== promoterId) ||
+      (assignmentOwner && assignmentOwner !== assignmentId)
+    ) {
+      return null;
+    }
+
+    this.globalCodes.set(code, promoterId);
+    this.eventCodeClaims.set(claimKey, assignmentId);
+    this.assignmentCodes.set(assignmentId, { eventId, promoterId, code });
+    return code;
+  }
+
+  async recordClick(linkId: EntityId, clickId: string, now = new Date()): Promise<boolean> {
     const link = this.links.get(linkId);
     if (!link || !link.isActive) return false;
+    const nowMs = now.getTime();
+    const recent = this.recentClickIds.get(linkId) ?? new Map<string, number>();
+    for (const [key, expiresAt] of recent) if (expiresAt <= nowMs) recent.delete(key);
+    if (recent.has(clickId)) return false;
+    recent.set(clickId, nowMs + 60_000);
+    this.recentClickIds.set(linkId, recent);
     this.links.set(linkId, {
       ...link,
       clicks: link.clicks + 1,
-      updatedAt: new Date().toISOString(),
+      lastClickedAt: now.toISOString(),
+      updatedAt: now.toISOString(),
     });
     return true;
   }

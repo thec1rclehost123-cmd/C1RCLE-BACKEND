@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { InvalidOperationError } from '../errors.js';
 
 import type { EntityId } from '../identity.js';
@@ -53,8 +55,22 @@ export function createFollow(input: {
   };
 }
 
-export const NOTIFICATION_TYPES = ['event.new_from_followed'] as const;
+export const NOTIFICATION_TYPES = ['event.new_from_followed', 'event.material_change'] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
+export type EventMaterialChangeResponse = 'accepted' | 'refund_requested';
+
+export function eventMaterialChangeSubjectId(
+  eventId: EntityId,
+  eventVersion: number,
+  orderId: EntityId,
+  entitlementId: EntityId | null,
+): EntityId {
+  const digest = createHash('sha256')
+    .update(`${eventId}:${eventVersion}:${orderId}:${entitlementId ?? 'order-contact'}`)
+    .digest('hex')
+    .slice(0, 32);
+  return `EMC-${digest}`;
+}
 
 export interface SocialNotification {
   id: EntityId;
@@ -68,6 +84,19 @@ export interface SocialNotification {
   subjectId: EntityId;
   createdAt: string;
   readAt: string | null;
+  /** Present only on ticket-holder notices for a material event change. */
+  eventChange?: {
+    eventVersion: number;
+    entitlementId: EntityId;
+    canAccept: boolean;
+    canRequestRefund: boolean;
+  };
+  /** One immutable response per recipient, order, ticket and event version. */
+  eventChangeResponse?: {
+    response: EventMaterialChangeResponse;
+    respondedAt: string;
+    respondedBy: EntityId;
+  } | null;
 }
 
 export type Notification = SocialNotification;
@@ -83,6 +112,12 @@ export function createNotification(input: {
   body: string;
   link: string | null;
   subjectId: EntityId;
+  eventChange?: {
+    eventVersion: number;
+    entitlementId: EntityId;
+    canAccept: boolean;
+    canRequestRefund: boolean;
+  };
   now: Date;
 }): SocialNotification {
   return {
@@ -95,5 +130,7 @@ export function createNotification(input: {
     subjectId: input.subjectId,
     createdAt: input.now.toISOString(),
     readAt: null,
+    ...(input.eventChange ? { eventChange: input.eventChange } : {}),
+    ...(input.eventChange ? { eventChangeResponse: null } : {}),
   };
 }

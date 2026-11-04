@@ -24,6 +24,10 @@ export interface ReferralLink extends VersionedEntity {
   assignmentId: EntityId | null;
   assignmentVersion: number | null;
   termsSnapshot: CommissionTerms | null;
+  /** Null identifies links created before M4 policy snapshots were added. */
+  commissionPolicyVersion: string | null;
+  commercialPolicyVersion: string | null;
+  eligibleTierIds: EntityId[] | null;
   attributionSignature: string | null;
   eventTitle: string;
   campaignLabel: string;
@@ -35,6 +39,8 @@ export interface ReferralLink extends VersionedEntity {
   isActive: boolean;
   /** Click counter — cheap vanity metric, never an attribution source. */
   clicks: number;
+  /** Latest accepted campaign interaction used for the bounded attribution window. */
+  lastClickedAt: string | null;
   /**
    * Orders attributed to this link. Incremented by the checkout path, which
    * is also what writes the immutable attribution onto the order itself.
@@ -52,6 +58,16 @@ export interface ReferralLink extends VersionedEntity {
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 const CODE_LENGTH = 8;
 const CODE_PATTERN = /^[A-Z0-9]{4,16}$/;
+export const REFERRAL_ATTRIBUTION_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+export function isWithinReferralAttributionWindow(link: ReferralLink, now = new Date()): boolean {
+  const interactionAt = Date.parse(link.lastClickedAt ?? link.createdAt);
+  return (
+    Number.isFinite(interactionAt) &&
+    interactionAt <= now.getTime() &&
+    now.getTime() - interactionAt <= REFERRAL_ATTRIBUTION_WINDOW_MS
+  );
+}
 
 export interface CreateReferralLinkInput {
   id: EntityId;
@@ -61,6 +77,9 @@ export interface CreateReferralLinkInput {
   assignmentId?: EntityId;
   assignmentVersion?: number;
   termsSnapshot?: CommissionTerms;
+  commissionPolicyVersion?: string;
+  commercialPolicyVersion?: string;
+  eligibleTierIds?: EntityId[];
   attributionSignature?: string;
   eventTitle?: string;
   vanityPrefix?: string;
@@ -88,6 +107,9 @@ export function createReferralLink(input: CreateReferralLinkInput): ReferralLink
     assignmentId: input.assignmentId ?? null,
     assignmentVersion: input.assignmentVersion ?? null,
     termsSnapshot: input.termsSnapshot ?? null,
+    commissionPolicyVersion: input.commissionPolicyVersion ?? null,
+    commercialPolicyVersion: input.commercialPolicyVersion ?? null,
+    eligibleTierIds: input.eligibleTierIds ? [...input.eligibleTierIds] : null,
     attributionSignature: input.attributionSignature ?? null,
     eventTitle: input.eventTitle ?? '',
     campaignLabel: input.label ?? 'organic',
@@ -97,6 +119,7 @@ export function createReferralLink(input: CreateReferralLinkInput): ReferralLink
     label: input.label ?? code,
     isActive: true,
     clicks: 0,
+    lastClickedAt: null,
     conversions: 0,
     revenuePaise: 0,
     commissionPaise: 0,
@@ -145,7 +168,13 @@ export function generatePromoterCode(
  * nothing — a lost click is not a lost order.
  */
 export function recordClick(link: ReferralLink, now?: Date): ReferralLink {
-  return { ...link, clicks: link.clicks + 1, updatedAt: (now ?? new Date()).toISOString() };
+  const timestamp = (now ?? new Date()).toISOString();
+  return {
+    ...link,
+    clicks: link.clicks + 1,
+    lastClickedAt: timestamp,
+    updatedAt: timestamp,
+  };
 }
 
 /**

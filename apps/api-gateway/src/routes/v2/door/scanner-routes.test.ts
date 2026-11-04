@@ -163,12 +163,12 @@ async function scannerToken(): Promise<string> {
   return openSession(await createDoorCode());
 }
 
-function scan(token: string, qrPayload: string, eventId = EVENT_ID) {
+function scan(token: string, qrPayload: string, eventId = EVENT_ID, eligibilityVerified = false) {
   return server.inject({
     method: 'POST',
     url: '/door/check-ins',
     headers: { ...HEADERS, 'x-scanner-session-token': token },
-    payload: { eventId, qrPayload },
+    payload: { eventId, qrPayload, ...(eligibilityVerified ? { eligibilityVerified: true } : {}) },
   });
 }
 
@@ -448,6 +448,31 @@ describe('POST /door/sessions', () => {
 });
 
 describe('POST /door/check-ins', () => {
+  it('refuses admission after the event is cancelled without spending the ticket', async () => {
+    const token = await scannerToken();
+    const entitlement = await seedEntitlement('ENT-cancelled-event');
+    const eventRepository = services.repos().events as unknown as {
+      events: Map<string, Record<string, unknown>>;
+    };
+    const original = eventRepository.events.get(EVENT_ID);
+    if (!original) throw new Error('missing seeded event');
+    eventRepository.events.set(EVENT_ID, {
+      ...original,
+      status: 'cancelled',
+      isPublic: false,
+      cancellationReason: 'weather',
+    });
+
+    try {
+      const response = await scan(token, entitlement.id);
+      expect(response.statusCode, response.body).toBe(400);
+      expect(response.json()).toMatchObject({ code: 'validation' });
+      expect((await services.repos().entitlements.findById(entitlement.id))?.scanCount).toBe(0);
+    } finally {
+      eventRepository.events.set(EVENT_ID, original);
+    }
+  });
+
   it('admits a valid ticket and actually spends the admission', async () => {
     const token = await scannerToken();
     const entitlement = await seedEntitlement('ENT-admit-1');
@@ -464,6 +489,94 @@ describe('POST /door/check-ins', () => {
     expect(stored?.scanCount).toBe(1);
     expect(stored?.status).toBe('redeemed');
     expect(stored?.scannedAt).toHaveLength(1);
+  });
+
+  it('requires an explicit scanner eligibility check for restricted entitlements', async () => {
+    const token = await scannerToken();
+    const entitlement = await seedEntitlement('ENT-restricted', {
+      eligibility: {
+        audienceType: 'WOMEN_ONLY',
+        minAge: null,
+        maxAge: null,
+        attested: true,
+        attestedAt: new Date().toISOString(),
+      },
+    });
+
+    const preview = await server.inject({
+      method: 'POST',
+      url: '/door/lookup',
+      headers: { ...HEADERS, 'x-scanner-session-token': token },
+      payload: { eventId: EVENT_ID, qrPayload: entitlement.id },
+    });
+    expect(preview.json()).toMatchObject({
+      status: 'valid',
+      entitlement: {
+        eligibilityPolicy: { audienceType: 'WOMEN_ONLY', minAge: null, maxAge: null },
+      },
+    });
+
+    const refused = await scan(token, entitlement.id);
+    expect(refused.json()).toMatchObject({ status: 'denied', denyReason: 'eligibility_required' });
+    expect((await services.repos().entitlements.findById(entitlement.id))?.scanCount).toBe(0);
+
+    const admitted = await scan(token, entitlement.id, EVENT_ID, true);
+    expect(admitted.json()).toMatchObject({ status: 'consumed' });
+  });
+
+  it('uses the current tier policy for legacy entitlements without an eligibility snapshot', async () => {
+    const token = await scannerToken();
+    const now = new Date().toISOString();
+    const tierId = 'tier_legacy_eligibility';
+    if (!(await services.repos().catalog.getTierById(tierId))) {
+      await services.repos().catalog.saveTier({
+        id: tierId,
+        eventId: EVENT_ID,
+        organizationId: ORG_ID,
+        name: 'Student legacy tier',
+        description: '',
+        entryType: 'ENTRY',
+        currency: 'INR',
+        priceInPaise: 100,
+        quantity: 10,
+        status: 'active',
+        salesStartAt: null,
+        salesEndAt: null,
+        maxPerOrder: 10,
+        accessMode: 'public',
+        audienceType: 'STUDENT',
+        guestCount: 1,
+        admissionMode: 'per_person',
+        pricingPhases: [],
+        doorPriceInPaise: null,
+        benefits: [],
+        minAge: null,
+        maxAge: null,
+        minPerOrder: null,
+        maxPerUser: null,
+        tableConfig: null,
+        commissionEligible: false,
+        version: 1,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    const entitlement = await seedEntitlement('ENT-legacy-restricted', { tierId });
+
+    const preview = await server.inject({
+      method: 'POST',
+      url: '/door/lookup',
+      headers: { ...HEADERS, 'x-scanner-session-token': token },
+      payload: { eventId: EVENT_ID, qrPayload: entitlement.id },
+    });
+    expect(preview.json()).toMatchObject({
+      status: 'valid',
+      entitlement: { eligibilityPolicy: { audienceType: 'STUDENT' } },
+    });
+    const refused = await scan(token, entitlement.id);
+    expect(refused.json()).toMatchObject({ status: 'denied', denyReason: 'eligibility_required' });
+    const admitted = await scan(token, entitlement.id, EVENT_ID, true);
+    expect(admitted.json()).toMatchObject({ status: 'consumed' });
   });
 
   it('refuses the same ticket a second time', async () => {
@@ -571,6 +684,85 @@ describe('POST /door/check-ins', () => {
     expect(qr.statusCode, qr.body).toBe(200);
     const response = await scan(token, qr.json().qrPayload);
     expect(response.json()).toMatchObject({ status: 'consumed' });
+  });
+});
+
+describe('POST /door/ticket-addons/redeem', () => {
+  it('redeems an active extra with a scanner session without consuming admission', async () => {
+    const token = await scannerToken();
+    const now = new Date().toISOString();
+    const entitlement = await seedEntitlement('ENT-addon-redemption', {
+      ticketAddons: [
+        {
+          id: 'ADDON-ENT-1',
+          addonId: 'ADDON-1',
+          name: 'Parking',
+          kind: 'parking',
+          unitPricePaise: 500,
+          status: 'active',
+          createdAt: now,
+          redeemedAt: null,
+        },
+      ],
+    });
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/door/ticket-addons/redeem',
+      headers: {
+        ...HEADERS,
+        'x-scanner-session-token': token,
+        'idempotency-key': 'addon-redeem-route-1',
+      },
+      payload: {
+        eventId: EVENT_ID,
+        entitlementId: entitlement.id,
+        addonEntitlementId: 'ADDON-ENT-1',
+      },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({
+      entitlementId: entitlement.id,
+      addon: { id: 'ADDON-ENT-1', status: 'redeemed', redeemedAt: expect.any(String) },
+    });
+    const stored = await services.repos().entitlements.findById(entitlement.id);
+    expect(stored?.scanCount).toBe(0);
+    expect(stored?.ticketAddons?.[0]?.status).toBe('redeemed');
+  });
+
+  it('refuses redemption without a scanner session token', async () => {
+    const now = new Date().toISOString();
+    const entitlement = await seedEntitlement('ENT-addon-no-session', {
+      ticketAddons: [
+        {
+          id: 'ADDON-ENT-2',
+          addonId: 'ADDON-2',
+          name: 'Cloakroom',
+          kind: 'cloakroom',
+          unitPricePaise: 200,
+          status: 'active',
+          createdAt: now,
+          redeemedAt: null,
+        },
+      ],
+    });
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/door/ticket-addons/redeem',
+      headers: { ...HEADERS, 'idempotency-key': 'addon-redeem-no-session' },
+      payload: {
+        eventId: EVENT_ID,
+        entitlementId: entitlement.id,
+        addonEntitlementId: 'ADDON-ENT-2',
+      },
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(
+      (await services.repos().entitlements.findById(entitlement.id))?.ticketAddons?.[0]?.status,
+    ).toBe('active');
   });
 });
 
@@ -745,6 +937,27 @@ describe('offline manifest + sync', () => {
         body.manifestSignature,
       ),
     ).toBe(false);
+  });
+
+  it('refuses offline manifests when an active restricted ticket requires a door check', async () => {
+    const token = await scannerToken();
+    await seedEntitlement('ENT-off-restricted', {
+      eligibility: {
+        audienceType: 'STUDENT',
+        minAge: null,
+        maxAge: null,
+        attested: true,
+        attestedAt: new Date().toISOString(),
+      },
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/door/offline-manifest?eventId=${EVENT_ID}`,
+      headers: { ...HEADERS, 'x-scanner-session-token': token },
+    });
+    expect(response.statusCode, response.body).toBe(503);
+    expect(response.json()).toMatchObject({ code: 'server' });
   });
 
   it('re-decides every offline scan server-side and reports conflicts', async () => {
@@ -927,6 +1140,28 @@ describe('GET /tickets/:ticketId/qr', () => {
     expect(response.json().refreshIntervalSec).toBe(30);
     expect(response.headers['cache-control']).toBe('no-store');
   });
+
+  it.each([
+    ['void', { status: 'void' as const }],
+    [
+      'refund-locked',
+      { refundLock: { refundRequestId: 'REF-qr', frozenAt: new Date().toISOString() } },
+    ],
+  ])(
+    'does not mint a QR for an authorized holder whose ticket is %s',
+    async (_state, overrides) => {
+      const entitlement = await seedEntitlement(`ENT-qr-${_state}`, {
+        userId: 'guest_9',
+        ...overrides,
+      });
+      currentActor = { userId: 'guest_9', organizationId: '', role: 'member', capabilities: [] };
+
+      const response = await server.inject({ method: 'GET', url: `/tickets/${entitlement.id}/qr` });
+
+      expect(response.statusCode, response.body).toBe(409);
+      expect(response.json()).toMatchObject({ code: 'conflict', status: 409 });
+    },
+  );
 
   it('404s for a stranger who is neither the holder nor org staff', async () => {
     const entitlement = await seedEntitlement('ENT-qr-stranger', { userId: 'guest_9' });

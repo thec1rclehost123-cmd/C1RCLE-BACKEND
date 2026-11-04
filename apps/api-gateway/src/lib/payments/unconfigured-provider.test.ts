@@ -22,6 +22,9 @@ describe('UnconfiguredPaymentProvider', () => {
       ServiceUnavailableError,
     );
     await expect(provider.getPayment('pay_1')).rejects.toBeInstanceOf(ServiceUnavailableError);
+    await expect(provider.getRefund('pay_1', 'rfnd_1')).rejects.toBeInstanceOf(
+      ServiceUnavailableError,
+    );
   });
 
   it('surfaces as HTTP 503, not a generic 500', () => {

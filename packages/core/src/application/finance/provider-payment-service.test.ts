@@ -8,6 +8,7 @@ import { MemoryProviderPaymentRepository } from '../../infrastructure/memory/mem
 import { FinancialPostingService } from './financial-posting-service.js';
 import { ProviderPaymentService } from './provider-payment-service.js';
 
+import type { DomainEvent } from '../../domain/events.js';
 import type {
   ProviderPayment,
   ProviderPaymentEvent,
@@ -29,28 +30,36 @@ const order = {
 
 function build(
   providerPayments: ProviderPaymentRepository = new MemoryProviderPaymentRepository(),
+  orderRecord: unknown = order,
 ) {
   const providerFinancialEvents = new MemoryProviderFinancialEventRepository();
   const financialJournals = new MemoryFinancialJournalRepository();
+  const outboxEvents: DomainEvent[] = [];
   // The service needs only these three collaborators; the rest of ServiceDeps is irrelevant here.
   const deps = {
     repositories: {
       providerPayments,
       providerFinancialEvents,
-      orders: { getById: async (id: string) => (id === order.id ? order : null) },
+      orders: { getById: async (id: string) => (id === order.id ? orderRecord : null) },
       financialJournals,
     },
     config: { clock: { now: () => NOW } },
+    outbox: {
+      append: async (event: DomainEvent) => {
+        outboxEvents.push(event);
+      },
+    },
   } as unknown as ServiceDeps;
   return {
     service: new ProviderPaymentService(deps),
     providerPayments,
     providerFinancialEvents,
     financialJournals,
+    outboxEvents,
   };
 }
 
-async function seedSale(journals: MemoryFinancialJournalRepository) {
+async function seedSale(journals: MemoryFinancialJournalRepository, withPromoter = false) {
   await new FinancialPostingService(journals).postTicketSale({
     organizationId: 'org_host',
     orderId: order.id,
@@ -69,11 +78,11 @@ async function seedSale(journals: MemoryFinancialJournalRepository) {
     allocation: {
       platformPaise: 10_000,
       hostOrganizationId: 'org_host',
-      hostPaise: 90_000,
+      hostPaise: withPromoter ? 88_750 : 90_000,
       venueOrganizationId: null,
       venuePaise: 0,
-      promoterOrganizationId: null,
-      promoterPaise: 0,
+      promoterOrganizationId: withPromoter ? 'org_promoter' : null,
+      promoterPaise: withPromoter ? 1_250 : 0,
     },
   });
 }
@@ -145,6 +154,45 @@ describe('ProviderPaymentService.recordEvent', () => {
       processingState: 'processed',
       processingAttempts: 1,
       finalResult: 'provider_aggregate_updated',
+    });
+  });
+
+  it('emits one outbox event for a Promoter commission chargeback hold', async () => {
+    const attributed = {
+      ...order,
+      attribution: { promoterId: 'org_promoter', promoterCommissionPaise: 1_250 },
+    };
+    const { service, outboxEvents, financialJournals } = build(
+      new MemoryProviderPaymentRepository(),
+      attributed,
+    );
+    await seedSale(financialJournals, true);
+    await service.recordEvent(captured);
+    const dispute: ProviderPaymentEvent = {
+      type: 'dispute',
+      paymentId: 'pay_1',
+      disputeId: 'disp_m4_1',
+      amountPaise: 3_000,
+      currency: 'INR',
+      status: 'open',
+      amountDeductedPaise: 0,
+      reasonCode: 'test_reason',
+      reasonDescription: null,
+      respondBy: null,
+      phase: 'chargeback',
+      evidenceState: 'none',
+      providerOccurredAt: null,
+    };
+
+    await service.recordEvent(dispute);
+    await service.recordEvent(dispute);
+
+    expect(outboxEvents).toHaveLength(1);
+    expect(outboxEvents[0]).toMatchObject({
+      id: expect.stringMatching(/^EVT-/),
+      type: 'finance.chargeback.updated',
+      aggregateId: order.id,
+      payload: { orderId: order.id, disputeId: 'disp_m4_1', status: 'open' },
     });
   });
 

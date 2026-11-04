@@ -10,6 +10,7 @@ import { requireOrgAccess } from '../context.js';
 
 import { createFinanceService } from './finance-service.js';
 import { FinancialPostingService } from './financial-posting-service.js';
+import { appendPayoutStatusEvent } from './payout-events.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type { Payout, PayoutTransferEvidence } from '../../domain/models/payout.js';
@@ -43,6 +44,7 @@ export interface PayoutServiceDeps {
   reconciliations: ReconciliationRepository;
   platformSettings: PlatformSettingsRepository;
   config: ServiceDeps['config'];
+  outbox?: ServiceDeps['outbox'];
 }
 
 export interface RequestPayoutInput {
@@ -110,6 +112,7 @@ export function createPayoutService(deps: PayoutServiceDeps): PayoutService {
       ) {
         throw new IdempotencyConflictError(input.idempotencyKey);
       }
+      await appendPayoutStatusEvent(deps.outbox, replay, actor.userId, config.clock.now());
       return replay;
     }
 
@@ -135,14 +138,18 @@ export function createPayoutService(deps: PayoutServiceDeps): PayoutService {
       },
       postedAt: new Date(payout.createdAt),
     });
-    return payouts.createWithinLimit(payout, payableLimit, reservation);
+    const created = await payouts.createWithinLimit(payout, payableLimit, reservation);
+    await appendPayoutStatusEvent(deps.outbox, created, actor.userId, config.clock.now());
+    return created;
   }
 
   async function beginProcessingPayout(payoutId: EntityId, actor: ActorContext): Promise<Payout> {
     const payout = await payouts.findById(payoutId);
     if (!payout) throw new NotFoundError('Payout', payoutId);
     requireOrgAccess(actor, payout.organizationId);
-    return payouts.save(beginProcessing(payout, config.clock.now()));
+    const updated = await payouts.save(beginProcessing(payout, config.clock.now()));
+    await appendPayoutStatusEvent(deps.outbox, updated, actor.userId, config.clock.now());
+    return updated;
   }
 
   async function completePayout(
@@ -165,7 +172,9 @@ export function createPayoutService(deps: PayoutServiceDeps): PayoutService {
       transferReference: paid.transferReference ?? evidence.transferReference,
       postedAt: config.clock.now(),
     });
-    return payouts.save(paid);
+    const updated = await payouts.save(paid);
+    await appendPayoutStatusEvent(deps.outbox, updated, actor.userId, config.clock.now());
+    return updated;
   }
 
   async function failPayout(
@@ -182,7 +191,9 @@ export function createPayoutService(deps: PayoutServiceDeps): PayoutService {
       payoutId: payout.id,
       postedAt: config.clock.now(),
     });
-    return payouts.save(failed);
+    const updated = await payouts.save(failed);
+    await appendPayoutStatusEvent(deps.outbox, updated, actor.userId, config.clock.now());
+    return updated;
   }
 
   async function listPayouts(

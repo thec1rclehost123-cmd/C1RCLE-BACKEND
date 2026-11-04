@@ -13,6 +13,17 @@ const base = {
 };
 
 describe('ticket tier extensions', () => {
+  it('stores a separate nonnegative cover component and rejects paid cover on free RSVP', () => {
+    const tier = createTicketTier({ ...base, coverAmountPaise: 150_000 });
+    expect(tier.coverAmountPaise).toBe(150_000);
+    expect(() =>
+      createTicketTier({ ...base, accessType: 'RSVP', coverAmountPaise: 150_000 }),
+    ).toThrow(InvalidOperationError);
+    expect(() => createTicketTier({ ...base, coverAmountPaise: -1 })).toThrow(
+      InvalidOperationError,
+    );
+  });
+
   it('keeps legacy tiers valid with safe defaults', () => {
     const tier = createTicketTier({
       ...base,

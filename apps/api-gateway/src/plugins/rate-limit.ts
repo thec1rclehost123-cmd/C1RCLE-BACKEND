@@ -10,7 +10,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
  * Ported from Sagar's parallel B10 work (origin/main 80cca2c) — this repo had
  * deferred rate limiting entirely; this plugin was more complete.
  *
- * Compound key: IP + user + organization. IP alone punishes everyone behind a
+ * Compound key: IP + user + verified organization. IP alone punishes everyone behind a
  * NAT and lets one account rotate addresses; user alone lets an anonymous
  * flood through. Both, plus tenant, so one noisy org cannot starve another.
  *
@@ -98,15 +98,12 @@ export default fp<RateLimitOptions>(
   { name: 'rate-limit-v2' },
 );
 
-/** IP + user + organization + class — one bucket per meaningful principal. */
+/** IP + user + verified organization + class — never trust a raw tenant header. */
 function compoundKey(request: FastifyRequest, limitClass: RateLimitClass): string {
   const ip = request.ip || 'unknown-ip';
   const userId = request.authUser?.id ?? 'anonymous';
-  const organizationId =
-    request.actor?.organizationId ??
-    (typeof request.headers['x-organization-id'] === 'string'
-      ? request.headers['x-organization-id']
-      : 'no-org');
+  const verifiedOrganizationId = request.actor?.organizationId ?? '';
+  const organizationId = verifiedOrganizationId.length > 0 ? verifiedOrganizationId : 'no-org';
   return `${limitClass}|${ip}|${userId}|${organizationId}`;
 }
 

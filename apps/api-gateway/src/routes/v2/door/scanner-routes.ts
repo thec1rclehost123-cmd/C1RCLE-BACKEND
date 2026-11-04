@@ -1,5 +1,6 @@
 import {
   opaqueIdSchema,
+  idempotencyKeySchema,
   scannerSessionCreateBodySchema,
   scannerSessionDtoSchema,
   startShiftResponseSchema,
@@ -7,6 +8,8 @@ import {
   scanRequestSchema,
   scanResponseSchema,
   ticketLookupResponseSchema,
+  ticketAddonRedemptionRequestSchema,
+  ticketAddonRedemptionResponseSchema,
   checkInDtoSchema,
   magicQrResponseSchema,
   offlineManifestRequestSchema,
@@ -54,6 +57,9 @@ const services = createV2Services();
 const sessionIdParam = z.object({ sessionId: opaqueIdSchema });
 const checkInIdParam = z.object({ checkInId: opaqueIdSchema });
 const ticketIdParam = z.object({ ticketId: opaqueIdSchema });
+const addonRedemptionHeaders = scannerSessionTokenHeaderSchema.extend({
+  'idempotency-key': idempotencyKeySchema,
+});
 
 /**
  * Pulls the scanner-session bearer off the request. Absent or malformed is
@@ -186,6 +192,7 @@ export default async function phase5ScannerRoutes(fastify: FastifyInstance) {
               ...(body.operatorName === undefined ? {} : { operatorName: body.operatorName }),
               ...(body.operatorRole === undefined ? {} : { operatorRole: body.operatorRole }),
               ...(body.gate === undefined ? {} : { gate: body.gate }),
+              ...(body.eligibilityVerified === true ? { eligibilityVerified: true } : {}),
             },
             actor,
           );
@@ -194,6 +201,54 @@ export default async function phase5ScannerRoutes(fastify: FastifyInstance) {
             request,
             scanResponseSchema,
             scanResultToDto(scanResult),
+          );
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
+        },
+      }).catch((error: unknown) =>
+        mapDomainError(reply, request, body.eventId, error, { hideForbidden: true }),
+      );
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
+
+  fastify.post(
+    '/door/ticket-addons/redeem',
+    {
+      preHandler: [
+        fastify.rateLimit('SCANNER_COMMAND'),
+        fastify.validateV2({
+          body: ticketAddonRedemptionRequestSchema,
+          headers: addonRedemptionHeaders,
+        }),
+      ],
+    },
+    async (request, reply) => {
+      const body = request.body as z.infer<typeof ticketAddonRedemptionRequestSchema>;
+      const actor = services.actor(request);
+      const v2Headers = request.v2Headers ?? {};
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: actor.userId,
+        commandName: 'door.ticket-addon.redeem',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: {}, body },
+        run: async () => {
+          const entitlement = await services.scanner.redeemTicketAddon({
+            ...body,
+            sessionToken: sessionTokenFrom(request),
+          });
+          const addon = entitlement.ticketAddons?.find(
+            (item) => item.id === body.addonEntitlementId,
+          );
+          if (!addon) throw new Error('redeemed ticket extra is missing from its entitlement');
+          const validated = validateV2Response(
+            reply,
+            request,
+            ticketAddonRedemptionResponseSchema,
+            { entitlementId: entitlement.id, addon },
           );
           if (validated === undefined) throw new Error('v2 response validation failed');
           return { statusCode: 200, body: validated };

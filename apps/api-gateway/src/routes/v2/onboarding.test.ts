@@ -69,7 +69,7 @@ async function uploadRequiredDocuments(userId: string, requestId: string) {
       method: 'POST',
       url: `/onboarding/applications/${requestId}/documents`,
       headers: asUser(userId),
-      payload: { label, storagePath: `kyc/${userId}/${label}.jpg` },
+      payload: { label, storagePath: `kyc/${userId}/${requestId}/${label}` },
     });
     expect(response.statusCode).toBe(200);
   }
@@ -92,6 +92,76 @@ describe('applicant onboarding', () => {
     const created = await startApplication('user_a');
     expect(created.status).toBe('draft');
     expect(created.missingDocuments).toEqual(['id_front', 'id_back', 'selfie']);
+  });
+
+  it('records versioned test-fixture agreement evidence and exposes it to Admin review', async () => {
+    const agreement = await server.inject({
+      method: 'GET',
+      url: '/onboarding/promoter-agreement',
+      headers: asUser('promoter_applicant'),
+    });
+    expect(agreement.statusCode).toBe(200);
+    expect(agreement.json()).toMatchObject({
+      activationAvailable: false,
+      agreement: {
+        version: expect.stringMatching(/^m4-test-fixture-/),
+        status: 'test_fixture',
+        text: expect.stringMatching(/TEST FIXTURE ONLY.*NOT A LEGAL AGREEMENT/),
+        textSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+    });
+
+    const application = await server.inject({
+      method: 'POST',
+      url: '/onboarding/applications',
+      headers: asUser('promoter_applicant'),
+      payload: { requestedType: 'promoter', plan: 'basic', profile: FULL_PROFILE },
+    });
+    expect(application.statusCode).toBe(201);
+    const accepted = await server.inject({
+      method: 'POST',
+      url: `/onboarding/applications/${application.json().id}/promoter-agreement/accept`,
+      headers: asUser('promoter_applicant'),
+      payload: { version: agreement.json().agreement.version },
+    });
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.json().promoterAgreementAcceptances).toHaveLength(1);
+    expect(accepted.json().promoterAgreementAcceptances[0]).toMatchObject({
+      version: agreement.json().agreement.version,
+      artifactStatus: 'test_fixture',
+      acceptedBy: 'promoter_applicant',
+      acceptedAt: expect.any(String),
+    });
+
+    const reaccepted = await server.inject({
+      method: 'POST',
+      url: `/onboarding/applications/${application.json().id}/promoter-agreement/accept`,
+      headers: asUser('promoter_applicant'),
+      payload: { version: agreement.json().agreement.version },
+    });
+    expect(reaccepted.statusCode).toBe(200);
+    expect(reaccepted.json().promoterAgreementAcceptances).toHaveLength(1);
+
+    await seedAdmin('admin_agreement_review', 'admin');
+    const adminQueue = await server.inject({
+      method: 'GET',
+      url: '/admin/onboarding/applications?status=draft',
+      headers: { 'x-user-id': 'admin_agreement_review' },
+    });
+    expect(adminQueue.statusCode).toBe(200);
+    expect(adminQueue.json().items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: application.json().id,
+          promoterAgreementAcceptances: [
+            expect.objectContaining({
+              version: agreement.json().agreement.version,
+              acceptedBy: 'promoter_applicant',
+            }),
+          ],
+        }),
+      ]),
+    );
   });
 
   it('refuses a second live application', async () => {
@@ -141,6 +211,35 @@ describe('applicant onboarding', () => {
   });
 
   describe('KYC upload URLs', () => {
+    it('rejects cross-applicant, cross-request and unknown-label attachment paths', async () => {
+      const created = await startApplication('user_a');
+      for (const payload of [
+        { label: 'id_front', storagePath: `kyc/user_b/${created.id}/id_front` },
+        { label: 'id_front', storagePath: 'kyc/user_a/other_request/id_front' },
+        { label: 'passport', storagePath: `kyc/user_a/${created.id}/passport` },
+      ]) {
+        const response = await server.inject({
+          method: 'POST',
+          url: `/onboarding/applications/${created.id}/documents`,
+          headers: asUser('user_a'),
+          payload,
+        });
+        expect(response.statusCode).toBe(400);
+      }
+      expect((await services.repos().onboarding.getById(created.id))?.documents).toEqual([]);
+    });
+
+    it('cannot attach to another applicant even with their canonical path', async () => {
+      const created = await startApplication('user_a');
+      const response = await server.inject({
+        method: 'POST',
+        url: `/onboarding/applications/${created.id}/documents`,
+        headers: asUser('user_b'),
+        payload: { label: 'id_front', storagePath: `kyc/user_a/${created.id}/id_front` },
+      });
+      expect(response.statusCode).toBe(404);
+    });
+
     it('issues a bounded, time-limited PUT grant', async () => {
       const created = await startApplication('user_a');
       const response = await server.inject({
@@ -618,6 +717,34 @@ describe('admin review', () => {
 });
 
 describe('admin document read URLs', () => {
+  it('will not sign a legacy attachment outside its application namespace', async () => {
+    const created = await startApplication('user_a');
+    const request = await services.repos().onboarding.getById(created.id);
+    if (!request) throw new Error('Expected the newly created application');
+    await services.repos().onboarding.save({
+      ...request,
+      documents: [
+        {
+          label: 'id_front',
+          storagePath: 'private/unrelated-document',
+          uploadedAt: new Date().toISOString(),
+          status: 'pending',
+          reviewedBy: null,
+          reviewedAt: null,
+          rejectionReason: null,
+        },
+      ],
+    });
+    await seedAdmin('admin_ops', 'ops');
+    const response = await server.inject({
+      method: 'GET',
+      url: `/admin/onboarding/applications/${created.id}/documents/id_front/read-url`,
+      headers: { 'x-user-id': 'admin_ops' },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).not.toHaveProperty('readUrl');
+  });
+
   async function submittedApplication(): Promise<string> {
     const created = await startApplication('user_a');
     await uploadRequiredDocuments('user_a', created.id);

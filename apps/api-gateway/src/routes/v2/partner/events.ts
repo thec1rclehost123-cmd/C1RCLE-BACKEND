@@ -5,15 +5,18 @@ import {
   paginationQuerySchema,
   versionHeaderSchema,
   eventDtoSchema,
+  eventOperationsDtoSchema,
+  organizationEventListResponseSchema,
   promoterAssignedEventDtoSchema,
+  promoterAssignmentDtoSchema,
   updateEventSchema,
   cancelEventSchema,
   posterUploadUrlRequestSchema,
   posterUploadUrlDtoSchema,
   eventPreviewDtoSchema,
-  paginatedSchema,
   createEventSchema,
 } from '@c1rcle/contracts/client';
+import { promoterAssignmentStatusAt } from '@c1rcle/core/domain';
 import { z } from 'zod';
 
 import type { ActorContext } from '@c1rcle/core/application';
@@ -75,8 +78,9 @@ const readHeaders = z.looseObject({
   'x-organization-id': opaqueIdSchema,
 });
 
-const eventListSchema = paginatedSchema(eventDtoSchema);
+const eventListSchema = organizationEventListResponseSchema;
 const assignedEventListSchema = z.array(promoterAssignedEventDtoSchema);
+const promoterInvitationListSchema = z.array(promoterAssignmentDtoSchema);
 
 export default async function partnerEventRoutes(fastify: FastifyInstance) {
   // Promoters see only events with an active assignment to their own org.
@@ -94,6 +98,7 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
       ],
     },
     async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
       const { promoterId } = request.params as { promoterId: string };
       const actor = services.actor(request);
       const events = await services.catalog
@@ -112,13 +117,80 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
             id: assignment.id,
             eventId: assignment.eventId,
             promoterId: assignment.promoterId,
-            status: assignment.status,
+            status: promoterAssignmentStatusAt(assignment, services.config().clock.now()),
             terms: assignment.terms,
             endedAt: assignment.endedAt,
+            invitedAt: assignment.invitedAt,
+            invitedBy: assignment.invitedBy,
+            respondedAt: assignment.respondedAt,
+            respondedBy: assignment.respondedBy,
+            acceptedAt: assignment.acceptedAt,
+            rejectedAt: assignment.rejectedAt,
+            revokedAt: assignment.revokedAt,
+            revokedBy: assignment.revokedBy,
+            revocationReason: assignment.revocationReason,
+            startsAt: assignment.startsAt,
+            expiresAt: assignment.expiresAt,
+            eligibleTierIds: assignment.eligibleTierIds,
             version: assignment.version,
             createdAt: assignment.createdAt,
             updatedAt: assignment.updatedAt,
           },
+        })),
+      );
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  fastify.get(
+    '/promoters/:promoterId/assignment-invitations',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({
+          params: z.object({ promoterId: opaqueIdSchema }),
+          headers: readHeaders,
+        }),
+        fastify.requirePermission('event.read'),
+      ],
+    },
+    async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
+      const { promoterId } = request.params as { promoterId: string };
+      const actor = services.actor(request);
+      const invitations = await services.catalog
+        .listPromoterInvitations(actor, promoterId)
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, promoterId, error, { hideForbidden: true }),
+        );
+      if (invitations === undefined) return reply;
+      const validated = validateV2Response(
+        reply,
+        request,
+        promoterInvitationListSchema,
+        invitations.map((assignment) => ({
+          id: assignment.id,
+          eventId: assignment.eventId,
+          promoterId: assignment.promoterId,
+          status: promoterAssignmentStatusAt(assignment, services.config().clock.now()),
+          terms: assignment.terms,
+          endedAt: assignment.endedAt,
+          invitedAt: assignment.invitedAt,
+          invitedBy: assignment.invitedBy,
+          respondedAt: assignment.respondedAt,
+          respondedBy: assignment.respondedBy,
+          acceptedAt: assignment.acceptedAt,
+          rejectedAt: assignment.rejectedAt,
+          revokedAt: assignment.revokedAt,
+          revokedBy: assignment.revokedBy,
+          revocationReason: assignment.revocationReason,
+          startsAt: assignment.startsAt,
+          expiresAt: assignment.expiresAt,
+          eligibleTierIds: assignment.eligibleTierIds,
+          version: assignment.version,
+          createdAt: assignment.createdAt,
+          updatedAt: assignment.updatedAt,
         })),
       );
       if (validated === undefined) return reply;
@@ -141,15 +213,19 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
       ],
     },
     async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
       const { organizationId } = request.params as z.infer<typeof orgIdParam>;
       const query = request.query as z.infer<typeof paginationQuerySchema>;
       const actor = services.actor(request);
       if (requirePathOrg(reply, request, actor, organizationId) === undefined) return reply;
-      const page = await services.events.list(actor, {
+      const page = await services.events.listWithOperations(actor, {
         limit: query.limit,
         cursor: query.cursor ?? null,
       });
-      const items = page.items.map(eventToDto);
+      const items = page.items.map(({ event, ...operations }) => ({
+        ...eventToDto(event),
+        ...operations,
+      }));
       const payload = {
         items,
         pageInfo: {
@@ -157,6 +233,7 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
           pageSize: query.limit,
           total: page.total,
           hasNextPage: page.nextCursor !== null,
+          nextCursor: page.nextCursor,
         },
       };
       const validated = validateV2Response(reply, request, eventListSchema, payload);
@@ -179,13 +256,22 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
       ],
     },
     async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
       const { eventId } = request.params as z.infer<typeof eventIdParam>;
       const actor = services.actor(request);
-      const event = await services.events.get(actor, eventId).catch((error: unknown) => {
-        return mapDomainError(reply, request, eventId, error, { hideForbidden: true });
-      });
+      const event = await services.events
+        .getWithOperations(actor, eventId)
+        .catch((error: unknown) => {
+          return mapDomainError(reply, request, eventId, error, { hideForbidden: true });
+        });
       if (event === undefined) return reply;
-      const validated = validateV2Response(reply, request, eventDtoSchema, eventToDto(event));
+      const validated = validateV2Response(reply, request, eventOperationsDtoSchema, {
+        ...eventToDto(event.event),
+        capacity: event.capacity,
+        venueName: event.venueName,
+        ticketsSold: event.ticketsSold,
+        salesCountComplete: event.salesCountComplete,
+      });
       if (validated === undefined) return reply;
       return reply.send(validated);
     },
@@ -221,6 +307,7 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
         run: async () => {
           const event = await services.events.create(actor, {
             venueId: body.venueId,
+            slotRequestId: body.slotRequestId ?? null,
             title: body.title,
             summary: body.summary,
             description: body.description,
@@ -229,6 +316,10 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
             endAt: body.endAt ?? null,
             tags: body.tags,
             compensation: body.compensation ?? null,
+            entryRules: body.entryRules,
+            media: body.media,
+            visibilityMode: body.visibilityMode,
+            addressDisclosure: body.addressDisclosure,
           });
           const validated = validateV2Response(reply, request, eventDtoSchema, eventToDto(event));
           if (validated === undefined) throw new Error('v2 response validation failed');
@@ -292,6 +383,7 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
       ],
     },
     async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
       const { eventId } = request.params as z.infer<typeof eventIdParam>;
       const body = request.body as z.infer<typeof updateEventSchema>;
       const actor = services.actor(request);
@@ -343,6 +435,7 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
       ],
     },
     async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
       const { eventId } = request.params as z.infer<typeof eventIdParam>;
       const actor = services.actor(request);
       const preview = await services.events
@@ -482,6 +575,8 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
 
 /** Converts the core domain Event to the canonical wire DTO. */
 export function eventToDto(event: Event) {
+  const visibilityMode = event.visibilityMode ?? 'public';
+  const privateEvent = visibilityMode === 'code' || visibilityMode === 'invited';
   return {
     id: event.id,
     organizationId: event.organizationId,
@@ -490,16 +585,25 @@ export function eventToDto(event: Event) {
     title: event.title,
     summary: event.summary,
     description: event.description,
-    imageUrl: event.imageUrl,
+    ...(!privateEvent && event.media ? { media: event.media } : {}),
+    // Never serialize a public object URL for restricted events. Older private
+    // records may predate managed poster ACL revocation, and promoter/partner
+    // projections must not re-expose those historical URLs.
+    imageUrl: privateEvent ? null : event.imageUrl,
     startAt: event.startAt,
     endAt: event.endAt,
     status: event.status,
+    visibilityMode,
+    addressDisclosure:
+      event.addressDisclosure ??
+      (event.visibilityMode === 'code' || event.visibilityMode === 'invited' ? 'hidden' : 'public'),
     isPublic: event.isPublic,
     tags: event.tags,
     startingPricePaise: event.startingPricePaise,
     isFree: event.isFree,
     cancellationReason: event.cancellationReason,
     compensation: event.compensation ?? null,
+    ...(event.entryRules === undefined ? {} : { entryRules: event.entryRules }),
     version: event.version,
     createdAt: event.createdAt,
     updatedAt: event.updatedAt,
@@ -674,6 +778,17 @@ export function mapDomainError(
         status: 400,
         message: known.message ?? 'Invalid operation',
         code: 'validation',
+        requestId: request.id,
+      }),
+    );
+    return undefined;
+  }
+  if (known?.code === 'service_unavailable') {
+    reply.status(503).send(
+      buildV2ErrorResponse({
+        status: 503,
+        message: known.message ?? 'This feature is not enabled',
+        code: 'server',
         requestId: request.id,
       }),
     );
