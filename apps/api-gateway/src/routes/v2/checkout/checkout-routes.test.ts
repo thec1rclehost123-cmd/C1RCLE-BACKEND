@@ -1,9 +1,9 @@
-import { seedVerifiedCheckoutUsers } from '../../../test-utils/verified-test-users.js';
 import { checkoutQuoteResponseSchema } from '@c1rcle/contracts';
 import { describe, expect, it } from 'vitest';
 
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 import { publishEventForTest } from '../../../test-utils/publish-event.js';
+import { seedVerifiedCheckoutUsers } from '../../../test-utils/verified-test-users.js';
 import partnerEventCatalogRoutes from '../partner/event-catalog.js';
 import partnerEventRoutes from '../partner/events.js';
 import partnerOrganizationRoutes from '../partner/organizations.js';

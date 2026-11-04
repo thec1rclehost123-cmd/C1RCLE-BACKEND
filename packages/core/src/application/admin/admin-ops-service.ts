@@ -1,7 +1,7 @@
-import { currentEntitlementHolderId } from '../../domain/models/entitlement.js';
 import { ConflictError, InvalidOperationError, NotFoundError } from '../../domain/errors.js';
 import { deterministicDomainEventId, domainEvent } from '../../domain/events.js';
 import { isExecutable } from '../../domain/models/admin-authority.js';
+import { currentEntitlementHolderId } from '../../domain/models/entitlement.js';
 import {
   reinstatePromoterAssignment,
   suspendPromoterAssignment,

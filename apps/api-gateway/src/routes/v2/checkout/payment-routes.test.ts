@@ -1,10 +1,10 @@
-import { seedVerifiedCheckoutUsers } from '../../../test-utils/verified-test-users.js';
 import { MemoryPaymentProvider } from '@c1rcle/core/domain';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createV2Services } from '../../../lib/v2-services.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 import { publishEventForTest } from '../../../test-utils/publish-event.js';
+import { seedVerifiedCheckoutUsers } from '../../../test-utils/verified-test-users.js';
 import partnerEventCatalogRoutes from '../partner/event-catalog.js';
 import partnerEventRoutes from '../partner/events.js';
 import partnerOrganizationRoutes from '../partner/organizations.js';

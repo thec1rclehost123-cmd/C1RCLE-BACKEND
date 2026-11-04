@@ -82,13 +82,11 @@ function entryDto(entry: {
 }
 
 /** Preserved M5 handlers are deliberately unavailable at the V1 boundary. */
-function unavailableInV1(_request: FastifyRequest, reply: FastifyReply): Promise<FastifyReply> {
-  return Promise.resolve(
-    reply
-      .header('cache-control', 'private, no-store')
-      .code(410)
-      .send({ error: { code: 'not_available', message: 'Waitlists are not available in V1.' } }),
-  );
+async function unavailableInV1(_request: FastifyRequest, reply: FastifyReply): Promise<void> {
+  await reply
+    .header('cache-control', 'private, no-store')
+    .code(410)
+    .send({ error: { code: 'not_available', message: 'Waitlists are not available in V1.' } });
 }
 
 export default async function waitlistRoutes(fastify: FastifyInstance) {
