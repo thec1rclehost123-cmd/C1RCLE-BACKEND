@@ -18,6 +18,11 @@
       "types": "./src/client.ts",
       "import": "./src/client.ts",
       "default": "./dist/client.js"
+    },
+    "./guest-onboarding": {
+      "types": "./src/contracts/guest-onboarding.ts",
+      "import": "./src/contracts/guest-onboarding.ts",
+      "default": "./dist/contracts/guest-onboarding.js"
     }
   },
   "scripts": {

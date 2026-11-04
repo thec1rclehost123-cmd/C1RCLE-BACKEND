@@ -6,6 +6,7 @@ import type { GuestProfile } from '@c1rcle/core/domain';
 import { validateV2Response } from '../../lib/v2-response-validation.js';
 import { createV2Services } from '../../lib/v2-services.js';
 
+import { registerGuestOnboarding } from './guest-onboarding.js';
 import { requireUserId } from './onboarding.js';
 import { mapDomainError } from './partner/events.js';
 
@@ -27,6 +28,7 @@ import type { z } from 'zod';
 const services = createV2Services();
 
 export default async function guestProfileRoutes(fastify: FastifyInstance) {
+  await registerGuestOnboarding(fastify, services.guestProfile);
   fastify.get(
     '/profile/me',
     { preHandler: [fastify.rateLimit('AUTH_READ')] },
@@ -38,7 +40,7 @@ export default async function guestProfileRoutes(fastify: FastifyInstance) {
         .getMine(userId)
         .catch((error: unknown) => mapDomainError(reply, request, userId, error));
       if (found === undefined) return reply;
-      if (found === null) {
+      if (found === null || !found.dateOfBirth || found.tastes.length < 1) {
         mapDomainError(reply, request, userId, new NotFoundError('Guest profile', userId));
         return reply;
       }

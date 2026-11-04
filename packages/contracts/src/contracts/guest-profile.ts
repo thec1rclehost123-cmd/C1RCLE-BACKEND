@@ -34,9 +34,9 @@ export const guestProfileDtoSchema = z.object({
   userId: z.string().min(1).max(128),
   displayName: displayNameSchema,
   dateOfBirth: dateOfBirthSchema,
-  city: citySchema,
-  tastes: z.array(tasteSchema).min(3).max(20),
-  intents: z.array(intentSchema).min(1).max(10),
+  city: z.string().max(100),
+  tastes: z.array(tasteSchema).min(1).max(20),
+  intents: z.array(intentSchema).max(10),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
 });

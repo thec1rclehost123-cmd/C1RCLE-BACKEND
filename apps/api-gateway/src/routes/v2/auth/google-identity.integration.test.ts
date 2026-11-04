@@ -1,5 +1,7 @@
 import { generateKeyPairSync, randomUUID, sign } from 'node:crypto';
 
+import { createGuestProfileService } from '@c1rcle/core/application';
+import { FirestoreGuestProfileRepository } from '@c1rcle/core/infrastructure/firestore';
 import { Firestore } from 'firebase-admin/firestore';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -86,6 +88,22 @@ describe.runIf(emulator)(
         ).toBe(0);
         const first = await google('new@example.invalid', 'new-provider-id');
         expect(first.user?.role).toBe('guest');
+        const guestOnboarding = createGuestProfileService({
+          guestProfiles: new FirestoreGuestProfileRepository(db),
+          config: { clock: { now: () => new Date() } } as never,
+        });
+        expect((await guestOnboarding.getOnboarding(first.user.id)).complete).toBe(false);
+        await guestOnboarding.saveOnboarding(first.user.id, {
+          displayName: first.user.name,
+          dateOfBirth: '2000-01-01',
+        });
+        await guestOnboarding.verifyPhone(first.user.id, '+919876543210', 'synthetic-proof', {
+          name: 'fixture',
+          verify: async () => ({ passed: true, provider: 'firebase-phone' }),
+        });
+        await guestOnboarding.saveOnboarding(first.user.id, { tastes: ['House'] });
+        expect((await guestOnboarding.getOnboarding(first.user.id)).complete).toBe(true);
+
         // Exercise native authorization/state/callback and ordinary cookie session.
         candidate.validateAuthorizationCode = async () => ({ idToken: lastToken });
         const initiate = await auth.api.signInSocial({
