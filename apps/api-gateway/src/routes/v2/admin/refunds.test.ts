@@ -3,6 +3,7 @@ import {
   DefiniteProviderFailureError,
   MemoryPaymentProvider,
 } from '@c1rcle/core/domain';
+import { MemoryUserAccountRepository } from '@c1rcle/core/infrastructure';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AdminRole } from '@c1rcle/core/domain';
@@ -61,6 +62,19 @@ async function seedPaidOrder(
   priceInPaise = 600_000,
   quantity = 1,
 ): Promise<{ orderId: string; grandTotalPaise: number; tierId: string }> {
+  const users = services.repos().users;
+  if (!(users instanceof MemoryUserAccountRepository))
+    throw new Error('Expected memory account directory in refund test');
+  users.save({
+    id: 'user_1',
+    email: 'guest-refund@example.test',
+    name: 'Refund test guest',
+    image: null,
+    emailVerified: true,
+    role: 'guest',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  });
   const write = (org: string) => ({
     'x-organization-id': org,
     'idempotency-key': `catalog-${++keySeq}`,
@@ -101,6 +115,7 @@ async function seedPaidOrder(
     headers: { 'idempotency-key': `hold-${++keySeq}` },
     payload: { eventId, lines: [{ tierId, quantity }] },
   });
+  expect(hold.statusCode, hold.body).toBe(201);
   const holdId: string = hold.json().holdId;
   const grandTotalPaise: number = hold.json().pricing.grandTotalPaise;
   const attempt = await server.inject({
@@ -390,7 +405,7 @@ describe('executing an approved refund', () => {
     expect(await services.repos().entitlements.getByOrderId(orderId)).toEqual(before);
   });
 
-  it('deterministically revokes only the selected ticket quantity and cannot revoke twice', async () => {
+  it('revokes only the explicitly selected non-first attendee and cannot revoke twice', async () => {
     await seedAdmin('admin_a', 'finance');
     const { orderId, tierId } = await seedPaidOrder(server, 100_000, 3);
     const before = (await services.repos().entitlements.getByOrderId(orderId)).sort((left, right) =>
@@ -405,18 +420,23 @@ describe('executing an approved refund', () => {
         amountPaise: 40_000,
         reason: 'One attendee cancelled',
         ticketLines: [{ tierId, quantity: 1 }],
+        targetEntitlementIds: [before[1]?.id],
       },
     });
     const requestId = requested.json().request.id as string;
     expect(requested.json().request).toMatchObject({
       scope: 'ticket_lines',
-      targetEntitlementIds: [before[0]?.id],
+      targetEntitlementIds: [before[1]?.id],
     });
     const frozen = (await services.repos().entitlements.getByOrderId(orderId)).sort((left, right) =>
       left.id.localeCompare(right.id),
     );
-    expect(frozen[0]?.refundLock?.refundRequestId).toBe(requestId);
-    expect(frozen.slice(1).every((entitlement) => !entitlement.refundLock)).toBe(true);
+    expect(frozen[1]?.refundLock?.refundRequestId).toBe(requestId);
+    expect(
+      frozen
+        .filter((entitlement) => entitlement.id !== before[1]?.id)
+        .every((entitlement) => !entitlement.refundLock),
+    ).toBe(true);
 
     expect(
       (
@@ -440,8 +460,36 @@ describe('executing an approved refund', () => {
     const after = (await services.repos().entitlements.getByOrderId(orderId)).sort((left, right) =>
       left.id.localeCompare(right.id),
     );
-    expect(after.map((entitlement) => entitlement.status)).toEqual(['void', 'valid', 'valid']);
-    expect(after[0]?.version).toBe((before[0]?.version ?? 0) + 2);
+    expect(after.map((entitlement) => entitlement.status)).toEqual(['valid', 'void', 'valid']);
+    expect(after[1]?.version).toBe((before[1]?.version ?? 0) + 2);
+  });
+
+  it('does not revoke unselected attendees by refunding the full order balance for one ticket', async () => {
+    await seedAdmin('admin_a', 'finance');
+    const { orderId, grandTotalPaise } = await seedPaidOrder(server, 100_000, 2);
+    const tickets = await services.repos().entitlements.getByOrderId(orderId);
+    const response = await server.inject({
+      method: 'POST',
+      url: '/admin/refunds',
+      headers: asUser('admin_a'),
+      payload: {
+        orderId,
+        amountPaise: grandTotalPaise,
+        reason: 'Specific attendee request',
+        targetEntitlementIds: [tickets[1]?.id],
+      },
+    });
+    expect(response.statusCode, response.body).toBe(400);
+    expect(response.body).toContain('selecting every active ticket');
+    expect(await services.repos().orders.getById(orderId)).toMatchObject({
+      status: 'paid',
+      refundedPaise: 0,
+    });
+    expect(
+      (await services.repos().entitlements.getByOrderId(orderId)).every(
+        (ticket) => ticket.status === 'valid' && !ticket.refundLock,
+      ),
+    ).toBe(true);
   });
 
   it('releases the exact frozen ticket set after a definite provider failure', async () => {
@@ -456,6 +504,7 @@ describe('executing an approved refund', () => {
         amountPaise: 40_000,
         reason: 'Provider rejection test',
         ticketLines: [{ tierId, quantity: 1 }],
+        targetEntitlementIds: [(await services.repos().entitlements.getByOrderId(orderId))[0]?.id],
       },
     });
     const requestId = requested.json().request.id as string;
@@ -498,6 +547,7 @@ describe('executing an approved refund', () => {
         amountPaise: 40_000,
         reason: 'HTTP rejection test',
         ticketLines: [{ tierId, quantity: 1 }],
+        targetEntitlementIds: [(await services.repos().entitlements.getByOrderId(orderId))[0]?.id],
       },
     });
     const requestId = requested.json().request.id as string;
@@ -566,6 +616,7 @@ describe('executing an approved refund', () => {
         amountPaise: 40_000,
         reason: 'Ambiguous provider test',
         ticketLines: [{ tierId, quantity: 1 }],
+        targetEntitlementIds: [(await services.repos().entitlements.getByOrderId(orderId))[0]?.id],
       },
     });
     const requestId = requested.json().request.id as string;
@@ -606,6 +657,9 @@ describe('executing an approved refund', () => {
           amountPaise: 40_000,
           reason: 'Classification regression',
           ticketLines: [{ tierId, quantity: 1 }],
+          targetEntitlementIds: [
+            (await services.repos().entitlements.getByOrderId(orderId))[0]?.id,
+          ],
         },
       });
       expect(requested.statusCode).toBe(201);
@@ -787,6 +841,7 @@ describe('uncertain refund recovery', () => {
         amountPaise: 40_000,
         reason: 'Synthetic recovery test',
         ticketLines: [{ tierId, quantity: 1 }],
+        targetEntitlementIds: [(await services.repos().entitlements.getByOrderId(orderId))[0]?.id],
       },
     });
     expect(created.statusCode).toBe(201);

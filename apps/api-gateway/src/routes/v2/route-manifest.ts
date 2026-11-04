@@ -74,7 +74,8 @@ export interface RegisterV2RoutesOptions {
  * The single registration surface for all `/api/v2` routes. Phase 4's public
  * discovery slice (PR1, unauthenticated, under `/public`), checkout/
  * payments/webhook slice (PR2), and orders/tickets/wallet reads (PR3) are
- * all LIVE. Transfer/claim, waitlist, scanner, cover and controlled-admin
+ * registered. V1 waitlist endpoints explicitly reject with 410; preserved
+ * transfer/claim, scanner, cover and controlled-admin
  * routes are registered but remain protected by Core authorization and feature
  * gates where policy or operational approval is still pending.
  */

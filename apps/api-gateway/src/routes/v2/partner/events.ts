@@ -315,6 +315,7 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
             startAt: body.startAt,
             endAt: body.endAt ?? null,
             tags: body.tags,
+            refundPolicy: body.refundPolicy,
             compensation: body.compensation ?? null,
             entryRules: body.entryRules,
             media: body.media,
@@ -527,6 +528,77 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
     );
   }
 
+  const lifecycleBody = z.discriminatedUnion('action', [
+    z
+      .object({ action: z.literal('postpone'), reason: z.string().trim().min(1).max(1000) })
+      .strict(),
+    z
+      .object({
+        action: z.literal('reschedule'),
+        startAt: z.iso.datetime(),
+        endAt: z.iso.datetime().nullable().optional(),
+        slotRequestId: z.string().min(1).optional(),
+        venueId: z.string().min(1).optional(),
+        expectedVersion: z.number().int().positive(),
+      })
+      .strict(),
+  ]);
+  fastify.post(
+    '/events/:eventId/lifecycle',
+    {
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({
+          params: eventIdParam,
+          headers: createEventHeaders,
+          body: lifecycleBody,
+        }),
+        fastify.requirePermission('event.update'),
+      ],
+    },
+    async (request, reply) => {
+      const { eventId } = request.params as z.infer<typeof eventIdParam>;
+      const body = request.body as z.infer<typeof lifecycleBody>;
+      const actor = services.actor(request);
+      const headers = request.v2Headers ?? {};
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: actor.userId,
+        commandName: `event.${body.action}`,
+        idempotencyKey: headers['idempotency-key'],
+        context: { path: { eventId }, body },
+        run: async () => {
+          const event =
+            body.action === 'postpone'
+              ? await services.events.postpone(actor, eventId, body.reason)
+              : await services.events.update(actor, {
+                  eventId,
+                  expectedVersion: body.expectedVersion,
+                  resumePostponed: true,
+                  changes: {
+                    startAt: body.startAt,
+                    ...(body.endAt === undefined ? {} : { endAt: body.endAt }),
+                    ...(body.slotRequestId ? { slotRequestId: body.slotRequestId } : {}),
+                    ...(body.venueId ? { venueId: body.venueId } : {}),
+                  },
+                });
+          const validated = validateV2Response(reply, request, eventDtoSchema, eventToDto(event));
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
+        },
+      }).catch((error: unknown) =>
+        isIdempotencyConflict(error)
+          ? mapDomainError(reply, request, eventId, error, {
+              conflictId: headers['idempotency-key'],
+            })
+          : mapDomainError(reply, request, eventId, error),
+      );
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
+
   // `cancel` needs a body (`reason`), so it's not folded into `simpleActions`.
   fastify.post(
     '/events/:eventId/cancel',
@@ -602,6 +674,8 @@ export function eventToDto(event: Event) {
     startingPricePaise: event.startingPricePaise,
     isFree: event.isFree,
     cancellationReason: event.cancellationReason,
+    ...(event.postponement ? { postponement: event.postponement } : {}),
+    ...(event.refundPolicy ? { refundPolicy: event.refundPolicy } : {}),
     compensation: event.compensation ?? null,
     ...(event.entryRules === undefined ? {} : { entryRules: event.entryRules }),
     version: event.version,

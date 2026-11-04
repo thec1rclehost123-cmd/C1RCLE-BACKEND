@@ -45,6 +45,7 @@ function toSupportTicketDto(ticket: {
   internalNotes: unknown;
   timeline: unknown;
   links: unknown;
+  refundReview?: unknown;
   sla: unknown;
   mergedInto: unknown;
   mergedFrom: unknown;
@@ -70,6 +71,7 @@ function toSupportTicketDto(ticket: {
     internalNotes: ticket.internalNotes,
     timeline: ticket.timeline,
     links: ticket.links,
+    ...(ticket.refundReview ? { refundReview: ticket.refundReview } : {}),
     sla: ticket.sla,
     mergedInto: ticket.mergedInto,
     mergedFrom: ticket.mergedFrom,

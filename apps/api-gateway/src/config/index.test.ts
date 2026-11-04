@@ -269,3 +269,13 @@ describe('origin allow-lists', () => {
     ).toThrow(/ALLOWED_ORIGINS/);
   });
 });
+
+it('accepts only an HTTP(S) Guest deployment origin for invitation links', () => {
+  expect(
+    getGatewayConfig({ GUEST_PORTAL_URL: 'https://guest-staging.example.test' }).GUEST_PORTAL_URL,
+  ).toBe('https://guest-staging.example.test');
+  expect(() =>
+    getGatewayConfig({ GUEST_PORTAL_URL: 'https://guest-staging.example.test/invite' }),
+  ).toThrow();
+  expect(() => getGatewayConfig({ GUEST_PORTAL_URL: 'javascript:alert(1)' })).toThrow();
+});

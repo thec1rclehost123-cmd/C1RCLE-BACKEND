@@ -1,3 +1,4 @@
+import { seedVerifiedCheckoutUsers } from '../../../test-utils/verified-test-users.js';
 import { checkoutQuoteResponseSchema } from '@c1rcle/contracts';
 import { describe, expect, it } from 'vitest';
 
@@ -19,8 +20,9 @@ import checkoutRoutes from './checkout-routes.js';
  */
 
 let keySeq = 0;
-const buildServer = () =>
-  buildPartnerTestServer({
+const buildServer = () => {
+  seedVerifiedCheckoutUsers();
+  return buildPartnerTestServer({
     routes: [
       partnerOrganizationRoutes,
       partnerVenueRoutes,
@@ -29,6 +31,7 @@ const buildServer = () =>
       checkoutRoutes,
     ],
   });
+};
 
 type Server = Awaited<ReturnType<typeof buildServer>>;
 

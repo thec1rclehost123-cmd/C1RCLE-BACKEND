@@ -1,8 +1,12 @@
 import {
   entitlementDtoSchema,
+  managedTicketSchema,
+  ticketTransferPreviewSchema,
   eventChangeResponseDtoSchema,
   eventChangeResponseRequestSchema,
   opaqueIdSchema,
+  guestRefundReviewRequestSchema,
+  guestRefundReviewDtoSchema,
 } from '@c1rcle/contracts/client';
 import { z } from 'zod';
 
@@ -17,8 +21,8 @@ import type { FastifyInstance } from 'fastify';
  * `GET /tickets/:id` — the entitlement DTO for a ticket the caller owns.
  *
  * Email-bound transfer routes reuse the entitlement and scanner credential
- * path. Transfer writes are disabled by default behind the M5 feature flag;
- * recipients prove a persisted verified email when they accept an invitation.
+ * path. Recipients prove the exact persisted verified email when accepting
+ * a V1 assignment or transfer invitation.
  */
 
 const services = createV2Services();
@@ -52,6 +56,69 @@ const transferDtoSchema = z.object({
 });
 
 export default async function ticketRoutes(fastify: FastifyInstance) {
+  fastify.post(
+    '/tickets/:id/refund-review',
+    {
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({ params: ticketIdParam, body: guestRefundReviewRequestSchema }),
+      ],
+    },
+    async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
+      const { id } = request.params as z.infer<typeof ticketIdParam>;
+      const { reason } = request.body as z.infer<typeof guestRefundReviewRequestSchema>;
+      const review = await services.support
+        .requestTicketRefundReview(services.actor(request).userId, id, reason)
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, id, error, { hideForbidden: true }),
+        );
+      if (!review) return reply;
+      const data = {
+        id: review.id,
+        status: review.status,
+        requestedAt: review.refundReview?.requestedAt ?? review.createdAt,
+      };
+      const validated = validateV2Response(reply, request, guestRefundReviewDtoSchema, data);
+      return validated ? reply.code(201).send(validated) : reply;
+    },
+  );
+
+  fastify.get(
+    '/tickets/:id/management',
+    { preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({ params: ticketIdParam })] },
+    async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
+      const { id } = request.params as z.infer<typeof ticketIdParam>;
+      const data = await services.tickets
+        .getManagement(id, services.actor(request))
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, id, error, { hideForbidden: true }),
+        );
+      if (!data) return reply;
+      const validated = validateV2Response(reply, request, managedTicketSchema, data);
+      return validated ? reply.send(validated) : reply;
+    },
+  );
+  fastify.get(
+    '/ticket-transfers/:transferId',
+    {
+      preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({ params: transferIdParam })],
+    },
+    async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
+      const { transferId } = request.params as z.infer<typeof transferIdParam>;
+      const data = await services.tickets
+        .previewTransfer(transferId, services.actor(request))
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, transferId, error, { hideForbidden: true }),
+        );
+      if (!data) return reply;
+      const validated = validateV2Response(reply, request, ticketTransferPreviewSchema, data);
+      return validated ? reply.send(validated) : reply;
+    },
+  );
+
   fastify.post(
     '/tickets/:id/event-changes/:eventVersion/respond',
     {

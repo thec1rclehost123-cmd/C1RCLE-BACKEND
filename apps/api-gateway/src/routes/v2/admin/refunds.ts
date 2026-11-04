@@ -119,6 +119,7 @@ export default async function adminRefundRoutes(fastify: FastifyInstance) {
               amountPaise: body.amountPaise,
               reason: body.reason,
               ticketLines: body.ticketLines,
+              targetEntitlementIds: body.targetEntitlementIds,
             },
             requestMeta(request),
           );

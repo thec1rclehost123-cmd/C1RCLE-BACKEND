@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { createV2Services } from '../../../lib/v2-services.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 import { publishEventForTest } from '../../../test-utils/publish-event.js';
+import { seedVerifiedCheckoutUsers } from '../../../test-utils/verified-test-users.js';
 import checkoutRoutes from '../checkout/checkout-routes.js';
 import paymentRoutes from '../checkout/payment-routes.js';
 import partnerEventCatalogRoutes from '../partner/event-catalog.js';
@@ -687,6 +688,7 @@ function memoryProvider(): MemoryPaymentProvider {
 
 /** Seeds org -> venue -> event -> tier -> hold -> paid order. */
 async function seedPaidOrder(server: Server): Promise<{ org: string; orderId: string }> {
+  seedVerifiedCheckoutUsers(['user_1']);
   const org = await seedOrganization(server);
   const venue = await server.inject({
     method: 'POST',

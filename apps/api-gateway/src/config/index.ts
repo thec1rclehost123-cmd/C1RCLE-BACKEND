@@ -232,6 +232,14 @@ const envSchema = z.object({
    * Optional: when absent, emails omit the link rather than linking nowhere.
    */
   PARTNER_DASHBOARD_URL: z.url().optional(),
+  /** Guest deployment origin for exact-email ticket assignment/transfer invitation links. */
+  GUEST_PORTAL_URL: z
+    .url({ protocol: /^https?$/ })
+    .refine((value) => {
+      const url = new URL(value);
+      return !url.username && !url.password && url.pathname === '/' && !url.search && !url.hash;
+    }, 'Use a Guest HTTP(S) origin without credentials or a path')
+    .optional(),
   /**
    * Comma-separated list of exact browser origins allowed to call the gateway
    * cross-origin (CORS) and trusted by Better Auth, e.g.

@@ -15,7 +15,7 @@ import { createV2Services } from '../../../lib/v2-services.js';
 import { requireUserId } from '../onboarding.js';
 import { mapDomainError } from '../partner/events.js';
 
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 const services = createV2Services();
 const joinBody = z
@@ -81,11 +81,22 @@ function entryDto(entry: {
   };
 }
 
+/** Preserved M5 handlers are deliberately unavailable at the V1 boundary. */
+function unavailableInV1(_request: FastifyRequest, reply: FastifyReply): Promise<FastifyReply> {
+  return Promise.resolve(
+    reply
+      .header('cache-control', 'private, no-store')
+      .code(410)
+      .send({ error: { code: 'not_available', message: 'Waitlists are not available in V1.' } }),
+  );
+}
+
 export default async function waitlistRoutes(fastify: FastifyInstance) {
   fastify.post(
     '/waitlist',
     {
       preHandler: [
+        unavailableInV1,
         fastify.rateLimit('STANDARD_COMMAND'),
         fastify.validateV2({ body: joinBody, headers: optionalCommandHeaders }),
       ],
@@ -109,7 +120,11 @@ export default async function waitlistRoutes(fastify: FastifyInstance) {
   fastify.get(
     '/waitlist/:entryId',
     {
-      preHandler: [fastify.rateLimit('AUTH_READ'), fastify.validateV2({ params: entryParams })],
+      preHandler: [
+        unavailableInV1,
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({ params: entryParams }),
+      ],
     },
     async (request, reply) => {
       reply.header('cache-control', 'private, no-store');
@@ -135,6 +150,7 @@ export default async function waitlistRoutes(fastify: FastifyInstance) {
     '/waitlist',
     {
       preHandler: [
+        unavailableInV1,
         fastify.rateLimit('AUTH_READ'),
         fastify.validateV2({ querystring: paginationQuerySchema }),
       ],
@@ -166,6 +182,7 @@ export default async function waitlistRoutes(fastify: FastifyInstance) {
     '/waitlist/:entryId/accept',
     {
       preHandler: [
+        unavailableInV1,
         fastify.rateLimit('SENSITIVE_COMMAND'),
         fastify.validateV2({ params: entryParams, headers: optionalCommandHeaders }),
       ],
@@ -208,6 +225,7 @@ export default async function waitlistRoutes(fastify: FastifyInstance) {
     '/waitlist/:entryId',
     {
       preHandler: [
+        unavailableInV1,
         fastify.rateLimit('SENSITIVE_COMMAND'),
         fastify.validateV2({ params: entryParams, headers: optionalCommandHeaders }),
       ],
@@ -230,6 +248,7 @@ export default async function waitlistRoutes(fastify: FastifyInstance) {
     '/events/:eventId/tiers/:tierId/waitlist/offer-next',
     {
       preHandler: [
+        unavailableInV1,
         fastify.rateLimit('SENSITIVE_COMMAND'),
         fastify.validateV2({ params: offerParams, headers: partnerOfferHeaders }),
         fastify.requirePermission('event.update'),
@@ -274,6 +293,7 @@ export default async function waitlistRoutes(fastify: FastifyInstance) {
     '/events/:eventId/tiers/:tierId/waitlist',
     {
       preHandler: [
+        unavailableInV1,
         fastify.rateLimit('AUTH_READ'),
         fastify.validateV2({
           params: offerParams,
@@ -316,6 +336,7 @@ export default async function waitlistRoutes(fastify: FastifyInstance) {
     '/admin/events/:eventId/tiers/:tierId/waitlist/offer-next',
     {
       preHandler: [
+        unavailableInV1,
         fastify.rateLimit('SENSITIVE_COMMAND'),
         fastify.validateV2({ params: offerParams, headers: commandHeaders }),
       ],
@@ -360,6 +381,7 @@ export default async function waitlistRoutes(fastify: FastifyInstance) {
     '/admin/events/:eventId/tiers/:tierId/waitlist',
     {
       preHandler: [
+        unavailableInV1,
         fastify.rateLimit('AUTH_READ'),
         fastify.validateV2({ params: offerParams, querystring: adminQueueQuery }),
       ],

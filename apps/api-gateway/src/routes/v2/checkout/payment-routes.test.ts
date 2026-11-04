@@ -1,3 +1,4 @@
+import { seedVerifiedCheckoutUsers } from '../../../test-utils/verified-test-users.js';
 import { MemoryPaymentProvider } from '@c1rcle/core/domain';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -21,8 +22,9 @@ import paymentRoutes from './payment-routes.js';
  */
 
 let keySeq = 0;
-const buildServer = () =>
-  buildPartnerTestServer({
+const buildServer = () => {
+  seedVerifiedCheckoutUsers();
+  return buildPartnerTestServer({
     routes: [
       partnerOrganizationRoutes,
       partnerVenueRoutes,
@@ -32,6 +34,7 @@ const buildServer = () =>
       paymentRoutes,
     ],
   });
+};
 
 type Server = Awaited<ReturnType<typeof buildServer>>;
 

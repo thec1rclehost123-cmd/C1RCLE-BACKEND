@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { createV2Services } from '../../../lib/v2-services.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 import { publishEventForTest } from '../../../test-utils/publish-event.js';
+import { seedVerifiedCheckoutUsers } from '../../../test-utils/verified-test-users.js';
 import partnerEventCatalogRoutes from '../partner/event-catalog.js';
 import partnerEventRoutes from '../partner/events.js';
 import partnerOrganizationRoutes from '../partner/organizations.js';
@@ -59,6 +60,7 @@ const write = (org: string) => ({
 });
 
 async function seedHold(server: Server): Promise<{ holdId: string; grandTotalPaise: number }> {
+  seedVerifiedCheckoutUsers(['user_1']);
   const created = await server.inject({
     method: 'POST',
     url: '/organizations',
@@ -117,6 +119,7 @@ async function seedHoldWithPartnership(
   server: Server,
   venueShareRate: number,
 ): Promise<{ holdId: string; grandTotalPaise: number; venueOwnerOrgId: string }> {
+  seedVerifiedCheckoutUsers(['user_1']);
   // Host org
   const hostCreated = await server.inject({
     method: 'POST',

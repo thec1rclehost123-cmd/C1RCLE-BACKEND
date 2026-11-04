@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { createV2Services } from '../../../lib/v2-services.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 import { publishEventForTest } from '../../../test-utils/publish-event.js';
+import { seedVerifiedCheckoutUsers } from '../../../test-utils/verified-test-users.js';
 import checkoutRoutes from '../checkout/checkout-routes.js';
 import paymentRoutes from '../checkout/payment-routes.js';
 import partnerEventCatalogRoutes from '../partner/event-catalog.js';
@@ -48,6 +49,7 @@ function memoryProvider(): MemoryPaymentProvider {
 
 /** Seeds org -> venue -> event -> tier -> hold -> paid order, returns its ticket id. */
 async function seedTicket(server: Server): Promise<string> {
+  seedVerifiedCheckoutUsers(['user_1']);
   const created = await server.inject({
     method: 'POST',
     url: '/organizations',

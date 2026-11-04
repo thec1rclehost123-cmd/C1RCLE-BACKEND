@@ -56,6 +56,7 @@ function toSupportTicketDto(ticket: SupportTicket) {
     internalNotes: ticket.internalNotes,
     timeline: ticket.timeline,
     links: ticket.links,
+    ...(ticket.refundReview ? { refundReview: ticket.refundReview } : {}),
     sla: ticket.sla,
     mergedInto: ticket.mergedInto,
     mergedFrom: ticket.mergedFrom,

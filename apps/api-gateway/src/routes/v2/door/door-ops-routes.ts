@@ -457,6 +457,16 @@ export default async function doorOpsRoutes(fastify: FastifyInstance) {
             body.eventId,
             body.entitlementId,
             actor,
+            {
+              sessionToken: sessionTokenFrom(request),
+              ...(body.eligibilityVerified === undefined
+                ? {}
+                : { eligibilityVerified: body.eligibilityVerified }),
+              ...(body.coupleConfirmed === undefined
+                ? {}
+                : { coupleConfirmed: body.coupleConfirmed }),
+              ...(body.reason === undefined ? {} : { reason: body.reason }),
+            },
           );
           const validated = validateV2Response(reply, request, manualCheckInResponseSchema, {
             guest: outcome.guest,

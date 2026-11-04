@@ -360,6 +360,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     bankEncryptionSecret: gw.ENCRYPTION_KEY,
     bankEncryptionSalt: gw.ENCRYPTION_SALT,
     ...(gw.PARTNER_DASHBOARD_URL ? { partnerDashboardUrl: gw.PARTNER_DASHBOARD_URL } : {}),
+    ...(gw.GUEST_PORTAL_URL ? { guestPortalUrl: gw.GUEST_PORTAL_URL } : {}),
   });
 
   const repositories: ServiceDeps['repositories'] = buildRepositories(gw);
@@ -426,12 +427,12 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
       : keyId && keySecret && webhookSecret
         ? new RazorpayPaymentProvider({ keyId, keySecret, webhookSecret })
         : new UnconfiguredPaymentProvider();
-  const pricing = new PricingService({ eventCatalog: repositories.catalog });
   const inventory = new InventoryService({
     eventCatalog: repositories.catalog,
     cartReservation: repositories.cartReservations,
     order: repositories.orders,
   });
+  const pricing = new PricingService({ eventCatalog: repositories.catalog, inventory });
 
   // Phone verification: real GCP Identity Platform check when firestore
   // credentials exist (see `firebase-phone-verifier.ts`); on the memory
@@ -564,6 +565,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   eventBus.subscribe('promoter_connection.requested', notificationConsumer);
   eventBus.subscribe('partnership.requested', notificationConsumer);
   eventBus.subscribe('event.published', notificationConsumer);
+  eventBus.subscribe('event.updated', notificationConsumer);
 
   const eventMaterialChangeNoticeConsumer = createEventMaterialChangeNoticeConsumer({
     orders: repositories.orders,

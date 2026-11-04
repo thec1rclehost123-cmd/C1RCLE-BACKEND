@@ -140,6 +140,7 @@ export default async function checkoutRoutes(fastify: FastifyInstance) {
             organizationId: event.organizationId,
             lines: pricing.lines.map((line) => ({
               tierId: line.tierId,
+              ...(line.pricingPhaseId === undefined ? {} : { pricingPhaseId: line.pricingPhaseId }),
               tierName: line.tierName,
               quantity: line.quantity,
               unitPricePaise: line.unitPricePaise,

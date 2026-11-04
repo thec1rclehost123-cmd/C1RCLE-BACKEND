@@ -1,5 +1,5 @@
 import { sharedTxns } from '@c1rcle/core/infrastructure';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ActorContext } from '@c1rcle/core/application';
 import type { CoverWallet } from '@c1rcle/core/domain';
@@ -378,41 +378,39 @@ describe('POST /door/ticket-sale', () => {
     });
   }
 
-  it('sells at the tier’s price, issues tickets, and admits the guest immediately', async () => {
+  it('keeps anonymous paid door sales unavailable before any order, ticket, inventory, admission or settlement mutation', async () => {
     const token = await startShift('full');
     const tier = await seedTier();
-
-    const response = await sell(token, { tierId: tier.id, quantity: 2 });
-    expect(response.statusCode, response.body).toBe(201);
-    expect(response.json()).toMatchObject({
-      amountPaise: 300_000,
-      quantity: 2,
-      paymentMode: 'cash',
-      replayed: false,
-    });
-    expect(response.json().ticketIds).toHaveLength(2);
-    // The guest is standing at the door — they are in, not pending.
-    expect(response.json().checkInIds).toHaveLength(2);
-
-    const order = await services.repos().orders.getById(response.json().orderId);
-    expect(order).toMatchObject({ status: 'paid', grandTotalPaise: 300_000 });
-    // A cash sale carries no gateway fee or GST-on-fees — inventing one would
-    // be charging the guest for something nobody is paying.
-    expect(order).toMatchObject({ platformFeePaise: 0, paymentFeePaise: 0, gstPaise: 0 });
-
-    const ticket = await services.repos().entitlements.findById(response.json().ticketIds[0]);
-    expect(ticket?.scanCount).toBe(1);
-    expect(ticket?.status).toBe('redeemed');
+    const order = vi.spyOn(services.repos().orders, 'save');
+    const tickets = vi.spyOn(services.repos().entitlements, 'saveMany');
+    const admission = vi.spyOn(services.repos().entitlements, 'claimAdmission');
+    const inventory = vi.spyOn(services.repos().cartReservations, 'create');
+    const settle = vi.spyOn(services.checkout, 'settleOrder');
+    try {
+      const response = await sell(token, { tierId: tier.id, quantity: 2 });
+      expect(response.statusCode, response.body).toBe(503);
+      for (const operation of [order, tickets, admission, inventory, settle])
+        expect(operation).not.toHaveBeenCalled();
+    } finally {
+      for (const operation of [order, tickets, admission, inventory, settle])
+        operation.mockRestore();
+    }
   });
 
-  it('settles door revenue into the same finance ledger as an online sale', async () => {
+  it('does not create revenue or accounting projections for deferred door sales', async () => {
     const token = await startShift('full');
     const tier = await seedTier();
-    const response = await sell(token, { tierId: tier.id });
-    expect(response.statusCode, response.body).toBe(201);
-
-    const entries = await services.repos().ledger.findByOrder(response.json().orderId);
-    expect(entries.length).toBeGreaterThan(0);
+    const ledger = vi.spyOn(services.repos().ledger, 'createBatch');
+    const journal = vi.spyOn(services.repos().financialJournals, 'postBatch');
+    try {
+      const response = await sell(token, { tierId: tier.id });
+      expect(response.statusCode, response.body).toBe(503);
+      expect(ledger).not.toHaveBeenCalled();
+      expect(journal).not.toHaveBeenCalled();
+    } finally {
+      ledger.mockRestore();
+      journal.mockRestore();
+    }
   });
 
   it('ignores any price the client tries to send', async () => {
@@ -423,29 +421,40 @@ describe('POST /door/ticket-sale', () => {
     expect(response.statusCode).toBe(422);
   });
 
-  it('charges once when a dropped response is retried', async () => {
+  it('keeps retried unavailable sales non-mutating', async () => {
     const token = await startShift('full');
     const tier = await seedTier();
-    const idempotencyKey = 'sale-retry-1';
-
-    const first = await sell(token, { tierId: tier.id, idempotencyKey });
-    const retry = await sell(token, { tierId: tier.id, idempotencyKey });
-
-    expect(first.statusCode).toBe(201);
-    expect(retry.statusCode).toBe(200);
-    expect(retry.json()).toMatchObject({ orderId: first.json().orderId, replayed: true });
-    // One sale, one set of tickets — not two of each.
-    const tickets = await services.repos().entitlements.getByOrderId(first.json().orderId);
-    expect(tickets).toHaveLength(1);
+    const order = vi.spyOn(services.repos().orders, 'save');
+    try {
+      const first = await sell(token, {
+        tierId: tier.id,
+        idempotencyKey: 'm3-deferred-sale-retry',
+      });
+      const retry = await sell(token, {
+        tierId: tier.id,
+        idempotencyKey: 'm3-deferred-sale-retry',
+      });
+      expect(first.statusCode).toBe(503);
+      // The existing command wrapper retains an unsuccessful attempt's key.
+      // Its retry is a conflict; neither attempt may write commercial state.
+      expect(retry.statusCode).toBe(409);
+      expect(retry.json()).toMatchObject({ code: 'conflict' });
+      expect(order).not.toHaveBeenCalled();
+    } finally {
+      order.mockRestore();
+    }
   });
 
-  it('will not oversell the room', async () => {
+  it('does not allocate from a sold-out tier through the deferred path', async () => {
     const token = await startShift('full');
-    const tier = await seedTier({ quantity: 1 });
-
-    expect((await sell(token, { tierId: tier.id })).statusCode).toBe(201);
-    const second = await sell(token, { tierId: tier.id });
-    expect(second.statusCode).toBe(400);
+    const tier = await seedTier({ quantity: 0 });
+    const response = await sell(token, { tierId: tier.id });
+    expect(response.statusCode, response.body).toBe(503);
+    expect((await services.repos().catalog.getTierById(tier.id))?.quantity).toBe(0);
+    const orders = await services.repos().orders.listByEvent(EVENT_ID, { limit: 100 });
+    expect(
+      orders.items.every((order) => !order.lines.some((line) => line.tierId === tier.id)),
+    ).toBe(true);
   });
 
   it('refuses a scan_only session — selling entry is not scanning it', async () => {
@@ -455,11 +464,11 @@ describe('POST /door/ticket-sale', () => {
     expect(response.statusCode).toBe(404);
   });
 
-  it('refuses a tier belonging to another event', async () => {
+  it('does not expose foreign tier state through the deferred sale path', async () => {
     const token = await startShift('full');
     const tier = await seedTier({ eventId: 'evt_somewhere_else' });
     const response = await sell(token, { tierId: tier.id });
-    expect(response.statusCode).toBe(404);
+    expect(response.statusCode).toBe(503);
   });
 
   it('enforces the same guest rules as the walk-in form', async () => {

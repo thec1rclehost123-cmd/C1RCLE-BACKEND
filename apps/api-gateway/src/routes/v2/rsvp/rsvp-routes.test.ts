@@ -86,7 +86,7 @@ async function seed(
     payload: {
       title: 'Free Night',
       venueId,
-      startAt: '2026-09-01T18:00:00Z',
+      startAt: new Date(Date.now() + 60 * 60_000).toISOString(),
       summary: 'Test RSVP event',
       description: 'Connected route fixture for free entry.',
     },
@@ -199,7 +199,7 @@ describe('POST /rsvp', () => {
     await server.close();
   });
 
-  it('rejects a second RSVP from the same account with 409', async () => {
+  it('replays a second RSVP from the same account without creating another ticket', async () => {
     seedVerifiedTestAccounts();
     const server = await buildServer();
     const { eventId, tierId } = await seed(server);
@@ -208,8 +208,11 @@ describe('POST /rsvp', () => {
     expect(first.statusCode).toBe(201);
 
     const second = await rsvp(server, { eventId, tierId });
-    expect(second.statusCode).toBe(409);
-    expect(second.json()).toMatchObject({ code: 'conflict', status: 409 });
+    expect(second.statusCode).toBe(201);
+    expect(second.json().order.id).toBe(first.json().order.id);
+    expect(second.json().entitlements.map((item: { id: string }) => item.id)).toEqual(
+      first.json().entitlements.map((item: { id: string }) => item.id),
+    );
     await server.close();
   });
 
@@ -295,7 +298,7 @@ describe('POST /rsvp', () => {
       payload: {
         title: 'Unlisted Night',
         venueId: venue.json().id,
-        startAt: '2026-09-01T18:00:00Z',
+        startAt: new Date(Date.now() + 60 * 60_000).toISOString(),
       },
     });
     const eventId: string = event.json().id;
