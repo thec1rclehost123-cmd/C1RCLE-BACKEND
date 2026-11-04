@@ -729,3 +729,98 @@ it('supports acknowledged paid Couple checkout with provisional eligibility flag
   expect(hold.lines[0]?.guestCount).toBe(2);
   expect(hold.lines[0]?.eligibility?.audienceType).toBe('COUPLE');
 });
+
+describe('M3 acquisition ownership and retry boundaries', () => {
+  it('scopes a repeated paid hold key to its verified buyer', async () => {
+    const { events, catalog, service, deps } = buildService();
+    await seedPublishedFreeEvent(events);
+    seedTier(catalog, { accessType: 'ENTRY', priceInPaise: 50000 });
+    const { pricing } = await service.quote({
+      actor: actor('user_1'),
+      eventId: 'evt_1',
+      lines: [{ tierId: 'tier_1', quantity: 1 }],
+    });
+    const input = {
+      eventId: 'evt_1',
+      organizationId: 'org_1',
+      lines: pricing.lines,
+      pricing,
+      appliedPromoCode: null,
+      attribution: null,
+      idempotencyKey: 'shared-browser-retry',
+    };
+    const first = await service.createHold({ ...input, actor: actor('user_1') });
+    const replay = await service.createHold({ ...input, actor: actor('user_1') });
+    const otherBuyer = await service.createHold({ ...input, actor: actor('user_2') });
+    expect(replay.id).toBe(first.id);
+    expect(replay.userId).toBe('user_1');
+    expect(otherBuyer.id).not.toBe(first.id);
+    expect(otherBuyer.userId).toBe('user_2');
+    expect(await deps.inventory.getAvailableQuantity('evt_1', 'tier_1')).toBe(8);
+    await expect(
+      service.createHold({ ...input, actor: actor('user_2'), userId: 'user_1' }),
+    ).rejects.toBeInstanceOf(UnauthorizedError);
+    expect(await deps.inventory.getAvailableQuantity('evt_1', 'tier_1')).toBe(8);
+  });
+
+  it('does not resurrect a cancelled RSVP through a deterministic acquisition retry', async () => {
+    const { events, catalog, service, deps, outbox } = buildService();
+    await seedPublishedFreeEvent(events);
+    seedTier(catalog, { quantity: 1 });
+    const command = { actor: actor('user_1'), eventId: 'evt_1', tierId: 'tier_1' };
+    const first = await service.createRsvp(command);
+    const cancelled = await service.cancelRsvp(first.order.id, actor('user_1'));
+    await expect(service.createRsvp(command)).rejects.toThrow();
+    await expect(service.cancelRsvp(first.order.id, actor(''))).rejects.toBeInstanceOf(
+      UnauthorizedError,
+    );
+    await expect(service.cancelRsvp('RSVP-missing', actor('user_1'))).rejects.toThrow();
+    expect(await deps.repositories.orders.getById(first.order.id)).toMatchObject({
+      status: 'cancelled',
+      version: cancelled.version,
+    });
+    expect(
+      await deps.repositories.entitlements.getById(first.entitlements[0]?.id ?? ''),
+    ).toMatchObject({ status: 'void', credentialVersion: 2 });
+    expect(await deps.inventory.getAvailableQuantity('evt_1', 'tier_1')).toBe(1);
+    expect(outbox.all().filter((row) => row.type === 'rsvp.cancelled')).toHaveLength(1);
+  });
+
+  it.each(['entered', 'refund-locked', 'invitation-pending'] as const)(
+    'does not release RSVP inventory when its admission is %s',
+    async (state) => {
+      const { events, catalog, service, deps } = buildService();
+      await seedPublishedFreeEvent(events);
+      seedTier(catalog, { quantity: 1 });
+      const result = await service.createRsvp({
+        actor: actor('user_1'),
+        eventId: 'evt_1',
+        tierId: 'tier_1',
+      });
+      const entitlement = result.entitlements[0];
+      if (!entitlement) throw new Error('RSVP fixture ticket missing');
+      await deps.repositories.entitlements.save({
+        ...entitlement,
+        version: entitlement.version + 1,
+        ...(state === 'entered'
+          ? { status: 'redeemed' as const, scanCount: 1, scannedAt: [NOW.toISOString()] }
+          : {}),
+        ...(state === 'refund-locked'
+          ? { refundLock: { refundRequestId: 'REF-review', frozenAt: NOW.toISOString() } }
+          : {}),
+        ...(state === 'invitation-pending' ? { pendingTransferId: 'TRF-held' } : {}),
+      });
+      await expect(service.cancelRsvp(result.order.id, actor('user_1'))).rejects.toThrow(
+        /unused RSVP/,
+      );
+      expect(await deps.repositories.orders.getById(result.order.id)).toMatchObject({
+        status: 'paid',
+        version: result.order.version,
+      });
+      expect(await deps.inventory.getAvailableQuantity('evt_1', 'tier_1')).toBe(0);
+      await expect(
+        service.createRsvp({ actor: actor('user_2'), eventId: 'evt_1', tierId: 'tier_1' }),
+      ).rejects.toThrow(/inventory/);
+    },
+  );
+});

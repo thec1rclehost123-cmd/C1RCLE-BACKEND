@@ -127,7 +127,7 @@ function service(
       guestProfiles: { getByUserId: async () => ({ displayName: 'Recipient Name' }) },
     },
   } as unknown as ServiceDeps;
-  return { entitlements, events, notifications, outbox, service: new TicketService(deps) };
+  return { deps, entitlements, events, notifications, outbox, service: new TicketService(deps) };
 }
 
 function materialChangeNotice(userId: string, entitlement: Entitlement = ticket) {
@@ -612,4 +612,166 @@ describe('authoritative event lifecycle in ticket management', () => {
     });
     expect((await entitlements.getById(ticket.id))?.status).toBe('valid');
   });
+});
+
+describe('M3 purchaser roster and invitation previews', () => {
+  it('paginates purchased units without mixing another purchaser or losing assigned custody', async () => {
+    const { entitlements, service: tickets } = service(false);
+    for (let index = 0; index < 8; index++) {
+      await entitlements.save({
+        ...ticket,
+        id: `ENT-roster-${index}`,
+        currentHolderUserId: index === 0 ? 'USR-recipient' : index === 1 ? null : 'USR-sender',
+      });
+    }
+    await entitlements.save({ ...ticket, id: 'ENT-other-purchaser', userId: 'USR-other' });
+    const first = await tickets.listPurchasedManagement(actor('USR-sender'), { limit: 7 });
+    const second = await tickets.listPurchasedManagement(actor('USR-sender'), {
+      limit: 7,
+      cursor: first.nextCursor,
+    });
+    const rows = [...first.items, ...second.items];
+    expect(first.total).toBe(8);
+    expect(first.items).toHaveLength(7);
+    expect(second.items).toHaveLength(1);
+    expect(second.nextCursor).toBeNull();
+    expect(new Set(rows.map((row) => row.id)).size).toBe(8);
+    expect(rows.find((row) => row.id === 'ENT-roster-0')).toMatchObject({
+      ownership: 'transferred',
+      canPresent: false,
+      canTransfer: false,
+    });
+    expect(rows.find((row) => row.id === 'ENT-roster-1')).toMatchObject({
+      ownership: 'unassigned',
+      holderName: null,
+      canPresent: false,
+      canTransfer: true,
+    });
+    await expect(tickets.listPurchasedManagement(actor(''), { limit: 7 })).rejects.toThrow(
+      /Sign in/,
+    );
+  });
+
+  it('requires sign-in and exact verified email before revealing invitation details', async () => {
+    const { deps, entitlements, service: tickets } = service(false);
+    await entitlements.save(ticket);
+    const invite = await tickets.requestTransfer(
+      ticket.id,
+      'recipient@example.test',
+      actor('USR-sender'),
+    );
+    await expect(tickets.previewTransfer(invite.id, actor(''))).rejects.toThrow(/Sign in/);
+    await expect(
+      tickets.previewTransfer(invite.id, actor('USR-unverified')),
+    ).rejects.toBeInstanceOf(NotFoundError);
+    await expect(tickets.previewTransfer(invite.id, actor('USR-stranger'))).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
+    const recipient = await deps.repositories.users.getById('USR-recipient');
+    if (!recipient) throw new Error('Recipient fixture missing');
+    deps.repositories.users.getById = async () => ({ ...recipient, emailVerified: false });
+    await expect(tickets.previewTransfer(invite.id, actor('USR-recipient'))).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
+    deps.repositories.users.getById = async () => ({
+      ...recipient,
+      email: 'different@example.test',
+      emailVerified: true,
+    });
+    await expect(tickets.previewTransfer(invite.id, actor('USR-recipient'))).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
+    deps.repositories.users.getById = async () => recipient;
+    await expect(tickets.previewTransfer(invite.id, actor('USR-recipient'))).resolves.toMatchObject(
+      {
+        id: invite.id,
+        eventTitle: 'Transfer test',
+        senderName: 'Recipient Name',
+        canAccept: true,
+        unavailableReason: null,
+      },
+    );
+    await expect(
+      tickets.previewTransfer('TRF-missing', actor('USR-recipient')),
+    ).rejects.toBeInstanceOf(NotFoundError);
+    expect((await entitlements.getById(ticket.id))?.currentHolderUserId).toBe('USR-sender');
+  });
+
+  it.each(['accepted', 'declined', 'cancelled', 'expired', 'frozen'] as const)(
+    'shows a %s invitation as unavailable without changing admission rights',
+    async (status) => {
+      const { entitlements, service: tickets } = service(false);
+      await entitlements.save(ticket);
+      const invite = await tickets.requestTransfer(
+        ticket.id,
+        'recipient@example.test',
+        actor('USR-sender'),
+      );
+      entitlements.transfers.set(invite.id, { ...invite, status });
+      await expect(
+        tickets.previewTransfer(invite.id, actor('USR-recipient')),
+      ).resolves.toMatchObject({
+        status,
+        canAccept: false,
+        unavailableReason: `This invitation is ${status}.`,
+      });
+      expect((await entitlements.getById(ticket.id))?.credentialVersion).toBe(1);
+    },
+  );
+
+  it('treats the expiry instant as expired and performs no acceptance mutation', async () => {
+    const { entitlements, service: tickets } = service(false);
+    await entitlements.save(ticket);
+    const invite = await tickets.requestTransfer(
+      ticket.id,
+      'recipient@example.test',
+      actor('USR-sender'),
+    );
+    entitlements.transfers.set(invite.id, { ...invite, expiresAt: NOW.toISOString() });
+    await expect(tickets.previewTransfer(invite.id, actor('USR-recipient'))).resolves.toMatchObject(
+      {
+        status: 'expired',
+        canAccept: false,
+      },
+    );
+    expect((await entitlements.getTicketTransfer(invite.id))?.status).toBe('pending');
+  });
+
+  it.each(['recipient-is-holder', 'pending-replaced', 'reserved-cover', 'missing-ticket'] as const)(
+    'refuses a preview made unsafe by %s',
+    async (change) => {
+      const { deps, entitlements, service: tickets } = service(false);
+      await entitlements.save(ticket);
+      const invite = await tickets.requestTransfer(
+        ticket.id,
+        'recipient@example.test',
+        actor('USR-sender'),
+      );
+      const current = await entitlements.getById(ticket.id);
+      if (!current) throw new Error('Ticket fixture missing');
+      if (change === 'recipient-is-holder')
+        entitlements.entitlements.set(ticket.id, {
+          ...current,
+          currentHolderUserId: 'USR-recipient',
+        });
+      if (change === 'pending-replaced')
+        entitlements.entitlements.set(ticket.id, {
+          ...current,
+          pendingTransferId: 'TRF-replacement',
+        });
+      if (change === 'reserved-cover')
+        deps.repositories.eventCoverAccounts.getByEntitlement = async () =>
+          ({ status: 'active', reservedPaise: 100 }) as never;
+      if (change === 'missing-ticket') {
+        entitlements.entitlements.delete(ticket.id);
+        await expect(
+          tickets.previewTransfer(invite.id, actor('USR-recipient')),
+        ).rejects.toBeInstanceOf(NotFoundError);
+      } else {
+        await expect(
+          tickets.previewTransfer(invite.id, actor('USR-recipient')),
+        ).resolves.toMatchObject({ canAccept: false, unavailableReason: expect.any(String) });
+      }
+    },
+  );
 });
