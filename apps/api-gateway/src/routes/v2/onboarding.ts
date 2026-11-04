@@ -47,6 +47,10 @@ const commandHeaders = z.looseObject({ 'idempotency-key': idempotencyKeySchema }
 const requestListSchema = paginatedSchema(onboardingRequestDtoSchema);
 
 export default async function onboardingRoutes(fastify: FastifyInstance) {
+  fastify.addHook('onSend', async (_request, reply, payload) => {
+    reply.header('cache-control', 'private, no-store');
+    return payload;
+  });
   fastify.get(
     '/onboarding/promoter-agreement',
     { preHandler: [fastify.rateLimit('AUTH_READ')] },

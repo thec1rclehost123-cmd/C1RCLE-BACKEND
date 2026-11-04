@@ -21,6 +21,57 @@ export const onboardingPlanSchema = z.enum(['basic', 'silver', 'diamond']);
  * and re-filtered in the domain — a client cannot smuggle `role` in either
  * place (v1's privilege-escalation guard, made total).
  */
+const kycIdentitySchema = z
+  .object({
+    idType: z.enum(['aadhaar', 'passport', 'driving_licence', 'voter_id']),
+    idNumber: z.string().trim().min(1).max(30),
+  })
+  .strict();
+const applicantKycSchema = z
+  .object({
+    identity: kycIdentitySchema.optional(),
+    business: z
+      .object({
+        pan: z.string().regex(/^[A-Z]{5}[0-9]{4}[A-Z]$/),
+        gst: z
+          .string()
+          .regex(/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/)
+          .optional(),
+        address: z.string().trim().min(10).max(1000),
+      })
+      .strict()
+      .optional(),
+    signatory: kycIdentitySchema
+      .extend({
+        fullName: z.string().trim().min(2).max(200),
+        designation: z.string().min(1).max(100),
+        email: z.email().max(254),
+        phone: z.string().max(20).optional(),
+        declared: z.literal(true),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .superRefine((kyc, context) => {
+    // Same existing V1 formats as the Partner wizard. Advisory shape validation only.
+    const patterns = {
+      aadhaar: /^[2-9][0-9]{11}$/,
+      passport: /^[A-Z][0-9]{7,8}$/,
+      driving_licence: /^[A-Z]{2}[0-9]{2}[0-9]{4}[0-9]{4,7}$/,
+      voter_id: /^[A-Z]{3}[0-9]{7}$/,
+    };
+    for (const section of ['identity', 'signatory'] as const) {
+      const details = kyc[section];
+      if (details && !patterns[details.idType].test(details.idNumber))
+        context.addIssue({
+          code: 'custom',
+          path: [section, 'idNumber'],
+          message: 'Enter a valid number for the selected ID type.',
+        });
+    }
+  });
+
 export const onboardingProfileSchema = z
   .object({
     legalName: z.string().min(1).max(200),
@@ -35,6 +86,8 @@ export const onboardingProfileSchema = z
     businessType: z.string().max(120).optional(),
     registrationNumber: z.string().max(120).optional(),
     entityType: z.string().max(120).optional(),
+    /** Private application-only KYC; never mapped into an operational/public profile. */
+    kyc: applicantKycSchema.optional(),
   })
   .strict();
 export type OnboardingProfileDto = z.infer<typeof onboardingProfileSchema>;
