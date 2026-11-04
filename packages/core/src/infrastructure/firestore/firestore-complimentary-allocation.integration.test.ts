@@ -72,5 +72,5 @@ describe.runIf(EMULATOR)('M5 complimentary allocation Firestore transactions', (
       await batch.commit();
       await db.terminate();
     }
-  });
+  }, 45_000);
 });
