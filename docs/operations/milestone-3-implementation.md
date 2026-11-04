@@ -42,6 +42,18 @@ Core/contracts checkpoint `f089166`, Scanner fixture checkpoint `618c9cd`, Gatew
 
 User clarification: finish the entire local M3 candidate; close this final integration gate and review the accumulated frontend/backend diffs; then one consolidated frontend PR and one backend PR into staging, normal existing CI/hosting, connected acceptance. No intermediate or cosmetic PR/deployment. No main merge or new infrastructure. A later corrective PR requires a demonstrated staging defect and its affected-surface correction.
 
+## CI candidate corrections
+
+Frontend matched CI run 41921901956 passed for 0d3d562. Its opt-in local E2E and hosted smoke jobs were skipped; this is not connected acceptance.
+
+The first backend matched CI passed its build and all 2,295 tests but failed the unchanged coverage ratchet (lines 73.67% versus cached 74.84%, tolerance 0.5 points). New real HTTP and Core tests exercise exact-email privacy, purchaser pagination, buyer isolation, cancellation/replay and phase quota semantics. They exposed a genuine shared response-boundary defect: validation discarded the parsed DTO and returned raw domain objects. The helper now returns the schema result, with top-level/nested privacy and fail-closed regressions. The complete post-fix backend run passed 2,319 tests (100 skipped). Further lifecycle/Venue/RSVP HTTP and Memory inventory suites passed 101 targeted tests. A measured coverage union estimate is 74.38%; normal CI remains the authoritative ratchet result.
+
+Security scanning flagged a synthetic credential-bearing negative URL fixture, not a real credential. The fixture now constructs the same rejected URL at runtime; no scanner exclusion or policy relaxation. Commitlint rejected the numeric documentation scope. Only that newest documentation message was reworded; original 74728f0 is preserved at local `codex/m3-before-message-repair-20261104`, replacement 9317748 has the identical tree 1ea8bfa29d4604ff571ec357b07b5e2ebf8fc895. Earlier logical/source commits were preserved.
+
+One PR Emulator run exceeded the default five-second budget on an existing concurrent cover-challenge case; an identical-tree matched run passed it. CI now serializes native test files, retaining all concurrent operations and assertions within each race test. The targeted cover/M3 admission set passed 16 tests. No timeout or assertion was weakened; the original timeout's exact cause is not claimed proven.
+
+These corrections update the same consolidated PRs, backend #158 and frontend #92; no intermediate PR or staging deployment. Matched backend CI/Security must pass before staging merge.
+
 ## Connected completion gate — still open
 
 This document is the local pre-PR checkpoint. No push, PR, deployment or connected M3 acceptance has occurred at this checkpoint. M3 is NOT COMPLETE.
