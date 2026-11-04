@@ -14,6 +14,7 @@ import type {
   PaymentVerificationResponse,
   RefundRequest,
   RefundResponse,
+  ProviderRefund,
 } from '@c1rcle/core/domain/ports';
 
 interface RazorpayErrorResponse {
@@ -91,6 +92,24 @@ function isRazorpayRefundResponse(data: unknown): data is RazorpayRefundResponse
     typeof (data as Record<string, unknown>).id === 'string' &&
     typeof (data as Record<string, unknown>).status === 'string' &&
     typeof (data as Record<string, unknown>).amount === 'number'
+  );
+}
+
+function isDefiniteRefundRejection(
+  status: number,
+  data: unknown,
+): data is { error: { code: 'BAD_REQUEST_ERROR'; description: string } } {
+  // Fail closed on server/transport errors, in-flight conflicts and unknown
+  // responses. A non-2xx status alone does not prove that no refund was accepted.
+  if (![400, 401, 403, 404, 422].includes(status)) return false;
+  if (typeof data !== 'object' || data === null) return false;
+  const error = (data as Record<string, unknown>).error;
+  if (typeof error !== 'object' || error === null) return false;
+  const fields = error as Record<string, unknown>;
+  return (
+    fields.code === 'BAD_REQUEST_ERROR' &&
+    typeof fields.description === 'string' &&
+    fields.description.trim().length > 0
   );
 }
 
@@ -269,17 +288,13 @@ export class RazorpayPaymentProvider {
     });
 
     if (!response.ok) {
-      const error = await response
-        .json()
-        .catch(() => ({ error: { description: 'Unknown error' } }));
-      if (!isRazorpayErrorResponseDataWithDescription(error)) {
+      const error: unknown = await response.json().catch(() => null);
+      if (isDefiniteRefundRejection(response.status, error)) {
         throw new DefiniteProviderFailureError(
-          `Razorpay refund was rejected: ${response.statusText}`,
+          `Razorpay refund was rejected: ${error.error.description}`,
         );
       }
-      throw new DefiniteProviderFailureError(
-        `Razorpay refund was rejected: ${error.error.description}`,
-      );
+      throw new InvalidOperationError('Razorpay refund result is uncertain');
     }
 
     const data = await response.json();
@@ -290,6 +305,39 @@ export class RazorpayPaymentProvider {
       id: data.id,
       status: data.status,
       amountPaise: data.amount,
+    };
+  }
+
+  async getRefund(paymentId: string, refundId: string): Promise<ProviderRefund> {
+    const payment = assertProviderId(paymentId, 'payment id');
+    const refund = assertProviderId(refundId, 'refund id');
+    const response = await fetch(`${this.baseUrl}/payments/${payment}/refunds/${refund}`, {
+      headers: { Authorization: this.authHeader },
+    });
+    // Missing, failed or malformed lookups do not prove refund failure/absence.
+    if (!response.ok) throw new InvalidOperationError('Unable to establish provider refund fact');
+    const data: unknown = await response.json();
+    if (!isRazorpayRefundResponse(data)) {
+      throw new InvalidOperationError('Invalid provider refund fact');
+    }
+    const fact = data as unknown as Record<string, unknown>;
+    if (
+      data.id !== refund ||
+      fact.payment_id !== payment ||
+      !Number.isSafeInteger(data.amount) ||
+      data.amount <= 0 ||
+      !['pending', 'processed', 'failed'].includes(data.status) ||
+      typeof fact.currency !== 'string' ||
+      !(fact.receipt === null || typeof fact.receipt === 'string')
+    )
+      throw new InvalidOperationError('Invalid provider refund fact');
+    return {
+      id: data.id,
+      status: data.status,
+      amountPaise: data.amount,
+      paymentId: payment,
+      currency: fact.currency,
+      receipt: fact.receipt,
     };
   }
 

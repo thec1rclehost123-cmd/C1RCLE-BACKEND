@@ -318,6 +318,9 @@ describe('bounded checkout ticket upgrades', () => {
       capturePayment: async () => {
         throw new Error('unused');
       },
+      getRefund: async () => {
+        throw new Error('Refund lookup is not used by this checkout fixture');
+      },
       refundPayment: async () => {
         throw new Error('unused');
       },
@@ -472,6 +475,9 @@ describe('bounded checkout ticket upgrades', () => {
       },
       capturePayment: async () => {
         throw new Error('unused');
+      },
+      getRefund: async () => {
+        throw new Error('Refund lookup is not used by this checkout fixture');
       },
       refundPayment: async () => {
         throw new Error('unused');

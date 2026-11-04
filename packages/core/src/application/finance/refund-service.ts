@@ -393,27 +393,33 @@ export class RefundService {
       // refund failed and reopening an order after money may have moved.
       request = recordRefundProviderFact(request, response.id, response.status, now);
       await this.refundRequests.save(request);
-      if (response.status === 'failed') {
-        const failed = markRefundFailed(request, 'Provider definitively rejected the refund', now);
-        await this.refundRequests.save(failed);
-        await this.releaseSelectedTickets(failed, now);
-        await this.releaseCoverRefundFreeze(order.id, request.id, now);
-        const restored = restoreOrderAfterRefundFailure(order, now);
-        await this.orders.save(restored);
-        await emit(
-          this.deps,
-          {
-            userId: admin.id,
-            organizationId: order.organizationId,
-            role: 'owner',
-            capabilities: [],
-          },
-          request.id,
-          'finance.refund.finalized',
-          { refundRequestId: request.id, orderId: order.id, status: 'failed' },
-        );
-        return { request: failed, order: restored };
+    }
+    if (request.providerStatus === 'failed') {
+      const recorded = await this.deps.repositories.providerPayments.findByPaymentId(
+        order.paymentId,
+      );
+      if (request.providerRefundId && recorded?.refunds[request.providerRefundId] !== undefined) {
+        throw new ConflictError('Provider refund conflicts with a recorded processed refund');
       }
+      const failed = markRefundFailed(request, 'Provider definitively rejected the refund', now);
+      await this.refundRequests.save(failed);
+      await this.releaseSelectedTickets(failed, now);
+      await this.releaseCoverRefundFreeze(order.id, request.id, now);
+      const restored = restoreOrderAfterRefundFailure(order, now);
+      await this.orders.save(restored);
+      await emit(
+        this.deps,
+        {
+          userId: admin.id,
+          organizationId: order.organizationId,
+          role: 'owner',
+          capabilities: [],
+        },
+        request.id,
+        'finance.refund.finalized',
+        { refundRequestId: request.id, orderId: order.id, status: 'failed' },
+      );
+      return { request: failed, order: restored };
     }
     if (request.providerStatus !== 'processed' && request.providerRefundId) {
       const providerPayment = await this.deps.repositories.providerPayments.findByPaymentId(
@@ -516,6 +522,97 @@ export class RefundService {
       userAgent: meta?.userAgent,
     });
     return { request: settled, order: refundedOrder };
+  }
+
+  /** Records fetched evidence only; existing execute handles internal convergence. */
+  async reconcileRefund(
+    adminUserId: EntityId,
+    refundRequestId: EntityId,
+    command: { providerRefundId: string; reason: string },
+    meta?: AuditRequestMeta,
+  ): Promise<{ request: AdminRefundRequest; order: Order }> {
+    const admin = await this.authority.authorize(adminUserId, 'FINANCIAL_REFUND');
+    const request = await this.requireRefundRequest(refundRequestId);
+    const order = await this.requireOrder(request.orderId);
+    if (!command.reason.trim() || command.reason.length > 2000) {
+      throw new InvalidOperationError('Refund reconciliation requires an operator reason');
+    }
+    if (request.providerRefundId && request.providerRefundId !== command.providerRefundId) {
+      throw new ConflictError('A different provider refund is already linked');
+    }
+    if (request.status === 'settled') return { request, order };
+    if (
+      request.status !== 'executing' ||
+      !order.paymentId ||
+      order.organizationId !== request.organizationId
+    ) {
+      throw new ConflictError('Only an executing refund can be reconciled');
+    }
+    const audit = {
+      targetType: 'refund_request',
+      targetId: request.id,
+      reason: command.reason.trim(),
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
+    };
+    await this.authority.record(admin, {
+      ...audit,
+      action: 'FINANCIAL_REFUND.reconcile.requested',
+      before: { status: request.status, providerRefundId: request.providerRefundId },
+      after: { candidateProviderRefundId: command.providerRefundId },
+    });
+    const fact = await this.deps.paymentProvider.getRefund(
+      order.paymentId,
+      command.providerRefundId,
+    );
+    if (
+      fact.id !== command.providerRefundId ||
+      fact.paymentId !== order.paymentId ||
+      fact.amountPaise !== request.amountPaise ||
+      fact.currency !== order.currency ||
+      fact.receipt !== request.executionIdempotencyKey ||
+      !['pending', 'processed', 'failed'].includes(fact.status)
+    ) {
+      throw new ConflictError('Provider refund does not match the original execution');
+    }
+    if (
+      (request.providerStatus === 'processed' || request.providerStatus === 'failed') &&
+      request.providerStatus !== fact.status
+    ) {
+      throw new ConflictError('Provider refund conflicts with a saved terminal fact');
+    }
+    const payment = await this.deps.repositories.providerPayments.findByPaymentId(order.paymentId);
+    const processedAmount = payment?.refunds[fact.id];
+    if (
+      processedAmount !== undefined &&
+      (fact.status !== 'processed' || processedAmount !== fact.amountPaise)
+    ) {
+      throw new ConflictError('Provider refund conflicts with a recorded processed refund');
+    }
+    await this.authority.record(admin, {
+      ...audit,
+      action: 'FINANCIAL_REFUND.reconcile.observed',
+      before: {
+        providerRefundId: request.providerRefundId,
+        providerStatus: request.providerStatus,
+      },
+      after: {
+        providerRefundId: fact.id,
+        providerStatus: fact.status,
+        amountPaise: fact.amountPaise,
+      },
+    });
+    if (request.providerRefundId === fact.id && request.providerStatus === fact.status) {
+      return { request, order };
+    }
+    const reconciled = recordRefundProviderFact(
+      request,
+      fact.id,
+      fact.status,
+      this.deps.config.clock.now(),
+    );
+    await this.refundRequests.save(reconciled);
+    return { request: reconciled, order };
   }
 
   async listRefunds(

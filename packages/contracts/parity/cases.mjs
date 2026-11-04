@@ -873,6 +873,25 @@ export async function runParityCases({
   );
   agree('platformSettingsUpdateRequestSchema', 'rejects unknown field', { bogus: 1 }, false);
 
+  agree(
+    'reconcileRefundRequestSchema',
+    'accepts a provider id hint and reason',
+    { providerRefundId: 'rfnd_synthetic', reason: 'Approved review' },
+    true,
+  );
+  agree(
+    'reconcileRefundRequestSchema',
+    'rejects an operator-supplied refund state',
+    { providerRefundId: 'rfnd_synthetic', reason: 'Approved review', status: 'processed' },
+    false,
+  );
+  agree(
+    'reconcileRefundRequestSchema',
+    'rejects a blank operator reason',
+    { providerRefundId: 'rfnd_synthetic', reason: ' ' },
+    false,
+  );
+
   /* ── admin order DTO ────────────────────────────────────────────────────── */
   const VALID_ADMIN_ORDER = {
     id: 'ord_1',

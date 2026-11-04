@@ -393,7 +393,11 @@ describe('RazorpayPaymentProvider — refundPayment', () => {
   it('throws the provider error description on failure', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue(jsonError({ error: { description: 'Refund too large' } })),
+      vi
+        .fn()
+        .mockResolvedValue(
+          jsonError({ error: { code: 'BAD_REQUEST_ERROR', description: 'Refund too large' } }),
+        ),
     );
     await expect(
       provider().refundPayment({
