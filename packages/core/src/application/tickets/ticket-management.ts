@@ -89,18 +89,34 @@ export async function managedTicketRow(
     if (cover && (cover.status !== 'active' || cover.reservedPaise > 0))
       reason = 'Transfer is unavailable while event cover is reserved or frozen.';
   }
-  const status =
-    ticket.refundLock || order?.status === 'refund_requested'
-      ? ('refund_pending' as const)
-      : event?.status === 'cancelled' || order?.eventCancellation
-        ? ('cancelled' as const)
-        : ticket.status === 'void'
-          ? (order?.refundedPaise ?? 0) > 0
-            ? ('refunded' as const)
-            : ('cancelled' as const)
-          : ticket.status === 'redeemed'
-            ? ('used' as const)
-            : ('active' as const);
+  let refundPending = Boolean(ticket.refundLock);
+  if (!refundPending && order?.status === 'refund_requested') {
+    const requests = (await deps.repositories.refundRequests?.listByOrder(order.id)) ?? [];
+    const pending = requests.filter((request) =>
+      ['pending', 'approved', 'executing'].includes(request.status),
+    );
+    // Exact selection also protects a request persisted before its ticket locks.
+    // Preserve whole-order/legacy locks when selection cannot be established.
+    refundPending =
+      pending.length === 0 ||
+      pending.some(
+        (request) =>
+          request.scope !== 'ticket_lines' ||
+          !request.targetEntitlementIds?.length ||
+          request.targetEntitlementIds.includes(ticket.id),
+      );
+  }
+  const status = refundPending
+    ? ('refund_pending' as const)
+    : event?.status === 'cancelled' || order?.eventCancellation
+      ? ('cancelled' as const)
+      : ticket.status === 'void'
+        ? (order?.refundedPaise ?? 0) > 0
+          ? ('refunded' as const)
+          : ('cancelled' as const)
+        : ticket.status === 'redeemed'
+          ? ('used' as const)
+          : ('active' as const);
   if (!reason && status !== 'active') reason = 'This ticket cannot be transferred.';
   return {
     id: ticket.id,

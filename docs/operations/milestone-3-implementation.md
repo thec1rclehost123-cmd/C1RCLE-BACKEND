@@ -65,3 +65,9 @@ Final authoritative/staging revisions, PRs, CI and connected scenarios belong in
 ## Deliberately deferred
 
 Provider checkout/capture/refunds/payouts, production release, full email design, offline Scanner/advanced M5, Student/Member, waitlists, resale, broad load work and full Promoter analytics/E2E. Promoter frozen purchase attribution and refund reversal behavior remain protected by existing paths and affected regressions.
+
+## Local connected acceptance correction
+
+With the consolidated PRs preserved open while independent backend review is unavailable, real local Gateway/Firestore Emulator/Redis refund acceptance exposed a ticket projection defect: an exact attendee refund made an unaffected same-order holder's management status `refund_pending`, although that holder's ticket and direct QR remained valid. Management now uses canonical ticket locks and the persisted active refund selection, retaining conservative whole-order behavior when legacy selection metadata is missing. A six-case regression reproduced the original failure before the fix; 40 focused Core tests and 16 Gateway ticket/wallet tests pass, and independent read-only review found no actionable issue.
+
+The actual local HTTP refund journey now passes 25 steps, including selected-only locks, unaffected presentation, distinct Admin approval, rejection recovery, and idempotent settlement/restock recovery. Paid/capture/provider-result fixtures are explicitly synthetic emulator records; no provider request or money movement is claimed. Local acceptance is separate from hosted acceptance, which remains blocked by required GitHub review. Both existing consolidated PRs remain open; protections are unchanged.
