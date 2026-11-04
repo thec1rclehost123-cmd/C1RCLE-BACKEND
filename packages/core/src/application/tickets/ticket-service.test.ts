@@ -139,6 +139,13 @@ function materialChangeNotice(userId: string, entitlement: Entitlement = ticket)
 }
 
 describe('TicketService transfer controls', () => {
+  it('rejects oversized recipient addresses before repository lookup', async () => {
+    const { service: tickets } = service(true, { manifestsDisabled: true, drainComplete: true });
+    await expect(
+      tickets.requestTransfer(ticket.id, 'a'.repeat(255) + '@example.test', actor('USR-sender')),
+    ).rejects.toThrow('A valid recipient email is required for ticket transfer');
+  });
+
   it('keeps transfer endpoints disabled unless the deployment explicitly enables the flag', async () => {
     const { entitlements, service: tickets } = service(false);
     await entitlements.save(ticket);

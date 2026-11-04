@@ -139,7 +139,7 @@ export class TicketService {
     this.requireTransferFeature();
     if (!actor.userId) throw new UnauthorizedError('A session is required to transfer tickets');
     const normalizedEmail = recipientEmail.trim().toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+    if (normalizedEmail.length > 254 || !/^[^\s@]+@[^\s@.]+\.[^\s@]+$/.test(normalizedEmail)) {
       throw new ConflictError('A valid recipient email is required for ticket transfer');
     }
     const invitedAccount = await this.deps.repositories.users.getByEmail(normalizedEmail);

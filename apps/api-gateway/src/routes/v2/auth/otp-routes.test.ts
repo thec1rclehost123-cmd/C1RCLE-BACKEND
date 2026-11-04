@@ -56,6 +56,29 @@ describe('POST /auth/otp/send', () => {
 });
 
 describe('POST /auth/otp/verify', () => {
+  it('rate limits the real verify route despite rotating organization headers', async () => {
+    const server = await buildPartnerTestServer({ routes: [otpRoutes], rateLimit: true });
+    try {
+      let limited = false;
+      for (let index = 0; index < 15; index += 1) {
+        const response = await server.inject({
+          method: 'POST',
+          url: '/otp/verify',
+          headers: { 'x-organization-id': `synthetic-${index}` },
+          payload: { email: 'limit@example.test', code: '123456' },
+        });
+        if (response.statusCode === 429) {
+          expect(response.headers['retry-after']).toBeDefined();
+          limited = true;
+          break;
+        }
+      }
+      expect(limited).toBe(true);
+    } finally {
+      await server.close();
+    }
+  });
+
   it('rejects a code with no send in progress', async () => {
     const server = await buildServer();
     const res = await server.inject({
