@@ -38,8 +38,24 @@ ${NGINX_ORIGIN_LOCKED_MAP_ENTRIES}
 }
 
 # 1 only for a locked host that did NOT present a valid secret. nginx's `if`
-# takes a single variable, so the two facts are combined here.
-map "$c1rcle_origin_locked_host:$c1rcle_origin_verified" $c1rcle_origin_blocked {
+# takes a single variable, so the facts are combined here.
+#
+# One deliberate exception: GET and HEAD of exactly /api/v2/internal/health.
+# The platform's own health checker (Render) probes the service through its
+# custom domain, so the Host is a locked name, and it cannot send a secret it
+# does not know. Without this exception a locked deployment never passes its
+# health check and every deploy fails after ~15 minutes with "update_failed",
+# leaving the previous version running (this happened on 2026-11-04). The path
+# answers only {ok, uptime}; /internal/readiness and /internal/version stay
+# behind their own token, and every other path on a locked host stays refused.
+#
+# nginx evaluates exact map keys before regular expressions regardless of
+# order, so the two exact keys below win over the "~^1:0:" catch-all.
+# `$uri` is the normalised path (percent-decoding and "../" resolved, query
+# string removed), so a crafted path cannot be mistaken for the health path.
+map "$c1rcle_origin_locked_host:$c1rcle_origin_verified:$request_method:$uri" $c1rcle_origin_blocked {
     default 0;
-    "1:0" 1;
+    "~^1:0:" 1;
+    "1:0:GET:/api/v2/internal/health" 0;
+    "1:0:HEAD:/api/v2/internal/health" 0;
 }
