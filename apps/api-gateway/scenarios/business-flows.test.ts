@@ -113,9 +113,9 @@ async function onboardAndApproveHost(
       method: 'POST',
       url: `/api/v2/onboarding/applications/${requestId}/documents`,
       headers: asUser(applicantId),
-      payload: { label, storagePath: `kyc/${applicantId}/${label}.jpg` },
+      payload: { label, storagePath: `kyc/${applicantId}/${requestId}/${label}` },
     });
-    expect(doc.statusCode).toBe(200);
+    expect(doc.statusCode, JSON.stringify(doc.json())).toBe(200);
   }
 
   const submit = await server.inject({
@@ -123,7 +123,7 @@ async function onboardAndApproveHost(
     url: `/api/v2/onboarding/applications/${requestId}/submit`,
     headers: asUser(applicantId),
   });
-  expect(submit.statusCode).toBe(200);
+  expect(submit.statusCode, JSON.stringify(submit.json())).toBe(200);
 
   // Seed a real platform admin so the approval's `requireAdmin` passes.
   await services
@@ -335,9 +335,9 @@ describe('scenario: KYC document reject, re-upload, request-changes, and the app
         method: 'POST',
         url: `/api/v2/onboarding/applications/${requestId}/documents`,
         headers: asUser(applicantId),
-        payload: { label, storagePath: `kyc/${applicantId}/${label}.jpg` },
+        payload: { label, storagePath: `kyc/${applicantId}/${requestId}/${label}` },
       });
-      expect(doc.statusCode).toBe(200);
+      expect(doc.statusCode, JSON.stringify(doc.json())).toBe(200);
     }
 
     const submit = await server.inject({
@@ -345,7 +345,7 @@ describe('scenario: KYC document reject, re-upload, request-changes, and the app
       url: `/api/v2/onboarding/applications/${requestId}/submit`,
       headers: asUser(applicantId),
     });
-    expect(submit.statusCode).toBe(200);
+    expect(submit.statusCode, JSON.stringify(submit.json())).toBe(200);
 
     await services
       .repos()
@@ -377,13 +377,14 @@ describe('scenario: KYC document reject, re-upload, request-changes, and the app
     expect(afterReject.status).toBe('rejected');
     expect(afterReject.rejectionReason).toBe('Photo is blurry, re-upload needed');
 
-    // The applicant re-uploads — the new copy must be pending again, never
+    // Re-upload uses the same applicant/application/label object key. The
+    // new copy must be pending again, never
     // inheriting the stale rejected status.
     const reupload = await server.inject({
       method: 'POST',
       url: `/api/v2/onboarding/applications/${requestId}/documents`,
       headers: asUser(applicantId),
-      payload: { label: 'id_front', storagePath: `kyc/${applicantId}/id_front-v2.jpg` },
+      payload: { label: 'id_front', storagePath: `kyc/${applicantId}/${requestId}/id_front` },
     });
     expect(reupload.statusCode).toBe(200);
     const afterReupload = reupload
@@ -430,18 +431,20 @@ describe('scenario: KYC document reject, re-upload, request-changes, and the app
     const requestId: string = start.json().id;
 
     for (const label of ['id_front', 'id_back', 'selfie']) {
-      await server.inject({
+      const document = await server.inject({
         method: 'POST',
         url: `/api/v2/onboarding/applications/${requestId}/documents`,
         headers: asUser(applicantId),
-        payload: { label, storagePath: `kyc/${applicantId}/${label}.jpg` },
+        payload: { label, storagePath: `kyc/${applicantId}/${requestId}/${label}` },
       });
+      expect(document.statusCode, JSON.stringify(document.json())).toBe(200);
     }
-    await server.inject({
+    const submit = await server.inject({
       method: 'POST',
       url: `/api/v2/onboarding/applications/${requestId}/submit`,
       headers: asUser(applicantId),
     });
+    expect(submit.statusCode, JSON.stringify(submit.json())).toBe(200);
 
     await services
       .repos()
@@ -653,7 +656,7 @@ describe('scenario: M4 Promoter campaign attribution over the full API', () => {
         method: 'POST',
         url: `/api/v2/onboarding/applications/${requestId}/documents`,
         headers: asUser(promoterUserId),
-        payload: { label, storagePath: `kyc/${promoterUserId}/${label}.jpg` },
+        payload: { label, storagePath: `kyc/${promoterUserId}/${requestId}/${label}` },
       });
       expect(document.statusCode, JSON.stringify(document.json())).toBe(200);
     }
