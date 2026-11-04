@@ -17,9 +17,12 @@ import { ServiceUnavailableError } from '@c1rcle/core/domain';
 import type { OrganizationService } from '@c1rcle/core/application';
 import type { StaffRotationStore } from '@c1rcle/core/domain';
 
+import { getBetterAuthTrustedOrigins, getGatewayConfig } from '../../../config/index.js';
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { toWebHeaders, type BetterAuthInstance } from '../../../plugins/auth.js';
 import { invitationToDto } from '../partner/organizations.js';
+
+import { registerNativeCallbacks } from './native-callbacks.js';
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { z } from 'zod';
@@ -46,6 +49,7 @@ export default async function authRoutes(
   },
 ) {
   const { auth, rotationStore, organizations } = options;
+  if (auth) await registerNativeCallbacks(fastify, auth);
 
   const invitationListSchema = paginatedSchema(invitationDtoSchema);
 
@@ -181,8 +185,20 @@ export default async function authRoutes(
       const body = request.body as z.infer<typeof forgotPasswordRequestSchema>;
       let validated: unknown;
       try {
+        const trustedOrigins = getBetterAuthTrustedOrigins(getGatewayConfig());
+        const origin = request.headers.origin ?? trustedOrigins[0];
+        if (!origin || !trustedOrigins.includes(origin)) {
+          return await reply.status(400).send(
+            buildV2ErrorResponse({
+              status: 400,
+              code: 'validation',
+              message: 'Invalid recovery origin.',
+              requestId: request.id,
+            }),
+          );
+        }
         const result = await auth.api.requestPasswordReset({
-          body: { email: body.email },
+          body: { email: body.email, redirectTo: new URL('/reset-password', origin).href },
           headers: toWebHeaders(request.headers),
         });
         validated = validateV2Response(reply, request, passwordResetAckSchema, result);

@@ -19,9 +19,11 @@ describe.runIf(emulator)('native session revocation (local Emulator)', () => {
     const email = `packet-1-8-${randomUUID()}@example.invalid`;
     let userId: string | undefined;
     let resetToken: string | undefined;
+    let resetUrl: string | undefined;
     const sender = {
       name: 'capture-only',
       sendPasswordResetEmail: async (_email: string, url: string) => {
+        resetUrl = url;
         resetToken = new URL(url).pathname.split('/').pop();
       },
     } as EmailSender;
@@ -75,15 +77,42 @@ describe.runIf(emulator)('native session revocation (local Emulator)', () => {
       await expect(auth.api.signInEmail({ body: { email, password } })).rejects.toThrow();
       const relogin = await auth.api.signInEmail({ body: { email, password: changed } });
       const active = credentials(relogin.token);
-      await auth.api.requestPasswordReset({ body: { email } });
+      await auth.api.requestPasswordReset({
+        body: { email, redirectTo: 'http://localhost:3000/reset-password' },
+      });
       expect(resetToken).toBeTruthy();
-      if (!resetToken) throw new Error('Expected captured reset token');
+      if (!resetToken || !resetUrl) throw new Error('Expected captured reset token');
+      const callback = await auth.handler(new Request(resetUrl));
+      expect(callback.status).toBe(302);
+      const destination = new URL(callback.headers.get('location') ?? '');
+      expect(destination.origin + destination.pathname).toBe(
+        'http://localhost:3000/reset-password',
+      );
+      expect(destination.searchParams.get('token')).toBe(resetToken);
+      await expect(
+        auth.api.resetPassword({ body: { token: 'invalid-synthetic-token', newPassword: reset } }),
+      ).rejects.toThrow();
       await auth.api.resetPassword({ body: { token: resetToken, newPassword: reset } });
       expect(await auth.api.getSession({ headers: active })).toBeNull();
       await expect(
         auth.api.resetPassword({ body: { token: resetToken, newPassword: changed } }),
       ).rejects.toThrow();
       await expect(auth.api.signInEmail({ body: { email, password: changed } })).rejects.toThrow();
+      expect((await auth.api.signInEmail({ body: { email, password: reset } })).user.id).toBe(
+        userId,
+      );
+      await auth.api.requestPasswordReset({
+        body: { email, redirectTo: 'http://localhost:3000/reset-password' },
+      });
+      const expired = await db
+        .collection('v2_auth_verification_tokens')
+        .where('identifier', '==', `reset-password:${resetToken}`)
+        .get();
+      expect(expired.docs).toHaveLength(1);
+      await expired.docs[0]!.ref.update({ expiresAt: new Date(0) });
+      await expect(
+        auth.api.resetPassword({ body: { token: resetToken, newPassword: changed } }),
+      ).rejects.toThrow();
       expect((await auth.api.signInEmail({ body: { email, password: reset } })).user.id).toBe(
         userId,
       );
