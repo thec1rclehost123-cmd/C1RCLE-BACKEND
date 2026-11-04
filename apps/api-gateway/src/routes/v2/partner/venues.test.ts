@@ -1309,3 +1309,63 @@ describe('Overnight automatic availability', () => {
     await server.close();
   });
 });
+
+describe('M3 Venue cancellation of an accepted live booking', () => {
+  it('requires Venue ownership and a reason, freezes the event with a Venue initiator, and replays once', async () => {
+    const server = await buildSlotRequestServer();
+    try {
+      const fixture = await createHostSlotRequestFixture(server, true);
+      const url = `/venues/slot-requests/${fixture.request.id}/cancel-by-venue`;
+      const blank = await server.inject({
+        method: 'POST',
+        url,
+        headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
+        payload: { reason: '' },
+      });
+      expect(blank.statusCode).toBe(422);
+      const foreign = await server.inject({
+        method: 'POST',
+        url,
+        headers: {
+          'x-organization-id': fixture.hostOrganizationId,
+          'idempotency-key': nextVenueKey(),
+        },
+        payload: { reason: 'Host cannot impersonate Venue' },
+      });
+      expect(foreign.statusCode).toBe(404);
+      const headers = { ...READ_HEADERS, 'idempotency-key': nextVenueKey() };
+      const payload = { reason: 'Venue temporarily closed for safety' };
+      const cancelled = await server.inject({ method: 'POST', url, headers, payload });
+      const replay = await server.inject({ method: 'POST', url, headers, payload });
+      expect(cancelled.statusCode, cancelled.body).toBe(200);
+      expect(cancelled.json()).toMatchObject({ id: fixture.request.id, status: 'cancelled' });
+      expect(replay.json()).toEqual(cancelled.json());
+      const event = await server.inject({
+        method: 'GET',
+        url: `/events/${fixture.request.eventId}`,
+        headers: { 'x-organization-id': fixture.hostOrganizationId },
+      });
+      expect(event.statusCode, event.body).toBe(200);
+      expect(event.json()).toMatchObject({
+        status: 'postponed',
+        isPublic: false,
+        postponement: { initiatedBy: 'venue', organizationId: ORG, reason: payload.reason },
+      });
+      const changed = await server.inject({
+        method: 'POST',
+        url,
+        headers,
+        payload: { reason: 'Changed replay intent' },
+      });
+      expect(changed.statusCode).toBe(409);
+      const unchanged = await server.inject({
+        method: 'GET',
+        url: `/events/${fixture.request.eventId}`,
+        headers: { 'x-organization-id': fixture.hostOrganizationId },
+      });
+      expect(unchanged.json().version).toBe(event.json().version);
+    } finally {
+      await server.close();
+    }
+  });
+});
