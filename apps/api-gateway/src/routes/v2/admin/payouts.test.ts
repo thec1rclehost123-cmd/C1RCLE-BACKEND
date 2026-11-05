@@ -1,6 +1,6 @@
 import { FinancialPostingService } from '@c1rcle/core/application';
 import { createPayout, createPlatformAdmin, DEFAULT_ACCOUNTING_POLICY } from '@c1rcle/core/domain';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AdminRole } from '@c1rcle/core/domain';
 
@@ -10,7 +10,22 @@ import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.
 import adminRoutes from './onboarding-review.js';
 import adminPayoutRoutes from './payouts.js';
 
+import type * as ConfigModule from '../../../config/index.js';
 import type { FastifyInstance } from 'fastify';
+
+// Positive in-memory release/batch scenarios must explicitly opt in. Deployment
+// defaults and the separate payout-off route regressions remain disabled.
+const payoutFlag = vi.hoisted(() => ({ enabled: false }));
+vi.mock('../../../config/index.js', async (importOriginal) => {
+  const actual: typeof ConfigModule = await importOriginal();
+  return {
+    ...actual,
+    getGatewayConfig: (...args: Parameters<typeof actual.getGatewayConfig>) => ({
+      ...actual.getGatewayConfig(...args),
+      PAYOUTS_ENABLED: payoutFlag.enabled,
+    }),
+  };
+});
 
 /**
  * ─── Admin payout controls over HTTP (Phase 6 admin) ─────────────────────────
@@ -61,6 +76,7 @@ function asUser(userId: string) {
 let server: FastifyInstance;
 
 beforeEach(async () => {
+  payoutFlag.enabled = false;
   const repos = services.repos();
   (repos.platformAdmins as unknown as { admins: Map<string, unknown> }).admins.clear();
   (repos.proposals as unknown as { proposals: Map<string, unknown> }).proposals.clear();
@@ -110,6 +126,7 @@ describe('payout freeze/release — dual control', () => {
   });
 
   it('release restores exactly the status held before freezing', async () => {
+    payoutFlag.enabled = true;
     await seedAdmin('admin_a', 'super');
     await seedAdmin('admin_b', 'super');
     const payout = await seedPayout('processing');
@@ -180,6 +197,7 @@ describe('payout freeze/release — dual control', () => {
 
 describe('POST /admin/payouts/batch-run — TIER2, single admin', () => {
   it('moves eligible requested payouts to processing and skips the rest', async () => {
+    payoutFlag.enabled = true;
     await seedAdmin('admin_ops', 'ops');
     const eligible = await seedPayout('requested');
     const alreadyProcessing = await seedPayout('processing');
@@ -200,6 +218,7 @@ describe('POST /admin/payouts/batch-run — TIER2, single admin', () => {
   });
 
   it('refuses a support-tier admin (below TIER2)', async () => {
+    payoutFlag.enabled = true;
     await seedAdmin('admin_support', 'support');
     const payout = await seedPayout('requested');
 
