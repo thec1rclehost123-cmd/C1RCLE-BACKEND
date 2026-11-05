@@ -14,26 +14,25 @@
 #  a follow-up — see NOTE at the bottom of this file.
 # ============================================================================
 
-FROM node:24-slim AS base
+FROM node:24-bookworm-slim AS base
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
 # Upgrade OS packages to fix known HIGH/CRITICAL CVEs before any downstream stage.
-#   tar       — CVE-2026-73566 (tar < 7.5.21, HIGH)
+#   apt / libapt-pkg6.0 — CVE-2026-109518 (bookworm fixed in 2.6.2)
 #   pcre2     — CVE-2026-86145 / CVE-2026-89161 (libpcre2-8-0 < 10.42-1+deb12u1, HIGH)
 #   perl-base — CVE-2026-13221 / CVE-2026-42496 / CVE-2026-8376 / CVE-2026-42497 /
 #               CVE-2026-48962 / CVE-2026-57432 / CVE-2026-57433 (CRITICAL / HIGH)
 RUN apt-get update -qq \
- && apt-get install -y --no-install-recommends tar libpcre2-8-0 perl-base \
+ && apt-get install -y --no-install-recommends apt libapt-pkg6.0 tar libpcre2-8-0 perl-base \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
-RUN corepack enable && pnpm config set store-dir /pnpm/store
-# pnpm bundles tar inside its own dist/node_modules/tar. Trivy reads the
-# version from that package.json and flags anything <7.5.21 for
-# CVE-2026-73566. Patch the version string in-place as a backstop; the
-# primary fix is the pnpm version bump above (11.26.0 bundles tar >=7.5.21).
-RUN find / -path "*/node_modules/tar/package.json" 2>/dev/null \
-    | xargs -r grep -l '"version": "7\.5\.[0-9]\{1,2\}"' \
-    | xargs -r sed -i 's/"version": "7\.5\.[0-9]\{1,2\}"/"version": "7.5.21"/'
+# Install the actual package-manager version pinned by the repository before
+# invoking pnpm; do not rely on Corepack's default or alter dependency metadata.
+COPY package.json /tmp/c1rcle-package.json
+RUN corepack enable \
+ && corepack install --global "$(node -p "require('/tmp/c1rcle-package.json').packageManager")" \
+ && rm /tmp/c1rcle-package.json \
+ && pnpm config set store-dir /pnpm/store
 # Purge the node:24-slim bundled npm/npx — the app runs entirely on pnpm, so
 # global npm is dead weight and a recurring Trivy finding (its bundled
 # brace-expansion & ip-address carry HIGH CVEs that library overrides cannot
