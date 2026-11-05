@@ -25,7 +25,7 @@ Host eligibility uses canonical effective event end (M3 six-hour fallback): 0 be
 3. Failure/expiry/restart recovery: implemented locally — bounded stranded-capture repair and no blind provider retries; captured purchases unable to grant admission become full-original-payment canonical compensation requests with existing approval thresholds. No direct compensation refund POST.
 4. Connected exact-ticket refunds: local backend implemented — original component allocation, atomic intake, event-version guards, approval-gated compensation and fee-only policy remedies, cancellation full-remaining-original policy. Admin/Guest frontend integration implemented and focused checks passed. Real provider payment/refund acceptance remains UNVERIFIED.
 5. Reconciliation/disputes/settlement: implemented locally — legitimate M3 states, affected exposure holds, staged event-end eligibility, explicit Partner journal linkage and bidirectional reversal with transactional refund/correction guards. Unlinked or mixed-scope claims require a separately approved adjustment; provider chargebacks remain distinct.
-6. Final integrated acceptance: pending — final affected integration gate, complete diff review and frozen revisions; ordinary feature work is frozen, complete diff review and frozen revisions before consolidated PRs.
+6. Final integrated acceptance: local affected gate and targeted connected/browser acceptance passed with qualifications below. Ordinary features are frozen and complete diffs reviewed. Consolidated PR/CI and legitimate M3→M4 staging/real Razorpay Test acceptance remain; M4 is not complete.
 
 ### Founder dispute decision
 
@@ -38,7 +38,7 @@ These are separate focused runs, not a cumulative unique-test count or the final
 - UNIT VERIFIED: pricing/order snapshot tests; 18 posting tests including distinct fee caps/replay and refund after Partner reversal; 3 canonical compensation intake tests; 25 staged settlement tests; 18 dispute/correction tests including native cases below.
 - EMULATOR VERIFIED: conditional expiry/issuance regressions, native provider-claim/intake/completion races, and 4 native/memory correction cases. Tests use disposable demo projects on loopback, never production.
 - LOCAL HTTP VERIFIED with Memory provider: 70 affected checkout/payment/webhook tests; 57 refund tests at cancellation checkpoint; 2 focused subsequent policy-remedy cases (55 unrelated cases unselected); 1 focused financial fee-settings authority/version/audit case (10 unselected); 7 Admin dispute tests.
-- Frontend focused tests/typechecks passed for Test fee disclosure/policy version reconfirmation, staged Host settlement/payout-disabled behavior and Admin uncertain-refund recovery. Actual M4 browser acceptance remains pending.
+- Frontend focused tests/typechecks passed for Test fee disclosure/policy version reconfirmation, staged Host settlement/payout-disabled behavior and Admin uncertain-refund recovery. Browser acceptance was pending at this focused checkpoint; final evidence follows below.
 - RAZORPAY TEST MODE VERIFIED, order adapter only: one real Test order creation and later exact read-only lookup/recovery; no second creation after uncertain lookup. No real Test payment/capture/refund claimed.
 - FIREBASE c1rcle-v2 READ ONLY: protected metadata probe confirmed no Emulator configured, absent journal-transition singleton and no persisted M4 booking policy; existing accounting policy version is `m2-test-policy-v1`. No writes attempted. Therefore the default legacy finance mode remains unavailable for M4 settlement until a governed cutover; this work does not silently migrate it.
 
@@ -50,13 +50,13 @@ Approved connected project: `c1rcle-v2`, Razorpay **Test Mode only**. No product
 
 Use focused regression/unit tests during changes, native Emulator tests for transaction races, real Redis only for shared coordination, and targeted browser tests for changed UI. Do not repeat broad suites after small edits. Preserve failed reproductions and classify UNIT / EMULATOR / REDIS / LOCAL CONNECTED / RAZORPAY TEST MODE / BROWSER / STAGING evidence honestly.
 
-M3's required independent backend review remains an external hosted-release dependency, not a blocker to local M4 implementation. Real payment/refund, browser and hosted acceptance remain unverified. Hosted release still requires the legitimate M3 process.
+M3's required independent backend review remains an external hosted-release dependency, not a blocker to local M4 implementation. Real provider payment/refund and hosted acceptance remain unverified. Local browser evidence and its qualifications are recorded below. Hosted release still requires the legitimate M3 process.
 
 ## Preserved M5 boundary
 
 Venue cover sales and ticket add-on sales remain OFF (`M5_COVER_SALES_ENABLED=false`, `M5_TICKET_ADDONS_ENABLED=false` by safe defaults); M4 does not activate their separate commercial/accounting capabilities. Bounded dependency review found the older cover integration permits only full unused full-order refunds. Exact unused organizer cover remedies could eventually use per-entitlement saved policies, but normal admission-only refunds would void the linked admission and leave cover rights unresolved. The future cover authorization must decide whether to refund unused cover, preserve an independent redeemable right, or make combined products ineligible for that normal refund. No such new policy or cover implementation is authorized by M4; existing fail-closed cover behavior is preserved.
 
-## Local feature freeze checkpoint
+## Historical pre-gate feature freeze checkpoint
 
 Ordinary M4 feature implementation is frozen. Subsequent changes require a demonstrated gate/runtime defect or required acceptance correction; no speculative failure sweeps or M5 work.
 
@@ -80,3 +80,51 @@ Local independent diff review found and resolved four additional integration bou
 The accounting-only refund fast path verifies the mandatory collection/allocation pair and restores stored companion lines. It does not invent an isolated missing conditional provider-fee aggregate from an otherwise existing pair. New capture posting writes its known provider fee atomically, and new fulfillment separately requires the conditional fee proof. This is a recorded recovery limit, not a claim of arbitrary historical financial reconstruction.
 
 Code checkpoints now include backend `675849e`, `f81ca5e`, `56ee9c1` and frontend `79034f6`, following the integrated checkpoint. The reviewed comprehensive gate is prepared as 45 sequential steps outside source, with two file workers for this 8 GB machine; concurrency operations inside race tests and existing timeouts are unchanged. The gate has NOT been executed at this documentation checkpoint. Only demonstrated verification/acceptance failures may change the frozen candidate from here.
+
+
+## Final local gate and connected acceptance — 2026-11-04/05
+
+Application checkpoints: backend `9b4e302` and frontend `b8ad579`. Subsequent evidence-only documentation commits do not change application behavior. Exact frozen M3 ancestors remain preserved; unrelated worktrees were not reset or cleaned.
+
+The single accumulated comprehensive affected gate passed: **45 steps passed, 1 not applicable, no test skips**. The original 45-step plan passed, then final native acceptance demonstrated the optional-audit-metadata defect below. One bounded regression step was added; only affected backend type/lint/format/build checks resumed. Earlier successful evidence retains its recorded revisions; this is explicitly mixed-revision evidence, not an exact-head claim for every earlier test. No original assertion, concurrency operation, timeout or gate was weakened.
+
+| Stage | Passing tests |
+| --- | ---: |
+| Backend contracts | 39 |
+| Core affected invariants | 594 |
+| Memory repositories | 15 |
+| Native Firestore/concurrency | 121 |
+| Gateway routes/adapters | 465 |
+| Real Redis rate limiting | 18 |
+| Post-acceptance Admin/refund/native regression | 22 |
+| Guest affected | 166 |
+| Admin refund/format | 41 |
+| Partner finance | 101 |
+| Frontend contracts / API client / config | 7 / 54 / 11 |
+
+These are separate stages, not a unique cumulative total. Contracts/export/parity, types, backend/shared builds, architecture boundaries, indexes, nginx, security action pins/history, affected lint/format, all three Next production builds and Scanner Web export passed. The Scanner affected-lint selection was not applicable because no Scanner source changed; its types/export did run. Exact argv, failed attempts, source heads and reviewed resumptions are preserved in the external `final-gate/plan.json`, `state.json`, `logs/` and `reports/`.
+
+Demonstrated final-gate/runtime corrections:
+
+- Initial version-one Order creation is create-if-absent in native and Memory repositories. A stale create cannot overwrite completion or refund locks. The losing concurrent confirmation follows the common provider-binding path, including recovery when the winner's final binding was interrupted.
+- Captured purchases queued for compensation grant no admission and consume neither sold inventory nor paid-unit quota. Ordinary paid-pending claims remain protected. Original buyer races/counts and timeouts were retained.
+- Canonical Admin audit writes omit undefined optional IP/User-Agent fields while preserving supplied values, including empty strings. Native regressions reproduced three serializer failures before the fix; six cases passed afterward, including immutable actor evidence. No adapter/global `ignoreUndefinedProperties` workaround was added.
+- Older finance test fixtures now explicitly opt in to in-memory payout-route scenarios and use journal-backed, provider-evidenced, ended-event proceeds. Deployment defaults remain OFF. Original route/replay/reservation assertions remain.
+
+LOCAL CONNECTED / EMULATOR VERIFIED: actual Host/Venue/event/quote HTTP journey; original versioned pricing; native canonical Memory-provider purchase completion and exact all-admission refund with a distinct authorized approver; same-request recovery after the audit interruption; balanced journals, receipt/outbox facts, exact ticket invalidation and stable terminal retry. Native settlement passed 11 actual Host API cases across the staged clock, affected holds and missing-end fallback. Governed journal transition occurred only in disposable `demo-c1rcle-m4-local`; real `c1rcle-v2` settings/transition were not changed.
+
+BROWSER VERIFIED against production Guest/Admin builds: pending, compensation with actual public-event 404, original receipt and all-admission refund retaining fees, each at 1440/390px. Original payment ₹1,087.43, refund ₹999.01, retained ₹88.42 remain exact; refunded admissions show no active ticket CTA. Stranger order API returns 404 and the UI exposes only unavailable-booking/noindex, no financial facts. A streamed Next not-found document may return 200 ([official semantics](https://nextjs.org/docs/app/api-reference/file-conventions/not-found)); the initial harness's document-status assumption was corrected and only security/Admin checks resumed. Owner-state evidence was preserved rather than rerun.
+
+Admin current canonical compensation amount ₹1,088.5 and pending state were browser verified; no financial action was clicked. This is **qualified** evidence: five initial 401 responses were recorded. The two refund requests recovered after refresh to 200; three initial dashboard-prefetch endpoints were not rechecked. It is not a clean-network claim. Existing Host settlement/payout-disabled and Admin recovery-control browser evidence remains separate. No Auth/KYC/Profile side-track was imported.
+
+The first receipt harness generated overlong synthetic identifiers. Its native failure/recovery evidence was retained; it was not accepted as browser proof. A private lossless snapshot and exact transactional membership/version checks quarantined only its 78 owned invalid-fixture documents in the disposable Emulator. Shared identities, event/tier, settings, journal transition, sequence and unrelated records were preserved. Corrected V2 fixture IDs are validated against the existing contract before acquisition. Application contracts were not relaxed.
+
+Evidence root: `/Users/aayushdivase/Desktop/C1RCLE-M4-VERIFICATION-20261104/FINAL_M4_LOCAL_EVIDENCE.md`. Browser results, native fixtures and failed attempts remain in `local-connected/`. These Memory-provider facts are **not Razorpay observations or email-delivery evidence**.
+
+## Release and remaining acceptance
+
+Frontend `b8ad579` adds exact-M4-branch `git.deploymentEnabled=false` in all three app configs to prevent previews before M3 ([Vercel configuration](https://vercel.com/docs/project-configuration/git-configuration)). Other branch rules are unchanged. Render remains `autoDeploy=false`; CI deployment acts only on a successful staging push. Opening the consolidated PRs does not authorize M4 staging ahead of M3.
+
+Both CI parity repository variables currently select staging, which lacks the paired M3/M4 contracts. The existing backend `frontend_ref` and frontend `backend_ref` workflow-dispatch inputs support exact-pair CI without changing those variables or protections. Preserve any automatic staging-parity mismatch and distinguish supported exact-pair CI evidence; never claim current staging contains the candidate.
+
+RAZORPAY TEST ORDER ONLY VERIFIED: one real Test order creation plus later exact read-only recovery. Real Test payment/capture/refund, hosted callback/webhook races and M4 staging acceptance remain UNVERIFIED. M3 backend #158 still requires legitimate independent review/merge/hosted acceptance before M4 merge/deployment. No bypass, production/Live operation, real-project finance cutover, worker/payout enablement or M5 work is included. Full M4 remains incomplete until its required hosted/real Test acceptance passes.
