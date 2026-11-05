@@ -9,7 +9,9 @@ import { PricingService } from '../../application/pricing/pricing-service.js';
 import { createCoreConfig } from '../../config/index.js';
 import { createTicketTier } from '../../domain/models/event-catalog.js';
 import { createEvent, transitionEvent } from '../../domain/models/event.js';
+import { MemoryOnboardingRepository } from '../memory/memory-onboarding-repository.js';
 import { MemoryOutboxStore } from '../memory/memory-outbox-store.js';
+import { MemoryPartnershipRepository } from '../memory/memory-partnership-repository.js';
 import { MemoryEventRepository } from '../memory/memory-repositories.js';
 
 import { FirestoreCartReservationRepository } from './firestore-cart-reservation-repository.js';
@@ -100,6 +102,8 @@ describe.runIf(EMULATOR)('seat reservation (Firestore emulator)', () => {
       repositories: {
         users: { getById: async (id: string) => ({ id, emailVerified: true }) },
         events,
+        partnerships: new MemoryPartnershipRepository(),
+        onboarding: new MemoryOnboardingRepository(),
         catalog,
         cartReservations: carts,
         orders,

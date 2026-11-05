@@ -107,7 +107,11 @@ export class InventoryService {
     if (!addon) throw new InvalidOperationError(`Ticket add-on ${addonId} not found`);
     let sold = 0;
     for (const order of await this.deps.order.listSeatClaims(addon.eventId)) {
-      if (order.status !== 'paid' && order.status !== 'refund_requested') continue;
+      if (
+        order.compensationRequired ||
+        (order.status !== 'paid' && order.status !== 'refund_requested')
+      )
+        continue;
       for (const line of order.lines) sold += addonUnitsForLine(line).get(addonId) ?? 0;
     }
     let held = 0;

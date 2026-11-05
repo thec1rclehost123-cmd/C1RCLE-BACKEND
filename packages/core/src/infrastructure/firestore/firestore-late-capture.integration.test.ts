@@ -8,18 +8,25 @@ import { SYSTEM_ACTOR } from '../../application/context.js';
 import { InventoryService } from '../../application/inventory/inventory-service.js';
 import { PricingService } from '../../application/pricing/pricing-service.js';
 import { createCoreConfig } from '../../config/index.js';
-import { PaymentRefundedError } from '../../domain/errors.js';
+import { VersionConflictError } from '../../domain/errors.js';
 import { createTicketTier } from '../../domain/models/event-catalog.js';
 import { createEvent, transitionEvent } from '../../domain/models/event.js';
+import { lockOrderForRefund } from '../../domain/models/order.js';
 import { MemoryPaymentProvider } from '../../domain/ports/payment-provider.js';
-import { MemoryOutboxStore } from '../memory/memory-outbox-store.js';
 import { MemoryUserAccountRepository } from '../memory/memory-user-account-repository.js';
 import { buildRepositories } from '../utils.js';
 
 import { FirestoreCartReservationRepository } from './firestore-cart-reservation-repository.js';
 import { FirestoreEntitlementRepository } from './firestore-entitlement-repository.js';
 import { FirestoreEventCatalogRepository } from './firestore-event-catalog-repository.js';
+import { FirestoreEventRepository } from './firestore-event-repository.js';
+import { FirestoreFinancialJournalRepository } from './firestore-financial-journal-repository.js';
+import { FirestoreLedgerRepository } from './firestore-ledger-repository.js';
 import { FirestoreOrderRepository } from './firestore-order-repository.js';
+import { FirestoreOutboxStore } from './firestore-outbox-store.js';
+import { FirestoreProviderFinancialEventRepository } from './firestore-provider-financial-event-repository.js';
+import { FirestoreProviderPaymentRepository } from './firestore-provider-payment-repository.js';
+import { FirestoreRefundRequestRepository } from './firestore-refund-request-repository.js';
 
 import type { ActorContext, ServiceDeps } from '../../application/context.js';
 import type { Entitlement } from '../../domain/models/entitlement.js';
@@ -148,6 +155,12 @@ describe.runIf(EMULATOR)('late payment vs a new buyer (Firestore emulator)', () 
       cartReservations: carts,
       orders,
       entitlements,
+      events: new FirestoreEventRepository(db),
+      financialJournals: new FirestoreFinancialJournalRepository(db),
+      ledger: new FirestoreLedgerRepository(db),
+      providerPayments: new FirestoreProviderPaymentRepository(db),
+      providerFinancialEvents: new FirestoreProviderFinancialEventRepository(db),
+      refundRequests: new FirestoreRefundRequestRepository(db),
     };
 
     let event = createEvent({
@@ -177,7 +190,7 @@ describe.runIf(EMULATOR)('late payment vs a new buyer (Firestore emulator)', () 
     const refund = vi.spyOn(provider, 'refundPayment');
     const deps = {
       config,
-      outbox: new MemoryOutboxStore(),
+      outbox: new FirestoreOutboxStore(db),
       paymentProvider: provider,
       pricing: new PricingService({ eventCatalog: catalog }),
       inventory: new InventoryService({
@@ -257,6 +270,8 @@ describe.runIf(EMULATOR)('late payment vs a new buyer (Firestore emulator)', () 
       carts,
       orders,
       entitlements,
+      repositories,
+      inventory: deps.inventory,
       lapsedHold: lapsed,
       hold,
       lateCapture,
@@ -277,23 +292,150 @@ describe.runIf(EMULATOR)('late payment vs a new buyer (Firestore emulator)', () 
     );
   }
 
+  async function expectCompensation(
+    ctx: Awaited<ReturnType<typeof lapsedHoldForTheLastSeat>>,
+    expectedActivePaidUnits = 0,
+  ) {
+    const order = await ctx.orders.getByPaymentId(`pay_${ctx.run}`);
+    expect(order).toMatchObject({
+      status: 'refund_requested',
+      fulfillmentState: 'pending',
+      paymentId: `pay_${ctx.run}`,
+      grandTotalPaise: ctx.lapsedHold.pricing.grandTotalPaise,
+      refundedPaise: 0,
+      compensationRequired: { reason: 'capacity_unavailable' },
+    });
+    if (!order) throw new Error('Captured payment must retain a durable compensation order');
+    const requests = await ctx.repositories.refundRequests.listByOrder(order.id);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      orderId: order.id,
+      refundCause: 'fulfillment_failure',
+      amountPaise: order.grandTotalPaise,
+      scope: 'amount_only',
+      targetEntitlementIds: [],
+      ticketLines: [],
+      status: 'pending',
+      approversRequired: 1,
+      approvals: [],
+      providerRefundId: null,
+      executionAttempts: 0,
+    });
+    expect(ctx.refund).not.toHaveBeenCalled();
+    expect(await ctx.entitlements.getByOrderId(order.id)).toHaveLength(0);
+    expect(await ctx.entitlements.countActivePaidUnitsByUserAndEvent('buyer_a', ctx.eventId)).toBe(
+      expectedActivePaidUnits,
+    );
+    expect(
+      await ctx.orders.countPaidQuantityByUserAndEvent('buyer_a', ctx.eventId, ctx.tierId),
+    ).toBe(0);
+    expect(await ctx.carts.getById(ctx.lapsedHold.id)).toMatchObject({
+      status: 'released',
+      convertedOrderId: null,
+    });
+    expect(
+      (await ctx.carts.listActiveByEvent(ctx.eventId, new Date())).some(
+        (hold) => hold.id === ctx.lapsedHold.id,
+      ),
+    ).toBe(false);
+    return order;
+  }
+
   it('honours a late payment when nobody else wants the seat', async () => {
     const ctx = await lapsedHoldForTheLastSeat();
 
     const result = await ctx.lateCapture();
 
     expect(result.order.status).toBe('paid');
+    expect(result.order.fulfillmentState).toBe('complete');
+    expect(result.entitlements).toHaveLength(1);
+    expect(await ctx.repositories.refundRequests.listByOrder(result.order.id)).toHaveLength(0);
     expect(ctx.refund).not.toHaveBeenCalled();
     expect(await seatsPromised(ctx)).toBe(1);
   }, 120_000);
 
-  it('refunds a late payment when a new buyer already holds the seat', async () => {
+  it('rejects a stale version-one create after paid, completed, and refund-locked state without overwriting the winner', async () => {
     const ctx = await lapsedHoldForTheLastSeat();
-    await ctx.hold('buyer_c');
+    const result = await ctx.lateCapture();
+    const completed = await ctx.orders.getById(result.order.id);
+    if (!completed) throw new Error('Missing completed purchase');
+    const stale = {
+      ...completed,
+      status: 'paid' as const,
+      fulfillmentState: 'pending' as const,
+      version: 1,
+    };
+    await expect(ctx.orders.save(stale)).rejects.toBeInstanceOf(VersionConflictError);
+    expect(await ctx.orders.getById(completed.id)).toEqual(completed);
+    const locked = lockOrderForRefund(completed, NOW);
+    await ctx.orders.save(locked);
+    await expect(ctx.orders.save(stale)).rejects.toBeInstanceOf(VersionConflictError);
+    expect(await ctx.orders.getById(completed.id)).toEqual(locked);
+    const paid = { ...stale, id: `ORD-create-${ctx.run}`, paymentId: `pay-create-${ctx.run}` };
+    await ctx.orders.save(paid);
+    await expect(
+      ctx.orders.save({ ...paid, grandTotalPaise: paid.grandTotalPaise + 1 }),
+    ).rejects.toBeInstanceOf(VersionConflictError);
+    expect(await ctx.orders.getById(paid.id)).toEqual(paid);
+  }, 120_000);
 
-    await expect(ctx.lateCapture()).rejects.toBeInstanceOf(PaymentRefundedError);
+  it('converges provider binding on the concurrent create loser after the winner binding is interrupted', async () => {
+    const ctx = await lapsedHoldForTheLastSeat();
+    const originalRead = ctx.orders.getByPaymentId.bind(ctx.orders);
+    let arrivals = 0;
+    let release = () => {};
+    const bothRead = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.spyOn(ctx.orders, 'getByPaymentId').mockImplementation(async (id) => {
+      const found = await originalRead(id);
+      arrivals += 1;
+      if (arrivals <= 2) {
+        if (arrivals === 2) release();
+        await bothRead;
+      }
+      return found;
+    });
+    const originalSave = ctx.repositories.providerPayments.save.bind(
+      ctx.repositories.providerPayments,
+    );
+    let interrupted = false;
+    vi.spyOn(ctx.repositories.providerPayments, 'save').mockImplementation(async (record) => {
+      if (record.orderId !== null && !interrupted) {
+        interrupted = true;
+        throw new Error('Synthetic interruption after completion before provider binding');
+      }
+      return originalSave(record);
+    });
+    const outcomes = await Promise.allSettled([ctx.lateCapture(), ctx.lateCapture()]);
+    expect(interrupted).toBe(true);
+    expect(outcomes.some((outcome) => outcome.status === 'fulfilled')).toBe(true);
+    const order = await originalRead(`pay_${ctx.run}`);
+    expect(order).toMatchObject({ status: 'paid', fulfillmentState: 'complete' });
+    if (!order) throw new Error('Missing canonical captured purchase');
+    expect(await ctx.repositories.providerPayments.findByPaymentId(`pay_${ctx.run}`)).toMatchObject(
+      { orderId: order.id, processingState: 'fulfilled', capturedPaise: order.grandTotalPaise },
+    );
+    expect(await ctx.entitlements.getByOrderId(order.id)).toHaveLength(1);
+    expect(await ctx.repositories.refundRequests.listByOrder(order.id)).toHaveLength(0);
+    expect(ctx.refund).not.toHaveBeenCalled();
+    expect(await seatsPromised(ctx)).toBe(1);
+  }, 120_000);
 
-    expect(ctx.refund).toHaveBeenCalledTimes(1);
+  it('queues full approval-gated compensation when a new buyer already holds the seat', async () => {
+    const ctx = await lapsedHoldForTheLastSeat();
+    const rival = await ctx.hold('buyer_c');
+
+    const result = await ctx.lateCapture();
+    expect(result.entitlements).toHaveLength(0);
+    expect(result.order.status).toBe('refund_requested');
+    expect(await ctx.carts.getById(rival.id)).toEqual({
+      ...rival,
+      providerOrderId: null,
+      providerOrderCreation: null,
+    });
+    await expectCompensation(ctx);
+    expect(await ctx.inventory.getAvailableQuantity(ctx.eventId, ctx.tierId)).toBe(0);
     expect(await seatsPromised(ctx)).toBe(1);
   }, 120_000);
 
@@ -328,18 +470,29 @@ describe.runIf(EMULATOR)('late payment vs a new buyer (Firestore emulator)', () 
     expect(await seatsPromised(ctx)).toBe(1);
   }, 120_000);
 
-  it('refunds once and only once when the same late payment is delivered twice', async () => {
+  it('creates one durable compensation request with no provider POST when the same late payment is delivered twice', async () => {
     const ctx = await lapsedHoldForTheLastSeat();
-    await ctx.hold('buyer_c');
+    const rival = await ctx.hold('buyer_c');
 
-    await Promise.allSettled([ctx.lateCapture(), ctx.lateCapture()]);
+    const deliveries = await Promise.allSettled([ctx.lateCapture(), ctx.lateCapture()]);
+    expect(
+      deliveries.some((delivery) => delivery.status === 'fulfilled'),
+      deliveries
+        .map((delivery) => (delivery.status === 'rejected' ? String(delivery.reason) : 'fulfilled'))
+        .join(' | '),
+    ).toBe(true);
 
-    const keys = new Set(ctx.refund.mock.calls.map(([request]) => request.idempotencyKey));
-    expect(keys.size).toBe(1);
+    await expectCompensation(ctx);
+    expect(await ctx.carts.getById(rival.id)).toEqual({
+      ...rival,
+      providerOrderId: null,
+      providerOrderCreation: null,
+    });
+    expect(await ctx.inventory.getAvailableQuantity(ctx.eventId, ctx.tierId)).toBe(0);
     expect(await seatsPromised(ctx)).toBe(1);
   }, 120_000);
 
-  it('refunds a late capture that would exceed the purchaser event-wide paid-unit cap', async () => {
+  it('queues full compensation without additional admissions when a late capture exceeds the purchaser event-wide paid-unit cap', async () => {
     const ctx = await lapsedHoldForTheLastSeat();
     const existingPaidEntitlement: Entitlement = {
       id: `m5-late-quota-entitlement-${ctx.run}`,
@@ -366,13 +519,11 @@ describe.runIf(EMULATOR)('late payment vs a new buyer (Firestore emulator)', () 
     await ctx.entitlements.saveMany([existingPaidEntitlement]);
 
     try {
-      await expect(ctx.lateCapture()).rejects.toBeInstanceOf(PaymentRefundedError);
-      expect(ctx.refund).toHaveBeenCalledTimes(1);
-      expect(ctx.refund.mock.calls[0]?.[0]).toMatchObject({
-        paymentId: `pay_${ctx.run}`,
-        idempotencyKey: `autorefund:pay_${ctx.run}`,
-      });
-      expect(await ctx.orders.getByPaymentId(`pay_${ctx.run}`)).toBeNull();
+      const result = await ctx.lateCapture();
+      expect(result.entitlements).toHaveLength(0);
+      await expectCompensation(ctx, 10);
+      expect(await ctx.inventory.getAvailableQuantity(ctx.eventId, ctx.tierId)).toBe(1);
+      expect(await seatsPromised(ctx)).toBe(0);
       expect(
         await ctx.entitlements.countActivePaidUnitsByUserAndEvent('buyer_a', ctx.eventId),
       ).toBe(10);

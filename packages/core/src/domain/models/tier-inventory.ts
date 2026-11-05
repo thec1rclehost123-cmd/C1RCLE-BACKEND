@@ -15,6 +15,8 @@ interface ClaimLine {
   pricingPhaseId?: string | null;
 }
 interface OrderClaim {
+  /** Captured money awaiting compensation granted no inventory rights. */
+  compensationRequired?: { reason: string; requestedAt: string };
   status: string;
   lines: ClaimLine[];
   refundedTicketClaims?: {
@@ -44,7 +46,11 @@ export function committedTierQuantity(
       line.pricingPhaseId === pricingPhaseId);
   let quantity = 0;
   for (const order of orders) {
-    if (order.status !== 'paid' && order.status !== 'refund_requested') continue;
+    if (
+      order.compensationRequired ||
+      (order.status !== 'paid' && order.status !== 'refund_requested')
+    )
+      continue;
     let committed = 0;
     for (const line of order.lines) if (matches(line)) committed += tierLineUnits(line);
     const released = new Set(

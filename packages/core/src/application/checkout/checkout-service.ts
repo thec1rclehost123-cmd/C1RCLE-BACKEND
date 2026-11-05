@@ -1796,9 +1796,11 @@ export class CheckoutService {
       // caller-facing error: converge on whichever write actually landed.
       if (error instanceof VersionConflictError) {
         const winner = await this.deps.repositories.orders.getByPaymentId(paymentId);
-        if (winner) return this.completeFulfilment(winner, hold);
+        if (!winner) throw error;
+        order = winner;
+      } else {
+        throw error;
       }
-      throw error;
     }
 
     const result = await this.completeFulfilment(order, hold);

@@ -9,7 +9,9 @@ import { createEvent, transitionEvent } from '../../domain/models/event.js';
 import { MemoryFinancialJournalRepository } from '../memory/memory-financial-journal-repository.js';
 import { MemoryLeaderboardRepository } from '../memory/memory-leaderboard-repository.js';
 import { MemoryLedgerRepository } from '../memory/memory-ledger-repository.js';
+import { MemoryOnboardingRepository } from '../memory/memory-onboarding-repository.js';
 import { MemoryOutboxStore } from '../memory/memory-outbox-store.js';
+import { MemoryPartnershipRepository } from '../memory/memory-partnership-repository.js';
 import {
   MemoryEventCatalogRepository,
   MemoryEventRepository,
@@ -106,6 +108,8 @@ describe.runIf(EMULATOR)('Firestore active paid-unit quota', () => {
         repositories: {
           users,
           events: eventRepo,
+          partnerships: new MemoryPartnershipRepository(),
+          onboarding: new MemoryOnboardingRepository(),
           catalog,
           cartReservations: carts,
           orders,

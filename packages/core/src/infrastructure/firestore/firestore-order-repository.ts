@@ -1,4 +1,4 @@
-import { ConflictError, InvalidOperationError } from '../../domain/errors.js';
+import { ConflictError, InvalidOperationError, VersionConflictError } from '../../domain/errors.js';
 import { deterministicDomainEventId, domainEvent } from '../../domain/events.js';
 import { completeOrderFulfilment } from '../../domain/models/fulfilment.js';
 import { bookingReferenceForOrderId } from '../../domain/models/order.js';
@@ -361,7 +361,7 @@ export class FirestoreOrderRepository implements OrderRepository {
   async listSeatClaims(eventId: EntityId) {
     const snap = await this.collection
       .where('eventId', '==', eventId)
-      .select('status', 'lines', 'refundedTicketClaims')
+      .select('status', 'lines', 'refundedTicketClaims', 'compensationRequired')
       .get();
     return snap.docs.map((doc) => {
       const data = doc.data();
@@ -374,6 +374,9 @@ export class FirestoreOrderRepository implements OrderRepository {
       }[];
       return {
         status: data.status as OrderStatus,
+        ...(data.compensationRequired
+          ? { compensationRequired: data.compensationRequired as Order['compensationRequired'] }
+          : {}),
         refundedTicketClaims: (data.refundedTicketClaims as Order['refundedTicketClaims']) ?? [],
         lines: lines.map((line) => ({
           tierId: line.tierId,
@@ -397,7 +400,8 @@ export class FirestoreOrderRepository implements OrderRepository {
     const snap = await this.collection.where('userId', '==', userId).get();
     return snap.docs.reduce((sum, doc) => {
       const order = toOrder(doc.data());
-      if (order.eventId !== eventId || order.status !== 'paid') return sum;
+      if (order.eventId !== eventId || order.status !== 'paid' || order.compensationRequired)
+        return sum;
       return (
         sum +
         order.lines.reduce(
@@ -418,6 +422,17 @@ export class FirestoreOrderRepository implements OrderRepository {
   }
 
   async save(order: Order, _tx?: TxContext | null): Promise<void> {
+    // Payment IDs deterministically identify new orders. A repeated version-one
+    // create must converge on its winner, never overwrite later refund/completion state.
+    if (order.version === 1) {
+      const ref = this.collection.doc(order.id);
+      await this.db.runTransaction(async (tx) => {
+        const current = await tx.get(ref);
+        if (current.exists) throw new VersionConflictError(0, Number(current.data()?.version ?? 0));
+        tx.create(ref, toDoc(order));
+      });
+      return;
+    }
     // Compare-and-set: a write of version N must find N-1 (see compare-and-set.ts).
     await compareAndSet(this.db, this.collection, order, toDoc);
   }

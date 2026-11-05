@@ -834,10 +834,13 @@ export interface OrderRepository {
    * paging through whole orders, which is what makes counting sold seats scale.
    * Includes orders of every status; the caller decides which ones hold a seat.
    */
-  listSeatClaims(
-    eventId: EntityId,
-  ): Promise<
-    { status: OrderStatus; lines: SeatClaimLine[]; refundedTicketClaims?: RefundedTicketClaim[] }[]
+  listSeatClaims(eventId: EntityId): Promise<
+    {
+      status: OrderStatus;
+      lines: SeatClaimLine[];
+      refundedTicketClaims?: RefundedTicketClaim[];
+      compensationRequired?: Order['compensationRequired'];
+    }[]
   >;
   /** Lists all orders platform-wide (admin read-only dashboards). */
   listAll(query: PaginationQuery): Promise<Page<Order>>;

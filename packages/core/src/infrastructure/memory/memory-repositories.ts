@@ -1030,6 +1030,7 @@ export class MemoryOrderRepository implements OrderRepository {
       .filter((o) => o.eventId === eventId)
       .map((o) => ({
         status: o.status,
+        ...(o.compensationRequired ? { compensationRequired: o.compensationRequired } : {}),
         refundedTicketClaims: o.refundedTicketClaims ?? [],
         lines: o.lines.map((line) => ({
           tierId: line.tierId,
@@ -1048,7 +1049,12 @@ export class MemoryOrderRepository implements OrderRepository {
   ): Promise<number> {
     return [...this.orders.values()].reduce((sum, order) => {
       // Only money-captured orders consume the per-user cap.
-      if (order.eventId !== eventId || order.userId !== userId || order.status !== 'paid') {
+      if (
+        order.eventId !== eventId ||
+        order.userId !== userId ||
+        order.status !== 'paid' ||
+        order.compensationRequired
+      ) {
         return sum;
       }
       return (
@@ -1078,6 +1084,8 @@ export class MemoryOrderRepository implements OrderRepository {
   }
 
   async save(order: Order, _tx?: TxContext | null): Promise<void> {
+    const existing = this.orders.get(order.id);
+    if (order.version === 1 && existing) throw new VersionConflictError(0, existing.version);
     casSet(this.orders, order);
     if (order.paymentId) this.byPaymentId.set(order.paymentId, order);
   }
