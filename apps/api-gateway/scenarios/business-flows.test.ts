@@ -61,6 +61,9 @@ const FULL_PROFILE = {
   contactPerson: 'A. Applicant',
   phone: '9876543210',
   city: 'Mumbai',
+  kyc: {
+    identity: { idType: 'passport', idNumber: 'P1234567' },
+  },
 };
 
 const WEBHOOK_SECRET = 'test_webhook_secret';
@@ -378,6 +381,17 @@ describe('scenario: KYC document reject, re-upload, request-changes, and the app
     expect(afterReject.status).toBe('rejected');
     expect(afterReject.rejectionReason).toBe('Photo is blurry, re-upload needed');
 
+    // Submitted evidence is immutable: the reviewer must reopen the
+    // application before the applicant can replace the rejected document.
+    const requestChanges = await server.inject({
+      method: 'POST',
+      url: `/api/v2/admin/onboarding/applications/${requestId}/request-changes`,
+      headers: { ...asUser('ops_kyc'), 'idempotency-key': ik('reupload-request-changes') },
+      payload: { note: 'Photo is blurry, re-upload needed' },
+    });
+    expect(requestChanges.statusCode, JSON.stringify(requestChanges.json())).toBe(200);
+    expect(requestChanges.json().status).toBe('changes_requested');
+
     // Re-upload uses the same applicant/application/label object key. The
     // new copy must be pending again, never
     // inheriting the stale rejected status.
@@ -393,6 +407,14 @@ describe('scenario: KYC document reject, re-upload, request-changes, and the app
       .documents.find((d: { label: string }) => d.label === 'id_front');
     expect(afterReupload.status).toBe('pending');
     expect(afterReupload.rejectionReason).toBeNull();
+
+    const resubmit = await server.inject({
+      method: 'POST',
+      url: `/api/v2/onboarding/applications/${requestId}/submit`,
+      headers: asUser(applicantId),
+    });
+    expect(resubmit.statusCode, JSON.stringify(resubmit.json())).toBe(200);
+    expect(resubmit.json().status).toBe('submitted');
 
     // Approval is still blocked — id_front is pending again after the re-upload.
     const stillBlocked = await server.inject({
