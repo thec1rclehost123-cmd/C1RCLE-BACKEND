@@ -75,12 +75,19 @@ async function deliverMessage(
   } catch (error) {
     // Provider errors can contain request/recipient data. Keep only a safe
     // category in durable evidence and let the outbox apply its retry policy.
+    if (error instanceof PermanentEmailDeliveryError) {
+      await deps.emailDeliveries.markPermanentFailure(
+        id,
+        'Transactional email permanently rejected',
+        deps.config.clock.now().getTime(),
+      );
+      return;
+    }
     await deps.emailDeliveries.markFailed(
       id,
       'Transactional email provider failure',
       deps.config.clock.now().getTime(),
     );
-    if (error instanceof PermanentEmailDeliveryError) return;
     throw new Error('Transactional email delivery failed');
   }
 }

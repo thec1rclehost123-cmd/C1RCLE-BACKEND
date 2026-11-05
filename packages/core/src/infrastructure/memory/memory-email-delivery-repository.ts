@@ -17,7 +17,8 @@ export class MemoryEmailDeliveryRepository implements EmailDeliveryRepository {
 
   async claim(id: EntityId, now: number, leaseExpiresAt: number): Promise<boolean> {
     const current = this.records.get(id);
-    if (!current || current.status === 'sent' || current.status === 'captured') return false;
+    if (!current || ['sent', 'captured', 'permanent_failure'].includes(current.status))
+      return false;
     if (current.status === 'sending' && (current.leaseExpiresAt ?? 0) > now) return false;
     this.records.set(id, {
       ...current,
@@ -63,6 +64,18 @@ export class MemoryEmailDeliveryRepository implements EmailDeliveryRepository {
     this.records.set(id, {
       ...current,
       status: 'failed',
+      lastError: safeError.slice(0, 160),
+      updatedAt: now,
+      leaseExpiresAt: null,
+    });
+  }
+
+  async markPermanentFailure(id: EntityId, safeError: string, now: number): Promise<void> {
+    const current = this.records.get(id);
+    if (!current) return;
+    this.records.set(id, {
+      ...current,
+      status: 'permanent_failure',
       lastError: safeError.slice(0, 160),
       updatedAt: now,
       leaseExpiresAt: null,

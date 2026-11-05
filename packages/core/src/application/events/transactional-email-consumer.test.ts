@@ -1548,7 +1548,7 @@ describe('transactional email consumer', () => {
     );
     expect(attempts).toBe(1);
     expect([...emailDeliveries.records.values()][0]).toMatchObject({
-      status: 'failed',
+      status: 'permanent_failure',
       retryCount: 1,
       providerMessageId: null,
     });

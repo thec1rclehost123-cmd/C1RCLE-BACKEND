@@ -14,7 +14,7 @@ const deliverySchema = z.object({
   id: opaqueIdSchema,
   aggregateId: opaqueIdSchema,
   kind: z.string().min(1),
-  status: z.enum(['queued', 'sending', 'sent', 'failed']),
+  status: z.enum(['queued', 'sending', 'sent', 'captured', 'failed', 'permanent_failure']),
   retryCount: z.number().int().nonnegative(),
   providerMessageId: z.string().nullable(),
   createdAt: z.number().int(),
