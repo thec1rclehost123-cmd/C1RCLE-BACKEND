@@ -28,6 +28,9 @@ import type { z } from 'zod';
 const services = createV2Services();
 
 export default async function guestProfileRoutes(fastify: FastifyInstance) {
+  fastify.addHook('onSend', async (_request, reply) => {
+    reply.header('cache-control', 'private, no-store');
+  });
   await registerGuestOnboarding(fastify, services.guestProfile);
   fastify.get(
     '/profile/me',
@@ -87,6 +90,7 @@ export function toDto(profile: GuestProfile) {
     userId: profile.userId,
     displayName: profile.displayName,
     dateOfBirth: profile.dateOfBirth,
+    phoneNumber: profile.phoneVerifiedAt ? (profile.phoneNumber ?? null) : null,
     city: profile.city,
     tastes: profile.tastes,
     intents: profile.intents,

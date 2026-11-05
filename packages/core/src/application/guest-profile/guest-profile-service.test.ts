@@ -103,3 +103,28 @@ describe('GuestProfileService', () => {
     expect(await service.getMine('user_1')).toBeNull();
   });
 });
+
+it('preserves authoritative verified phone and onboarding completion through a profile edit', async () => {
+  const { service } = build();
+  await service.saveOnboarding('profile-owner', {
+    displayName: 'Synthetic Guest',
+    dateOfBirth: '2000-01-01',
+    tastes: ['House'],
+  });
+  await service.verifyPhone('profile-owner', '+919000000041', 'synthetic-proof', {
+    name: 'fixture',
+    verify: async () => ({ passed: true, provider: 'firebase-phone' }),
+  });
+  const before = await service.getMine('profile-owner');
+  const after = await service.upsertMine('profile-owner', {
+    displayName: 'Updated Guest',
+    dateOfBirth: '2000-01-01',
+    tastes: ['House'],
+    city: '',
+    intents: [],
+  });
+  expect(after.phoneNumber).toBe(before?.phoneNumber);
+  expect(after.phoneVerifiedAt).toBe(before?.phoneVerifiedAt);
+  expect((await service.getOnboarding('profile-owner')).complete).toBe(true);
+  expect(await service.getMine('another-owner')).toBeNull();
+});
