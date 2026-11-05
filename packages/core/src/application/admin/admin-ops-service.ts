@@ -798,12 +798,13 @@ export class AdminOperationsService {
     const updated: PlatformSettings = {
       ...current,
       ...patch,
+      revision: (current.revision ?? 0) + 1,
       ...(bookingFeePolicy ? { bookingFeePolicy } : {}),
       featureFlags: patch.featureFlags ?? current.featureFlags,
       accountingPolicy: patch.accountingPolicy ?? current.accountingPolicy,
       updatedAt: this.deps.config.clock.now().toISOString(),
     };
-    await this.deps.repositories.platformSettings.save(updated);
+    await this.deps.repositories.platformSettings.save(updated, current.revision ?? 0);
     await this.authority.record(admin, {
       action: 'PLATFORM_SETTINGS_UPDATE',
       targetType: 'platform_settings',

@@ -1849,7 +1849,8 @@ export interface SocialNotificationRepository {
  */
 export interface PlatformSettingsRepository {
   get(): Promise<PlatformSettings>;
-  save(settings: PlatformSettings): Promise<void>;
+  /** Atomically preserves settings and immutable booking-policy version identity. */
+  save(settings: PlatformSettings, expectedRevision: number): Promise<void>;
 }
 
 /**

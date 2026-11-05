@@ -6,6 +6,10 @@ import {
 } from '../../domain/errors.js';
 import { bumpVersion } from '../../domain/identity.js';
 import { admissionLedger } from '../../domain/models/admission-ledger.js';
+import {
+  snapshotBookingFeePolicy,
+  type BookingFeePolicy,
+} from '../../domain/models/booking-fee-policy.js';
 import { claimCartReservationProviderOrderCreation } from '../../domain/models/cart-reservation.js';
 import {
   admitSeats,
@@ -626,13 +630,32 @@ export class MemoryEventCatalogRepository implements EventCatalogRepository {
 /** In-memory singleton for `PlatformSettingsRepository`. */
 export class MemoryPlatformSettingsRepository implements PlatformSettingsRepository {
   settings: PlatformSettings = { ...DEFAULT_PLATFORM_SETTINGS };
+  readonly bookingFeePolicies = new Map<string, BookingFeePolicy>();
 
   async get(): Promise<PlatformSettings> {
-    return { ...this.settings };
+    return structuredClone(this.settings);
   }
 
-  async save(settings: PlatformSettings): Promise<void> {
-    this.settings = { ...settings };
+  async save(settings: PlatformSettings, expectedRevision: number): Promise<void> {
+    const revision = this.settings.revision ?? 0;
+    if (revision !== expectedRevision) throw new VersionConflictError(expectedRevision, revision);
+    const policies = [
+      this.settings.bookingFeePolicy ?? DEFAULT_PLATFORM_SETTINGS.bookingFeePolicy,
+      settings.bookingFeePolicy ?? DEFAULT_PLATFORM_SETTINGS.bookingFeePolicy,
+    ]
+      .filter((policy): policy is BookingFeePolicy => policy !== undefined)
+      .map(snapshotBookingFeePolicy);
+    const pending = new Map(this.bookingFeePolicies);
+    for (const policy of policies) {
+      const previous = pending.get(policy.version);
+      if (previous && JSON.stringify(previous) !== JSON.stringify(policy))
+        throw new ConflictError(
+          'A booking fee policy version cannot be reused with different terms',
+        );
+      pending.set(policy.version, policy);
+    }
+    for (const [version, policy] of pending) this.bookingFeePolicies.set(version, policy);
+    this.settings = structuredClone({ ...settings, revision: expectedRevision + 1 });
   }
 }
 

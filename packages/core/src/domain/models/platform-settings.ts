@@ -12,6 +12,8 @@ import { NON_PRODUCTION_BOOKING_FEE_POLICY, type BookingFeePolicy } from './book
  */
 
 export interface PlatformSettings {
+  /** Server-only CAS revision; absent on older persisted settings. */
+  revision?: number;
   bookingFeePolicy?: BookingFeePolicy;
   /** Default platform fee rate (decimal, e.g. 0.15 = 15%). */
   platformFeeRate: number;
@@ -56,6 +58,7 @@ const DEFAULT_SINGLE_THRESHOLD = 50_000; // ₹500
 const DEFAULT_DUAL_THRESHOLD = 500_000; // ₹5,000
 
 export const DEFAULT_PLATFORM_SETTINGS: Readonly<PlatformSettings> = {
+  revision: 0,
   bookingFeePolicy: NON_PRODUCTION_BOOKING_FEE_POLICY,
   platformFeeRate: 0.15,
   refundSingleApproverThresholdPaise: DEFAULT_SINGLE_THRESHOLD,
