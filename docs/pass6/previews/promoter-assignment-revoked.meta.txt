@@ -1,0 +1,3 @@
+Subject: A C1RCLE Promoter assignment was revoked
+Preheader: Promoter assignment revoked
+Template: promoter_assignment_status

@@ -1,0 +1,3 @@
+Subject: Your C1RCLE ticket upgrade is confirmed
+Preheader: Ticket upgrade confirmed
+Template: ticket_upgrade_confirmed

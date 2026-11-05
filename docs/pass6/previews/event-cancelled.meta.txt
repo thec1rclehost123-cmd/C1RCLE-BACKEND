@@ -1,0 +1,3 @@
+Subject: Update: Night Market 2026 has been cancelled
+Preheader: Important information about your event and tickets.
+Template: event_cancelled

@@ -1,0 +1,3 @@
+Subject: Your C1RCLE add-on was redeemed
+Preheader: Add-on redeemed
+Template: ticket_addon_redeemed

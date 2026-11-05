@@ -1,0 +1,7 @@
+Payout not completed
+
+Amount: ₹2,450.00
+Reference: PAYO-VISUAL
+Current status: failed.
+
+Review the Finance section in your partner workspace for details.

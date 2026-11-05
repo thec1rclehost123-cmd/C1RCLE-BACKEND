@@ -1,0 +1,3 @@
+Subject: Your waitlist offer for Night Market 2026 expired
+Preheader: Waitlist offer expired
+Template: waitlist_offer_expired

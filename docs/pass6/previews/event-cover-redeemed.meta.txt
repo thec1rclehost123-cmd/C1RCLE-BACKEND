@@ -1,0 +1,3 @@
+Subject: Your C1RCLE cover was redeemed
+Preheader: Cover redeemed
+Template: event_cover_status

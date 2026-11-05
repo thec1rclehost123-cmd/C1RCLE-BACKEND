@@ -1,0 +1,13 @@
+Refund request declined
+
+Your refund request was declined after review. No refund was issued.
+Reference: C1-VIS-2048
+Contact support if you have questions.
+
+Event: Night Market 2026
+Venue: Venue details unavailable
+Date and time: 8 November 2026 at 11:30 pm (Asia/Kolkata)
+Order reference: ORD-VISUAL
+View your tickets (https://guest-staging.example.test/tickets)
+Need help? Contact support (https://guest-staging.example.test/help) and quote C1-VIS-2048.
+Terms (https://guest-staging.example.test/terms)

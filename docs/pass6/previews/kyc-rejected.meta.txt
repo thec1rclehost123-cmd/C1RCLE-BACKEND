@@ -1,0 +1,3 @@
+Subject: Update on your C1RCLE application
+Preheader: Review the latest update to your application.
+Template: partner_onboarding_rejected

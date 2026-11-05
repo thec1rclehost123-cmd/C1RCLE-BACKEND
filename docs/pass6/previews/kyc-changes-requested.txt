@@ -1,0 +1,7 @@
+Your application needs an update
+
+Your venue application needs attention before review can continue.
+Please add the missing venue registration document.
+Continue your application (https://partners-staging.example.test/onboard)
+
+Review your application in the C1RCLE partner workspace.
