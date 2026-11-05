@@ -100,4 +100,23 @@ describe('private Guest onboarding endpoints', () => {
     expect(response.headers['cache-control']).toBe('private, no-store');
     await app.close();
   });
+
+  it('rate-limits repeated phone verification attempts before verification', async () => {
+    const { app } = await build();
+    const headers = { 'x-test-user': 'guest-rate-limited' };
+    const responses = [];
+    for (let attempt = 0; attempt < 11; attempt += 1) {
+      responses.push(
+        await app.inject({
+          method: 'POST',
+          url: '/profile/onboarding/phone',
+          headers,
+          payload: { phoneNumber: '+919876543210', proofToken: 'wrong' },
+        }),
+      );
+    }
+    expect(responses.slice(0, 10).every((response) => response.statusCode !== 429)).toBe(true);
+    expect(responses[10]?.statusCode).toBe(429);
+    await app.close();
+  });
 });

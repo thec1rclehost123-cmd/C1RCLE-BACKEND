@@ -26,13 +26,13 @@ function requireUserId(request: FastifyRequest, reply: FastifyReply) {
 }
 
 export async function registerGuestOnboarding(
-  app: FastifyInstance,
+  fastify: FastifyInstance,
   service: GuestProfileService,
   phoneVerifier?: VerificationProvider,
 ) {
-  app.get(
+  fastify.get(
     '/profile/onboarding',
-    { preHandler: app.rateLimit('AUTH_READ') },
+    { preHandler: fastify.rateLimit('AUTH_READ') },
     async (request, reply) => {
       const userId = requireUserId(request, reply);
       if (!userId) return reply;
@@ -51,12 +51,12 @@ export async function registerGuestOnboarding(
       return valid === undefined ? reply : reply.send(valid);
     },
   );
-  app.put(
+  fastify.put(
     '/profile/onboarding',
     {
       preHandler: [
-        app.rateLimit('STANDARD_COMMAND'),
-        app.validateV2({ body: guestOnboardingPatchSchema }),
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({ body: guestOnboardingPatchSchema }),
       ],
     },
     async (request, reply) => {
@@ -70,9 +70,14 @@ export async function registerGuestOnboarding(
       }
     },
   );
-  app.post(
+  fastify.post(
     '/profile/onboarding/phone',
-    { preHandler: [app.rateLimit('OTP_VERIFY'), app.validateV2({ body: guestPhoneProofSchema })] },
+    {
+      preHandler: [
+        fastify.rateLimit('OTP_VERIFY'),
+        fastify.validateV2({ body: guestPhoneProofSchema }),
+      ],
+    },
     async (request, reply) => {
       const userId = requireUserId(request, reply);
       if (!userId) return reply;
