@@ -48,11 +48,17 @@ export function createTransactionalEmailConsumer(deps: ServiceDeps) {
       if (!deps.emailSender.sendTransactionalEmail)
         throw new Error('Transactional email sender unavailable');
       const result = await deps.emailSender.sendTransactionalEmail(message);
-      await deps.emailDeliveries.markSent(
-        id,
-        result.providerMessageId,
-        deps.config.clock.now().getTime(),
-      );
+      if (result.outcome === 'captured_locally') {
+        await deps.emailDeliveries.markCaptured(id, deps.config.clock.now().getTime());
+      } else if (result.providerMessageId) {
+        await deps.emailDeliveries.markSent(
+          id,
+          result.providerMessageId,
+          deps.config.clock.now().getTime(),
+        );
+      } else {
+        throw new Error('Email sender did not report a delivery outcome');
+      }
     } catch (error) {
       // Provider errors can contain request/recipient data. Keep only a safe
       // category in durable evidence and let the outbox apply its retry policy.
@@ -704,7 +710,31 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
               ? '<p>Review your assignments in the C1RCLE partner workspace.</p>'
               : '<p>Review the Finance section in your partner workspace for details.</p>';
   const html = `<div style="background:#080808;color:#f7f7f7;padding:32px;font-family:Arial,sans-serif;max-width:620px;margin:auto"><div style="color:#ff5a00;font-weight:800;letter-spacing:3px">THE C1RCLE</div><h1>${escapeHtml(heading)}</h1>${details}<hr style="border-color:#333">${footer}</div>`;
-  return { to, subject, html, idempotencyKey, kind, aggregateId: deliveryAggregateId };
+  return {
+    to,
+    subject,
+    html,
+    text: `${heading}\n\n${htmlToPlainText(details)}\n\n${htmlToPlainText(footer)}`,
+    templateType: kind,
+    idempotencyKey,
+    kind,
+    aggregateId: deliveryAggregateId,
+  };
+}
+
+function htmlToPlainText(html: string): string {
+  return html
+    .replace(/<\/(p|li|h[1-6]|div|tr)>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 async function enqueueMaterialChangeRecipients(

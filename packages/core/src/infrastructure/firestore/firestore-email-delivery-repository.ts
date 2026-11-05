@@ -30,6 +30,7 @@ export class FirestoreEmailDeliveryRepository implements EmailDeliveryRepository
       const data = snapshot.data() as EmailDelivery;
       if (
         data.status === 'sent' ||
+        data.status === 'captured' ||
         (data.status === 'sending' && (data.leaseExpiresAt ?? 0) > now)
       ) {
         return false;
@@ -49,6 +50,17 @@ export class FirestoreEmailDeliveryRepository implements EmailDeliveryRepository
       status: 'sent',
       providerMessageId,
       sentAt: now,
+      updatedAt: now,
+      lastError: null,
+      leaseExpiresAt: null,
+    });
+  }
+
+  async markCaptured(id: EntityId, now: number): Promise<void> {
+    await this.db.collection(COLLECTION).doc(id).update({
+      status: 'captured',
+      providerMessageId: null,
+      sentAt: null,
       updatedAt: now,
       lastError: null,
       leaseExpiresAt: null,

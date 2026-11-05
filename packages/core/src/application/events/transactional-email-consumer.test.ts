@@ -14,6 +14,48 @@ import { createTransactionalEmailConsumer } from './transactional-email-consumer
 import type { ServiceDeps } from '../context.js';
 
 describe('transactional email consumer', () => {
+  it('records local capture separately from provider acceptance', async () => {
+    const emailDeliveries = new MemoryEmailDeliveryRepository();
+    const consumer = createTransactionalEmailConsumer({
+      config: { clock: { now: () => new Date('2026-11-05T12:00:00.000Z') } },
+      emailDeliveries,
+      emailSender: {
+        name: 'capture',
+        sendTransactionalEmail: async () => ({
+          outcome: 'captured_locally',
+          providerMessageId: null,
+        }),
+      },
+      repositories: {
+        orders: {
+          getById: async () => ({
+            id: 'ORD-captured',
+            status: 'paid',
+            fulfillmentState: 'complete',
+            grandTotalPaise: 1000,
+            contact: { email: 'guest@real.test' },
+            lines: [],
+          }),
+        },
+        events: { getById: async () => ({ title: 'Captured Event' }) },
+      },
+    } as unknown as ServiceDeps);
+    await consumer(
+      domainEvent({
+        id: 'order-fulfilled-captured',
+        type: 'order.fulfilled',
+        aggregateId: 'ORD-captured',
+        organizationId: 'ORG-captured',
+        actorId: 'system:internal',
+        occurredAt: 1,
+        payload: { orderId: 'ORD-captured', eventId: 'EVT-captured' },
+      }),
+    );
+    expect([...emailDeliveries.records.values()]).toMatchObject([
+      { status: 'captured', providerMessageId: null, sentAt: null, kind: 'booking_receipt' },
+    ]);
+  });
+
   it('retries staged ticket delivery until canonical completion, then sends the existing notice once', async () => {
     const sent = vi.fn(async () => ({ providerMessageId: 'synthetic-completion-notice' }));
     const emailDeliveries = new MemoryEmailDeliveryRepository();
