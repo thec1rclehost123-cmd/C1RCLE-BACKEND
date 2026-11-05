@@ -326,6 +326,10 @@ export interface EventPayloads {
   'promoter.onboarding.approved': { requestId: EntityId; promoterId: EntityId };
   'promoter.onboarding.submitted': { requestId: EntityId };
   'promoter.onboarding.rejected': { requestId: EntityId };
+  'partner.onboarding.email_requested': {
+    requestId: EntityId;
+    status: 'submitted' | 'changes_requested' | 'approved' | 'rejected';
+  };
   'promoter.assignments.status_changed': {
     promoterId: EntityId;
     status: 'suspended' | 'active';

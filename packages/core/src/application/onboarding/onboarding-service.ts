@@ -279,7 +279,7 @@ export class OnboardingService {
     const now = this.deps.config.clock.now();
     const submitted = submitOnboardingRequest(request, now);
     await this.repo.save(submitted);
-    if (request.requestedType === 'promoter') {
+    {
       await this.deps.outbox.append(
         domainEvent({
           id: this.deps.config.ids(),
@@ -293,6 +293,7 @@ export class OnboardingService {
         }),
       );
     }
+    await this.enqueueApplicantEmail(submitted, 'submitted', userId, now);
     this.deps.logger.info('onboarding.submitted', { requestId });
     return submitted;
   }
@@ -563,6 +564,7 @@ export class OnboardingService {
         }),
       );
     }
+    await this.enqueueApplicantEmail(approved, 'approved', adminUserId, now);
     this.deps.logger.info('onboarding.approved', {
       requestId: request.id,
       organizationId: organization.id,
@@ -598,30 +600,6 @@ export class OnboardingService {
         requestOnboardingChanges(request, { reviewedBy: admin.id, note: command.note, now }),
       meta,
     );
-
-    // Best-effort notification. The decision is already persisted and audited:
-    // an email-provider outage (or no resolvable email, e.g. memory/test
-    // driver) must not roll it back or block the admin. Every failure is
-    // logged, never silently swallowed.
-    try {
-      const email = await this.deps.userDirectory.getEmailById(updated.userId);
-      if (email) {
-        await this.deps.emailSender.sendOnboardingChangesRequestedEmail(email, {
-          legalName: updated.profile.legalName,
-          note: updated.reviewNote ?? '',
-        });
-      } else {
-        this.deps.logger.info('onboarding.changes_requested_email_skipped', {
-          requestId: updated.id,
-          reason: 'no_email_on_file',
-        });
-      }
-    } catch (error) {
-      this.deps.logger.error('onboarding.changes_requested_email_failed', {
-        requestId: updated.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
 
     return updated;
   }
@@ -664,7 +642,33 @@ export class OnboardingService {
         }),
       );
     }
+    const emailStatus =
+      updated.status === 'rejected'
+        ? 'rejected'
+        : auditAction === 'onboarding.request_changes'
+          ? 'changes_requested'
+          : null;
+    if (emailStatus) await this.enqueueApplicantEmail(updated, emailStatus, adminUserId, now);
     return updated;
+  }
+
+  private async enqueueApplicantEmail(
+    request: OnboardingRequest,
+    status: 'submitted' | 'changes_requested' | 'approved' | 'rejected',
+    actorId: EntityId,
+    occurredAt: Date,
+  ): Promise<void> {
+    await this.deps.outbox.append(
+      domainEvent({
+        id: this.deps.config.ids(),
+        type: 'partner.onboarding.email_requested',
+        aggregateId: request.id,
+        organizationId: request.userId,
+        actorId,
+        payload: { requestId: request.id, status },
+        occurredAt: occurredAt.getTime(),
+      }),
+    );
   }
 
   /* ─── Lookups ────────────────────────────────────────────────────────────── */

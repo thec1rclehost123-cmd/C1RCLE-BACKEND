@@ -581,6 +581,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   eventBus.subscribe('event.updated', transactionalEmailConsumer);
   eventBus.subscribe('event.material_change.batch_requested', transactionalEmailConsumer);
   eventBus.subscribe('event.material_change.order_affected', transactionalEmailConsumer);
+  eventBus.subscribe('partner.onboarding.email_requested', transactionalEmailConsumer);
   const eventCoverFinancialConsumer = createEventCoverFinancialConsumer({
     eventCoverAccounts: repositories.eventCoverAccounts,
     financialJournals: repositories.financialJournals,
