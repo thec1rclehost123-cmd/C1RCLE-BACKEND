@@ -997,6 +997,36 @@ export class MemoryEntitlementRepository implements EntitlementRepository {
     _tx?: TxContext | null,
     _outboxEvent?: DomainEvent,
   ): Promise<void> {
+    if (entitlement.version === 1 && _outboxEvent?.type === 'ticket.issued') {
+      if (
+        _outboxEvent.aggregateId !== entitlement.id ||
+        _outboxEvent.organizationId !== entitlement.organizationId ||
+        _outboxEvent.payload.entitlementId !== entitlement.id ||
+        _outboxEvent.payload.orderId !== entitlement.orderId ||
+        _outboxEvent.payload.eventId !== entitlement.eventId ||
+        _outboxEvent.payload.purchaserUserId !== entitlement.userId ||
+        _outboxEvent.payload.holderUserId !== currentEntitlementHolderId(entitlement)
+      ) {
+        throw new ConflictError('Issuance event does not match its ticket');
+      }
+      const existing = this.entitlements.get(entitlement.id);
+      if (existing) {
+        if (
+          existing.orderId !== entitlement.orderId ||
+          existing.eventId !== entitlement.eventId ||
+          existing.organizationId !== entitlement.organizationId ||
+          existing.tierId !== entitlement.tierId ||
+          existing.userId !== entitlement.userId ||
+          (existing.unitKind ?? (existing.orderId.startsWith('RSVP-') ? 'free_rsvp' : 'paid')) !==
+            (entitlement.unitKind ??
+              (entitlement.orderId.startsWith('RSVP-') ? 'free_rsvp' : 'paid')) ||
+          existing.scanCountAllowed !== entitlement.scanCountAllowed
+        ) {
+          throw new ConflictError('Ticket id is already associated with a different issuance');
+        }
+        return;
+      }
+    }
     casSet(this.entitlements, entitlement);
   }
 

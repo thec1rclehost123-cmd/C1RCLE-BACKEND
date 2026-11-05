@@ -121,6 +121,19 @@ export class FirestoreEntitlementRepository implements EntitlementRepository {
       await compareAndSet(this.db, this.collection, entitlement, entitlementToDoc);
       return;
     }
+    const initialIssuance = entitlement.version === 1 && outboxEvent.type === 'ticket.issued';
+    if (
+      initialIssuance &&
+      (outboxEvent.aggregateId !== entitlement.id ||
+        outboxEvent.organizationId !== entitlement.organizationId ||
+        outboxEvent.payload.entitlementId !== entitlement.id ||
+        outboxEvent.payload.orderId !== entitlement.orderId ||
+        outboxEvent.payload.eventId !== entitlement.eventId ||
+        outboxEvent.payload.purchaserUserId !== entitlement.userId ||
+        outboxEvent.payload.holderUserId !== currentEntitlementHolderId(entitlement))
+    ) {
+      throw new ConflictError('Issuance event does not match its ticket');
+    }
     const entitlementRef = this.collection.doc(entitlement.id);
     const outboxRef = this.db.collection('v2_outbox').doc(outboxEvent.id);
     await this.db.runTransaction(async (tx) => {
@@ -128,13 +141,31 @@ export class FirestoreEntitlementRepository implements EntitlementRepository {
         tx.get(entitlementRef),
         tx.get(outboxRef),
       ]);
-      if (entitlement.version > 1) {
+      if (initialIssuance && entitlementSnap.exists) {
+        const existing = entitlementFromDoc(entitlementSnap.data() ?? {});
+        if (
+          existing.orderId !== entitlement.orderId ||
+          existing.eventId !== entitlement.eventId ||
+          existing.organizationId !== entitlement.organizationId ||
+          existing.tierId !== entitlement.tierId ||
+          existing.userId !== entitlement.userId ||
+          (existing.unitKind ?? (existing.orderId.startsWith('RSVP-') ? 'free_rsvp' : 'paid')) !==
+            (entitlement.unitKind ??
+              (entitlement.orderId.startsWith('RSVP-') ? 'free_rsvp' : 'paid')) ||
+          existing.scanCountAllowed !== entitlement.scanCountAllowed
+        ) {
+          throw new ConflictError('Ticket id is already associated with a different issuance');
+        }
+        // A delayed confirmation must preserve later custody/admission/refund
+        // state, while still repairing a missing deterministic issuance intent.
+      } else {
         const storedVersion = Number(entitlementSnap.data()?.version ?? 0);
-        if (!entitlementSnap.exists || storedVersion !== entitlement.version - 1) {
+        if (storedVersion !== entitlement.version - 1) {
           throw new VersionConflictError(entitlement.version - 1, storedVersion);
         }
+        if (initialIssuance) tx.create(entitlementRef, entitlementToDoc(entitlement));
+        else tx.set(entitlementRef, entitlementToDoc(entitlement));
       }
-      tx.set(entitlementRef, entitlementToDoc(entitlement));
       if (!outboxSnap.exists) tx.create(outboxRef, outboxDocument(outboxEvent));
     });
   }

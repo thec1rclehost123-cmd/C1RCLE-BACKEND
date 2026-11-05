@@ -148,17 +148,26 @@ export class FirestoreCartReservationRepository implements CartReservationReposi
 
     if (snap.empty) return 0;
 
-    const batch = this.db.batch();
+    let released = 0;
     for (const doc of snap.docs) {
-      const data = doc.data();
-      const released: CartReservation = {
-        ...toCartReservation(data),
-        status: 'released',
-      };
-      batch.set(doc.ref, toDoc(released));
+      const changed = await this.db.runTransaction(async (tx) => {
+        const current = (await tx.get(doc.ref)).data();
+        if (
+          !current ||
+          current.status !== 'active' ||
+          typeof current.expiresAt !== 'string' ||
+          !(Date.parse(current.expiresAt) <= now.getTime())
+        ) {
+          return false;
+        }
+        // Re-read under the same transaction as the release: a conversion or
+        // revival that won after the candidate query must remain authoritative.
+        tx.update(doc.ref, { status: 'released' });
+        return true;
+      });
+      if (changed) released += 1;
     }
-    await batch.commit();
-    return snap.size;
+    return released;
   }
 
   /**
