@@ -578,6 +578,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   eventBus.subscribe('finance.refund.settled', transactionalEmailConsumer);
   eventBus.subscribe('finance.payout.status_changed', transactionalEmailConsumer);
   eventBus.subscribe('event.cancellation.order_affected', transactionalEmailConsumer);
+  eventBus.subscribe('event.cancellation.email_requested', transactionalEmailConsumer);
   eventBus.subscribe('event.updated', transactionalEmailConsumer);
   eventBus.subscribe('event.material_change.batch_requested', transactionalEmailConsumer);
   eventBus.subscribe('event.material_change.order_affected', transactionalEmailConsumer);

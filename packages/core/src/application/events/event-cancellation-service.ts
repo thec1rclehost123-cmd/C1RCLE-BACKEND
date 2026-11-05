@@ -344,6 +344,29 @@ export class EventCancellationService {
       order.id,
       String(eventVersion),
     );
+    const surviving = (await this.deps.repositories.entitlements.getByOrderId(order.id)).filter(
+      (entitlement) => entitlement.status !== 'void',
+    );
+    const recipients = new Map<string, EntityId | null>();
+    for (const entitlement of surviving) {
+      const holderId = entitlement.currentHolderUserId ?? entitlement.userId;
+      const key = holderId ?? `unassigned:${order.id}`;
+      if (!recipients.has(key)) recipients.set(key, entitlement.id);
+    }
+    if (recipients.size === 0) recipients.set(`order:${order.id}`, null);
+    for (const entitlementId of recipients.values()) {
+      await this.appendDeterministic(
+        'event.cancellation.email_requested',
+        order.id,
+        order.organizationId,
+        actorId,
+        { eventId: order.eventId, orderId: order.id, entitlementId, eventVersion, reason },
+        order.eventId,
+        order.id,
+        String(eventVersion),
+        entitlementId ?? 'order-contact',
+      );
+    }
     await this.deps.adminAudit.write({
       id: deterministicDomainEventId(
         'audit.event.cancellation.order_affected',

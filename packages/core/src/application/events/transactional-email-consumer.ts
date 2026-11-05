@@ -462,16 +462,31 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
       (ticket) => ticket.status === 'valid' && !ticket.refundLock,
     ).length;
     details = `<p>Refunded amount: <strong>${money(refund.amountPaise)}</strong></p><p>Affected tickets: ${refundedCount}</p><p>Remaining valid tickets: ${remaining}</p><p>Your bank or payment provider may take additional time to reflect the credit.</p><p>Support reference: ${escapeHtml(order.bookingReference ?? order.id)}</p>`;
-  } else if (event.type === 'event.cancellation.order_affected') {
-    const payload = event.payload as { eventId: EntityId; orderId: EntityId; reason: string };
+  } else if (event.type === 'event.cancellation.email_requested') {
+    const payload = event.payload as EventPayloads['event.cancellation.email_requested'];
     order = await deps.repositories.orders.getById(payload.orderId);
     const eventRecord = await deps.repositories.events.getById(payload.eventId);
-    if (!order || !eventRecord || (order.status !== 'refund_requested' && order.status !== 'paid'))
+    if (!order || !eventRecord || !['refund_requested', 'paid', 'cancelled'].includes(order.status))
       return null;
     deliveryAggregateId = order.id;
-    if (!isDeliverableRecipient(order.contact.email)) return null;
+    if (payload.entitlementId) {
+      const entitlement = await deps.repositories.entitlements.getById(payload.entitlementId);
+      if (
+        !entitlement ||
+        entitlement.orderId !== order.id ||
+        entitlement.eventId !== payload.eventId
+      )
+        return null;
+      const holderId = currentEntitlementHolderId(entitlement);
+      const holder = holderId ? await deps.repositories.users.getById(holderId) : null;
+      if (holder?.emailVerified && isDeliverableRecipient(holder.email))
+        explicitRecipient = holder.email;
+    } else if (isDeliverableRecipient(order.contact.email)) {
+      explicitRecipient = order.contact.email;
+    }
+    if (!explicitRecipient) return null;
     kind = 'event_cancelled';
-    idempotencyKey = `event-change:${eventRecord.id}:${eventRecord.version}:${order.id}`;
+    idempotencyKey = `event-cancelled:${eventRecord.id}:${payload.eventVersion}:${order.id}:${createHash('sha256').update(explicitRecipient.trim().toLowerCase()).digest('hex')}`;
     subject = `Update: ${eventRecord.title} has been cancelled`;
     heading = 'Event cancelled';
     details = `<p><strong>${escapeHtml(eventRecord.title)}</strong> has been cancelled.</p><p>${escapeHtml(payload.reason)}</p><p>If a refund applies, it remains subject to the existing review process. We will notify you when it is completed.</p><p>Booking reference: ${escapeHtml(order.bookingReference ?? order.id)}</p>`;

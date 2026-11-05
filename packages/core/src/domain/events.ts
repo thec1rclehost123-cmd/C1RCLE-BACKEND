@@ -125,6 +125,13 @@ export interface EventPayloads {
     refundRequestId: EntityId | null;
     reason: string;
   };
+  'event.cancellation.email_requested': {
+    eventId: EntityId;
+    orderId: EntityId;
+    entitlementId: EntityId | null;
+    eventVersion: number;
+    reason: string;
+  };
   'order.fulfilled': { orderId: EntityId; eventId: EntityId; receiptFacts?: OrderReceiptFacts };
   /** Durable per-entitlement issuance fact with explicit purchaser/holder roles. */
   'ticket.issued': {
