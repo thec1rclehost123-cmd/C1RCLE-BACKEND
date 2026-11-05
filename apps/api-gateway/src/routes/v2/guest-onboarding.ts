@@ -25,6 +25,14 @@ function requireUserId(request: FastifyRequest, reply: FastifyReply) {
   return userId;
 }
 
+async function requireAuthenticatedGuest(request: FastifyRequest, reply: FastifyReply) {
+  requireUserId(request, reply);
+}
+
+function authenticatedUserId(request: FastifyRequest) {
+  return (request.actor as { userId: string }).userId;
+}
+
 export async function registerGuestOnboarding(
   fastify: FastifyInstance,
   service: GuestProfileService,
@@ -32,10 +40,9 @@ export async function registerGuestOnboarding(
 ) {
   fastify.get(
     '/profile/onboarding',
-    { preHandler: fastify.rateLimit('AUTH_READ') },
+    { preHandler: [fastify.rateLimit('AUTH_READ'), requireAuthenticatedGuest] },
     async (request, reply) => {
-      const userId = requireUserId(request, reply);
-      if (!userId) return reply;
+      const userId = authenticatedUserId(request);
       const state = await service.getOnboarding(userId);
       const body = {
         displayName: state.profile?.displayName ?? '',
@@ -57,11 +64,11 @@ export async function registerGuestOnboarding(
       preHandler: [
         fastify.rateLimit('STANDARD_COMMAND'),
         fastify.validateV2({ body: guestOnboardingPatchSchema }),
+        requireAuthenticatedGuest,
       ],
     },
     async (request, reply) => {
-      const userId = requireUserId(request, reply);
-      if (!userId) return reply;
+      const userId = authenticatedUserId(request);
       try {
         await service.saveOnboarding(userId, guestOnboardingPatchSchema.parse(request.body));
         return await reply.status(204).send();
@@ -76,11 +83,11 @@ export async function registerGuestOnboarding(
       preHandler: [
         fastify.rateLimit('OTP_VERIFY'),
         fastify.validateV2({ body: guestPhoneProofSchema }),
+        requireAuthenticatedGuest,
       ],
     },
     async (request, reply) => {
-      const userId = requireUserId(request, reply);
-      if (!userId) return reply;
+      const userId = authenticatedUserId(request);
       const body = guestPhoneProofSchema.parse(request.body);
       try {
         const verifier =
