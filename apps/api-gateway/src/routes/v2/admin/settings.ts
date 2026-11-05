@@ -5,6 +5,8 @@ import {
 } from '@c1rcle/contracts/client';
 import { z } from 'zod';
 
+import type { BookingFeePolicy } from '@c1rcle/core/domain';
+
 import { isIdempotencyConflict, runIdempotent } from '../../../lib/v2-idempotency.js';
 import { requestMeta } from '../../../lib/v2-request-meta.js';
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
@@ -29,6 +31,7 @@ const services = createV2Services();
 const commandHeaders = z.looseObject({ 'idempotency-key': idempotencyKeySchema });
 
 function settingsToDto(settings: {
+  bookingFeePolicy?: BookingFeePolicy;
   platformFeeRate: number;
   refundSingleApproverThresholdPaise: number;
   refundDualApproverThresholdPaise: number;
@@ -46,6 +49,7 @@ function settingsToDto(settings: {
   updatedAt: string;
 }) {
   return {
+    ...(settings.bookingFeePolicy ? { bookingFeePolicy: settings.bookingFeePolicy } : {}),
     platformFeeRate: settings.platformFeeRate,
     refundSingleApproverThresholdPaise: settings.refundSingleApproverThresholdPaise,
     refundDualApproverThresholdPaise: settings.refundDualApproverThresholdPaise,

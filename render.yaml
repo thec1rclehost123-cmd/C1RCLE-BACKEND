@@ -53,7 +53,7 @@ services:
       - key: STORAGE_DRIVER
         value: firestore
       - key: FIRESTORE_PROJECT_ID
-        sync: false
+        value: c1rcle-v2
       - key: FIREBASE_CLIENT_EMAIL
         sync: false
       - key: FIREBASE_PRIVATE_KEY
@@ -125,9 +125,11 @@ services:
       # file (see docs/operations/payments-release-gate.md). Change only with sign-off.
       - key: PAYOUTS_ENABLED
         value: 'false'
+      - key: BACKGROUND_WORKERS_ENABLED
+        value: 'false'
 
-      # Phase 4 payments. Optional in the schema; required once the checkout
-      # and webhook routes are registered.
+      # M4 payments: configure all three together, with an rzp_test_ key ID.
+      # Live Mode and partial tuples fail validation at startup.
       - key: RAZORPAY_KEY_ID
         sync: false
       - key: RAZORPAY_KEY_SECRET

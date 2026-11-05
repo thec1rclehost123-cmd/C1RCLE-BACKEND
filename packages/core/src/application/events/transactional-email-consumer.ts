@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 
+import { guestPortalOrigin } from '../../config/index.js';
+import { ConflictError } from '../../domain/errors.js';
 import { deterministicDomainEventId, domainEvent } from '../../domain/events.js';
 import { currentEntitlementHolderId } from '../../domain/models/entitlement.js';
 import { PermanentEmailDeliveryError } from '../../domain/ports/email-sender.js';
@@ -78,7 +80,7 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
   if (event.type === 'order.fulfilled') {
     const { orderId } = event.payload as { orderId: EntityId };
     order = await deps.repositories.orders.getById(orderId);
-    if (!order || order.status !== 'paid') return null;
+    if (!order || order.status !== 'paid' || order.fulfillmentState === 'pending') return null;
     if (!isDeliverableRecipient(order.contact.email)) return null;
     const isRsvp = order.grandTotalPaise === 0;
     kind = isRsvp ? 'rsvp_confirmation' : 'booking_receipt';
@@ -95,21 +97,24 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
     if (
       !transfer ||
       transfer.status !== 'pending' ||
-      !transfer.recipientUserId ||
       Date.parse(transfer.expiresAt) <= deps.config.clock.now().getTime()
     ) {
       return null;
     }
-    const recipient = await deps.repositories.users.getById(transfer.recipientUserId);
+    if (transfer.recipientEmail && !transfer.recipientEmailHash) return null;
+    const recipient = transfer.recipientUserId
+      ? await deps.repositories.users.getById(transfer.recipientUserId)
+      : null;
+    const deliveryEmail =
+      transfer.recipientEmail?.trim().toLowerCase() ??
+      (recipient?.emailVerified ? recipient.email.trim().toLowerCase() : null);
     if (
-      !recipient?.emailVerified ||
-      !isDeliverableRecipient(recipient.email) ||
+      !deliveryEmail ||
+      !isDeliverableRecipient(deliveryEmail) ||
       (transfer.recipientEmailHash &&
-        createHash('sha256').update(recipient.email.trim().toLowerCase()).digest('hex') !==
-          transfer.recipientEmailHash)
-    ) {
+        createHash('sha256').update(deliveryEmail).digest('hex') !== transfer.recipientEmailHash)
+    )
       return null;
-    }
     const entitlement = await deps.repositories.entitlements.getById(transfer.entitlementId);
     const eventRecord = entitlement
       ? await deps.repositories.events.getById(entitlement.eventId)
@@ -119,13 +124,14 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
       !eventRecord ||
       entitlement.status !== 'valid' ||
       entitlement.pendingTransferId !== transfer.id ||
-      currentEntitlementHolderId(entitlement) !== transfer.senderUserId
+      (currentEntitlementHolderId(entitlement) !== transfer.senderUserId &&
+        !(entitlement.currentHolderUserId === null && entitlement.userId === transfer.senderUserId))
     ) {
       return null;
     }
     if (deps.emailSender.name === 'logging' || !deps.emailSender.sendTransactionalEmail)
       return null;
-    explicitRecipient = recipient.email;
+    explicitRecipient = deliveryEmail;
     deliveryAggregateId = transfer.id;
     kind = 'ticket_transfer_invitation';
     idempotencyKey = payload.deliveryRequestId
@@ -133,8 +139,11 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
       : `ticket-transfer-invitation:${transfer.id}`;
     subject = 'A C1RCLE ticket is waiting for you';
     heading = 'You have a ticket invitation';
-    const transferUrl = `https://thec1rcle.com/ticket-transfer/${encodeURIComponent(transfer.id)}`;
-    details = `<p>A ticket for <strong>${escapeHtml(eventRecord.title)}</strong> is waiting in your C1RCLE account.</p><p><a href="${transferUrl}" style="color:#ff5a00">Review this invitation</a></p><p>Sign in with the verified email address this invitation was sent to. Your ticket holder will change only after you accept.</p>`;
+    const transferUrl = new URL(
+      `/ticket-transfer/${encodeURIComponent(transfer.id)}`,
+      guestPortalOrigin(deps.config.guestPortalUrl),
+    ).toString();
+    details = `<p>A ticket for <strong>${escapeHtml(eventRecord.title)}</strong> is waiting for you. Create a C1RCLE account if needed and verify this email address before accepting.</p><p><a href="${transferUrl}" style="color:#ff5a00">Review this invitation</a></p><p>Sign in with the verified email address this invitation was sent to. Your ticket holder will change only after you accept.</p>`;
   } else if (event.type === 'ticket.issued' || event.type === 'ticket.transfer.resolved') {
     const payload = event.payload as {
       entitlementId: EntityId;
@@ -187,7 +196,12 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
       }
       const entitlement = await deps.repositories.entitlements.getById(payload.entitlementId);
       if (!entitlement || entitlement.status === 'void') return null;
-      const currentHolderUserId = entitlement.currentHolderUserId ?? entitlement.userId;
+      if (entitlement.fulfillmentRequired) {
+        const paidOrder = await deps.repositories.orders.getById(entitlement.orderId);
+        if (!paidOrder || paidOrder.fulfillmentState !== 'complete')
+          throw new ConflictError('Ticket delivery is waiting for payment completion');
+      }
+      const currentHolderUserId = currentEntitlementHolderId(entitlement);
       if (!currentHolderUserId) return null;
       if (
         event.type === 'ticket.issued' &&
@@ -461,6 +475,7 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
       orderId: EntityId;
       entitlementId?: EntityId | null;
       eventVersion: number;
+      changeType?: 'postponed' | 'rescheduled';
       previousTitle: string;
       title: string;
       previousStartAt: string;
@@ -513,17 +528,25 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
       .digest('hex');
     idempotencyKey = `event-change:${eventRecord.id}:${payload.eventVersion}:${order.id}:${recipientHash}`;
     subject = `Important update: ${payload.title}`;
-    heading = 'Event details have changed';
+    heading =
+      payload.changeType === 'postponed'
+        ? 'Event postponed — new date to be announced'
+        : payload.changeType === 'rescheduled'
+          ? 'A new event date has been announced'
+          : 'Event details have changed';
     const oldDate = new Intl.DateTimeFormat('en-IN', {
       dateStyle: 'long',
       timeStyle: 'short',
       timeZone: 'Asia/Kolkata',
     }).format(new Date(payload.previousStartAt));
-    const newDate = new Intl.DateTimeFormat('en-IN', {
-      dateStyle: 'long',
-      timeStyle: 'short',
-      timeZone: 'Asia/Kolkata',
-    }).format(new Date(payload.startAt));
+    const newDate =
+      payload.changeType === 'postponed'
+        ? 'To be announced'
+        : new Intl.DateTimeFormat('en-IN', {
+            dateStyle: 'long',
+            timeStyle: 'short',
+            timeZone: 'Asia/Kolkata',
+          }).format(new Date(payload.startAt));
     const venueChange =
       payload.previousVenueId !== undefined && payload.previousVenueId !== eventRecord.venueId
         ? `<p>Venue: ${escapeHtml(previousVenue?.public.name ?? 'Previous venue unavailable')} → ${escapeHtml(currentVenue?.public.name ?? 'Venue details unavailable')}</p>`
@@ -691,6 +714,7 @@ async function enqueueMaterialChangeRecipients(
   let payload: {
     eventId: EntityId;
     eventVersion: number;
+    changeType?: 'postponed' | 'rescheduled';
     previousTitle: string;
     title: string;
     previousStartAt: string;
@@ -747,6 +771,7 @@ async function enqueueMaterialChangeRecipients(
             orderId: order.id,
             entitlementId,
             eventVersion: payload.eventVersion,
+            ...(payload.changeType ? { changeType: payload.changeType } : {}),
             previousTitle: payload.previousTitle,
             title: payload.title,
             previousStartAt: payload.previousStartAt,

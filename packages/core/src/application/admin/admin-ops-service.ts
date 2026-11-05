@@ -1,6 +1,8 @@
 import { ConflictError, InvalidOperationError, NotFoundError } from '../../domain/errors.js';
 import { deterministicDomainEventId, domainEvent } from '../../domain/events.js';
 import { isExecutable } from '../../domain/models/admin-authority.js';
+import { snapshotBookingFeePolicy } from '../../domain/models/booking-fee-policy.js';
+import { currentEntitlementHolderId } from '../../domain/models/entitlement.js';
 import {
   reinstatePromoterAssignment,
   suspendPromoterAssignment,
@@ -422,8 +424,7 @@ export class AdminOperationsService {
       after: {
         status: resolved.transfer.status,
         entitlementId: resolved.entitlement.id,
-        currentHolderUserId:
-          resolved.entitlement.currentHolderUserId ?? resolved.entitlement.userId,
+        currentHolderUserId: currentEntitlementHolderId(resolved.entitlement),
         credentialVersion: resolved.entitlement.credentialVersion ?? 1,
       },
       reason: normalizedReason,
@@ -483,7 +484,7 @@ export class AdminOperationsService {
         status: result.transfer.status,
         entitlementId: result.entitlement.id,
         pendingTransferId: null,
-        currentHolderUserId: result.entitlement.currentHolderUserId ?? result.entitlement.userId,
+        currentHolderUserId: currentEntitlementHolderId(result.entitlement),
         credentialVersion: result.entitlement.credentialVersion ?? 1,
       },
       reason: normalizedReason,
@@ -780,15 +781,33 @@ export class AdminOperationsService {
     meta?: AdminRequestMeta,
   ): Promise<PlatformSettings> {
     const admin = await this.authority.requireAdmin(adminUserId);
+    // Every settings field (fees, refund thresholds, maintenance) moves money
+    // or availability, so the financial tier is required unconditionally rather
+    // than only when the request happens to carry a booking fee policy.
+    await this.authority.authorize(adminUserId, 'FINANCIAL_REFUND');
     const current = await this.deps.repositories.platformSettings.get();
+    const bookingFeePolicy = patch.bookingFeePolicy
+      ? snapshotBookingFeePolicy(patch.bookingFeePolicy)
+      : current.bookingFeePolicy;
+    if (patch.bookingFeePolicy) {
+      const next = snapshotBookingFeePolicy(patch.bookingFeePolicy);
+      if (
+        current.bookingFeePolicy?.version === next.version &&
+        JSON.stringify(snapshotBookingFeePolicy(current.bookingFeePolicy)) !== JSON.stringify(next)
+      ) {
+        throw new ConflictError('A changed booking fee policy requires a new version');
+      }
+    }
     const updated: PlatformSettings = {
       ...current,
       ...patch,
+      revision: (current.revision ?? 0) + 1,
+      ...(bookingFeePolicy ? { bookingFeePolicy } : {}),
       featureFlags: patch.featureFlags ?? current.featureFlags,
       accountingPolicy: patch.accountingPolicy ?? current.accountingPolicy,
       updatedAt: this.deps.config.clock.now().toISOString(),
     };
-    await this.deps.repositories.platformSettings.save(updated);
+    await this.deps.repositories.platformSettings.save(updated, current.revision ?? 0);
     await this.authority.record(admin, {
       action: 'PLATFORM_SETTINGS_UPDATE',
       targetType: 'platform_settings',
@@ -799,6 +818,7 @@ export class AdminOperationsService {
         refundDualApproverThresholdPaise: current.refundDualApproverThresholdPaise,
         maintenanceMode: current.maintenanceMode,
         accountingPolicyVersion: current.accountingPolicy.version,
+        bookingFeePolicy: current.bookingFeePolicy ?? null,
       },
       after: {
         platformFeeRate: updated.platformFeeRate,
@@ -806,6 +826,7 @@ export class AdminOperationsService {
         refundDualApproverThresholdPaise: updated.refundDualApproverThresholdPaise,
         maintenanceMode: updated.maintenanceMode,
         accountingPolicyVersion: updated.accountingPolicy.version,
+        bookingFeePolicy: updated.bookingFeePolicy ?? null,
       },
       reason: null,
       ipAddress: meta?.ipAddress,

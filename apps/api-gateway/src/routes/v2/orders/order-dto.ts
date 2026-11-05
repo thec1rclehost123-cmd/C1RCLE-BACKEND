@@ -10,8 +10,30 @@ import type { Order } from '@c1rcle/core/domain';
  * response and every PR3 orders/wallet route below.
  */
 export function orderToDto(order: Order): OrderDto {
+  const originalIds = new Set(order.refundSnapshot?.tickets.map((ticket) => ticket.entitlementId));
+  const applied = new Set(order.appliedRefundRequestIds);
+  const settledIds = new Set(
+    (order.refundedTicketClaims ?? [])
+      .filter((claim) => originalIds.has(claim.entitlementId) && applied.has(claim.refundRequestId))
+      .map((claim) => claim.entitlementId),
+  );
+  const admissionRefundState =
+    originalIds.size === 0
+      ? undefined
+      : settledIds.size === 0
+        ? 'none'
+        : settledIds.size === originalIds.size
+          ? 'all'
+          : 'partial';
   return {
+    ...(admissionRefundState ? { admissionRefundState } : {}),
     id: order.id,
+    ...(order.fulfillmentState ? { fulfillmentState: order.fulfillmentState } : {}),
+    ...(order.fulfillmentCompletedAt
+      ? { fulfillmentCompletedAt: order.fulfillmentCompletedAt }
+      : {}),
+    ...(order.receiptFacts ? { receiptFacts: order.receiptFacts } : {}),
+    ...(order.feePolicy ? { feePolicy: order.feePolicy } : {}),
     bookingReference: order.bookingReference ?? bookingReferenceForOrderId(order.id),
     eventId: order.eventId,
     organizationId: order.organizationId,

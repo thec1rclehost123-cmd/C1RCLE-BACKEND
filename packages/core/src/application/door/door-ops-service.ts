@@ -1,9 +1,14 @@
 import { ForbiddenError, InvalidOperationError, NotFoundError } from '../../domain/errors.js';
+import { currentEntitlementHolderId } from '../../domain/models/entitlement.js';
 import { canSessionCharge } from '../../domain/models/event-code.js';
 import { requireOrgAccess } from '../context.js';
 
 import type { DoorStats, DoorStatsService } from './door-stats-service.js';
-import type { OpenScannerSessionCommand, ScannerService } from './scanner-service.js';
+import type {
+  ManualScanInput,
+  OpenScannerSessionCommand,
+  ScannerService,
+} from './scanner-service.js';
 import type { EntityId } from '../../domain/identity.js';
 import type { DoorSale } from '../../domain/models/door-sale.js';
 import type { Entitlement } from '../../domain/models/entitlement.js';
@@ -94,6 +99,7 @@ export interface DoorGuest {
   source: DoorGuestSource;
   /** Online admission custody, without exposing purchaser or holder account IDs. */
   ownershipStatus?: DoorGuestOwnershipStatus | null;
+  requirement?: string | null;
   status: 'entered' | 'not_entered';
   enteredAt: string | null;
   /** Only present for online tickets — door guests are entered by definition. */
@@ -206,6 +212,7 @@ export interface DoorOpsService {
     eventId: EntityId,
     entitlementId: EntityId,
     actor: ActorContext,
+    options: Omit<ManualScanInput, 'eventId' | 'entitlementId'>,
   ): Promise<{ guest: DoorGuest; scan: ScanLedger }>;
 }
 
@@ -498,13 +505,17 @@ export function createDoorOpsService(deps: DoorOpsServiceDeps): DoorOpsService {
     let scanned = 0;
     let truncated = false;
     let cursor: string | null = null;
+    const tierPolicies = new Map<string, TicketTier | null>();
     do {
       const page: Page<Entitlement> = await deps.entitlements.listByEvent(eventId, {
         cursor,
         limit: GUEST_SCAN_PAGE,
       });
       for (const entitlement of page.items) {
-        const guest = toOnlineGuest(entitlement);
+        if (!entitlement.eligibility && !tierPolicies.has(entitlement.tierId)) {
+          tierPolicies.set(entitlement.tierId, await deps.catalog.getTierById(entitlement.tierId));
+        }
+        const guest = toOnlineGuest(entitlement, tierPolicies.get(entitlement.tierId) ?? undefined);
         if (guestMatches(guest, query, search)) matches.push(guest);
       }
       scanned += page.items.length;
@@ -652,60 +663,56 @@ export function createDoorOpsService(deps: DoorOpsServiceDeps): DoorOpsService {
     eventId: EntityId,
     entitlementId: EntityId,
     actor: ActorContext,
+    options: Omit<ManualScanInput, 'eventId' | 'entitlementId'>,
   ): Promise<{ guest: DoorGuest; scan: ScanLedger }> {
-    const event = await deps.events.findById(eventId);
-    if (!event) throw new NotFoundError('Event', eventId);
-    requireOrgAccess(actor, event.organizationId);
-
-    const claim = await deps.entitlements.claimAdmission(entitlementId, eventId);
-    if (!claim.admitted) {
-      throw new InvalidOperationError(claim.denyMessage ?? 'This ticket cannot be checked in');
+    const result = await deps.scanner.manualScan({ eventId, entitlementId, ...options }, actor);
+    if (result.status !== 'consumed' || !result.scan) {
+      throw new InvalidOperationError(result.denyMessage ?? 'This ticket cannot be checked in');
     }
-    const entitlement = claim.entitlement;
-    if (!entitlement) throw new NotFoundError('Ticket', entitlementId);
-
-    const scan = await deps.scanLedger.create({
-      eventId,
-      organizationId: event.organizationId,
-      venueId: event.venueId,
-      entitlementId,
-      doorSaleId: null,
-      entryType: 'ticket',
-      tierName: entitlement.tierName,
-      tierId: entitlement.tierId,
-      operatorUid: actor.userId,
-      operatorName: null,
-      operatorRole: null,
-      gate: null,
-      // No device: this came from a manager's own screen, not a scanner. The
-      // ledger says so rather than borrowing some device's identity.
-      deviceId: null,
-      deviceName: 'manual check-in',
-      deviceBound: false,
-      guestName: entitlement.holderName,
-      guestEmail: null,
-      guestPhone: null,
-      scannedAt: new Date().toISOString(),
-      admittedCount: 1,
-      scanCountUsed: claim.scansUsed,
-      scanCountAllowed: claim.scansAllowed,
-      isOffline: false,
-      offlineDeviceId: null,
-      status: 'consumed',
-    });
-
-    await deps.adminAudit.write({
-      id: `audit-manual-${scan.id}-${Date.now()}`,
-      adminId: actor.userId,
-      actorId: actor.userId,
-      organizationId: event.organizationId,
-      action: 'door.manual_check_in',
-      targetType: 'scan_ledger',
-      targetId: scan.id,
-      after: { entitlementId, scansUsed: claim.scansUsed },
-    });
-
-    return { guest: toOnlineGuest(entitlement), scan };
+    const ticket = result.entitlement;
+    if (!ticket)
+      throw new InvalidOperationError(
+        'Admission recorded, but its guest projection is unavailable',
+      );
+    try {
+      await deps.adminAudit.write({
+        id: `audit-manual-${result.scan.id}`,
+        adminId: actor.userId,
+        actorId: actor.userId,
+        organizationId: result.scan.organizationId,
+        action: 'door.manual_check_in',
+        targetType: 'scan_ledger',
+        targetId: result.scan.id,
+        after: {
+          entitlementId,
+          deviceId: result.scan.deviceId,
+          method: 'manual',
+          reason: options.reason ?? 'QR unavailable',
+          scansUsed: result.scan.scanCountUsed,
+        },
+      });
+    } catch (error) {
+      deps.logger.warn('scanner_manual_secondary_audit_failed', {
+        scanId: result.scan.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    // The consumed scan and current ticket summary are the transaction result.
+    // Re-reading storage after admission would turn a read outage into a false failure.
+    const guest: DoorGuest = {
+      id: ticket.id,
+      name: ticket.holderName,
+      ticketType: ticket.tierName,
+      entryType: ticket.scansAllowed === 2 ? 'couple' : 'general',
+      quantity: ticket.scansAllowed,
+      source: 'online',
+      status: 'entered',
+      enteredAt: result.scan.scannedAt,
+      scansUsed: ticket.scansUsed,
+      scansAllowed: ticket.scansAllowed,
+      requirement: admissionRequirement(ticket.scansAllowed, ticket.eligibilityPolicy),
+    };
+    return { guest, scan: result.scan };
   }
 
   return {
@@ -742,12 +749,35 @@ function toTierSummary(tier: TicketTier): DoorTierSummary {
   };
 }
 
-function toOnlineGuest(entitlement: Entitlement): DoorGuest {
+function admissionRequirement(
+  scansAllowed: number,
+  policy?: { audienceType?: string; minAge?: number | null; maxAge?: number | null },
+): string | null {
+  return scansAllowed === 2
+    ? 'One male and one female entering together'
+    : policy
+      ? [
+          policy.audienceType && !['GENERAL', 'GROUP'].includes(policy.audienceType)
+            ? policy.audienceType
+            : null,
+          policy.minAge != null ? `Age ${policy.minAge}+` : null,
+          policy.maxAge != null ? `Age up to ${policy.maxAge}` : null,
+        ]
+          .filter(Boolean)
+          .join(' · ') || null
+      : null;
+}
+
+function toOnlineGuest(entitlement: Entitlement, tier?: TicketTier): DoorGuest {
+  const requirement = admissionRequirement(
+    entitlement.scanCountAllowed,
+    entitlement.eligibility ?? tier,
+  );
   const entered = entitlement.scanCount > 0;
   const ownershipStatus: DoorGuestOwnershipStatus =
     entitlement.currentHolderUserId === null
       ? 'unassigned'
-      : (entitlement.currentHolderUserId ?? entitlement.userId) === entitlement.userId
+      : currentEntitlementHolderId(entitlement) === entitlement.userId
         ? 'purchaser'
         : 'assigned';
   return {
@@ -757,6 +787,7 @@ function toOnlineGuest(entitlement: Entitlement): DoorGuest {
     entryType: entitlement.scanCountAllowed > 1 ? 'couple' : 'general',
     quantity: entitlement.scanCountAllowed,
     source: 'online',
+    requirement,
     ownershipStatus,
     status: entered ? 'entered' : 'not_entered',
     enteredAt: entitlement.scannedAt[entitlement.scannedAt.length - 1] ?? null,

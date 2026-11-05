@@ -112,12 +112,16 @@ describe('ticket-tier wire contracts', () => {
     ).toBe(false);
   });
 
-  it('accepts only the safe maxPerOrder update field', () => {
+  it('accepts safe inventory, future price and order-limit updates', () => {
     expect(updateTicketTierLimitsSchema.safeParse({ maxPerOrder: 10 }).success).toBe(true);
     expect(updateTicketTierLimitsSchema.safeParse({ maxPerOrder: 11 }).success).toBe(false);
     expect(updateTicketTierLimitsSchema.safeParse({ maxPerOrder: 2.5 }).success).toBe(false);
     expect(updateTicketTierLimitsSchema.safeParse({ maxPerOrder: 10, quantity: 100 }).success).toBe(
-      false,
+      true,
     );
+    expect(updateTicketTierLimitsSchema.safeParse({ priceInPaise: 50_000 }).success).toBe(true);
+    expect(updateTicketTierLimitsSchema.safeParse({ quantity: -1 }).success).toBe(false);
+    expect(updateTicketTierLimitsSchema.safeParse({ priceInPaise: -1 }).success).toBe(false);
+    expect(updateTicketTierLimitsSchema.safeParse({ audienceType: 'STUDENT' }).success).toBe(false);
   });
 });

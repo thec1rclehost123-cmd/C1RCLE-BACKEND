@@ -63,6 +63,8 @@ export interface CoreConfig {
    * link (the invitee asks their manager for it) rather than linking nowhere.
    */
   partnerDashboardUrl?: string | undefined;
+  /** Server-configured Guest origin for invitation links; never supplied by a command. */
+  guestPortalUrl: string;
 }
 
 export interface CoreConfigInput {
@@ -77,6 +79,7 @@ export interface CoreConfigInput {
   bankEncryptionSalt?: string;
   emailOtpSecret?: string;
   partnerDashboardUrl?: string;
+  guestPortalUrl?: string;
 }
 
 export class CoreConfigError extends Error {
@@ -95,6 +98,29 @@ export class CoreConfigError extends Error {
 export const LEGACY_BANK_ENCRYPTION_SECRET = 'default-bank-encryption-secret-change-in-production';
 export const LEGACY_BANK_ENCRYPTION_SALT = 'default-bank-encryption-salt';
 
+export const DEFAULT_GUEST_PORTAL_URL = 'https://thec1rcle.com';
+
+/** Invitation URLs may target one configured HTTP(S) origin, never a caller-provided path. */
+export function guestPortalOrigin(value: string = DEFAULT_GUEST_PORTAL_URL): string {
+  try {
+    const url = new URL(value);
+    if (
+      !['https:', 'http:'].includes(url.protocol) ||
+      url.username ||
+      url.password ||
+      (url.pathname !== '/' && url.pathname !== '') ||
+      url.search ||
+      url.hash
+    )
+      throw new Error('Invalid origin');
+    return url.origin;
+  } catch {
+    throw new CoreConfigError(
+      'guestPortalUrl must be an HTTP(S) origin without credentials, paths, query or fragment',
+    );
+  }
+}
+
 export function createCoreConfig(input: CoreConfigInput): CoreConfig {
   if (!input.redis || typeof input.redis.url !== 'string' || input.redis.url.length === 0) {
     throw new CoreConfigError('CoreConfig requires redis.url');
@@ -109,6 +135,7 @@ export function createCoreConfig(input: CoreConfigInput): CoreConfig {
   }
 
   return {
+    guestPortalUrl: guestPortalOrigin(input.guestPortalUrl),
     clock: input.clock ?? systemClock,
     ids: input.ids ?? defaultIdGenerator,
     redis: {

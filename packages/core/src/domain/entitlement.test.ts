@@ -284,3 +284,44 @@ describe('credential-version admission fence', () => {
     });
   });
 });
+
+describe('M3 admission safety', () => {
+  it('never admits an explicitly unassigned ticket', () => {
+    expect(admitSeats({ ...ticket, currentHolderUserId: null }, ticket.eventId)).toMatchObject({
+      admitted: false,
+    });
+  });
+  it('does not consume one seat of a Couple ticket', () => {
+    expect(admitSeats({ ...ticket, scanCountAllowed: 2 }, ticket.eventId)).toMatchObject({
+      admitted: false,
+    });
+  });
+  it('requires the operator to confirm Couple eligibility and consumes the pair together', () => {
+    const pair = { ...ticket, scanCountAllowed: 2 };
+    expect(admitSeats(pair, pair.eventId, { seats: 2 })).toMatchObject({ admitted: false });
+    expect(admitSeats(pair, pair.eventId, { seats: 2, eligibilityVerified: true })).toMatchObject({
+      admitted: true,
+      scansUsed: 2,
+    });
+  });
+});
+
+describe('M3 admission count validation', () => {
+  it.each([0, -1, 1.5, Number.NaN])('does not admit an invalid seat count %s', (seats) => {
+    expect(admitSeats(ticket, ticket.eventId, { seats })).toMatchObject({ admitted: false });
+  });
+  it('does not resurrect a redeemed ticket with an inconsistent count', () => {
+    expect(admitSeats({ ...ticket, status: 'redeemed' }, ticket.eventId)).toMatchObject({
+      admitted: false,
+      denyReason: 'already_used',
+    });
+  });
+});
+
+it('conceals another event before checking a replaced credential', () => {
+  expect(
+    admitSeats({ ...ticket, credentialVersion: 2 }, 'other-event', {
+      expectedCredentialVersion: 1,
+    }),
+  ).toMatchObject({ admitted: false, denyReason: 'wrong_event', scansUsed: 0, scansAllowed: 0 });
+});

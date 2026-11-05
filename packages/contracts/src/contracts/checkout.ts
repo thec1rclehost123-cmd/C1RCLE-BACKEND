@@ -2,6 +2,21 @@ import { z } from 'zod';
 
 import { opaqueIdSchema, paginatedSchema, idempotencyKeySchema } from './shared.js';
 
+/** Disclosed server-owned policy, frozen into original purchase evidence. */
+export const bookingFeePolicySchema = z
+  .object({
+    version: z.string().trim().min(1).max(80),
+    label: z.string().trim().min(1).max(240),
+    payer: z.literal('guest'),
+    environment: z.literal('test'),
+    platformFeeBasisPoints: z.number().int().min(0).max(10000),
+    paymentFeeBasisPoints: z.number().int().min(0).max(10000),
+    feeTaxBasisPoints: z.number().int().min(0).max(10000),
+    guestRefund: z.literal('admission_only'),
+    organizerRefund: z.literal('full_paid'),
+  })
+  .strict();
+
 export const ticketAddonSelectionSchema = z.object({
   addonId: opaqueIdSchema,
   name: z.string().min(1).max(120),
@@ -39,6 +54,7 @@ const checkoutLineRequestSchema = z.object({
 
 /** One priced line, as `CheckoutService.quote`/`createHold` actually return it. */
 export const pricingLineDtoSchema = z.object({
+  pricingPhaseId: z.string().nullable().optional(),
   tierId: opaqueIdSchema,
   tierName: z.string(),
   quantity: z.number().int().positive(),
@@ -68,6 +84,7 @@ export type PricingLineDto = z.infer<typeof pricingLineDtoSchema>;
  * fees only; see `domain/models/pricing.ts`). Money is always integer paise.
  */
 export const pricingBreakdownDtoSchema = z.object({
+  feePolicy: bookingFeePolicySchema.optional(),
   lines: z.array(pricingLineDtoSchema),
   subtotalPaise: z.number().int().nonnegative(),
   admissionSubtotalPaise: z.number().int().nonnegative().optional(),
@@ -223,6 +240,7 @@ const checkoutOrderStatusSchema = z.enum([
 ]);
 
 const checkoutOrderLineDtoSchema = z.object({
+  pricingPhaseId: z.string().nullable().optional(),
   tierId: opaqueIdSchema,
   tierName: z.string(),
   quantity: z.number().int().positive(),
@@ -250,7 +268,35 @@ const checkoutOrderLineDtoSchema = z.object({
  * reconciling that DTO is out of scope for the checkout/payments slice and
  * left for the orders/tickets/wallet PR.
  */
+export const orderReceiptFactsSchema = z.object({
+  version: z.literal('m4-paid-receipt-v1'),
+  orderId: opaqueIdSchema,
+  bookingReference: z.string(),
+  currency: z.string().length(3),
+  subtotalPaise: z.number().int().nonnegative(),
+  discountPaise: z.number().int().nonnegative(),
+  discountedSubtotalPaise: z.number().int().nonnegative(),
+  admissionPaise: z.number().int().nonnegative(),
+  coverPaise: z.number().int().nonnegative(),
+  addOnPaise: z.number().int().nonnegative(),
+  platformFeePaise: z.number().int().nonnegative(),
+  paymentFeePaise: z.number().int().nonnegative(),
+  feeTaxPaise: z.number().int().nonnegative(),
+  grandTotalPaise: z.number().int().nonnegative(),
+  providerOrderId: z.string().nullable(),
+  providerPaymentId: z.string().nullable(),
+  paidAt: z.iso.datetime().nullable(),
+  bookingFeePolicyVersion: z.string().nullable(),
+  accountingPolicyVersion: z.string().nullable(),
+});
+
 export const checkoutOrderDtoSchema = z.object({
+  /** Settled original admission identities; absent when a legacy order has no snapshot. */
+  admissionRefundState: z.enum(['none', 'partial', 'all']).optional(),
+  fulfillmentState: z.enum(['pending', 'complete']).optional(),
+  fulfillmentCompletedAt: z.iso.datetime().optional(),
+  receiptFacts: orderReceiptFactsSchema.optional(),
+  feePolicy: bookingFeePolicySchema.optional(),
   id: opaqueIdSchema,
   bookingReference: z.string().regex(/^C1-[A-F0-9]{5}(?:-[A-F0-9]{5}){3}$/),
   eventId: opaqueIdSchema,

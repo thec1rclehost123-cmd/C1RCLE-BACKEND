@@ -859,6 +859,54 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
     );
   }
 
+  const venueCancellationBody = z.object({ reason: z.string().trim().min(1).max(1000) }).strict();
+  fastify.post(
+    '/venues/slot-requests/:slotRequestId/cancel-by-venue',
+    {
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({
+          params: slotRequestIdParam,
+          headers: venueHeaders.extend({ 'idempotency-key': idempotencyKeySchema }),
+          body: venueCancellationBody,
+        }),
+        fastify.requirePermission('venue.schedule'),
+      ],
+    },
+    async (request, reply) => {
+      const { slotRequestId } = request.params as z.infer<typeof slotRequestIdParam>;
+      const body = request.body as z.infer<typeof venueCancellationBody>;
+      const actor = services.actor(request);
+      const headers = request.v2Headers ?? {};
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: actor.userId,
+        commandName: 'venue.slotRequest.cancelByVenue',
+        idempotencyKey: headers['idempotency-key'],
+        context: { path: { slotRequestId }, body },
+        run: async () => {
+          const slotRequest = await services.venueSlotRequests.cancelByVenue(
+            actor,
+            slotRequestId,
+            body.reason,
+          );
+          const validated = validateV2Response(reply, request, slotRequestDtoSchema, slotRequest);
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
+        },
+      }).catch((error: unknown) =>
+        isIdempotencyConflict(error)
+          ? mapDomainError(reply, request, slotRequestId, error, {
+              conflictId: headers['idempotency-key'],
+            })
+          : mapDomainError(reply, request, slotRequestId, error),
+      );
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
+
   // Host-side withdrawal: the requester cancels their own outgoing request.
   // Scoped to `slot-request.create` — the host org that sent the request is the
   // only caller the service will authorize (venue owners do not get this).

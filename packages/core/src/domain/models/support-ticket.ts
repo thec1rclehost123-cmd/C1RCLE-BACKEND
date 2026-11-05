@@ -107,6 +107,14 @@ export interface SupportSla {
 }
 
 export interface SupportTicket extends VersionedEntity {
+  /** Purchaser review request, separate from authorized financial execution. */
+  refundReview?: {
+    orderId: EntityId;
+    entitlementIds: EntityId[];
+    eventVersion: number;
+    policyKind: string;
+    requestedAt: string;
+  };
   id: EntityId;
   subject: string;
   description: string;

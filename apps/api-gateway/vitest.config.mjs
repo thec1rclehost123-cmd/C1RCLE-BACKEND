@@ -10,6 +10,10 @@ export default defineConfig({
       // provider's own fallback — see webhook-routes.ts's doc comment) and
       // fails closed (503) without it. Fixed so webhook signature tests can
       // compute a valid HMAC the same way `MemoryPaymentProvider` does.
+      // Complete synthetic tuple for validation; the memory driver never uses
+      // these to instantiate a real provider or make network requests.
+      RAZORPAY_KEY_ID: 'rzp_test_syntheticUnit123',
+      RAZORPAY_KEY_SECRET: 'synthetic-unit-key-secret',
       RAZORPAY_WEBHOOK_SECRET: 'test_webhook_secret',
     },
     // Each route test builds a full Fastify app (validate + rbac + rate-limit +

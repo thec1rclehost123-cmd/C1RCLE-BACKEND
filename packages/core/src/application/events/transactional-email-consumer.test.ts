@@ -14,6 +14,67 @@ import { createTransactionalEmailConsumer } from './transactional-email-consumer
 import type { ServiceDeps } from '../context.js';
 
 describe('transactional email consumer', () => {
+  it('retries staged ticket delivery until canonical completion, then sends the existing notice once', async () => {
+    const sent = vi.fn(async () => ({ providerMessageId: 'synthetic-completion-notice' }));
+    const emailDeliveries = new MemoryEmailDeliveryRepository();
+    let complete = false;
+    const ticket = {
+      id: 'ENT-completion',
+      orderId: 'ORD-completion',
+      eventId: 'EVT-completion',
+      userId: 'USR-purchaser',
+      currentHolderUserId: 'USR-purchaser',
+      status: 'valid',
+      fulfillmentRequired: true,
+      upgradeFromEntitlementId: 'ENT-original',
+    };
+    const deps = {
+      config: { clock: { now: () => new Date('2026-11-04T12:00:00.000Z') } },
+      logger: noopLogger,
+      emailDeliveries,
+      emailSender: { name: 'synthetic', sendTransactionalEmail: sent },
+      repositories: {
+        entitlements: { getById: async () => ticket },
+        orders: {
+          getById: async () => ({
+            id: ticket.orderId,
+            status: 'paid',
+            fulfillmentState: complete ? 'complete' : 'pending',
+          }),
+        },
+        users: { getById: async () => ({ email: 'synthetic@real.test', emailVerified: true }) },
+        events: { getById: async () => ({ title: 'Authoritative event title' }) },
+      },
+    } as unknown as ServiceDeps;
+    const event = domainEvent({
+      id: 'ticket-completion-issued',
+      type: 'ticket.issued',
+      aggregateId: ticket.id,
+      organizationId: 'ORG-completion',
+      actorId: ticket.userId,
+      occurredAt: 1,
+      payload: {
+        entitlementId: ticket.id,
+        orderId: ticket.orderId,
+        eventId: ticket.eventId,
+        purchaserUserId: ticket.userId,
+        holderUserId: ticket.userId,
+        upgradeFromEntitlementId: ticket.upgradeFromEntitlementId,
+      },
+    });
+    const consumer = createTransactionalEmailConsumer(deps);
+    await expect(consumer(event)).rejects.toThrow(/waiting for payment completion/);
+    expect(sent).not.toHaveBeenCalled();
+    expect(emailDeliveries.records.size).toBe(0);
+    complete = true;
+    await consumer(event);
+    await consumer(event);
+    expect(sent).toHaveBeenCalledTimes(1);
+    expect([...emailDeliveries.records.values()]).toEqual([
+      expect.objectContaining({ status: 'sent', kind: 'ticket_upgrade_confirmed' }),
+    ]);
+  });
+
   it('delivers a pending invitation only to its persisted verified recipient account', async () => {
     const sent: { to: string; subject: string; html: string; idempotencyKey: string }[] = [];
     const emailDeliveries = new MemoryEmailDeliveryRepository();
@@ -1498,5 +1559,85 @@ describe('transactional email consumer', () => {
       'ticket-addon-redeemed:addon_entitlement_1',
     ]);
     expect([...emailDeliveries.records.values()]).toHaveLength(3);
+  });
+});
+
+describe('new-account group assignment invitation delivery', () => {
+  it('delivers from a purchaser-custodied unassigned admission without requiring a recipient account', async () => {
+    const now = new Date('2026-11-04T12:00:00.000Z');
+    const recipientEmail = 'new-invited-guest@real.test';
+    const recipientEmailHash = createHash('sha256').update(recipientEmail).digest('hex');
+    const transfer = {
+      id: 'TRF-new-user',
+      entitlementId: 'ENT-unassigned',
+      eventId: 'night',
+      senderUserId: 'purchaser',
+      recipientUserId: null,
+      recipientEmail,
+      recipientEmailHash,
+      status: 'pending',
+      expiresAt: new Date(now.getTime() + 3600_000).toISOString(),
+    };
+    const send = vi.fn(async () => ({ providerMessageId: 'mock-only' }));
+    const userLookup = vi.fn();
+    const deliveries = new MemoryEmailDeliveryRepository();
+    const deps = {
+      config: { guestPortalUrl: 'https://guest-staging.example.test', clock: { now: () => now } },
+      emailDeliveries: deliveries,
+      emailSender: { name: 'mock', sendTransactionalEmail: send },
+      repositories: {
+        users: { getById: userLookup },
+        entitlements: {
+          getTicketTransfer: async () => transfer,
+          getById: async () => ({
+            id: transfer.entitlementId,
+            eventId: transfer.eventId,
+            userId: 'purchaser',
+            currentHolderUserId: null,
+            status: 'valid',
+            pendingTransferId: transfer.id,
+          }),
+        },
+        events: { getById: async () => ({ title: 'Group Night' }) },
+      },
+    } as unknown as ServiceDeps;
+    const fact = domainEvent({
+      id: 'new-user-invitation',
+      type: 'ticket.transfer.created',
+      aggregateId: transfer.entitlementId,
+      organizationId: 'host',
+      actorId: 'purchaser',
+      payload: {
+        transferId: transfer.id,
+        entitlementId: transfer.entitlementId,
+        eventId: transfer.eventId,
+        recipientBinding: 'verified_email',
+        expiresAt: transfer.expiresAt,
+      },
+      occurredAt: now.getTime(),
+    });
+    const consumer = createTransactionalEmailConsumer(deps);
+    await consumer(fact);
+    await consumer(fact);
+    expect(send).toHaveBeenCalledOnce();
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        html: expect.stringContaining(
+          'https://guest-staging.example.test/ticket-transfer/TRF-new-user',
+        ),
+      }),
+    );
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: recipientEmail,
+        html: expect.stringContaining('verify this email address'),
+      }),
+    );
+    expect(userLookup).not.toHaveBeenCalled();
+    expect(JSON.stringify(fact)).not.toContain(recipientEmail);
+    expect(JSON.stringify([...deliveries.records.values()])).not.toContain(recipientEmail);
+    transfer.recipientEmail = 'wrong@example.test';
+    await consumer({ ...fact, id: 'mismatched-delivery' });
+    expect(send).toHaveBeenCalledOnce();
   });
 });

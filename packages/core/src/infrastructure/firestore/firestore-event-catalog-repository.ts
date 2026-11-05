@@ -1,3 +1,6 @@
+import { InvalidOperationError, VersionConflictError } from '../../domain/errors.js';
+import { committedTierQuantity } from '../../domain/models/tier-inventory.js';
+
 import { compareAndSet } from './compare-and-set.js';
 import { paginateQuery } from './pagination.js';
 
@@ -116,7 +119,7 @@ export class FirestoreEventCatalogRepository implements EventCatalogRepository {
     }
     await this.db.collection(TIERS).doc(tier.id).set(data);
   }
-  async updateTier(tier: TicketTier): Promise<void> {
+  async updateTier(tier: TicketTier, options?: { now: Date }): Promise<void> {
     const data = { ...tier } as Record<string, unknown>;
     if (tier.accessType === 'RSVP') {
       delete data.priceInPaise;
@@ -124,7 +127,50 @@ export class FirestoreEventCatalogRepository implements EventCatalogRepository {
       delete data.doorPriceInPaise;
       delete data.commissionEligible;
     }
-    await compareAndSet(this.db, this.db.collection(TIERS), tier, () => data);
+    const ref = this.db.collection(TIERS).doc(tier.id);
+    const sequenceRef = this.db.collection('v2_hold_sequences').doc(tier.eventId);
+    await this.db.runTransaction(async (tx) => {
+      const [currentSnap, sequenceSnap, orders, holds] = await Promise.all([
+        tx.get(ref),
+        tx.get(sequenceRef),
+        tx.get(this.db.collection('v2_orders').where('eventId', '==', tier.eventId)),
+        tx.get(this.db.collection('v2_cart_reservations').where('eventId', '==', tier.eventId)),
+      ]);
+      const current = currentSnap.data();
+      if (!current || Number(current.version ?? 0) !== tier.version - 1) {
+        throw new VersionConflictError(tier.version - 1, Number(current?.version ?? 0));
+      }
+      if (tier.quantity !== current.quantity) {
+        const committed = committedTierQuantity(
+          tier.id,
+          orders.docs.map(
+            (doc) =>
+              doc.data() as { status: string; lines: { tierId: string; quantity: number }[] },
+          ),
+          holds.docs.map(
+            (doc) =>
+              doc.data() as {
+                status: string;
+                expiresAt: string;
+                lines: { tierId: string; quantity: number }[];
+              },
+          ),
+          options?.now ?? new Date(),
+        );
+        if (tier.quantity < committed)
+          throw new InvalidOperationError(
+            'Inventory cannot be reduced below sold and actively held tickets',
+          );
+      }
+      // Hold creation, RSVP acquisition and configuration edits share this
+      // serialization point; a concurrent commitment forces a fresh read.
+      tx.set(sequenceRef, {
+        ...sequenceSnap.data(),
+        eventId: tier.eventId,
+        last: Number(sequenceSnap.data()?.last ?? 0),
+      });
+      tx.set(ref, data);
+    });
   }
 
   // ── Promo codes ───────────────────────────────────────────────────────────

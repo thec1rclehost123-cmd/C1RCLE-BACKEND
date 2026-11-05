@@ -1,5 +1,6 @@
 import {
   entitlementsListResponseSchema,
+  managedTicketListSchema,
   eventCoverWalletResponseSchema,
   ordersListResponseSchema,
   paginationQuerySchema,
@@ -27,6 +28,31 @@ const services = createV2Services();
 
 export default async function walletRoutes(fastify: FastifyInstance) {
   fastify.get(
+    '/wallet/booking-tickets',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({ querystring: paginationQuerySchema }),
+      ],
+    },
+    async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
+      const query = request.query as z.infer<typeof paginationQuerySchema>;
+      const data = await services.tickets
+        .listPurchasedManagement(services.actor(request), {
+          limit: query.limit,
+          cursor: query.cursor ?? null,
+        })
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, 'self', error, { hideForbidden: true }),
+        );
+      if (!data) return reply;
+      const validated = validateV2Response(reply, request, managedTicketListSchema, data);
+      return validated ? reply.send(validated) : reply;
+    },
+  );
+
+  fastify.get(
     '/wallet',
     { preHandler: [fastify.rateLimit('AUTH_READ')] },
     async (request, reply) => {
@@ -38,7 +64,9 @@ export default async function walletRoutes(fastify: FastifyInstance) {
           const orders = await services.orders.listForUser(actor, { limit: 100, cursor: null });
           return {
             activeTicketCount: tickets.items.filter((t) => t.status === 'valid').length,
-            upcomingOrderCount: orders.items.filter((o) => o.status === 'paid').length,
+            upcomingOrderCount: orders.items.filter(
+              (o) => o.status === 'paid' && o.fulfillmentState !== 'pending',
+            ).length,
           };
         })
         .catch((error: unknown) => mapDomainError(reply, request, 'self', error));

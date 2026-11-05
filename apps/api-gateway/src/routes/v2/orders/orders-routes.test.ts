@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { createV2Services } from '../../../lib/v2-services.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 import { publishEventForTest } from '../../../test-utils/publish-event.js';
+import { seedVerifiedCheckoutUsers } from '../../../test-utils/verified-test-users.js';
 import checkoutRoutes from '../checkout/checkout-routes.js';
 import paymentRoutes from '../checkout/payment-routes.js';
 import partnerEventCatalogRoutes from '../partner/event-catalog.js';
@@ -51,6 +52,7 @@ function memoryProvider(): MemoryPaymentProvider {
 
 /** Seeds org -> venue -> event -> tier -> hold -> paid order. Returns the order id. */
 async function seedPaidOrder(server: Server): Promise<string> {
+  seedVerifiedCheckoutUsers(['user_1']);
   const created = await server.inject({
     method: 'POST',
     url: '/organizations',
@@ -159,7 +161,15 @@ describe('GET /orders/:id/status', () => {
     const response = await server.inject({ method: 'GET', url: `/orders/${orderId}/status` });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ id: orderId, status: 'paid', version: 1 });
+    const full = await server.inject({ method: 'GET', url: `/orders/${orderId}` });
+    expect(full.statusCode).toBe(200);
+    const persisted = full.json<{ version: number; updatedAt: string }>();
+    expect(response.json()).toEqual({
+      id: orderId,
+      status: 'paid',
+      version: persisted.version,
+      updatedAt: persisted.updatedAt,
+    });
     await server.close();
   });
 });

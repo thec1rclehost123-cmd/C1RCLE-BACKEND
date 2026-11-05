@@ -123,14 +123,14 @@ const envSchema = z.object({
    * Release gate for payouts. While the funds flow (who may hold and distribute
    * ticket money) and the tax rules are awaiting written legal, provider and CA
    * approval, the endpoints that request, batch-run or release a payout are
-   * switched off. Unset: ON outside production (dev, tests), OFF in production.
+   * switched off by default in every environment.
    * Set `true` only once those approvals are on file. Freezing a payout is a
    * safety action and stays available either way; reads are unaffected.
    */
   PAYOUTS_ENABLED: z
     .enum(['true', 'false'])
-    .optional()
-    .transform((value) => (value === undefined ? undefined : value === 'true')),
+    .default('false')
+    .transform((value) => value === 'true'),
   /** Private access activation stays off outside explicit test/config handoff. */
   M5_PRIVATE_ACCESS_ENABLED: z
     .enum(['true', 'false'])
@@ -187,10 +187,10 @@ const envSchema = z.object({
   FIREBASE_AUTH_EMULATOR_HOST: z.string().min(1).optional(),
   /** B12: which repository adapter set `lib/v2-services.ts` wires up. */
   STORAGE_DRIVER: z.enum(['memory', 'firestore']).default('memory'),
-  /** Disable process-wide Firestore workers for scoped connected acceptance runs. */
+  /** Process-wide workers require an explicit configuration decision. */
   BACKGROUND_WORKERS_ENABLED: z
     .enum(['true', 'false'])
-    .default('true')
+    .default('false')
     .transform((value) => value === 'true'),
   /** Firestore service-account credentials (only read/used when STORAGE_DRIVER=firestore). */
   FIREBASE_CLIENT_EMAIL: z.string().optional(),
@@ -232,6 +232,14 @@ const envSchema = z.object({
    * Optional: when absent, emails omit the link rather than linking nowhere.
    */
   PARTNER_DASHBOARD_URL: z.url().optional(),
+  /** Guest deployment origin for exact-email ticket assignment/transfer invitation links. */
+  GUEST_PORTAL_URL: z
+    .url({ protocol: /^https?$/ })
+    .refine((value) => {
+      const url = new URL(value);
+      return !url.username && !url.password && url.pathname === '/' && !url.search && !url.hash;
+    }, 'Use a Guest HTTP(S) origin without credentials or a path')
+    .optional(),
   /**
    * Comma-separated list of exact browser origins allowed to call the gateway
    * cross-origin (CORS) and trusted by Better Auth, e.g.
@@ -319,6 +327,29 @@ export function allowedBrowserOrigins(config: GatewayConfig): readonly string[] 
 
 /** Fail closed: STORAGE_DRIVER=firestore requires real credentials, never a silent memory fallback. */
 const validatedEnvSchema = envSchema.superRefine((value, ctx) => {
+  const providerFields = [
+    'RAZORPAY_KEY_ID',
+    'RAZORPAY_KEY_SECRET',
+    'RAZORPAY_WEBHOOK_SECRET',
+  ] as const;
+  if (providerFields.some((field) => value[field] !== undefined)) {
+    for (const field of providerFields) {
+      if (!value[field]?.trim()) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [field],
+          message: 'All three Razorpay provider fields must be configured together',
+        });
+      }
+    }
+    if (value.RAZORPAY_KEY_ID && !/^rzp_test_[A-Za-z0-9]+$/.test(value.RAZORPAY_KEY_ID)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['RAZORPAY_KEY_ID'],
+        message: 'M4 requires a Razorpay Test Mode key ID',
+      });
+    }
+  }
   const allowedOrigins = (() => {
     try {
       return validateOrigins(value.ALLOWED_ORIGINS, 'ALLOWED_ORIGINS');
@@ -356,6 +387,24 @@ const validatedEnvSchema = envSchema.superRefine((value, ctx) => {
   }
 
   if (value.STORAGE_DRIVER === 'firestore') {
+    const emulator = value.FIRESTORE_EMULATOR_HOST;
+    const loopback = emulator?.match(/^(?:127\.0\.0\.1|localhost|\[::1\]):([0-9]{1,5})$/);
+    const loopbackPort = Number(loopback?.[1]);
+    const localEmulator = Boolean(loopback && loopbackPort > 0 && loopbackPort <= 65535);
+    if (emulator !== undefined && !localEmulator) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['FIRESTORE_EMULATOR_HOST'],
+        message: 'M4 synthetic Firestore fixtures require an explicit loopback host and valid port',
+      });
+    }
+    if (!localEmulator && value.FIRESTORE_PROJECT_ID !== 'c1rcle-v2') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['FIRESTORE_PROJECT_ID'],
+        message: 'M4 real Firestore configuration must target c1rcle-v2',
+      });
+    }
     if (!value.FIREBASE_CLIENT_EMAIL) {
       ctx.addIssue({
         code: 'custom',

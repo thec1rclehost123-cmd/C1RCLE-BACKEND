@@ -9,13 +9,16 @@ import { createEvent, transitionEvent } from '../../domain/models/event.js';
 import { MemoryFinancialJournalRepository } from '../memory/memory-financial-journal-repository.js';
 import { MemoryLeaderboardRepository } from '../memory/memory-leaderboard-repository.js';
 import { MemoryLedgerRepository } from '../memory/memory-ledger-repository.js';
+import { MemoryOnboardingRepository } from '../memory/memory-onboarding-repository.js';
 import { MemoryOutboxStore } from '../memory/memory-outbox-store.js';
+import { MemoryPartnershipRepository } from '../memory/memory-partnership-repository.js';
 import {
   MemoryEventCatalogRepository,
   MemoryEventRepository,
   MemoryOrderRepository,
   MemoryPromoRedemptionRepository,
 } from '../memory/memory-repositories.js';
+import { MemoryUserAccountRepository } from '../memory/memory-user-account-repository.js';
 
 import { FirestoreCartReservationRepository } from './firestore-cart-reservation-repository.js';
 import { FirestoreEntitlementRepository } from './firestore-entitlement-repository.js';
@@ -78,6 +81,17 @@ describe.runIf(EMULATOR)('Firestore active paid-unit quota', () => {
         firestore: { projectId: 'demo-c1rcle' },
         clock: { now: () => new Date() },
       });
+      const users = new MemoryUserAccountRepository();
+      users.save({
+        id: userId,
+        email: `${userId}@example.test`,
+        name: userId,
+        image: null,
+        emailVerified: true,
+        role: 'guest',
+        createdAt: now.getTime(),
+        updatedAt: now.getTime(),
+      });
       const deps = {
         config,
         outbox: new MemoryOutboxStore(),
@@ -92,7 +106,10 @@ describe.runIf(EMULATOR)('Firestore active paid-unit quota', () => {
           order: orders,
         }),
         repositories: {
+          users,
           events: eventRepo,
+          partnerships: new MemoryPartnershipRepository(),
+          onboarding: new MemoryOnboardingRepository(),
           catalog,
           cartReservations: carts,
           orders,

@@ -104,6 +104,15 @@ export const supportTicketAssigneeDtoSchema = z.object({
 });
 
 export const supportTicketDtoSchema = z.object({
+  refundReview: z
+    .object({
+      orderId: opaqueIdSchema,
+      entitlementIds: z.array(opaqueIdSchema),
+      eventVersion: z.number().int().positive(),
+      policyKind: z.string(),
+      requestedAt: z.iso.datetime(),
+    })
+    .optional(),
   id: opaqueIdSchema,
   subject: z.string(),
   description: z.string(),

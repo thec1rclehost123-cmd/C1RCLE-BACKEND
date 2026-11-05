@@ -23,6 +23,12 @@ export interface PaymentOrderResponse {
   status: string;
 }
 
+/** Provider-sourced order identity used to reconcile uncertain creation. */
+export interface ProviderOrder extends PaymentOrderResponse {
+  receipt: string;
+  metadata: Record<string, string>;
+}
+
 export interface PaymentVerificationRequest {
   paymentId: string;
   orderId: string;
@@ -100,9 +106,12 @@ export interface ProviderRefund extends RefundResponse {
 export interface PaymentProvider {
   /**
    * Creates a payment order with the provider (e.g., Razorpay order).
-   * Must be idempotent via idempotencyKey.
+   * idempotencyKey is a stable receipt, NOT a provider POST idempotency guarantee.
+   * Callers must durably claim creation before invoking this method.
    */
   createOrder(request: PaymentOrderRequest): Promise<PaymentOrderResponse>;
+  /** Read-only recovery; unsupported adapters fail closed rather than create again. */
+  findOrdersByReceipt?(receipt: string): Promise<ProviderOrder[]>;
 
   /**
    * Verifies a payment signature (webhook or redirect).
@@ -145,7 +154,7 @@ export interface PaymentProvider {
  * network call is simulated, never the security check.
  */
 export class MemoryPaymentProvider implements PaymentProvider {
-  private readonly orders = new Map<string, PaymentOrderResponse>();
+  private readonly orders = new Map<string, ProviderOrder>();
   private readonly payments = new Map<string, PaymentVerificationResponse>();
   private readonly refunds = new Map<string, ProviderRefund>();
 
@@ -168,14 +177,22 @@ export class MemoryPaymentProvider implements PaymentProvider {
     const id = `order_mem_${request.idempotencyKey}`;
     const existing = this.orders.get(id);
     if (existing) return existing;
-    const order: PaymentOrderResponse = {
+    const order: ProviderOrder = {
       id,
       amountPaise: request.amountPaise,
       currency: request.currency,
       status: 'created',
+      receipt: request.idempotencyKey,
+      metadata: { ...request.metadata },
     };
     this.orders.set(id, order);
     return order;
+  }
+
+  async findOrdersByReceipt(receipt: string): Promise<ProviderOrder[]> {
+    return [...this.orders.values()]
+      .filter((order) => order.receipt === receipt)
+      .map((order) => ({ ...order, metadata: { ...order.metadata } }));
   }
 
   async verifyPayment(request: PaymentVerificationRequest): Promise<PaymentVerificationResponse> {

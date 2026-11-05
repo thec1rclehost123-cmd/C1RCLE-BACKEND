@@ -1,4 +1,8 @@
-import { InvalidOperationError, NotFoundError } from '../../domain/errors.js';
+import {
+  IdempotencyConflictError,
+  InvalidOperationError,
+  NotFoundError,
+} from '../../domain/errors.js';
 import {
   assertFinancialComponents,
   createPostedJournal,
@@ -16,6 +20,7 @@ import type {
   JournalLine,
   PostingSource,
 } from '../../domain/models/financial-journal.js';
+import type { RefundComponents } from '../../domain/models/purchase-refund-snapshot.js';
 import type { FinancialJournalRepository } from '../../domain/ports/repositories.js';
 
 export interface PartnerAllocation {
@@ -459,6 +464,7 @@ export class FinancialPostingService {
   }
 
   async postRefund(input: {
+    readonly refundComponents?: RefundComponents;
     readonly organizationId: EntityId;
     readonly orderId: EntityId;
     readonly eventId: EntityId;
@@ -471,6 +477,96 @@ export class FinancialPostingService {
   }): Promise<FinancialJournal[]> {
     if (!Number.isSafeInteger(input.amountPaise) || input.amountPaise <= 0) {
       throw new InvalidOperationError('Refund amount must be positive integer paise');
+    }
+    const requestedComponents = input.refundComponents;
+    const componentAmounts: number[] = requestedComponents
+      ? [
+          requestedComponents.admissionPaise,
+          requestedComponents.platformFeePaise,
+          requestedComponents.paymentFeePaise,
+          requestedComponents.feeTaxPaise,
+          requestedComponents.otherPaidPaise,
+        ]
+      : [];
+    if (
+      requestedComponents &&
+      (componentAmounts.some((amount) => !Number.isSafeInteger(amount) || amount < 0) ||
+        componentAmounts.reduce((sum, amount) => sum + amount, 0) !== input.amountPaise)
+    )
+      throw new InvalidOperationError('Refund components must equal the approved refund amount');
+    const exactComponents = requestedComponents
+      ? {
+          refundedAdmissionPaise: requestedComponents.admissionPaise,
+          refundedPlatformFeePaise: requestedComponents.platformFeePaise,
+          refundedPaymentFeePaise: requestedComponents.paymentFeePaise,
+          refundedFeeTaxPaise: requestedComponents.feeTaxPaise,
+          refundedOtherPaidPaise: requestedComponents.otherPaidPaise,
+        }
+      : null;
+    const accountAmounts = requestedComponents
+      ? new Map<string, number>([
+          ['ticket_collection_control', requestedComponents.admissionPaise],
+          [
+            'platform_fee_revenue',
+            requestedComponents.platformFeePaise + requestedComponents.paymentFeePaise,
+          ],
+          ['gst_tax_liability', requestedComponents.feeTaxPaise],
+          ['event_cover_liability', requestedComponents.otherPaidPaise],
+        ])
+      : null;
+    const previous = await this.journals.findBySource('refund', input.refundRequestId);
+    const previousRecognition = previous.find((journal) =>
+      journal.idempotencyKey.endsWith(':recognition'),
+    );
+    const previousSettlement = previous.find((journal) =>
+      journal.idempotencyKey.endsWith(':provider-settlement'),
+    );
+    if (previousRecognition && previousSettlement) {
+      const sameSource = previous.every(
+        (journal) =>
+          journal.organizationId === input.organizationId &&
+          journal.source.orderId === input.orderId &&
+          journal.source.paymentId === input.paymentId &&
+          journal.source.eventId === input.eventId &&
+          journal.components?.refundPaise === input.amountPaise,
+      );
+      const matchesProvider = previousSettlement.lines.some(
+        (entry) => entry.memo === `Provider refund ${input.providerRefundId} processed`,
+      );
+      const matchesComponents =
+        !accountAmounts ||
+        [...accountAmounts].every(
+          ([account, amount]) =>
+            previousRecognition.lines
+              .filter((entry) => entry.side === 'debit' && entry.account === account)
+              .reduce((sum, entry) => sum + entry.amountPaise, 0) === amount,
+        );
+      const matchesExactComponents =
+        !exactComponents ||
+        Object.entries(exactComponents).every(
+          ([key, amount]) =>
+            previousRecognition.components?.[key as keyof FinancialComponentBreakdown] === amount,
+        );
+      if (!sameSource || !matchesProvider || !matchesComponents || !matchesExactComponents)
+        throw new IdempotencyConflictError(`m2:refund:${input.refundRequestId}`);
+      const admissionReversed = previousRecognition.lines.some(
+        (entry) =>
+          entry.side === 'debit' &&
+          entry.account === 'ticket_collection_control' &&
+          entry.amountPaise > 0,
+      );
+      if (
+        !admissionReversed ||
+        previous.some((journal) => journal.idempotencyKey.endsWith(':payable-reversal'))
+      ) {
+        const rank = (journal: FinancialJournal) =>
+          journal.idempotencyKey.endsWith(':recognition')
+            ? 0
+            : journal.idempotencyKey.endsWith(':payable-reversal')
+              ? 1
+              : 2;
+        return [...previous].sort((a, b) => rank(a) - rank(b));
+      }
     }
     const saleJournals = (
       await Promise.all(
@@ -489,9 +585,52 @@ export class FinancialPostingService {
       throw new InvalidOperationError('Refund requires the original posted sale journals');
     }
     const collectedCredits = collection.lines.filter((entry) => entry.side === 'credit');
-    const priorRefundJournals = (await this.journals.findByOrderId(input.orderId)).filter(
+    const orderJournals = await this.journals.findByOrderId(input.orderId);
+    const priorRefundJournals = orderJournals.filter(
       (journal) => journal.source.type === 'refund' && journal.source.id !== input.refundRequestId,
     );
+    if (exactComponents) {
+      const originalAmounts = {
+        refundedAdmissionPaise: collection.components.netTicketRevenuePaise,
+        refundedPlatformFeePaise: collection.components.platformFeePaise,
+        refundedPaymentFeePaise: collection.components.paymentFeePaise,
+        refundedFeeTaxPaise: collection.components.gstPaise,
+        refundedOtherPaidPaise: collection.components.eventCoverLiabilityPaise ?? 0,
+      };
+      const priorRecognitions = priorRefundJournals.filter((journal) =>
+        journal.idempotencyKey.endsWith(':recognition'),
+      );
+      for (const key of Object.keys(exactComponents) as (keyof typeof exactComponents)[]) {
+        const amount = exactComponents[key];
+        if (amount === 0) continue;
+        const consumed = priorRecognitions.reduce((sum, journal) => {
+          const priorAmount = journal.components?.[key];
+          if (priorAmount !== undefined) return sum + priorAmount;
+          // Older journals combine the two fee components. Their exact split
+          // cannot safely be inferred when applying a new component-aware refund.
+          const account =
+            key === 'refundedAdmissionPaise'
+              ? 'ticket_collection_control'
+              : key === 'refundedFeeTaxPaise'
+                ? 'gst_tax_liability'
+                : key === 'refundedOtherPaidPaise'
+                  ? 'event_cover_liability'
+                  : 'platform_fee_revenue';
+          const legacyAmount = journal.lines
+            .filter((entry) => entry.side === 'debit' && entry.account === account)
+            .reduce((total, entry) => total + entry.amountPaise, 0);
+          if (legacyAmount > 0 && account === 'platform_fee_revenue')
+            throw new InvalidOperationError(
+              'Original refund fee components require financial review',
+            );
+          return sum + legacyAmount;
+        }, 0);
+        if (amount > originalAmounts[key] - consumed)
+          throw new InvalidOperationError(
+            'Refund component exceeds the original remaining paid component',
+          );
+      }
+    }
     const lineKey = (entry: Pick<JournalLine, 'account' | 'organizationId' | 'component'>) =>
       `${entry.account}|${entry.organizationId ?? ''}|${entry.component ?? ''}`;
     const consumedByKey = (suffix: ':recognition' | ':payable-reversal'): Map<string, number> => {
@@ -515,10 +654,33 @@ export class FinancialPostingService {
     const recognizedPrevious = collectedCredits.map(
       (entry) => recognizedConsumed.get(lineKey(entry)) ?? 0,
     );
-    const recognized = allocateProRata(
-      input.amountPaise,
-      collectionWeights.map((weight, index) => weight - (recognizedPrevious[index] ?? 0)),
+    const remainingCredits = collectionWeights.map(
+      (weight, index) => weight - (recognizedPrevious[index] ?? 0),
     );
+    const recognized = accountAmounts
+      ? collectedCredits.map(() => 0)
+      : allocateProRata(input.amountPaise, remainingCredits);
+    if (accountAmounts) {
+      for (const [account, amount] of accountAmounts) {
+        if (amount === 0) continue;
+        const indices = collectedCredits.flatMap((entry, index) =>
+          entry.account === account ? [index] : [],
+        );
+        const remaining = indices.map((index) => remainingCredits[index] ?? 0);
+        if (amount > remaining.reduce((sum, balance) => sum + balance, 0))
+          throw new InvalidOperationError(
+            'Refund component exceeds the original remaining paid component',
+          );
+        const shares = allocateProRata(amount, remaining);
+        indices.forEach((index, position) => {
+          recognized[index] = shares[position] ?? 0;
+        });
+      }
+      if (recognized.reduce((sum, amount) => sum + amount, 0) !== input.amountPaise)
+        throw new InvalidOperationError(
+          'Original journal does not support these refund components',
+        );
+    }
     const refundedTicketRevenue = collectedCredits.reduce(
       (sum, entry, index) =>
         entry.account === 'ticket_collection_control' ? sum + (recognized[index] ?? 0) : sum,
@@ -527,6 +689,7 @@ export class FinancialPostingService {
     const components: FinancialComponentBreakdown = {
       ...collection.components,
       refundPaise: input.amountPaise,
+      ...(exactComponents ?? {}),
     };
     const source: PostingSource = {
       type: 'refund',
@@ -574,41 +737,66 @@ export class FinancialPostingService {
       const reversedPrevious = allocatedCredits.map(
         (entry) => reversedConsumed.get(lineKey(entry)) ?? 0,
       );
-      const reversedAllocations = allocateProRata(
-        refundedTicketRevenue,
-        allocationWeights.map((weight, index) => weight - (reversedPrevious[index] ?? 0)),
+      const partnerReversals = orderJournals.filter(
+        (journal) => journal.source.type === 'partner_dispute_reversal',
       );
-      journals.push(
-        createPostedJournal({
-          organizationId: input.organizationId,
-          currency: collection.currency,
-          source,
-          idempotencyKey: `m2:refund:${input.refundRequestId}:payable-reversal`,
-          accountingPolicy: collection.accountingPolicy,
-          components,
-          postedAt: input.postedAt,
-          lines: [
-            ...allocatedCredits.map((entry, index) =>
+      const partnerConsumed = allocatedCredits.map((entry) =>
+        partnerReversals.reduce(
+          (sum, journal) =>
+            sum +
+            journal.lines
+              .filter(
+                (line) =>
+                  line.side === 'debit' &&
+                  line.account === entry.account &&
+                  line.organizationId === entry.organizationId,
+              )
+              .reduce((total, line) => total + line.amountPaise, 0),
+          0,
+        ),
+      );
+      const remainingAllocation = allocationWeights.map((weight, index) =>
+        Math.max(0, weight - (reversedPrevious[index] ?? 0) - (partnerConsumed[index] ?? 0)),
+      );
+      const originalShares = partnerReversals.length
+        ? allocateProRata(refundedTicketRevenue, allocationWeights)
+        : [];
+      const reversedAllocations = partnerReversals.length
+        ? originalShares.map((amount, index) => Math.min(amount, remainingAllocation[index] ?? 0))
+        : allocateProRata(refundedTicketRevenue, remainingAllocation);
+      const payableReversalAmount = reversedAllocations.reduce((sum, amount) => sum + amount, 0);
+      if (payableReversalAmount > 0)
+        journals.push(
+          createPostedJournal({
+            organizationId: input.organizationId,
+            currency: collection.currency,
+            source,
+            idempotencyKey: `m2:refund:${input.refundRequestId}:payable-reversal`,
+            accountingPolicy: collection.accountingPolicy,
+            components,
+            postedAt: input.postedAt,
+            lines: [
+              ...allocatedCredits.map((entry, index) =>
+                line({
+                  account: entry.account,
+                  side: 'debit',
+                  amountPaise: reversedAllocations[index] ?? 0,
+                  organizationId: entry.organizationId,
+                  component: entry.component,
+                  memo: `Refund payable reversal: ${entry.memo}`,
+                }),
+              ),
               line({
-                account: entry.account,
-                side: 'debit',
-                amountPaise: reversedAllocations[index] ?? 0,
-                organizationId: entry.organizationId,
-                component: entry.component,
-                memo: `Refund payable reversal: ${entry.memo}`,
+                account: 'ticket_collection_control',
+                side: 'credit',
+                amountPaise: payableReversalAmount,
+                organizationId: input.organizationId,
+                component: 'refundPaise',
+                memo: 'Reverse refunded ticket allocation',
               }),
-            ),
-            line({
-              account: 'ticket_collection_control',
-              side: 'credit',
-              amountPaise: refundedTicketRevenue,
-              organizationId: input.organizationId,
-              component: 'refundPaise',
-              memo: 'Reverse refunded ticket allocation',
-            }),
-          ].filter((entry) => entry.amountPaise > 0),
-        }),
-      );
+            ].filter((entry) => entry.amountPaise > 0),
+          }),
+        );
     }
 
     journals.push(

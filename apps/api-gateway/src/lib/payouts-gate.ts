@@ -5,15 +5,13 @@ import { getGatewayConfig, type GatewayConfig } from '../config/index.js';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 
 /**
- * Whether payout actions are switched on. An explicit `PAYOUTS_ENABLED` wins in
- * either direction; unset means on outside production and OFF in production, so
- * a production deploy that has not been explicitly approved cannot move payout
- * state by accident.
+ * Payout actions require explicit authorization in every environment.
+ * Unset or undefined configuration must never enable money movement.
  */
 export function payoutsEnabled(
-  config: Pick<GatewayConfig, 'NODE_ENV' | 'PAYOUTS_ENABLED'>,
+  config: Pick<GatewayConfig, 'NODE_ENV'> & { PAYOUTS_ENABLED?: boolean | undefined },
 ): boolean {
-  return config.PAYOUTS_ENABLED ?? config.NODE_ENV !== 'production';
+  return config.PAYOUTS_ENABLED === true;
 }
 
 /**

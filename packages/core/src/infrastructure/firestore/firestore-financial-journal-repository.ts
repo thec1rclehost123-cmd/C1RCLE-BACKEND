@@ -1,4 +1,8 @@
 import { IdempotencyConflictError } from '../../domain/errors.js';
+import {
+  assertPayableCorrections,
+  isPayableCorrection,
+} from '../financial-journal-correction-guard.js';
 
 import { paginateQuery } from './pagination.js';
 
@@ -29,6 +33,21 @@ export class FirestoreFinancialJournalRepository implements FinancialJournalRepo
     return this.db.collection(JOURNAL_COLLECTION);
   }
 
+  async hasAllLines(journalId: EntityId): Promise<boolean> {
+    const journal = await this.findById(journalId);
+    if (!journal || journal.lines.length < 2) return false;
+    const snapshots = await Promise.all(
+      journal.lines.map((line) => this.db.collection(JOURNAL_LINE_COLLECTION).doc(line.id).get()),
+    );
+    return snapshots.every((snap, index) => {
+      const line = journal.lines[index];
+      if (!line || !snap.exists) return false;
+      return Object.entries(financialJournalLineDocument(journal, line)).every(
+        ([key, value]) => JSON.stringify(snap.data()?.[key]) === JSON.stringify(value),
+      );
+    });
+  }
+
   async postBatch(journals: FinancialJournal[]): Promise<FinancialJournal[]> {
     return this.db.runTransaction(async (tx) => {
       const pairs = journals.map((journal) => ({
@@ -48,6 +67,29 @@ export class FirestoreFinancialJournalRepository implements FinancialJournalRepo
       for (const reference of existingRefs) {
         existingSnapshots.push(reference ? await tx.get(reference) : null);
       }
+      // A shared per-order revision serializes competing correction snapshots.
+      const orderIds = [
+        ...new Set(
+          journals
+            .filter(isPayableCorrection)
+            .map((item) => item.source.orderId)
+            .filter((id): id is string => id !== null),
+        ),
+      ];
+      const guards = [];
+      for (const orderId of orderIds) {
+        const ref = this.db
+          .collection(JOURNAL_IDEMPOTENCY_COLLECTION)
+          .doc(`correction-order:${encodeURIComponent(orderId)}`);
+        const revision = await tx.get(ref);
+        const snapshot = await tx.get(this.collection.where('orderId', '==', orderId));
+        assertPayableCorrections(
+          snapshot.docs.map((doc) => financialJournalFromDocument(doc.data())),
+          journals.filter((item) => item.source.orderId === orderId),
+        );
+        guards.push({ ref, revision: Number(revision.data()?.revision ?? 0) + 1 });
+      }
+      for (const guard of guards) tx.set(guard.ref, { revision: guard.revision });
       const resolved: FinancialJournal[] = [];
 
       pairs.forEach(({ journal, idempotencyRef }, index) => {

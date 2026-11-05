@@ -109,8 +109,8 @@ export class AdminAuthorityService {
       before: input.before,
       after: input.after,
       reason: input.reason ?? null,
-      ipAddress: input.ipAddress,
-      userAgent: input.userAgent,
+      ...(input.ipAddress === undefined ? {} : { ipAddress: input.ipAddress }),
+      ...(input.userAgent === undefined ? {} : { userAgent: input.userAgent }),
       occurredAt: this.deps.config.clock.now().getTime(),
     });
   }

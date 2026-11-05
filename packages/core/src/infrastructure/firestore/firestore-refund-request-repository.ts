@@ -26,7 +26,7 @@ export class FirestoreRefundRequestRepository implements AdminRefundRequestRepos
   async getById(id: EntityId): Promise<AdminRefundRequest | null> {
     const snap = await this.collection.doc(id).get();
     const data = snap.data();
-    return data ? toRefundRequest(data) : null;
+    return data ? refundRequestFromDoc(data) : null;
   }
 
   async listByOrder(orderId: EntityId): Promise<AdminRefundRequest[]> {
@@ -34,7 +34,7 @@ export class FirestoreRefundRequestRepository implements AdminRefundRequestRepos
       .where('orderId', '==', orderId)
       .orderBy('createdAt', 'desc')
       .get();
-    return snap.docs.map((doc) => toRefundRequest(doc.data()));
+    return snap.docs.map((doc) => refundRequestFromDoc(doc.data()));
   }
 
   async listByStatus(
@@ -44,7 +44,7 @@ export class FirestoreRefundRequestRepository implements AdminRefundRequestRepos
     const base: Query = status
       ? this.collection.where('status', '==', status).orderBy('createdAt', 'desc')
       : this.collection.orderBy('createdAt', 'desc');
-    return paginateQuery(base, query, toRefundRequest);
+    return paginateQuery(base, query, refundRequestFromDoc);
   }
 
   async save(request: AdminRefundRequest): Promise<void> {
@@ -53,19 +53,35 @@ export class FirestoreRefundRequestRepository implements AdminRefundRequestRepos
       const snap = await tx.get(ref);
       const data = snap.data();
       if (data) {
-        const existing = toRefundRequest(data);
+        const existing = refundRequestFromDoc(data);
         if (existing.version !== request.version - 1) {
           throw new VersionConflictError(request.version - 1, existing.version);
         }
       }
-      tx.set(ref, toDoc(request));
+      tx.set(ref, refundRequestToDoc(request));
     });
   }
 }
 
-function toDoc(request: AdminRefundRequest): DocumentData {
+export function refundRequestToDoc(request: AdminRefundRequest): DocumentData {
   return {
     id: request.id,
+    ...(request.executionActor ? { executionActor: request.executionActor } : {}),
+    ...(request.settlementAudit ? { settlementAudit: request.settlementAudit } : {}),
+    ...(request.intakeFingerprint ? { intakeFingerprint: request.intakeFingerprint } : {}),
+    ...(request.remedyForRefundRequestId
+      ? { remedyForRefundRequestId: request.remedyForRefundRequestId }
+      : {}),
+    ...(request.sourceEventVersion !== undefined
+      ? { sourceEventVersion: request.sourceEventVersion }
+      : {}),
+    ...(request.refundComponents
+      ? {
+          refundComponents: { ...request.refundComponents },
+          refundCause: request.refundCause,
+          purchasePolicyVersion: request.purchasePolicyVersion,
+        }
+      : {}),
     orderId: request.orderId,
     organizationId: request.organizationId,
     amountPaise: request.amountPaise,
@@ -90,9 +106,29 @@ function toDoc(request: AdminRefundRequest): DocumentData {
   };
 }
 
-function toRefundRequest(data: DocumentData): AdminRefundRequest {
+export function refundRequestFromDoc(data: DocumentData): AdminRefundRequest {
   return {
     id: data.id as string,
+    ...(data.executionActor
+      ? { executionActor: data.executionActor as AdminRefundRequest['executionActor'] }
+      : {}),
+    ...(data.settlementAudit
+      ? { settlementAudit: data.settlementAudit as AdminRefundRequest['settlementAudit'] }
+      : {}),
+    ...(data.intakeFingerprint ? { intakeFingerprint: data.intakeFingerprint as string } : {}),
+    ...(data.remedyForRefundRequestId
+      ? { remedyForRefundRequestId: data.remedyForRefundRequestId as string }
+      : {}),
+    ...(data.sourceEventVersion !== undefined
+      ? { sourceEventVersion: data.sourceEventVersion as number }
+      : {}),
+    ...(data.refundComponents
+      ? {
+          refundComponents: data.refundComponents as AdminRefundRequest['refundComponents'],
+          refundCause: data.refundCause as AdminRefundRequest['refundCause'],
+          purchasePolicyVersion: data.purchasePolicyVersion as string,
+        }
+      : {}),
     orderId: data.orderId as string,
     organizationId: data.organizationId as string,
     amountPaise: data.amountPaise as number,

@@ -11,6 +11,7 @@ import {
 } from '../../domain/errors.js';
 import { deterministicDomainEventId, domainEvent } from '../../domain/events.js';
 import {
+  currentEntitlementHolderId,
   entitlementRequiresEligibilityVerification,
   entitlementCredentialVersion,
   evaluateAdmission,
@@ -21,6 +22,11 @@ import {
   canSessionScan,
   hashSessionToken,
 } from '../../domain/models/event-code.js';
+import {
+  eventAdmissionUnavailableReason,
+  eventQrUnavailableReason,
+} from '../../domain/models/event-policy.js';
+import { fulfilmentPending } from '../../domain/models/fulfilment.js';
 import {
   bindScannerDevice,
   isDeviceAuthorized,
@@ -151,6 +157,7 @@ export interface ScannerService {
 
   // ── Scanning ─────────────────────────────────────────────────────────────
   scan(input: ScanInput, actor: ActorContext): Promise<ScanResult>;
+  manualScan(input: ManualScanInput, actor: ActorContext): Promise<ScanResult>;
   redeemTicketAddon(input: {
     eventId: EntityId;
     entitlementId: EntityId;
@@ -194,9 +201,18 @@ export interface ScannerService {
 
 /**
  * One scan request. `qrPayload` is whatever the camera read — the service
- * decides whether it is a rotating "magic" payload or a bare ticket id, so a
- * caller can never steer that choice.
+ * validates its rotating signature. Bare identifiers belong only to the
+ * separately authorized manual-admission path.
  */
+export interface ManualScanInput {
+  eventId: EntityId;
+  entitlementId: EntityId;
+  sessionToken: string;
+  eligibilityVerified?: boolean;
+  coupleConfirmed?: boolean;
+  reason?: string;
+}
+
 export interface ScanInput {
   eventId: EntityId;
   qrPayload: string;
@@ -662,7 +678,9 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
       guestName: args.entitlement?.holderName ?? null,
       guestEmail: null,
       guestPhone: null,
-      scannedAt: args.input.scannedAt ?? new Date().toISOString(),
+      scannedAt: args.isOffline
+        ? (args.input.scannedAt ?? config.clock.now().toISOString())
+        : config.clock.now().toISOString(),
       admittedCount: args.admitted ? (args.admittedCount ?? 1) : 0,
       scanCountUsed: args.scansUsed,
       scanCountAllowed: args.scansAllowed,
@@ -903,20 +921,24 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
    * The claim is last because everything before it is a reason to refuse
    * *without* spending an admission.
    */
-  async function scan(input: ScanInput, actor: ActorContext): Promise<ScanResult> {
+  async function scan(
+    input: ScanInput,
+    actor: ActorContext,
+    manual?: ManualScanInput,
+  ): Promise<ScanResult> {
     const event = await requireEvent(input.eventId, actor);
-    if (event.status === 'cancelled') {
-      throw new InvalidOperationError('Admission is closed because this event was cancelled');
-    }
+    const eventReason = eventAdmissionUnavailableReason(event, config.clock.now());
     const session = await authenticateSession(input.sessionToken, input.eventId);
     // The session belongs to the code, the code to the org — re-checked here
     // so a token minted under one tenant can never be replayed under another.
     requireOrgAccess(actor, session.organizationId);
+    if (session.venueId !== null && session.venueId !== event.venueId)
+      throw new DeviceNotAuthorizedError('The event venue changed. Start a new Scanner shift.');
     if (!canSessionScan(session)) {
       throw new ForbiddenError('This scanner session may not scan tickets');
     }
 
-    await requireBoundDevice(session);
+    const boundDevice = await requireBoundDevice(session);
 
     const code = await eventCodes.findById(session.codeId);
     // A gate-restricted code pins the gate; a free code takes the operator's.
@@ -934,8 +956,29 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
       input: { ...input, gate },
     };
 
-    const decoded = decodeQr(input.qrPayload);
-    if (!decoded.entitlementId) {
+    if (eventReason) {
+      const scanRecord = await recordScan({
+        ...scanArgs,
+        entitlementId: null,
+        entitlement: null,
+        admitted: false,
+        denyReason: 'event_closed',
+        denyMessage: eventReason,
+        scansUsed: null,
+        scansAllowed: null,
+      });
+      return {
+        scan: scanRecord,
+        status: 'denied',
+        denyReason: 'event_closed',
+        denyMessage: eventReason,
+      };
+    }
+
+    const decoded = manual
+      ? { entitlementId: manual.entitlementId, magic: false, credentialVersion: null }
+      : decodeQr(input.qrPayload, config.clock.now().getTime());
+    if (!decoded.entitlementId || (!manual && !decoded.magic)) {
       const scanRecord = await recordScan({
         ...scanArgs,
         entitlementId: null,
@@ -970,6 +1013,7 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
     );
     if (
       preview &&
+      preview.eventId === event.id &&
       decoded.magic &&
       decoded.credentialVersion !== entitlementCredentialVersion(preview)
     ) {
@@ -993,13 +1037,25 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
       };
     }
     if (
+      manual &&
+      preview?.eventId === event.id &&
+      preview.scanCountAllowed === 2 &&
+      !manual.coupleConfirmed
+    ) {
+      throw new ConflictError(
+        'Confirm one male and one female are present together before manual admission',
+      );
+    }
+    if (
       preview &&
       preview.eventId === event.id &&
       preview.status !== 'void' &&
+      currentEntitlementHolderId(preview) !== null &&
       !preview.refundLock &&
       preview.scanCountAllowed === 2 &&
       preview.scanCount === 0 &&
-      session.deviceId !== null
+      session.deviceId !== null &&
+      !manual?.coupleConfirmed
     ) {
       const expiresAtMs = Date.now() + COUPLE_CONFIRMATION_TTL_MS;
       return {
@@ -1028,6 +1084,20 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
     // THE atomic step. Everything this returns already accounts for every
     // concurrent scanner.
     const claim = await entitlements.claimAdmission(decoded.entitlementId, event.id, {
+      requireEventValidation: true,
+      expectedVenueId: event.venueId,
+      admissionAudit: {
+        operatorUserId: actor.userId,
+        deviceId: boundDevice.deviceId,
+        method: manual ? 'manual' : 'camera',
+        ...(gate ? { gate } : {}),
+        ...(session.deviceName ? { deviceName: session.deviceName } : {}),
+        ...(input.operatorName ? { operatorName: input.operatorName } : {}),
+        ...(input.operatorRole ? { operatorRole: input.operatorRole } : {}),
+        ...(manual?.reason ? { reason: manual.reason } : {}),
+      },
+      now: config.clock.now(),
+      ...(manual?.coupleConfirmed ? { seats: 2, eligibilityRequired: true } : {}),
       ...(decoded.magic && decoded.credentialVersion !== null
         ? { expectedCredentialVersion: decoded.credentialVersion }
         : {}),
@@ -1036,18 +1106,21 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
     });
     const entitlement = claim.entitlement;
 
-    const scanRecord = await recordScan({
-      ...scanArgs,
-      entitlementId: decoded.entitlementId,
-      // A wrong-event ticket belongs to another tenant: record the attempt,
-      // but never copy that tenant's guest name onto this org's ledger.
-      entitlement: claim.denyReason === 'wrong_event' ? null : entitlement,
-      admitted: claim.admitted,
-      denyReason: claim.denyReason,
-      denyMessage: claim.denyMessage,
-      scansUsed: claim.scansUsed,
-      scansAllowed: claim.scansAllowed,
-    });
+    const scanRecord =
+      claim.scan ??
+      (await recordScan({
+        ...scanArgs,
+        entitlementId: decoded.entitlementId,
+        // A wrong-event ticket belongs to another tenant: record the attempt,
+        // but never copy that tenant's guest name onto this org's ledger.
+        entitlement: claim.denyReason === 'wrong_event' ? null : entitlement,
+        admitted: claim.admitted,
+        admittedCount: manual?.coupleConfirmed ? 2 : 1,
+        denyReason: claim.denyReason,
+        denyMessage: claim.denyMessage,
+        scansUsed: claim.scansUsed,
+        scansAllowed: claim.scansAllowed,
+      }));
     await bumpCodeUsage(session.codeId);
     await touchDevice(session, {
       lastSeenAt: new Date().toISOString(),
@@ -1070,20 +1143,29 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
       };
     }
 
-    await adminAudit.write({
-      id: `audit-${scanRecord.id}-${Date.now()}`,
-      adminId: actor.userId,
-      actorId: actor.userId,
-      organizationId: event.organizationId,
-      action: 'door.scan_admitted',
-      targetType: 'scan_ledger',
-      targetId: scanRecord.id,
-      after: {
-        entitlementId: decoded.entitlementId,
-        scansUsed: claim.scansUsed,
-        scansAllowed: claim.scansAllowed,
-      },
-    });
+    // The canonical admission and audit were committed atomically. A redundant
+    // admin-console projection must never turn that success into an API failure.
+    try {
+      await adminAudit.write({
+        id: `audit-${scanRecord.id}-${Date.now()}`,
+        adminId: actor.userId,
+        actorId: actor.userId,
+        organizationId: event.organizationId,
+        action: 'door.scan_admitted',
+        targetType: 'scan_ledger',
+        targetId: scanRecord.id,
+        after: {
+          entitlementId: decoded.entitlementId,
+          scansUsed: claim.scansUsed,
+          scansAllowed: claim.scansAllowed,
+        },
+      });
+    } catch (error) {
+      deps.logger.warn('scanner_secondary_audit_failed', {
+        scanId: scanRecord.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
 
     return {
       scan: scanRecord,
@@ -1144,17 +1226,20 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
 
   async function resolve(input: ResolveInput, actor: ActorContext): Promise<TicketResolution> {
     const event = await requireEvent(input.eventId, actor);
-    if (event.status === 'cancelled') {
-      throw new InvalidOperationError('Admission is closed because this event was cancelled');
-    }
+    const eventReason = eventAdmissionUnavailableReason(event, config.clock.now());
     const session = await authenticateSession(input.sessionToken, input.eventId);
     requireOrgAccess(actor, session.organizationId);
+    if (session.venueId !== null && session.venueId !== event.venueId)
+      throw new DeviceNotAuthorizedError('The event venue changed. Start a new Scanner shift.');
     if (!canSessionScan(session)) {
       throw new ForbiddenError('This scanner session may not scan tickets');
     }
 
-    const decoded = decodeQr(input.qrPayload);
-    if (!decoded.entitlementId) {
+    await requireBoundDevice(session);
+    if (eventReason)
+      return { status: 'invalid', denyReason: 'event_closed', denyMessage: eventReason };
+    const decoded = decodeQr(input.qrPayload, config.clock.now().getTime());
+    if (!decoded.entitlementId || !decoded.magic) {
       return {
         status: 'invalid',
         denyReason: 'invalid_signature',
@@ -1165,6 +1250,7 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
     const eligibilityPolicy = entitlement ? await eligibilityPolicyFor(entitlement) : undefined;
     if (
       entitlement &&
+      entitlement.eventId === event.id &&
       decoded.magic &&
       decoded.credentialVersion !== entitlementCredentialVersion(entitlement)
     ) {
@@ -1200,34 +1286,16 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
     return scanRecord;
   }
 
-  /**
-   * Manually admits a guest whose scan was denied.
-   *
-   * Deliberately does NOT touch the entitlement's `scanCount`: an override is
-   * a human decision recorded against one refusal, not a repaired ticket. If
-   * it topped the ticket back up, one override would silently grant unlimited
-   * further entries.
-   */
+  /** V1 admission must use the validated camera or manual-admission path. */
   async function overrideScan(
     checkInId: EntityId,
-    reason: string,
+    _reason: string,
     actor: ActorContext,
   ): Promise<ScanLedger> {
-    const before = await getScan(checkInId, actor);
-    const updated = await scanLedger.markOverridden(checkInId, actor.userId, reason);
-    if (!updated) throw new NotFoundError('Scan', checkInId);
-    await adminAudit.write({
-      id: `audit-override-${checkInId}-${Date.now()}`,
-      adminId: actor.userId,
-      actorId: actor.userId,
-      organizationId: actor.organizationId,
-      action: 'door.scan_override',
-      targetType: 'scan_ledger',
-      targetId: checkInId,
-      before: { status: before.status, denyReason: before.denyReason },
-      after: { status: updated.status, overriddenBy: updated.overriddenBy, reason },
-    });
-    return updated;
+    await getScan(checkInId, actor);
+    throw new ConflictError(
+      'Admission overrides are unavailable. Use validated manual admission from the guest roster.',
+    );
   }
 
   /**
@@ -1244,10 +1312,9 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
   ): Promise<{ qrPayload: string; expiresAt: string; refreshIntervalSec: number }> {
     const entitlement = await entitlements.findById(ticketId);
     if (!entitlement) throw new NotFoundError('Ticket', ticketId);
-    const currentHolder = entitlement.currentHolderUserId ?? entitlement.userId;
-    const isHolder = currentHolder !== null && currentHolder === actor.userId;
-    const isStaff = entitlement.organizationId === actor.organizationId;
-    if (!isHolder && !isStaff) throw new NotFoundError('Ticket', ticketId);
+    const currentHolder = currentEntitlementHolderId(entitlement);
+    if (currentHolder === null || currentHolder !== actor.userId)
+      throw new NotFoundError('Ticket', ticketId);
     if (
       entitlement.status !== 'valid' ||
       entitlement.refundLock ||
@@ -1256,7 +1323,18 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
       throw new ConflictError('A ticket QR is available only while the entitlement is active.');
     }
 
-    const nowMs = Date.now();
+    if (entitlement.fulfillmentRequired) {
+      const order = await deps.repositories.orders.getById(entitlement.orderId);
+      if (fulfilmentPending(entitlement, order))
+        throw new ConflictError('Payment is still processing.');
+    }
+    const event = await deps.repositories.events.findById(entitlement.eventId);
+    if (!event || event.organizationId !== entitlement.organizationId)
+      throw new ConflictError('The event is unavailable.');
+    const now = config.clock.now();
+    const reason = eventQrUnavailableReason(event, now);
+    if (reason) throw new ConflictError(reason);
+    const nowMs = now.getTime();
     const windowStart = Math.floor(nowMs / 1000 / MAGIC_WINDOW_SEC) * MAGIC_WINDOW_SEC;
     return {
       qrPayload: buildRotatingQr(
@@ -1440,18 +1518,39 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
    * ticket, a different door, or a ticket whose state has moved since staff
    * were asked the question.
    */
+  async function manualScan(input: ManualScanInput, actor: ActorContext): Promise<ScanResult> {
+    return scan(
+      {
+        eventId: input.eventId,
+        qrPayload: '',
+        sessionToken: input.sessionToken,
+        ...(input.eligibilityVerified === true ? { eligibilityVerified: true } : {}),
+      },
+      actor,
+      input,
+    );
+  }
+
   async function confirmCouple(
     command: ConfirmCoupleCommand,
     actor: ActorContext,
   ): Promise<ScanResult> {
     const event = await requireEvent(command.eventId, actor);
+    const eventReason = eventAdmissionUnavailableReason(event, config.clock.now());
     const session = await authenticateSession(command.sessionToken, command.eventId);
     requireOrgAccess(actor, session.organizationId);
+    if (session.venueId !== null && session.venueId !== event.venueId)
+      throw new DeviceNotAuthorizedError('The event venue changed. Start a new Scanner shift.');
     if (!canSessionScan(session)) {
       throw new ForbiddenError('This scanner session may not scan tickets');
     }
-    await requireBoundDevice(session);
+    const boundDevice = await requireBoundDevice(session);
 
+    const code = await eventCodes.findById(session.codeId);
+    const gate = code?.gate ?? command.gate;
+    if (code?.gate && command.gate && command.gate !== code.gate) {
+      throw new ForbiddenError('This scanner session is restricted to a different gate');
+    }
     const claims = verifyConfirmationToken(command.confirmationToken);
     if (
       !claims ||
@@ -1469,9 +1568,27 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
       venueId: event.venueId,
       session,
       actor,
-      input: { ...command, gate: command.gate ?? null },
+      input: { ...command, gate: gate ?? null },
       entitlementId: claims.entitlementId,
     };
+
+    if (eventReason) {
+      const denied = await recordScan({
+        ...base,
+        entitlement: null,
+        admitted: false,
+        denyReason: 'event_closed',
+        denyMessage: eventReason,
+        scansUsed: null,
+        scansAllowed: null,
+      });
+      return {
+        scan: denied,
+        status: 'denied',
+        denyReason: 'event_closed',
+        denyMessage: eventReason,
+      };
+    }
 
     if (!command.confirmed) {
       // Staff looked and only one guest is there. Recorded as a real denial,
@@ -1497,23 +1614,37 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
     }
 
     const claim = await entitlements.claimAdmission(claims.entitlementId, event.id, {
+      requireEventValidation: true,
+      expectedVenueId: event.venueId,
+      admissionAudit: {
+        operatorUserId: actor.userId,
+        deviceId: boundDevice.deviceId,
+        method: 'camera',
+        ...(gate ? { gate } : {}),
+        ...(session.deviceName ? { deviceName: session.deviceName } : {}),
+        ...(command.operatorName ? { operatorName: command.operatorName } : {}),
+        ...(command.operatorRole ? { operatorRole: command.operatorRole } : {}),
+      },
+      now: config.clock.now(),
       seats: claims.seats,
       expectedScansUsed: claims.expectedScansUsed,
       expectedCredentialVersion: claims.expectedCredentialVersion,
-      eligibilityVerified: claims.eligibilityVerified,
-      eligibilityRequired: claims.eligibilityRequired,
+      eligibilityVerified: command.confirmed,
+      eligibilityRequired: true,
     });
-    const scanRecord = await recordScan({
-      ...base,
-      entitlement: claim.entitlement,
-      admitted: claim.admitted,
-      denyReason: claim.denyReason,
-      denyMessage: claim.denyMessage,
-      scansUsed: claim.scansUsed,
-      scansAllowed: claim.scansAllowed,
-      // Both guests walk through on one record — the door counted two people.
-      admittedCount: claim.admitted ? claims.seats : 0,
-    });
+    const scanRecord =
+      claim.scan ??
+      (await recordScan({
+        ...base,
+        entitlement: claim.entitlement,
+        admitted: claim.admitted,
+        denyReason: claim.denyReason,
+        denyMessage: claim.denyMessage,
+        scansUsed: claim.scansUsed,
+        scansAllowed: claim.scansAllowed,
+        // Both guests walk through on one record — the door counted two people.
+        admittedCount: claim.admitted ? claims.seats : 0,
+      }));
     await bumpCodeUsage(session.codeId);
     await touchDevice(session, {
       lastSeenAt: new Date().toISOString(),
@@ -1817,6 +1948,7 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
     getSession,
     revokeSession,
     scan,
+    manualScan,
     redeemTicketAddon,
     resolve,
     bindDevice,

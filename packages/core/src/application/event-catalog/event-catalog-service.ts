@@ -134,6 +134,8 @@ export class EventCatalogService {
 
   async createTier(actor: ActorContext, command: CreateTierCommand): Promise<TicketTier> {
     await this.assertEventOwned(actor, command.eventId);
+    if (command.audienceType === 'STUDENT' || command.audienceType === 'MEMBER')
+      throw new InvalidOperationError('This ticket category is not available in V1');
     const tier = createTicketTier({
       id: this.deps.config.ids(),
       eventId: command.eventId,
@@ -168,9 +170,20 @@ export class EventCatalogService {
     return tier;
   }
 
-  async listTiers(actor: ActorContext, eventId: EntityId): Promise<TicketTier[]> {
+  async listTiers(
+    actor: ActorContext,
+    eventId: EntityId,
+  ): Promise<
+    (TicketTier & { soldQuantity?: number; heldQuantity?: number; availableQuantity?: number })[]
+  > {
     await this.assertEventOwned(actor, eventId);
-    return this.repo.listTiers(eventId);
+    const tiers = await this.repo.listTiers(eventId);
+    return Promise.all(
+      tiers.map(async (tier) => ({
+        ...tier,
+        ...(await this.deps.inventory.getTierInventory(eventId, tier.id)),
+      })),
+    );
   }
 
   async updateTierLimits(
@@ -179,7 +192,9 @@ export class EventCatalogService {
       eventId: EntityId;
       tierId: EntityId;
       expectedVersion: number;
-      maxPerOrder: number;
+      maxPerOrder?: number;
+      quantity?: number;
+      priceInPaise?: number;
     },
   ): Promise<TicketTier> {
     await this.assertEventOwned(actor, command.eventId);
@@ -187,23 +202,26 @@ export class EventCatalogService {
     if (!tier || tier.eventId !== command.eventId || tier.organizationId !== actor.organizationId) {
       throw new EventNotFoundError(command.eventId);
     }
+    const changes = {
+      ...(command.maxPerOrder === undefined ? {} : { maxPerOrder: command.maxPerOrder }),
+      ...(command.quantity === undefined ? {} : { quantity: command.quantity }),
+      ...(command.priceInPaise === undefined ? {} : { priceInPaise: command.priceInPaise }),
+    };
+    if (Object.keys(changes).length === 0)
+      throw new InvalidOperationError('A tier change is required');
+    const sameChanges = Object.entries(changes).every(
+      ([key, value]) => tier[key as keyof TicketTier] === value,
+    );
     if (tier.version !== command.expectedVersion) {
-      if (
-        tier.version === command.expectedVersion + 1 &&
-        tier.maxPerOrder === command.maxPerOrder
-      ) {
+      if (tier.version === command.expectedVersion + 1 && sameChanges) {
         await this.recordTierLimitsUpdated(actor, command.eventId, tier);
         return tier;
       }
       throw new VersionConflictError(command.expectedVersion, tier.version);
     }
-    if (tier.maxPerOrder === command.maxPerOrder) return tier;
-    const updated = updateTicketTier(
-      tier,
-      { maxPerOrder: command.maxPerOrder },
-      this.deps.config.clock.now(),
-    );
-    await this.repo.updateTier(updated);
+    if (sameChanges) return tier;
+    const updated = updateTicketTier(tier, changes, this.deps.config.clock.now());
+    await this.repo.updateTier(updated, { now: this.deps.config.clock.now() });
     await this.recordTierLimitsUpdated(actor, command.eventId, updated);
     return updated;
   }
@@ -228,7 +246,9 @@ export class EventCatalogService {
           eventId,
           tierId: tier.id,
           tierName: tier.name,
-          maxPerOrder: tier.maxPerOrder ?? 1,
+          maxPerOrder: tier.maxPerOrder,
+          quantity: tier.quantity,
+          priceInPaise: effectiveTierPricePaise(tier),
         },
         occurredAt: this.deps.config.clock.now().getTime(),
       }),

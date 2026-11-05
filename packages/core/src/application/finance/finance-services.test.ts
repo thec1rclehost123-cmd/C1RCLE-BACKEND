@@ -7,19 +7,27 @@ import {
   InvalidOperationError,
   NotFoundError,
 } from '../../domain/errors.js';
+import { createTicketTier } from '../../domain/models/event-catalog.js';
 import { cancelEvent, createEvent } from '../../domain/models/event.js';
 import { createPostedJournal } from '../../domain/models/financial-journal.js';
 import { DEFAULT_JOURNAL_TRANSITION_STATE } from '../../domain/models/journal-transition.js';
 import { createLedgerEntry } from '../../domain/models/ledger.js';
+import { createOrder } from '../../domain/models/order.js';
 import { createPayout } from '../../domain/models/payout.js';
+import { calculatePricing } from '../../domain/models/pricing.js';
+import { applyProviderPaymentEvent } from '../../domain/models/provider-payment.js';
 import { MemoryBankAccountRepository } from '../../infrastructure/memory/memory-bank-account-repository.js';
+import { MemoryDisputeRepository } from '../../infrastructure/memory/memory-dispute-repository.js';
 import { MemoryFinancialJournalRepository } from '../../infrastructure/memory/memory-financial-journal-repository.js';
 import { MemoryJournalTransitionRepository } from '../../infrastructure/memory/memory-journal-transition-repository.js';
 import { MemoryLedgerRepository } from '../../infrastructure/memory/memory-ledger-repository.js';
 import { MemoryPayoutRepository } from '../../infrastructure/memory/memory-payout-repository.js';
+import { MemoryProviderPaymentRepository } from '../../infrastructure/memory/memory-provider-payment-repository.js';
 import { MemoryReconciliationRepository } from '../../infrastructure/memory/memory-reconciliation-repository.js';
+import { MemoryRefundRequestRepository } from '../../infrastructure/memory/memory-refund-request-repository.js';
 import {
   MemoryEventRepository,
+  MemoryOrderRepository,
   MemoryPlatformSettingsRepository,
 } from '../../infrastructure/memory/memory-repositories.js';
 
@@ -63,6 +71,80 @@ const transferEvidence = {
   transferMethod: 'bank_transfer',
   proof: { sha256: 'a'.repeat(64), contentType: 'application/pdf', sizeBytes: 128 },
 };
+
+function exposureRepositories() {
+  return {
+    orders: new MemoryOrderRepository(),
+    providerPayments: new MemoryProviderPaymentRepository(),
+    refundRequests: new MemoryRefundRequestRepository(),
+    disputes: new MemoryDisputeRepository(),
+  };
+}
+
+async function seedSettledEvidence(
+  events: MemoryEventRepository,
+  exposure: ReturnType<typeof exposureRepositories>,
+  id: string,
+  eventId: string,
+  paymentId: string,
+  amount = 100_000,
+  elapsedHours = 72,
+) {
+  const endAt = new Date(NOW.getTime() - elapsedHours * 3600000);
+  await events.save({
+    ...createEvent({
+      id: eventId,
+      organizationId: ORG,
+      venueId: 'venue-settlement',
+      title: 'Settled event',
+      startAt: new Date(endAt.getTime() - 4 * 3600000).toISOString(),
+      endAt: endAt.toISOString(),
+      now: NOW,
+    }),
+    status: 'ended',
+  });
+  const tier = createTicketTier({
+    id: `tier-${id}`,
+    eventId,
+    organizationId: ORG,
+    name: 'General',
+    priceInPaise: amount,
+    quantity: 10,
+    now: NOW,
+  });
+  const order = {
+    ...createOrder({
+      id,
+      eventId,
+      organizationId: ORG,
+      userId: 'buyer',
+      contact: { name: 'Buyer', email: '', phone: '' },
+      pricing: calculatePricing({ lines: [{ tier, quantity: 1 }] }),
+      now: NOW,
+    }),
+    status: 'paid' as const,
+    paymentId,
+  };
+  await exposure.orders.save(order);
+  await exposure.providerPayments.save(
+    applyProviderPaymentEvent(
+      null,
+      {
+        type: 'captured',
+        paymentId,
+        providerOrderId: `provider-${id}`,
+        orderId: id,
+        correlated: true,
+        amountPaise: order.grandTotalPaise,
+        currency: 'INR',
+        feePaise: 0,
+        taxOnFeePaise: 0,
+        occurredAt: NOW.toISOString(),
+      },
+      NOW,
+    ),
+  );
+}
 
 function financeService(ledger: MemoryLedgerRepository) {
   return createFinanceService({
@@ -256,10 +338,12 @@ describe('createFinanceService', () => {
         reconciliationPaise: 0,
       },
       readModel: 'legacy_ledger_v1',
+      settlementUnavailableReason:
+        'Settlement eligibility requires the controlled journal transition.',
     });
   });
 
-  it('uses only journal payables after cutover and applies reserves and reconciliation holds', async () => {
+  it('uses only journal payables after cutover and applies staged release and reconciliation holds', async () => {
     const ledger = new MemoryLedgerRepository();
     await ledger.createBatch([
       createLedgerEntry({
@@ -356,34 +440,50 @@ describe('createFinanceService', () => {
       createdAt: NOW.toISOString(),
       updatedAt: NOW.toISOString(),
     });
+    const events = new MemoryEventRepository();
+    const financialExposure = exposureRepositories();
+    await seedSettledEvidence(
+      events,
+      financialExposure,
+      'journal-order',
+      'event_1',
+      'pay_1',
+      100_000,
+      24,
+    );
     const service = createFinanceService({
       ledger,
       financialJournals,
       journalTransition,
       payouts,
-      events: new MemoryEventRepository(),
+      events,
       reconciliations,
+      financialExposure,
       config,
     });
 
     expect(await service.getBalances(ORG, actor(ORG))).toEqual({
-      availablePaise: 22_000,
+      availablePaise: 10_000,
       pendingPaise: 0,
       reservedPaise: 30_000,
-      heldPaise: 28_000,
+      heldPaise: 40_000,
       paidPaise: 0,
       lifetimePaise: 80_000,
       holds: {
-        reservePaise: 8_000,
+        reservePaise: 20_000,
         cancellationPaise: 0,
         chargebackPaise: 0,
         reconciliationPaise: 20_000,
+        refundPaise: 0,
+        disputePaise: 0,
+        providerUncertaintyPaise: 0,
       },
       readModel: 'financial_journal_v2',
+      settlementUnavailableReason: null,
     });
   });
 
-  it('getBalances reflects settled inflow minus paid out when nothing is pending', async () => {
+  it('keeps legacy settled inflow pending controlled journal transition after prior paid-out deductions', async () => {
     const repo = new MemoryLedgerRepository();
     await repo.createBatch([
       createLedgerEntry({
@@ -411,8 +511,8 @@ describe('createFinanceService', () => {
     ]);
     const service = financeService(repo);
     const balances = await service.getBalances(ORG, actor(ORG));
-    expect(balances.availablePaise).toBe(30_000);
-    expect(balances.pendingPaise).toBe(0);
+    expect(balances.availablePaise).toBe(0);
+    expect(balances.pendingPaise).toBe(30_000);
     expect(balances.lifetimePaise).toBe(70_000);
   });
 
@@ -680,7 +780,13 @@ describe('createPayoutService', () => {
     const payouts = new MemoryPayoutRepository(financialJournals);
     const platformSettings = new MemoryPlatformSettingsRepository();
     const journalTransition = new MemoryJournalTransitionRepository();
+    journalTransition.state = {
+      ...journalTransition.state,
+      phase: 'journal_reads',
+      readModel: 'financial_journal_v2',
+    };
     const events = new MemoryEventRepository();
+    const financialExposure = exposureRepositories();
     const reconciliations = new MemoryReconciliationRepository();
     const service = createPayoutService({
       payouts,
@@ -691,26 +797,41 @@ describe('createPayoutService', () => {
       events,
       reconciliations,
       platformSettings,
+      financialExposure,
       config,
     });
-    return { payouts, bankAccounts, ledger, financialJournals, service };
+    return { payouts, bankAccounts, ledger, financialJournals, events, financialExposure, service };
   }
 
   async function seedDefaults(deps: ReturnType<typeof makeDeps>) {
-    const { bankAccounts, ledger } = deps;
-    await ledger.createBatch([
-      createLedgerEntry({
-        id: 'led-avail',
-        organizationId: ORG,
-        orderId: 'order_avail',
-        eventId: 'evt_1',
-        entryType: 'host_payout',
-        amount: 100_000,
-        status: 'settled',
-        idempotencyKey: 'order_avail:host_payout',
-        now: NOW,
-      }),
-    ]);
+    const { bankAccounts, events, financialExposure, financialJournals } = deps;
+    await seedSettledEvidence(events, financialExposure, 'order_avail', 'evt_1', 'pay_available');
+    await new FinancialPostingService(financialJournals).postTicketSale({
+      organizationId: ORG,
+      orderId: 'order_avail',
+      eventId: 'evt_1',
+      paymentId: 'pay_available',
+      sourceType: 'online_payment_capture',
+      providerConfirmed: true,
+      currency: 'INR',
+      ticketFaceValuePaise: 100_000,
+      discountPaise: 0,
+      discountFundingOwner: null,
+      netTicketRevenuePaise: 100_000,
+      gstPaise: 0,
+      platformFeePaise: 0,
+      paymentFeePaise: 0,
+      allocation: {
+        platformPaise: 0,
+        hostOrganizationId: ORG,
+        hostPaise: 100_000,
+        venueOrganizationId: null,
+        venuePaise: 0,
+        promoterOrganizationId: null,
+        promoterPaise: 0,
+      },
+      postedAt: NOW,
+    });
     await bankAccounts.create(
       createBankAccountFixture('bank_1', ORG, true, '••1234', 'envelope-1'),
     );
@@ -775,20 +896,8 @@ describe('createPayoutService', () => {
 
   it('requestPayout honors an explicit bankAccountId', async () => {
     const deps = makeDeps();
-    const { bankAccounts, ledger } = deps;
-    await ledger.createBatch([
-      createLedgerEntry({
-        id: 'led-avail',
-        organizationId: ORG,
-        orderId: 'order_avail',
-        eventId: 'evt_1',
-        entryType: 'host_payout',
-        amount: 100_000,
-        status: 'settled',
-        idempotencyKey: 'order_avail:host_payout',
-        now: NOW,
-      }),
-    ]);
+    await seedDefaults(deps);
+    const { bankAccounts } = deps;
     await bankAccounts.create(createBankAccountFixture('bank_a', ORG, true));
     await bankAccounts.create(createBankAccountFixture('bank_b', ORG, false));
     const payout = await deps.service.requestPayout(

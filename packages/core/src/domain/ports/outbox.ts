@@ -38,6 +38,8 @@ export interface OutboxRecord {
 
 /** Append-side: written in the same unit of work as the business write. */
 export interface OutboxWriter {
+  /** Durable presence, including already delivered events. */
+  hasEvent?(id: EntityId): Promise<boolean>;
   append(event: DomainEvent): Promise<void>;
   /** Mark a row delivered (consumer idempotency by event id). */
   markProcessed(id: EntityId, processedAt: number, leaseToken?: string): Promise<void>;

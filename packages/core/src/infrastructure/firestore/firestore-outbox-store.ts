@@ -14,6 +14,10 @@ export class FirestoreOutboxStore implements OutboxStore {
     return this.db.collection(OUTBOX_COLLECTION);
   }
 
+  async hasEvent(id: EntityId): Promise<boolean> {
+    return (await this.collection.doc(id).get()).exists;
+  }
+
   async append(event: DomainEvent): Promise<void> {
     const reference = this.collection.doc(event.id);
     await this.db.runTransaction(async (transaction) => {

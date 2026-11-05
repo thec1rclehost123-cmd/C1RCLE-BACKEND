@@ -65,6 +65,7 @@ import type {
   FinancialJournal,
   PostingSourceType,
 } from '../models/financial-journal.js';
+import type { FulfilmentCompletionInput } from '../models/fulfilment.js';
 import type { GuestProfile } from '../models/guest-profile.js';
 import type { JournalTransitionState } from '../models/journal-transition.js';
 import type {
@@ -75,7 +76,7 @@ import type {
 import type { LedgerEntry, LedgerEntryType } from '../models/ledger.js';
 import type { Notification } from '../models/notification.js';
 import type { OnboardingRequest, OnboardingStatus } from '../models/onboarding.js';
-import type { Order, OrderStatus } from '../models/order.js';
+import type { Order, OrderStatus, RefundedTicketClaim } from '../models/order.js';
 import type {
   Organization,
   OrganizationInvitation,
@@ -94,6 +95,7 @@ import type {
   ReconciliationRun,
 } from '../models/reconciliation.js';
 import type { ReferralLink } from '../models/referral-link.js';
+import type { RefundIntakeInput } from '../models/refund-intake.js';
 import type { AdminRefundRequest, AdminRefundRequestStatus } from '../models/refund-request.js';
 import type {
   SafetyReport,
@@ -376,7 +378,7 @@ export interface EventRepository {
   listPublic(query: PaginationQuery): Promise<Page<Event>>;
   /** Upcoming public events, ordered by start time and bounded at the query. */
   listUpcomingPublic(startAtOrAfter: string, limit: number): Promise<Event[]>;
-  save(event: Event, tx?: TxContext | null): Promise<void>;
+  save(event: Event, tx?: TxContext | null, outboxEvent?: DomainEvent): Promise<void>;
   delete(eventId: EntityId, tx?: TxContext | null): Promise<void>;
 }
 
@@ -394,7 +396,7 @@ export interface EventCatalogRepository {
   findDineInTier(eventId: EntityId): Promise<TicketTier | null>;
   saveTier(tier: TicketTier, tx?: TxContext | null): Promise<void>;
   /** Compare-and-set update; creation remains on saveTier. */
-  updateTier(tier: TicketTier): Promise<void>;
+  updateTier(tier: TicketTier, options?: { now: Date }): Promise<void>;
   // Promo codes
   getPromoById(promoId: EntityId): Promise<PromoCode | null>;
   getPromoByCode(code: string, eventId: EntityId | null): Promise<PromoCode | null>;
@@ -723,6 +725,17 @@ export interface CartReservationRepository {
   release(reservationId: EntityId, tx?: TxContext | null): Promise<void>;
   /** Converts a hold to an order (atomic with order creation). */
   convertToOrder(reservationId: EntityId, orderId: EntityId, tx?: TxContext | null): Promise<void>;
+  /** Atomic durable claim made BEFORE any provider POST; exactly one caller wins. */
+  claimProviderOrderCreation(
+    reservationId: EntityId,
+    receipt: string,
+    now: Date,
+  ): Promise<{
+    hold: CartReservation;
+    claimed: boolean;
+  } | null>;
+  /** Records unresolved provider create/lookup outcomes without granting a new POST. */
+  markProviderOrderRequiresSupport(reservationId: EntityId, receipt: string): Promise<void>;
   /**
    * Binds the provider order to the hold, first writer wins, and returns the
    * order id that ended up bound (the caller's, or the one an earlier/racing
@@ -766,13 +779,33 @@ export interface CartReservationRepository {
 /** Order repository — the commerce aggregate. */
 /** One line of an order, as far as seat counting is concerned. */
 export interface SeatClaimLine {
+  pricingPhaseId?: string | null;
   tierId: EntityId;
   quantity: number;
   guestCount?: number;
   admissionMode?: 'bundle' | 'per_person';
 }
 
+export interface RsvpAcquisition {
+  order: Order;
+  entitlements: Entitlement[];
+  expectedEventVersion: number;
+  expectedTierVersion: number;
+  now: Date;
+}
+
 export interface OrderRepository {
+  /** Commit completion and its mandatory receipt/order intent only with durable sale evidence. */
+  completeFulfilment(input: FulfilmentCompletionInput): Promise<Order>;
+  /** One atomic intake: exact paid-order/ticket versions, request creation and selected-ticket freeze. */
+  beginRefundRequest(
+    input: RefundIntakeInput,
+  ): Promise<{ request: AdminRefundRequest; order: Order }>;
+
+  /** Serializes capacity with paid holds and atomically persists the order and admission. */
+  acquireRsvp(input: RsvpAcquisition): Promise<{ order: Order; entitlements: Entitlement[] }>;
+  /** Owner-only, unused free admission cancellation; release is idempotent. */
+  cancelRsvp(orderId: EntityId, userId: EntityId, now: Date): Promise<Order>;
   /** Fetches by id. */
   getById(orderId: EntityId): Promise<Order | null>;
   /** Fetches by immutable support-safe booking reference. */
@@ -801,7 +834,14 @@ export interface OrderRepository {
    * paging through whole orders, which is what makes counting sold seats scale.
    * Includes orders of every status; the caller decides which ones hold a seat.
    */
-  listSeatClaims(eventId: EntityId): Promise<{ status: OrderStatus; lines: SeatClaimLine[] }[]>;
+  listSeatClaims(eventId: EntityId): Promise<
+    {
+      status: OrderStatus;
+      lines: SeatClaimLine[];
+      refundedTicketClaims?: RefundedTicketClaim[];
+      compensationRequired?: Order['compensationRequired'];
+    }[]
+  >;
   /** Lists all orders platform-wide (admin read-only dashboards). */
   listAll(query: PaginationQuery): Promise<Page<Order>>;
   /** Hard-deletes an order (support operation). */
@@ -881,12 +921,14 @@ export interface EntitlementRepository {
     transfer: TicketTransfer,
     expectedCustodianUserId: EntityId,
     outboxEvent?: DomainEvent,
+    policy?: { now: Date },
   ): Promise<TicketTransfer>;
   /** Atomically resolves a pending transfer and, on acceptance, rotates ownership. */
   resolveTicketTransfer(input: {
     transferId: EntityId;
     actorUserId: EntityId;
     recipientEmailHash?: string;
+    requireEventValidation?: boolean;
     action: 'accept' | 'decline' | 'cancel' | 'freeze' | 'expire';
     holderName?: string;
     now?: Date;
@@ -926,6 +968,18 @@ export interface EntitlementRepository {
 export type { AdmissionClaim };
 
 export interface ClaimAdmissionOptions {
+  expectedVenueId?: string | null;
+  admissionAudit?: {
+    operatorUserId: string;
+    deviceId: string;
+    method: 'camera' | 'manual';
+    reason?: string;
+    gate?: string | null;
+    deviceName?: string | null;
+    operatorName?: string | null;
+    operatorRole?: string | null;
+  };
+  requireEventValidation?: boolean;
   /**
    * How many people this one call admits. 1 for an ordinary scan; 2 for a
    * confirmed couple ticket, where both guests walk through together and the
@@ -1460,6 +1514,8 @@ export interface LedgerRepository {
  * key may never be reused for different journal content.
  */
 export interface FinancialJournalRepository {
+  /** Includes the materialized companion line records used by settlement. */
+  hasAllLines?(journalId: EntityId): Promise<boolean>;
   postBatch(journals: FinancialJournal[]): Promise<FinancialJournal[]>;
   findById(id: EntityId): Promise<FinancialJournal | null>;
   findByIdempotencyKey(idempotencyKey: string): Promise<FinancialJournal | null>;
@@ -1643,6 +1699,7 @@ export interface SupportTicketQuery {
 }
 
 export interface SupportTicketRepository {
+  createIfAbsent(ticket: SupportTicket): Promise<boolean>;
   getById(id: EntityId, opts?: { includeDeleted?: boolean }): Promise<SupportTicket | null>;
   /** The ticket a client points at via `mergedInto`. */
   listByMergedInto(ticketId: EntityId): Promise<SupportTicket[]>;
@@ -1795,7 +1852,8 @@ export interface SocialNotificationRepository {
  */
 export interface PlatformSettingsRepository {
   get(): Promise<PlatformSettings>;
-  save(settings: PlatformSettings): Promise<void>;
+  /** Atomically preserves settings and immutable booking-policy version identity. */
+  save(settings: PlatformSettings, expectedRevision: number): Promise<void>;
 }
 
 /**

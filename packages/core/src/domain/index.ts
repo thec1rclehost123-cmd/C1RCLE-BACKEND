@@ -14,6 +14,8 @@ export * from './models/admin-authority.js';
 export * from './models/onboarding.js';
 export * from './models/promoter-agreement.js';
 export * from './models/pricing.js';
+export * from './models/booking-fee-policy.js';
+export * from './models/purchase-refund-snapshot.js';
 export * from './models/order.js';
 export * from './models/entitlement.js';
 export * from './models/ticket-transfer.js';

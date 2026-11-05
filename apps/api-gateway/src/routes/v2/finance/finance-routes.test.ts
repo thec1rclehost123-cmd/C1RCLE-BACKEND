@@ -1,9 +1,19 @@
-import { MemoryPaymentProvider } from '@c1rcle/core/domain';
-import { describe, expect, it } from 'vitest';
+import { FinancialPostingService } from '@c1rcle/core/application';
+import {
+  applyProviderPaymentEvent,
+  calculatePricing,
+  createEvent,
+  createOrder,
+  createTicketTier,
+  M4_ACCOUNTING_POLICY,
+  MemoryPaymentProvider,
+} from '@c1rcle/core/domain';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createV2Services } from '../../../lib/v2-services.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 import { publishEventForTest } from '../../../test-utils/publish-event.js';
+import { seedVerifiedCheckoutUsers } from '../../../test-utils/verified-test-users.js';
 import checkoutRoutes from '../checkout/checkout-routes.js';
 import paymentRoutes from '../checkout/payment-routes.js';
 import partnerEventCatalogRoutes from '../partner/event-catalog.js';
@@ -12,6 +22,22 @@ import partnerOrganizationRoutes from '../partner/organizations.js';
 import partnerVenueRoutes from '../partner/venues.js';
 
 import financeRoutes from './finance-routes.js';
+
+import type * as ConfigModule from '../../../config/index.js';
+
+// Explicitly opt in only for in-memory payout-route behavior tests. The real
+// configuration default and the balance route remain safely disabled.
+const payoutFlag = vi.hoisted(() => ({ enabled: false }));
+vi.mock('../../../config/index.js', async (importOriginal) => {
+  const actual: typeof ConfigModule = await importOriginal();
+  return {
+    ...actual,
+    getGatewayConfig: (...args: Parameters<typeof actual.getGatewayConfig>) => ({
+      ...actual.getGatewayConfig(...args),
+      PAYOUTS_ENABLED: payoutFlag.enabled,
+    }),
+  };
+});
 
 /**
  * ─── Finance routes over HTTP (Phase 6) ─────────────────────────────────────
@@ -27,8 +53,9 @@ import financeRoutes from './finance-routes.js';
  */
 
 let keySeq = 0;
-const buildServer = () =>
-  buildPartnerTestServer({
+const buildServer = ({ payoutsEnabled = false } = {}) => {
+  payoutFlag.enabled = payoutsEnabled;
+  return buildPartnerTestServer({
     routes: [
       partnerOrganizationRoutes,
       partnerVenueRoutes,
@@ -39,8 +66,20 @@ const buildServer = () =>
       financeRoutes,
     ],
   });
+};
 
 type Server = Awaited<ReturnType<typeof buildServer>>;
+
+beforeEach(async () => {
+  const repo = createV2Services().repos().journalTransition;
+  const state = await repo.get();
+  await repo.save({
+    ...state,
+    phase: 'legacy_reads',
+    readModel: 'legacy_ledger_v1',
+    version: state.version + 1,
+  });
+});
 
 const write = (org: string) => ({
   'x-organization-id': org,
@@ -81,6 +120,9 @@ describe('GET /organizations/:organizationId/finance/balance', () => {
         reconciliationPaise: 0,
       },
       readModel: 'legacy_ledger_v1',
+      payoutsEnabled: false,
+      settlementUnavailableReason:
+        'Settlement eligibility requires the controlled journal transition.',
     });
   });
 
@@ -164,7 +206,7 @@ describe('bank accounts + payouts', () => {
   });
 
   it('rejects a payout request below the ₹100 minimum', async () => {
-    const server = await buildServer();
+    const server = await buildServer({ payoutsEnabled: true });
     const org = await seedOrganization(server);
     await server.inject({
       method: 'POST',
@@ -188,7 +230,7 @@ describe('bank accounts + payouts', () => {
   });
 
   it('rejects a payout request exceeding available balance', async () => {
-    const server = await buildServer();
+    const server = await buildServer({ payoutsEnabled: true });
     const org = await seedOrganization(server);
     await server.inject({
       method: 'POST',
@@ -308,24 +350,107 @@ describe('GET /organizations/:organizationId/payouts', () => {
   async function seedSettledFundsAndBank(server: Server, org: string) {
     await seedLedger(server, org);
     const repro = createV2Services().repos();
-    // Give the org a settled host_payout so a payout can actually be requested.
-    // Unique id/idempotencyKey per org — the memory ledger dedups on BOTH.
-    const fundedKey = `order_funded:host_payout:${org}`;
-    await repro.ledger.createBatch([
-      {
-        id: `settled-${org}`,
+    // M4 eligibility requires authoritative journal proceeds and the event-end
+    // clock. A settled compatibility-ledger row alone is never withdrawable.
+    // This is an in-memory controlled fixture, not a deployment cutover.
+    const state = await repro.journalTransition.get();
+    await repro.journalTransition.save({
+      ...state,
+      phase: 'journal_reads',
+      readModel: 'financial_journal_v2',
+      version: state.version + 1,
+    });
+    const now = new Date();
+    const event = {
+      ...createEvent({
+        id: `funded-event-${++keySeq}`,
         organizationId: org,
-        orderId: 'order_funded',
-        eventId: 'evt_funded',
-        entryType: 'host_payout',
-        amount: 100_000,
-        status: 'settled',
-        idempotencyKey: fundedKey,
-        version: 1,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
+        venueId: 'venue-funded',
+        title: 'Funded synthetic event',
+        startAt: new Date(now.getTime() - 80 * 3600000).toISOString(),
+        endAt: new Date(now.getTime() - 76 * 3600000).toISOString(),
+        now,
+      }),
+      status: 'ended' as const,
+    };
+    await repro.events.save(event);
+    const tier = createTicketTier({
+      id: `funded-tier-${keySeq}`,
+      eventId: event.id,
+      organizationId: org,
+      name: 'Entry',
+      quantity: 10,
+      priceInPaise: 100_000,
+      now,
+    });
+    const order = {
+      ...createOrder({
+        id: `funded-order-${keySeq}`,
+        eventId: event.id,
+        organizationId: org,
+        userId: 'buyer-funded',
+        contact: { name: 'Synthetic buyer', email: '', phone: '' },
+        pricing: calculatePricing({ lines: [{ tier, quantity: 1 }] }),
+        now,
+      }),
+      // Legacy synthetic purchase has no M4 completion marker; this fixture
+      // tests payout reservation, not paid fulfillment.
+      status: 'paid' as const,
+      paymentId: `pay-funded-${keySeq}`,
+    };
+    await repro.orders.save(order);
+    await repro.providerPayments.save(
+      applyProviderPaymentEvent(
+        null,
+        {
+          type: 'captured',
+          paymentId: order.paymentId,
+          providerOrderId: `provider-funded-${keySeq}`,
+          orderId: order.id,
+          correlated: true,
+          amountPaise: order.grandTotalPaise,
+          currency: 'INR',
+          feePaise: 0,
+          taxOnFeePaise: 0,
+          occurredAt: now.toISOString(),
+        },
+        now,
+      ),
+    );
+    await new FinancialPostingService(repro.financialJournals).postTicketSale({
+      organizationId: org,
+      orderId: order.id,
+      eventId: event.id,
+      paymentId: order.paymentId,
+      sourceType: 'online_payment_capture',
+      providerConfirmed: true,
+      currency: 'INR',
+      ticketFaceValuePaise: order.subtotalPaise,
+      discountPaise: 0,
+      discountFundingOwner: null,
+      netTicketRevenuePaise: order.discountedSubtotalPaise,
+      gstPaise: order.gstPaise,
+      platformFeePaise: order.platformFeePaise,
+      paymentFeePaise: order.paymentFeePaise,
+      allocation: {
+        platformPaise: 0,
+        hostOrganizationId: org,
+        hostPaise: 100_000,
+        venueOrganizationId: null,
+        venuePaise: 0,
+        promoterOrganizationId: null,
+        promoterPaise: 0,
       },
-    ]);
+      policy: M4_ACCOUNTING_POLICY,
+      postedAt: now,
+    });
+    const balance = await createV2Services().finance.getBalances(org, {
+      userId: 'user_1',
+      organizationId: org,
+      role: 'owner',
+      capabilities: [],
+    });
+    expect(balance.availablePaise).toBe(100_000);
     const added = await server.inject({
       method: 'POST',
       url: `/organizations/${org}/bank-accounts`,
@@ -341,7 +466,7 @@ describe('GET /organizations/:organizationId/payouts', () => {
   }
 
   it('lists the org payouts', async () => {
-    const server = await buildServer();
+    const server = await buildServer({ payoutsEnabled: true });
     const org = await seedOrganization(server);
     await seedSettledFundsAndBank(server, org);
     const req = await server.inject({
@@ -367,7 +492,7 @@ describe('GET /organizations/:organizationId/payouts', () => {
   });
 
   it('replays one payout request without creating a second reservation', async () => {
-    const server = await buildServer();
+    const server = await buildServer({ payoutsEnabled: true });
     const org = await seedOrganization(server);
     await seedSettledFundsAndBank(server, org);
     const idempotencyKey = `replay-payout-${++keySeq}`;
@@ -402,7 +527,7 @@ describe('GET /organizations/:organizationId/payouts', () => {
   });
 
   it('returns a single payout by id', async () => {
-    const server = await buildServer();
+    const server = await buildServer({ payoutsEnabled: true });
     const org = await seedOrganization(server);
     await seedSettledFundsAndBank(server, org);
     const req = await server.inject({
@@ -687,6 +812,7 @@ function memoryProvider(): MemoryPaymentProvider {
 
 /** Seeds org -> venue -> event -> tier -> hold -> paid order. */
 async function seedPaidOrder(server: Server): Promise<{ org: string; orderId: string }> {
+  seedVerifiedCheckoutUsers(['user_1']);
   const org = await seedOrganization(server);
   const venue = await server.inject({
     method: 'POST',

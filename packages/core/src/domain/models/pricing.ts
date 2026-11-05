@@ -1,5 +1,12 @@
 import { InvalidOperationError } from '../errors.js';
 
+import {
+  feeAtBasisPoints,
+  NON_PRODUCTION_BOOKING_FEE_POLICY,
+  snapshotBookingFeePolicy,
+  type BookingFeePolicy,
+} from './booking-fee-policy.js';
+
 import type { EntityId } from '../identity.js';
 import type { PromoCode, TicketTier } from './event-catalog.js';
 import type { DiscountFundingOwner } from './financial-journal.js';
@@ -51,12 +58,15 @@ export function applyPercent(paise: number, percent: number): number {
 
 /** One line of the order: a tier and how many of it. */
 export interface PricingLineInput {
+  pricingPhaseId?: string | null;
   tier: TicketTier;
   quantity: number;
   ticketAddons?: TicketAddonSelection[];
 }
 
 export interface PricingLine {
+  /** Authoritative quantity-priced allocation captured at quote time. */
+  pricingPhaseId?: string | null;
   tierId: EntityId;
   tierName: string;
   quantity: number;
@@ -76,6 +86,8 @@ export interface PricingLine {
 }
 
 export interface PricingBreakdown {
+  /** Frozen server policy; absent only on pre-M4 persisted purchases. */
+  feePolicy?: BookingFeePolicy;
   lines: PricingLine[];
   /** Σ(unit × qty), before any discount. */
   subtotalPaise: number;
@@ -98,6 +110,7 @@ export interface PricingBreakdown {
 }
 
 export interface CalculatePricingInput {
+  feePolicy?: BookingFeePolicy;
   lines: PricingLineInput[];
   /** Already validated as redeemable by the caller; this only does the maths. */
   promo?: PromoCode | null;
@@ -111,54 +124,59 @@ export function calculatePricing(input: CalculatePricingInput): PricingBreakdown
   }
 
   const currency = input.currency ?? input.lines[0]?.tier.currency ?? 'INR';
-  const lines: PricingLine[] = input.lines.map(({ tier, quantity, ticketAddons = [] }) => {
-    if (!Number.isInteger(quantity) || quantity < 1) {
-      throw new InvalidOperationError(`Quantity for ${tier.name} must be a positive whole number`);
-    }
-    if (tier.currency !== currency) {
-      // Summing paise across currencies produces a number that means nothing.
-      throw new InvalidOperationError('All lines in an order must share one currency');
-    }
-    if (tier.maxPerOrder !== null && quantity > tier.maxPerOrder) {
-      throw new InvalidOperationError(
-        `${tier.name} has a maximum of ${tier.maxPerOrder} per order`,
+  const lines: PricingLine[] = input.lines.map(
+    ({ tier, quantity, ticketAddons = [], pricingPhaseId }) => {
+      if (!Number.isInteger(quantity) || quantity < 1) {
+        throw new InvalidOperationError(
+          `Quantity for ${tier.name} must be a positive whole number`,
+        );
+      }
+      if (tier.currency !== currency) {
+        // Summing paise across currencies produces a number that means nothing.
+        throw new InvalidOperationError('All lines in an order must share one currency');
+      }
+      if (tier.maxPerOrder !== null && quantity > tier.maxPerOrder) {
+        throw new InvalidOperationError(
+          `${tier.name} has a maximum of ${tier.maxPerOrder} per order`,
+        );
+      }
+      const coverUnitPricePaise = tier.coverAmountPaise ?? 0;
+      const coverEntitlementsPerUnit =
+        (tier.admissionMode ?? 'bundle') === 'per_person' ? (tier.guestCount ?? 1) : 1;
+      const addOnUnitSubtotalPaise = ticketAddons.reduce(
+        (sum, addon) => sum + addon.unitPricePaise * addon.quantityPerEntitlement,
+        0,
       );
-    }
-    const coverUnitPricePaise = tier.coverAmountPaise ?? 0;
-    const coverEntitlementsPerUnit =
-      (tier.admissionMode ?? 'bundle') === 'per_person' ? (tier.guestCount ?? 1) : 1;
-    const addOnUnitSubtotalPaise = ticketAddons.reduce(
-      (sum, addon) => sum + addon.unitPricePaise * addon.quantityPerEntitlement,
-      0,
-    );
-    const addOnEntitlementsPerUnit =
-      (tier.admissionMode ?? 'bundle') === 'per_person' ? (tier.guestCount ?? 1) : 1;
-    const addOnSubtotalPaise = addOnUnitSubtotalPaise * addOnEntitlementsPerUnit * quantity;
-    return {
-      tierId: tier.id,
-      tierName: tier.name,
-      quantity,
-      unitPricePaise:
-        tier.priceInPaise +
-        coverUnitPricePaise * coverEntitlementsPerUnit +
-        addOnUnitSubtotalPaise * addOnEntitlementsPerUnit,
-      admissionUnitPricePaise: tier.priceInPaise,
-      coverUnitPricePaise,
-      coverEntitlementsPerUnit,
-      ...(ticketAddons.length > 0
-        ? { ticketAddons: ticketAddons.map((addon) => ({ ...addon })) }
-        : {}),
-      admissionSubtotalPaise: tier.priceInPaise * quantity,
-      coverSubtotalPaise: coverUnitPricePaise * quantity * coverEntitlementsPerUnit,
-      addOnSubtotalPaise,
-      discountedAdmissionSubtotalPaise: tier.priceInPaise * quantity,
-      subtotalPaise:
-        (tier.priceInPaise +
-          coverUnitPricePaise * coverEntitlementsPerUnit +
-          addOnUnitSubtotalPaise * addOnEntitlementsPerUnit) *
+      const addOnEntitlementsPerUnit =
+        (tier.admissionMode ?? 'bundle') === 'per_person' ? (tier.guestCount ?? 1) : 1;
+      const addOnSubtotalPaise = addOnUnitSubtotalPaise * addOnEntitlementsPerUnit * quantity;
+      return {
+        tierId: tier.id,
+        ...(pricingPhaseId === undefined ? {} : { pricingPhaseId }),
+        tierName: tier.name,
         quantity,
-    };
-  });
+        unitPricePaise:
+          tier.priceInPaise +
+          coverUnitPricePaise * coverEntitlementsPerUnit +
+          addOnUnitSubtotalPaise * addOnEntitlementsPerUnit,
+        admissionUnitPricePaise: tier.priceInPaise,
+        coverUnitPricePaise,
+        coverEntitlementsPerUnit,
+        ...(ticketAddons.length > 0
+          ? { ticketAddons: ticketAddons.map((addon) => ({ ...addon })) }
+          : {}),
+        admissionSubtotalPaise: tier.priceInPaise * quantity,
+        coverSubtotalPaise: coverUnitPricePaise * quantity * coverEntitlementsPerUnit,
+        addOnSubtotalPaise,
+        discountedAdmissionSubtotalPaise: tier.priceInPaise * quantity,
+        subtotalPaise:
+          (tier.priceInPaise +
+            coverUnitPricePaise * coverEntitlementsPerUnit +
+            addOnUnitSubtotalPaise * addOnEntitlementsPerUnit) *
+          quantity,
+      };
+    },
+  );
 
   const subtotalPaise = lines.reduce((sum, line) => sum + line.subtotalPaise, 0);
   const admissionSubtotalPaise = lines.reduce(
@@ -187,11 +205,22 @@ export function calculatePricing(input: CalculatePricingInput): PricingBreakdown
   // Fees are charged on what the guest actually pays for tickets, not on the
   // pre-discount figure — otherwise a promo costs the guest less but the
   // platform still bills fees as though it had not applied.
-  const platformFeePaise = applyPercent(discountedSubtotalPaise, PLATFORM_FEE_PERCENT);
-  const paymentFeePaise = applyPercent(discountedSubtotalPaise, PAYMENT_FEE_PERCENT);
-  const gstPaise = applyPercent(platformFeePaise + paymentFeePaise, GST_PERCENT);
+  const feePolicy = snapshotBookingFeePolicy(input.feePolicy ?? NON_PRODUCTION_BOOKING_FEE_POLICY);
+  const platformFeePaise = feeAtBasisPoints(
+    discountedSubtotalPaise,
+    feePolicy.platformFeeBasisPoints,
+  );
+  const paymentFeePaise = feeAtBasisPoints(
+    discountedSubtotalPaise,
+    feePolicy.paymentFeeBasisPoints,
+  );
+  const gstPaise = feeAtBasisPoints(
+    platformFeePaise + paymentFeePaise,
+    feePolicy.feeTaxBasisPoints,
+  );
 
   const breakdown: PricingBreakdown = {
+    feePolicy,
     lines,
     subtotalPaise,
     admissionSubtotalPaise,

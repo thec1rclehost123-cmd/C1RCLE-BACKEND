@@ -1,3 +1,5 @@
+import { NON_PRODUCTION_BOOKING_FEE_POLICY, type BookingFeePolicy } from './booking-fee-policy.js';
+
 /**
  * ─── Platform-wide settings (admin-owned, singleton doc) ─────────────────────
  *
@@ -10,6 +12,9 @@
  */
 
 export interface PlatformSettings {
+  /** Server-only CAS revision; absent on older persisted settings. */
+  revision?: number;
+  bookingFeePolicy?: BookingFeePolicy;
   /** Default platform fee rate (decimal, e.g. 0.15 = 15%). */
   platformFeeRate: number;
   /** Refund threshold below which zero approvers are required (paise, default ₹500 = 50_000). */
@@ -25,6 +30,7 @@ export interface PlatformSettings {
 }
 
 export interface AccountingPolicyConfig {
+  releaseSchedule?: 'event_end_24h_75_72h_100';
   version: string;
   settlementDelayDays: number;
   reserveBasisPoints: number;
@@ -35,6 +41,7 @@ export interface AccountingPolicyConfig {
 }
 
 export interface PlatformSettingsInput {
+  bookingFeePolicy?: BookingFeePolicy;
   platformFeeRate?: number;
   refundSingleApproverThresholdPaise?: number;
   refundDualApproverThresholdPaise?: number;
@@ -51,6 +58,8 @@ const DEFAULT_SINGLE_THRESHOLD = 50_000; // ₹500
 const DEFAULT_DUAL_THRESHOLD = 500_000; // ₹5,000
 
 export const DEFAULT_PLATFORM_SETTINGS: Readonly<PlatformSettings> = {
+  revision: 0,
+  bookingFeePolicy: NON_PRODUCTION_BOOKING_FEE_POLICY,
   platformFeeRate: 0.15,
   refundSingleApproverThresholdPaise: DEFAULT_SINGLE_THRESHOLD,
   refundDualApproverThresholdPaise: DEFAULT_DUAL_THRESHOLD,

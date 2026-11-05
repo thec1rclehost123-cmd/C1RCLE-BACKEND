@@ -349,7 +349,7 @@ describe('ticket tiers', () => {
     const unsafe = await server.inject({
       ...updateRequest,
       headers: { ...write(org), 'if-match': String(updated.json().version) },
-      payload: { maxPerOrder: 8, quantity: 100 },
+      payload: { maxPerOrder: 8, audienceType: 'MALE' },
     });
     expect(unsafe.statusCode).toBe(422);
 

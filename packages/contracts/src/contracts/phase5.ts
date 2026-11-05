@@ -142,6 +142,7 @@ export const scanRequestSchema = z
 export type ScanRequest = z.infer<typeof scanRequestSchema>;
 
 export const scanDenyReasonSchema = z.enum([
+  'event_closed',
   'invalid_signature',
   'already_used',
   'expired',
@@ -716,6 +717,7 @@ export const doorGuestSchema = z.object({
   quantity: z.number().int().positive(),
   source: z.enum(['online', 'door']),
   ownershipStatus: z.enum(['purchaser', 'unassigned', 'assigned']).nullable().optional(),
+  requirement: z.string().nullable().optional(),
   status: z.enum(['entered', 'not_entered']),
   enteredAt: z.string().nullable(),
   scansUsed: z.number().int().nonnegative().nullable(),
@@ -795,7 +797,13 @@ export const attendanceReportDtoSchema = z.object({
 export type AttendanceReportDto = z.infer<typeof attendanceReportDtoSchema>;
 
 export const manualCheckInBodySchema = z
-  .object({ eventId: opaqueIdSchema, entitlementId: opaqueIdSchema })
+  .object({
+    eventId: opaqueIdSchema,
+    entitlementId: opaqueIdSchema,
+    eligibilityVerified: z.boolean().optional(),
+    coupleConfirmed: z.boolean().optional(),
+    reason: z.string().trim().min(1).max(500).optional(),
+  })
   .strict();
 export type ManualCheckInBody = z.infer<typeof manualCheckInBodySchema>;
 

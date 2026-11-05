@@ -643,3 +643,99 @@ describe('V2 partners events slice — previews and lifecycle', () => {
     await server.close();
   });
 });
+
+describe('M3 explicit event lifecycle HTTP commands', () => {
+  it('validates ownership/reason, postpones idempotently and announces an explicit replacement date', async () => {
+    const server = await buildServer();
+    try {
+      const { id } = await createEvent(server);
+      for (const action of ['review', 'publish']) {
+        const response = await server.inject({
+          method: 'POST',
+          url: `/events/${id}/${action}`,
+          headers: { ...VALID_HEADERS, 'idempotency-key': nextEventKey() },
+        });
+        expect(response.statusCode, response.body).toBe(200);
+      }
+      const url = `/events/${id}/lifecycle`;
+      const blank = await server.inject({
+        method: 'POST',
+        url,
+        headers: { ...VALID_HEADERS, 'idempotency-key': nextEventKey() },
+        payload: { action: 'postpone', reason: ' ' },
+      });
+      expect(blank.statusCode).toBe(422);
+      const foreign = await server.inject({
+        method: 'POST',
+        url,
+        headers: { 'x-organization-id': 'org_foreign', 'idempotency-key': nextEventKey() },
+        payload: { action: 'postpone', reason: 'Foreign update' },
+      });
+      expect(foreign.statusCode).toBe(404);
+      const headers = { ...VALID_HEADERS, 'idempotency-key': nextEventKey() };
+      const payload = { action: 'postpone', reason: 'Weather safety hold' };
+      const postponed = await server.inject({ method: 'POST', url, headers, payload });
+      const replay = await server.inject({ method: 'POST', url, headers, payload });
+      expect(postponed.statusCode, postponed.body).toBe(200);
+      expect(postponed.json()).toMatchObject({
+        status: 'postponed',
+        isPublic: false,
+        postponement: { reason: payload.reason, initiatedBy: 'host', organizationId: 'org_1' },
+      });
+      expect(replay.json()).toEqual(postponed.json());
+      const changedIntent = await server.inject({
+        method: 'POST',
+        url,
+        headers,
+        payload: { ...payload, reason: 'A different command' },
+      });
+      expect(changedIntent.statusCode).toBe(409);
+      const expectedVersion = postponed.json<{ version: number }>().version;
+      const past = await server.inject({
+        method: 'POST',
+        url,
+        headers: { ...VALID_HEADERS, 'idempotency-key': nextEventKey() },
+        payload: { action: 'reschedule', expectedVersion, startAt: '2000-01-01T00:00:00.000Z' },
+      });
+      expect(past.statusCode).toBe(400);
+      const replacement = {
+        action: 'reschedule',
+        expectedVersion,
+        startAt: '2099-12-01T18:00:00.000Z',
+        endAt: '2099-12-01T23:00:00.000Z',
+      };
+      const replacementHeaders = { ...VALID_HEADERS, 'idempotency-key': nextEventKey() };
+      const announced = await server.inject({
+        method: 'POST',
+        url,
+        headers: replacementHeaders,
+        payload: replacement,
+      });
+      const announcementReplay = await server.inject({
+        method: 'POST',
+        url,
+        headers: replacementHeaders,
+        payload: replacement,
+      });
+      expect(announced.statusCode, announced.body).toBe(200);
+      expect(announced.json()).toMatchObject({
+        status: 'published',
+        isPublic: true,
+        startAt: replacement.startAt,
+        endAt: replacement.endAt,
+      });
+      expect(announcementReplay.json()).toEqual(announced.json());
+      const stored = await server.inject({
+        method: 'GET',
+        url: `/events/${id}`,
+        headers: VALID_HEADERS,
+      });
+      expect(stored.json()).toMatchObject({
+        status: 'published',
+        version: announced.json().version,
+      });
+    } finally {
+      await server.close();
+    }
+  });
+});

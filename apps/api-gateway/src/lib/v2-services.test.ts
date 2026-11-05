@@ -33,6 +33,7 @@ describe('V2 services wiring (B09) — EventPublished → audit trail end-to-end
     const productionConfig = getGatewayConfig({
       NODE_ENV: 'production',
       STORAGE_DRIVER: 'firestore',
+      FIRESTORE_PROJECT_ID: 'c1rcle-v2',
       FIREBASE_CLIENT_EMAIL: 'firebase@example.test',
       FIREBASE_PRIVATE_KEY: 'private-key',
       BETTER_AUTH_SECRET: 'a'.repeat(64),

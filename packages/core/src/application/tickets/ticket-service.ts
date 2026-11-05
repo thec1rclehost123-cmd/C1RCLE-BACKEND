@@ -8,8 +8,16 @@ import {
 } from '../../domain/errors.js';
 import { deterministicDomainEventId, domainEvent } from '../../domain/events.js';
 import { currentEntitlementHolderId } from '../../domain/models/entitlement.js';
+import { eventTransferUnavailableReason } from '../../domain/models/event-policy.js';
+import { fulfilmentPending } from '../../domain/models/fulfilment.js';
 import { eventMaterialChangeSubjectId, notificationId } from '../../domain/models/social.js';
 import { createTicketTransfer } from '../../domain/models/ticket-transfer.js';
+
+import {
+  readTicketManagement,
+  listPurchasedTicketManagement,
+  readTransferPreview,
+} from './ticket-management.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type { Entitlement } from '../../domain/models/entitlement.js';
@@ -19,22 +27,40 @@ import type { ActorContext, ServiceDeps } from '../context.js';
 
 /**
  * ─── TicketService (Phase 4 PR3) ───────────────────────────────────────────────
- * Guest ticket reads and identity-bound transfer lifecycle. Transfer writes
- * remain disabled unless the deployment explicitly enables M5's feature flag.
+ * Guest ticket reads and verified-email V1 assignment/transfer lifecycle.
+ * Online ownership changes require offline manifests to remain disabled.
  *
- * A ticket read is scoped to its current holder, with a missing or explicit
- * null current-holder field falling back to purchaser custody for legacy and
- * unassigned units. A mismatch reports as 404, never 403.
+ * Ticket reads are scoped to the admission holder. Only absent legacy holder
+ * fields infer the purchaser; explicit null never grants admission rights.
  */
 export class TicketService {
   constructor(private readonly deps: ServiceDeps) {}
 
+  getManagement(id: string, actor: ActorContext) {
+    return readTicketManagement(this.deps, id, actor);
+  }
+  listPurchasedManagement(actor: ActorContext, query: PaginationQuery) {
+    return listPurchasedTicketManagement(this.deps, actor, query);
+  }
+  previewTransfer(id: string, actor: ActorContext) {
+    return readTransferPreview(this.deps, id, actor);
+  }
+
   async getById(ticketId: EntityId, actor: ActorContext): Promise<Entitlement> {
     const entitlement = await this.deps.repositories.entitlements.getById(ticketId);
-    const holderUserId = entitlement?.currentHolderUserId ?? entitlement?.userId;
+    const holderUserId = entitlement ? currentEntitlementHolderId(entitlement) : null;
     if (!entitlement || holderUserId !== actor.userId) {
       throw new NotFoundError('Ticket', ticketId);
     }
+    if (
+      entitlement.status !== 'void' &&
+      entitlement.fulfillmentRequired &&
+      fulfilmentPending(
+        entitlement,
+        await this.deps.repositories.orders.getById(entitlement.orderId),
+      )
+    )
+      throw new NotFoundError('Ticket', ticketId);
     return entitlement;
   }
 
@@ -67,7 +93,8 @@ export class TicketService {
       !event ||
       !['paid', 'refund_requested'].includes(order.status) ||
       event.status === 'cancelled' ||
-      Date.parse(event.startAt) <= this.deps.config.clock.now().getTime() ||
+      (event.status !== 'postponed' &&
+        Date.parse(event.startAt) <= this.deps.config.clock.now().getTime()) ||
       entitlement.status !== 'valid' ||
       entitlement.scanCount !== 0 ||
       entitlement.refundLock ||
@@ -154,6 +181,14 @@ export class TicketService {
     if (!entitlement || (holderUserId !== actor.userId && !isPurchaserCustodian)) {
       throw new NotFoundError('Ticket', ticketId);
     }
+    if (
+      entitlement.fulfillmentRequired &&
+      fulfilmentPending(
+        entitlement,
+        await this.deps.repositories.orders.getById(entitlement.orderId),
+      )
+    )
+      throw new ConflictError('Payment is still processing.');
     if (isFreeRsvp(entitlement)) {
       throw new ConflictError('Free RSVPs cannot be transferred');
     }
@@ -180,21 +215,19 @@ export class TicketService {
     const eventRecord = await this.deps.repositories.events.getById(entitlement.eventId);
     if (!eventRecord) throw new NotFoundError('Event', entitlement.eventId);
     const eventStart = Date.parse(eventRecord.startAt);
-    if (
-      eventRecord.status === 'cancelled' ||
-      !Number.isFinite(eventStart) ||
-      now.getTime() >= eventStart
-    ) {
-      throw new ConflictError('Ticket transfers close when the event starts');
-    }
+    const transferUnavailable = eventTransferUnavailableReason(eventRecord, now);
+    if (transferUnavailable) throw new ConflictError(transferUnavailable);
     const transfer = createTicketTransfer({
       id: this.deps.config.ids(),
       entitlementId: entitlement.id,
       eventId: entitlement.eventId,
       senderUserId: actor.userId,
       recipientEmailHash: createHash('sha256').update(normalizedEmail).digest('hex'),
+      recipientEmail: normalizedEmail,
       ...(recipientUserId ? { recipientUserId } : {}),
-      expiresAt: new Date(Math.min(now.getTime() + 24 * 60 * 60 * 1000, eventStart)).toISOString(),
+      expiresAt: new Date(
+        Math.min(now.getTime() + 24 * 60 * 60 * 1000, eventStart - 5 * 60 * 1000),
+      ).toISOString(),
       now,
     });
     const outboxEvent = domainEvent({
@@ -216,6 +249,7 @@ export class TicketService {
       transfer,
       actor.userId,
       outboxEvent,
+      { now },
     );
     // The Firestore adapter writes this in the ownership transaction. The
     // idempotent append keeps the in-memory adapter wired to the same event;
@@ -248,8 +282,9 @@ export class TicketService {
         .update(recipient.email.trim().toLowerCase())
         .digest('hex');
       if (
-        existing.recipientUserId !== actor.userId &&
-        existing.recipientEmailHash !== recipientEmailHash
+        existing.recipientEmailHash
+          ? existing.recipientEmailHash !== recipientEmailHash
+          : existing.recipientUserId !== actor.userId
       ) {
         throw new NotFoundError('Ticket transfer', transferId);
       }
@@ -257,11 +292,6 @@ export class TicketService {
     const now = this.deps.config.clock.now();
     const entitlement = await this.deps.repositories.entitlements.getById(existing.entitlementId);
     if (!entitlement) throw new NotFoundError('Ticket', existing.entitlementId);
-    if (action === 'accept') {
-      if (isFreeRsvp(entitlement)) {
-        throw new ConflictError('Free RSVPs cannot be transferred');
-      }
-    }
     if (existing.status !== 'pending') {
       await this.deps.outbox.append(
         this.transferResolvedEvent(
@@ -279,6 +309,14 @@ export class TicketService {
         transfer: existing,
         ...(action === 'accept' && existing.status === 'accepted' ? { entitlement } : {}),
       };
+    }
+    if (action === 'accept') {
+      const event = await this.deps.repositories.events.getById(entitlement.eventId);
+      const reason = event ? eventTransferUnavailableReason(event, now) : 'Event unavailable';
+      if (reason) throw new ConflictError(reason);
+      if (isFreeRsvp(entitlement)) {
+        throw new ConflictError('Free RSVPs cannot be transferred');
+      }
     }
     const profile =
       action === 'accept'
@@ -306,6 +344,7 @@ export class TicketService {
       actorUserId: actor.userId,
       action,
       ...(recipientEmailHash ? { recipientEmailHash } : {}),
+      requireEventValidation: true,
       ...(action === 'accept' ? { holderName: profile?.displayName ?? 'Guest' } : {}),
       now,
       outboxEvent,
@@ -375,7 +414,7 @@ export class TicketService {
 
   async listTransfers(ticketId: EntityId, actor: ActorContext): Promise<TicketTransfer[]> {
     const entitlement = await this.deps.repositories.entitlements.getById(ticketId);
-    const holderUserId = entitlement?.currentHolderUserId ?? entitlement?.userId;
+    const holderUserId = entitlement ? currentEntitlementHolderId(entitlement) : null;
     if (!entitlement || (holderUserId !== actor.userId && entitlement.userId !== actor.userId)) {
       throw new NotFoundError('Ticket', ticketId);
     }
@@ -442,12 +481,10 @@ export class TicketService {
   }
 
   private requireTransferFeature(): void {
-    if (
-      this.deps.config.features.m5TicketTransfers !== true ||
-      this.deps.config.features.m5OfflineTicketManifests !== false ||
-      this.deps.config.features.m5OfflineManifestDrainComplete !== true
-    ) {
-      throw new ServiceUnavailableError('Ticket transfers are not enabled for this deployment');
+    if (this.deps.config.features.m5OfflineTicketManifests === true) {
+      throw new ServiceUnavailableError(
+        'Online ticket transfers require offline manifests to be disabled',
+      );
     }
   }
 
@@ -479,7 +516,17 @@ export class TicketService {
 
   async listForUser(actor: ActorContext, query: PaginationQuery): Promise<Page<Entitlement>> {
     if (!actor.userId) throw new UnauthorizedError('A session is required to list tickets');
-    return this.deps.repositories.entitlements.listByHolder(actor.userId, query);
+    const page = await this.deps.repositories.entitlements.listByHolder(actor.userId, query);
+    const visibility = await Promise.all(
+      page.items.map(
+        async (ticket) =>
+          ticket.status === 'void' ||
+          !ticket.fulfillmentRequired ||
+          !fulfilmentPending(ticket, await this.deps.repositories.orders.getById(ticket.orderId)),
+      ),
+    );
+    const items = page.items.filter((_ticket, index) => visibility[index]);
+    return { ...page, items, total: page.total - (page.items.length - items.length) };
   }
 }
 

@@ -489,7 +489,7 @@ export default async function partnerEventCatalogRoutes(fastify: FastifyInstance
             eventId,
             tierId,
             expectedVersion,
-            maxPerOrder: body.maxPerOrder,
+            ...body,
           });
           const validated = validateV2Response(
             reply,
@@ -982,7 +982,9 @@ export default async function partnerEventCatalogRoutes(fastify: FastifyInstance
 
 /* ─── Serializers ──────────────────────────────────────────────────────────── */
 
-function tierToDto(tier: TicketTier) {
+function tierToDto(
+  tier: TicketTier & { soldQuantity?: number; heldQuantity?: number; availableQuantity?: number },
+) {
   return {
     id: tier.id,
     eventId: tier.eventId,
@@ -994,6 +996,9 @@ function tierToDto(tier: TicketTier) {
     priceInPaise: tier.priceInPaise,
     coverAmountPaise: tier.coverAmountPaise,
     quantity: tier.quantity,
+    ...(tier.soldQuantity === undefined ? {} : { soldQuantity: tier.soldQuantity }),
+    ...(tier.heldQuantity === undefined ? {} : { heldQuantity: tier.heldQuantity }),
+    ...(tier.availableQuantity === undefined ? {} : { availableQuantity: tier.availableQuantity }),
     status: tier.status,
     salesStartAt: tier.salesStartAt,
     salesEndAt: tier.salesEndAt,

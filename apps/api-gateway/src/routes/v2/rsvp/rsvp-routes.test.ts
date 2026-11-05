@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { createV2Services } from '../../../lib/v2-services.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
+import scannerRoutes from '../door/scanner-routes.js';
 import partnerEventCatalogRoutes from '../partner/event-catalog.js';
 import partnerEventRoutes from '../partner/events.js';
 import partnerOrganizationRoutes from '../partner/organizations.js';
@@ -27,6 +28,7 @@ const buildServer = () =>
       partnerEventRoutes,
       partnerEventCatalogRoutes,
       rsvpRoutes,
+      scannerRoutes,
     ],
   });
 
@@ -86,7 +88,7 @@ async function seed(
     payload: {
       title: 'Free Night',
       venueId,
-      startAt: '2026-09-01T18:00:00Z',
+      startAt: new Date(Date.now() + 60 * 60_000).toISOString(),
       summary: 'Test RSVP event',
       description: 'Connected route fixture for free entry.',
     },
@@ -199,7 +201,7 @@ describe('POST /rsvp', () => {
     await server.close();
   });
 
-  it('rejects a second RSVP from the same account with 409', async () => {
+  it('replays a second RSVP from the same account without creating another ticket', async () => {
     seedVerifiedTestAccounts();
     const server = await buildServer();
     const { eventId, tierId } = await seed(server);
@@ -208,8 +210,11 @@ describe('POST /rsvp', () => {
     expect(first.statusCode).toBe(201);
 
     const second = await rsvp(server, { eventId, tierId });
-    expect(second.statusCode).toBe(409);
-    expect(second.json()).toMatchObject({ code: 'conflict', status: 409 });
+    expect(second.statusCode).toBe(201);
+    expect(second.json().order.id).toBe(first.json().order.id);
+    expect(second.json().entitlements.map((item: { id: string }) => item.id)).toEqual(
+      first.json().entitlements.map((item: { id: string }) => item.id),
+    );
     await server.close();
   });
 
@@ -295,7 +300,7 @@ describe('POST /rsvp', () => {
       payload: {
         title: 'Unlisted Night',
         venueId: venue.json().id,
-        startAt: '2026-09-01T18:00:00Z',
+        startAt: new Date(Date.now() + 60 * 60_000).toISOString(),
       },
     });
     const eventId: string = event.json().id;
@@ -335,5 +340,50 @@ describe('POST /rsvp', () => {
     expect(loser.statusCode).toBe(400);
     expect(loser.json()).toMatchObject({ code: 'validation' });
     await server.close();
+  });
+});
+
+describe('M3 RSVP cancellation HTTP acceptance', () => {
+  it('cancels only the purchaser RSVP, replays safely, and immediately invalidates QR issuance', async () => {
+    seedVerifiedTestAccounts();
+    const server = await buildServer();
+    try {
+      const { eventId, tierId } = await seed(server, { quantity: 1 });
+      const acquired = await rsvp(server, { eventId, tierId });
+      expect(acquired.statusCode, acquired.body).toBe(201);
+      const body = acquired.json<{
+        order: { id: string };
+        entitlements: { id: string; credentialVersion?: number }[];
+      }>();
+      const ticket = body.entitlements[0];
+      if (!ticket) throw new Error('Expected RSVP entitlement');
+      const qrBefore = await server.inject({ method: 'GET', url: `/tickets/${ticket.id}/qr` });
+      expect(qrBefore.statusCode, qrBefore.body).toBe(200);
+      const url = `/rsvp/${body.order.id}/cancel`;
+      const foreign = await server.inject({
+        method: 'POST',
+        url,
+        headers: { 'x-user-id': 'user_2' },
+      });
+      expect(foreign.statusCode).toBe(404);
+      const cancelled = await server.inject({ method: 'POST', url });
+      const replay = await server.inject({ method: 'POST', url });
+      expect(cancelled.statusCode, cancelled.body).toBe(200);
+      expect(cancelled.json()).toMatchObject({ order: { id: body.order.id, status: 'cancelled' } });
+      expect(replay.json()).toEqual(cancelled.json());
+      const qrAfter = await server.inject({ method: 'GET', url: `/tickets/${ticket.id}/qr` });
+      expect(qrAfter.statusCode).toBe(409);
+      expect(qrAfter.body).not.toContain('qrPayload');
+      const stored = await createV2Services().repos().entitlements.getById(ticket.id);
+      expect(stored).toMatchObject({ status: 'void' });
+      expect(stored?.pendingTransferId ?? null).toBeNull();
+      expect(stored?.credentialVersion).toBeGreaterThan(ticket.credentialVersion ?? 1);
+      const replacement = await rsvp(server, { eventId, tierId }, 'user_2');
+      expect(replacement.statusCode, replacement.body).toBe(201);
+      const invalidId = await server.inject({ method: 'POST', url: '/rsvp/not-an-order/cancel' });
+      expect(invalidId.statusCode).toBe(422);
+    } finally {
+      await server.close();
+    }
   });
 });

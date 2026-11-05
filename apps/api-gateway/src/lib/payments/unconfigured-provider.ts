@@ -9,6 +9,7 @@ import type {
   RefundRequest,
   RefundResponse,
   ProviderRefund,
+  ProviderOrder,
 } from '@c1rcle/core/domain/ports';
 
 /**
@@ -26,6 +27,9 @@ export class UnconfiguredPaymentProvider implements PaymentProvider {
   }
 
   createOrder(_request: PaymentOrderRequest): Promise<PaymentOrderResponse> {
+    return Promise.resolve().then(() => this.fail());
+  }
+  findOrdersByReceipt(_receipt: string): Promise<ProviderOrder[]> {
     return Promise.resolve().then(() => this.fail());
   }
   verifyPayment(_request: PaymentVerificationRequest): Promise<PaymentVerificationResponse> {

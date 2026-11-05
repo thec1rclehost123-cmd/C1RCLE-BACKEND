@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import {
   ConflictError,
   DefiniteProviderFailureError,
@@ -5,6 +7,8 @@ import {
   NotFoundError,
   VersionConflictError,
 } from '../../domain/errors.js';
+import { deterministicDomainEventId, domainEvent } from '../../domain/events.js';
+import { newVersionedEntity } from '../../domain/identity.js';
 import {
   freezeEntitlementForRefund,
   releaseEntitlementRefundLock,
@@ -16,6 +20,11 @@ import {
   refundableBalance,
   restoreOrderAfterRefundFailure,
 } from '../../domain/models/order.js';
+import { quoteOriginalRefund } from '../../domain/models/purchase-refund-snapshot.js';
+import {
+  createReconciliationRun,
+  completeReconciliationRun,
+} from '../../domain/models/reconciliation.js';
 import {
   approveRefundRequest,
   beginRefundExecution,
@@ -25,16 +34,22 @@ import {
   markRefundSettled,
   recordRefundProviderFact,
   rejectRefundRequest,
+  rejectUnexecutedRefundForPolicyChange,
 } from '../../domain/models/refund-request.js';
+import { selectRefundTargets } from '../../domain/models/refund-targets.js';
+import { CheckoutService } from '../checkout/checkout-service.js';
 import { emit } from '../context.js';
 
 import { FinancialPostingService } from './financial-posting-service.js';
 import { ProviderPaymentService } from './provider-payment-service.js';
+import { requestOriginalPolicyRemedy } from './refund-policy-remedy.js';
 
 import type { EntityId } from '../../domain/identity.js';
+import type { PlatformAdmin } from '../../domain/models/admin-authority.js';
 import type { Entitlement } from '../../domain/models/entitlement.js';
 import type { EventCoverAccount } from '../../domain/models/event-cover.js';
 import type { Order } from '../../domain/models/order.js';
+import type { RefundCause } from '../../domain/models/purchase-refund-snapshot.js';
 import type { AdminRefundRequest } from '../../domain/models/refund-request.js';
 import type { AuditRequestMeta } from '../../domain/ports/audit.js';
 import type { PaginationQuery } from '../../domain/ports/repositories.js';
@@ -63,9 +78,13 @@ import type { ServiceDeps } from '../context.js';
 
 export interface RequestRefundCommand {
   orderId: EntityId;
-  amountPaise: number;
+  amountPaise?: number;
+  refundCause?: RefundCause;
+  /** Passed only from the validated server-side command header. */
+  intakeKey?: string;
   reason: string;
   ticketLines?: { tierId: EntityId; quantity: number }[];
+  targetEntitlementIds?: EntityId[];
 }
 
 export class RefundService {
@@ -92,109 +111,343 @@ export class RefundService {
     return this.deps.repositories.refundRequests;
   }
 
+  /** Read-only recovery when response-cache persistence failed after canonical intake committed. */
+  async replayIntake(
+    adminUserId: EntityId,
+    command: RequestRefundCommand,
+  ): Promise<{ request: AdminRefundRequest; order: Order } | null> {
+    const admin = await this.authority.authorize(adminUserId, 'FINANCIAL_REFUND');
+    if (!command.intakeKey) return null;
+    const request = await this.refundRequests.getById(this.intakeId(admin.id, command.intakeKey));
+    if (!request) return null;
+    if (
+      request.requestedBy !== admin.id ||
+      request.orderId !== command.orderId ||
+      request.intakeFingerprint !== this.intakeFingerprint(command)
+    ) {
+      throw new ConflictError('Refund intake key was already used with different request details');
+    }
+    return { request, order: await this.requireOrder(request.orderId) };
+  }
+
+  private intakeId(adminUserId: EntityId, key: string): string {
+    return `REF-${createHash('sha256').update(`${adminUserId}\n${key}`).digest('hex').slice(0, 40)}`;
+  }
+
+  private intakeFingerprint(command: RequestRefundCommand): string {
+    return createHash('sha256')
+      .update(
+        JSON.stringify({
+          orderId: command.orderId,
+          amountPaise: command.amountPaise ?? null,
+          refundCause: command.refundCause ?? 'guest_request',
+          reason: command.reason.trim(),
+          targetEntitlementIds: command.targetEntitlementIds
+            ? [...command.targetEntitlementIds].sort()
+            : null,
+          ticketLines: command.ticketLines
+            ? command.ticketLines
+                .map(({ tierId, quantity }) => ({ tierId, quantity }))
+                .sort((a, b) => a.tierId.localeCompare(b.tierId))
+            : null,
+        }),
+      )
+      .digest('hex');
+  }
+
+  private async authoritativeRefundContext(
+    order: Order,
+  ): Promise<{ cause: RefundCause; eventVersion: number } | null> {
+    const event = await this.deps.repositories.events.getById(order.eventId);
+    if (event?.status === 'cancelled' || order.eventCancellation)
+      return {
+        cause: 'organizer_cancel',
+        eventVersion: event?.version ?? order.eventCancellation?.eventVersion ?? 1,
+      };
+    if (!event) return null;
+    const affected =
+      event.status === 'postponed' ||
+      (Number.isFinite(Date.parse(event.lastMaterialChangeAt ?? '')) &&
+        Date.parse(order.bookedAt ?? order.createdAt) <=
+          Date.parse(event.lastMaterialChangeAt ?? ''));
+    return { cause: affected ? 'material_change' : 'guest_request', eventVersion: event.version };
+  }
+
+  private async recordPromotedPolicyRemedy(
+    request: AdminRefundRequest,
+    order: Order,
+    context: { cause: RefundCause; eventVersion: number },
+    actorId: EntityId,
+  ): Promise<void> {
+    const full = quoteOriginalRefund(order, request.targetEntitlementIds, context.cause);
+    const residual = Math.max(0, full.amountPaise - request.amountPaise);
+    if (residual === 0) return;
+    const identity = createHash('sha256')
+      .update(`${request.id}:${context.eventVersion}`)
+      .digest('hex')
+      .slice(0, 40);
+    const discrepancyId = `REM-${identity}`;
+    const store = this.deps.repositories.reconciliations;
+    const existingFinding = await store.getDiscrepancy(discrepancyId); // Never reset Admin resolution on replay.
+    const now = this.deps.config.clock.now();
+    const runId = `REMRUN-${identity}`;
+    let run = await store.getRun(runId);
+    if (!run) {
+      run = createReconciliationRun({ id: runId, requestedBy: actorId, now });
+      try {
+        await store.createRun(run);
+      } catch (error) {
+        const winner = await store.getRun(runId);
+        if (!winner) throw error;
+        run = winner;
+      }
+    }
+    if (!existingFinding) {
+      try {
+        await store.createDiscrepancies([
+          {
+            id: discrepancyId,
+            runId,
+            kind: 'refund_mismatch',
+            state: 'finance_review',
+            organizationId: order.organizationId,
+            orderId: order.id,
+            paymentId: order.paymentId,
+            payoutId: null,
+            amountPaise: residual,
+            currency: order.currency,
+            evidence: {
+              reason: 'policy_remedy_required',
+              refundRequestId: request.id,
+              selectedEntitlementIds: JSON.stringify(request.targetEntitlementIds),
+              originalCause: request.refundCause ?? 'legacy',
+              authoritativeCause: context.cause,
+              originalEventVersion: request.sourceEventVersion ?? null,
+              eventVersion: context.eventVersion,
+              originalAffectedPaidPaise: full.amountPaise,
+              originalRefundAmountPaise: request.amountPaise,
+              residualPlatformFeePaise: Math.max(
+                0,
+                full.components.platformFeePaise -
+                  (request.refundComponents?.platformFeePaise ?? 0),
+              ),
+              residualPaymentFeePaise: Math.max(
+                0,
+                full.components.paymentFeePaise - (request.refundComponents?.paymentFeePaise ?? 0),
+              ),
+              residualFeeTaxPaise: Math.max(
+                0,
+                full.components.feeTaxPaise - (request.refundComponents?.feeTaxPaise ?? 0),
+              ),
+              residualOtherPaidPaise: Math.max(
+                0,
+                full.components.otherPaidPaise - (request.refundComponents?.otherPaidPaise ?? 0),
+              ),
+            },
+            repair: 'recheck_evidence',
+            resolutionReason: null,
+            resolvedBy: null,
+            resolvedAt: null,
+            ...newVersionedEntity(now),
+          },
+        ]);
+      } catch (error) {
+        if (!(await store.getDiscrepancy(discrepancyId))) throw error;
+      }
+    }
+    if (run.status === 'running') {
+      try {
+        await store.saveRun(completeReconciliationRun(run, { refundRequests: 1 }, 1, now));
+      } catch (error) {
+        if ((await store.getRun(runId))?.status !== 'completed') throw error;
+      }
+    }
+  }
+
+  async requestPolicyRemedy(
+    adminUserId: EntityId,
+    originalRequestId: EntityId,
+    meta?: AuditRequestMeta,
+  ) {
+    const admin = await this.authority.authorize(adminUserId, 'FINANCIAL_REFUND');
+    const original = await this.requireRefundRequest(originalRequestId);
+    const order = await this.requireOrder(original.orderId);
+    const context = await this.authoritativeRefundContext(order);
+    if (!context || context.cause === 'guest_request')
+      throw new InvalidOperationError(
+        'Policy remedy requires authoritative cancellation or qualifying material change',
+      );
+    const result = await requestOriginalPolicyRemedy(this.deps, {
+      originalRequestId,
+      requestedBy: admin.id,
+      ...context,
+    });
+    await this.authority.record(admin, {
+      action: 'FINANCIAL_REFUND.policy_remedy',
+      targetType: 'refund_request',
+      targetId: result.request.id,
+      before: { originalRequestId, orderStatus: order.status },
+      after: { requestStatus: result.request.status, amountPaise: result.request.amountPaise },
+      reason: result.request.reason,
+      ipAddress: meta?.ipAddress,
+      userAgent: meta?.userAgent,
+    });
+    return result;
+  }
+
+  private async queueSettledPolicyRemedy(request: AdminRefundRequest, actorId: EntityId) {
+    if (request.refundCause !== 'guest_request' || request.status !== 'settled') return;
+    const order = await this.requireOrder(request.orderId);
+    const context = await this.authoritativeRefundContext(order);
+    // Cancellation has its bounded full-remaining-order consumer. A material
+    // change supplements only the exact admissions already refunded here.
+    if (context?.cause !== 'material_change') return;
+    const full = quoteOriginalRefund(order, request.targetEntitlementIds, context.cause);
+    if (full.amountPaise === request.amountPaise) return;
+    const active = (await this.refundRequests.listByOrder(order.id)).find((item) =>
+      ['pending', 'approved', 'executing', 'failed'].includes(item.status),
+    );
+    if (active && active.remedyForRefundRequestId !== request.id) return;
+    await requestOriginalPolicyRemedy(this.deps, {
+      originalRequestId: request.id,
+      requestedBy: actorId,
+      ...context,
+    });
+  }
+
   async requestRefund(
     adminUserId: EntityId,
     command: RequestRefundCommand,
     meta?: AuditRequestMeta,
   ): Promise<{ request: AdminRefundRequest; order: Order }> {
     const admin = await this.authority.authorize(adminUserId, 'FINANCIAL_REFUND');
+    const replay = command.intakeKey ? await this.replayIntake(adminUserId, command) : null;
+    if (replay) return replay;
     const order = await this.requireOrder(command.orderId);
     if (order.status !== 'paid') {
       throw new InvalidOperationError(`Order ${order.id} is not paid — nothing to refund`);
     }
     const remaining = refundableBalance(order);
-    if (command.amountPaise > remaining) {
-      throw new InvalidOperationError(
-        `Refund of ${command.amountPaise} exceeds order ${order.id}'s refundable balance of ${remaining}`,
-      );
-    }
-
     const orderEntitlements = await this.entitlements.getByOrderId(order.id);
-    const ticketLines = command.ticketLines ?? [];
-    const targetEntitlementIds: EntityId[] = [];
-    if (ticketLines.length > 0) {
-      const ordered = [...orderEntitlements].sort((left, right) => left.id.localeCompare(right.id));
-      const seenTiers = new Set<EntityId>();
-      for (const line of ticketLines) {
-        if (seenTiers.has(line.tierId)) {
-          throw new InvalidOperationError(`Refund tier ${line.tierId} was selected twice`);
-        }
-        seenTiers.add(line.tierId);
-        const purchased = order.lines.find((item) => item.tierId === line.tierId)?.quantity ?? 0;
-        if (
-          !Number.isSafeInteger(line.quantity) ||
-          line.quantity <= 0 ||
-          line.quantity > purchased
-        ) {
-          throw new InvalidOperationError(`Invalid refund quantity for tier ${line.tierId}`);
-        }
-        const eligible = ordered.filter(
-          (entitlement) => entitlement.tierId === line.tierId && entitlement.status !== 'void',
+    const selection =
+      order.refundSnapshot && !command.targetEntitlementIds && !command.ticketLines
+        ? {
+            ...command,
+            targetEntitlementIds: orderEntitlements
+              .filter((ticket) => ticket.status !== 'void')
+              .map((ticket) => ticket.id),
+          }
+        : command;
+    const { ticketLines, targetEntitlementIds } = selectRefundTargets(orderEntitlements, selection);
+    let quoted: ReturnType<typeof quoteOriginalRefund> | undefined;
+    let sourceEventVersion: number | undefined;
+    let amountPaise = command.amountPaise;
+    if (order.refundSnapshot) {
+      const context = await this.authoritativeRefundContext(order);
+      if (!context)
+        throw new InvalidOperationError('Event details are required to establish refund cause');
+      sourceEventVersion = context.eventVersion;
+      if (command.refundCause === 'organizer_cancel' && context.cause !== 'organizer_cancel')
+        throw new InvalidOperationError(
+          'Organizer cancellation refund requires authoritative cancellation',
         );
-        if (eligible.length < line.quantity) {
-          throw new InvalidOperationError(`Not enough refundable tickets for tier ${line.tierId}`);
-        }
-        targetEntitlementIds.push(
-          ...eligible.slice(0, line.quantity).map((entitlement) => entitlement.id),
+      if (command.refundCause === 'material_change' && context.cause === 'guest_request')
+        throw new InvalidOperationError(
+          'Material-change refund requires an authoritative qualifying event change',
         );
-      }
+      const cause = context.cause;
+      quoted = quoteOriginalRefund(order, targetEntitlementIds, cause);
+      if (command.amountPaise !== undefined && command.amountPaise !== quoted.amountPaise)
+        throw new InvalidOperationError(
+          'Refund amount must match the original purchase policy quote',
+        );
+      amountPaise = quoted.amountPaise;
     }
+    if (amountPaise === undefined || !Number.isSafeInteger(amountPaise) || amountPaise <= 0)
+      throw new InvalidOperationError('A positive explicit amount is required for legacy refunds');
+    if (amountPaise > remaining)
+      throw new InvalidOperationError(
+        `Refund of ${amountPaise} exceeds order ${order.id}'s refundable balance of ${remaining}`,
+      );
+    if (
+      ticketLines.length > 0 &&
+      amountPaise === remaining &&
+      targetEntitlementIds.length <
+        orderEntitlements.filter((ticket) => ticket.status !== 'void').length
+    )
+      throw new InvalidOperationError(
+        'Refunding the full remaining order balance requires selecting every active ticket',
+      );
+
     const coverAccounts = await this.getCoverAccounts(order, orderEntitlements);
     await this.assertCoverRefundScope(
       order,
-      command.amountPaise,
-      ticketLines.length > 0,
+      amountPaise,
+      ticketLines.length > 0 &&
+        targetEntitlementIds.length <
+          orderEntitlements.filter((ticket) => ticket.status !== 'void').length,
       coverAccounts,
     );
     const hasRedeemedEntitlement = orderEntitlements.some(
-      (entitlement) =>
-        entitlement.status === 'redeemed' ||
-        entitlement.ticketAddons?.some((addon) => addon.status === 'redeemed'),
+      (ticket) =>
+        ticket.status === 'redeemed' ||
+        ticket.ticketAddons?.some((addon) => addon.status === 'redeemed'),
     );
-
     const now = this.deps.config.clock.now();
-    const platformSettings = await this.deps.repositories.platformSettings.get();
-    const thresholds = {
-      singleApproverCeilingPaise: platformSettings.refundSingleApproverThresholdPaise,
-      dualApproverCeilingPaise: platformSettings.refundDualApproverThresholdPaise,
-    };
+    const settings = await this.deps.repositories.platformSettings.get();
     const request = createRefundRequest({
-      id: this.deps.config.ids(),
+      id: command.intakeKey ? this.intakeId(admin.id, command.intakeKey) : this.deps.config.ids(),
+      intakeFingerprint: this.intakeFingerprint(command),
       orderId: order.id,
       organizationId: order.organizationId,
-      amountPaise: command.amountPaise,
+      amountPaise,
       requestedBy: admin.id,
       reason: command.reason,
       scope: ticketLines.length > 0 ? 'ticket_lines' : 'amount_only',
       ticketLines,
       targetEntitlementIds,
+      ...(quoted
+        ? {
+            sourceEventVersion,
+            refundCause: quoted.cause,
+            refundComponents: quoted.components,
+            purchasePolicyVersion: quoted.purchasePolicyVersion,
+          }
+        : {}),
       hasRedeemedEntitlement,
-      thresholds,
+      thresholds: {
+        singleApproverCeilingPaise: settings.refundSingleApproverThresholdPaise,
+        dualApproverCeilingPaise: settings.refundDualApproverThresholdPaise,
+      },
       now,
     });
-
-    const lockedOrder = lockOrderForRefund(order, now);
-    await this.orders.save(lockedOrder);
-    await this.refundRequests.save(request);
-    await this.ensureSelectedTicketsFrozen(request, now);
+    const committed = await this.orders.beginRefundRequest({
+      request,
+      expectedOrderVersion: order.version,
+      ...(sourceEventVersion !== undefined ? { expectedEventVersion: sourceEventVersion } : {}),
+      expectedEntitlementVersions: orderEntitlements.map((ticket) => ({
+        id: ticket.id,
+        version: ticket.version,
+      })),
+      now,
+    });
     await this.authority.record(admin, {
       action: 'FINANCIAL_REFUND.request',
       targetType: 'refund_request',
-      targetId: request.id,
+      targetId: committed.request.id,
       before: { orderStatus: order.status },
-      after: { orderStatus: lockedOrder.status, requestStatus: request.status },
-      reason: request.reason,
+      after: { orderStatus: committed.order.status, requestStatus: committed.request.status },
+      reason: committed.request.reason,
       ipAddress: meta?.ipAddress,
       userAgent: meta?.userAgent,
     });
     this.deps.logger.info('refund.requested', {
-      requestId: request.id,
+      requestId: committed.request.id,
       orderId: order.id,
-      amountPaise: command.amountPaise,
-      approversRequired: request.approversRequired,
+      amountPaise,
+      approversRequired: committed.request.approversRequired,
     });
-
-    return { request, order: lockedOrder };
+    return committed;
   }
 
   async approveRefund(
@@ -231,13 +484,22 @@ export class RefundService {
     const admin = await this.authority.authorize(adminUserId, 'FINANCIAL_REFUND');
     const request = await this.requireRefundRequest(refundRequestId);
     const now = this.deps.config.clock.now();
-    const rejected = rejectRefundRequest(request, admin.id, reason, now);
+    const order = await this.requireOrder(request.orderId);
+    const context =
+      request.status === 'approved' &&
+      request.refundCause === 'guest_request' &&
+      order.refundSnapshot
+        ? await this.authoritativeRefundContext(order)
+        : null;
+    const rejected =
+      context && context.cause !== 'guest_request'
+        ? rejectUnexecutedRefundForPolicyChange(request, admin.id, reason, now)
+        : rejectRefundRequest(request, admin.id, reason, now);
     await this.refundRequests.save(rejected);
 
     // The order was locked when the request was created — restore it via the
     // dedicated function, never a value chosen here. This is the exact fix
     // for v1's admin console hardcoding the restore status on rejection.
-    const order = await this.requireOrder(request.orderId);
     const restored = restoreOrderAfterRefundFailure(order, now);
     await this.orders.save(restored);
     await this.releaseSelectedTickets(request, now);
@@ -284,7 +546,30 @@ export class RefundService {
     const admin = await this.authority.authorize(adminUserId, 'FINANCIAL_REFUND');
     let request = await this.requireRefundRequest(refundRequestId);
     let order = await this.requireOrder(request.orderId);
-    if (request.status === 'settled') return { request, order };
+    if (request.refundCause === 'guest_request' && order.refundSnapshot) {
+      const context = await this.authoritativeRefundContext(order);
+      if (context && context.cause !== 'guest_request') {
+        if (
+          ['pending', 'approved'].includes(request.status) &&
+          request.executionAttempts === 0 &&
+          !request.providerRefundId
+        )
+          throw new ConflictError(
+            'Event refund policy changed; reject and recreate this request under the full original-purchase policy before execution',
+          );
+        if (
+          request.executionAttempts > 0 ||
+          request.providerRefundId ||
+          request.status === 'settled'
+        )
+          await this.recordPromotedPolicyRemedy(request, order, context, admin.id);
+      }
+    }
+    if (request.status === 'settled') {
+      order = await this.requireOrder(order.id);
+      request = await this.ensureSettledExecutionIntents(request, order, admin, meta);
+      return { request, order: await this.requireOrder(order.id) };
+    }
     // Recheck and freeze at execution: an approved request may predate delayed
     // cover issuance, and a Venue redemption must not race provider movement.
     const orderEntitlements = await this.entitlements.getByOrderId(order.id);
@@ -292,7 +577,9 @@ export class RefundService {
     await this.assertCoverRefundScope(
       order,
       request.amountPaise,
-      request.scope === 'ticket_lines',
+      request.scope === 'ticket_lines' &&
+        request.targetEntitlementIds.length <
+          orderEntitlements.filter((ticket) => ticket.status !== 'void').length,
       coverAccounts,
       request.id,
     );
@@ -305,6 +592,9 @@ export class RefundService {
       );
     }
 
+    // Financial side effects cannot precede complete original capture accounting.
+    // This recovery never grants admission or changes the refund lock.
+    await new CheckoutService(this.deps).repairSaleAccounting(order.id);
     const now = this.deps.config.clock.now();
     if (request.status === 'executing' && request.providerRefundId === null) {
       throw new ConflictError(
@@ -314,14 +604,23 @@ export class RefundService {
       );
     }
     if (request.status === 'approved' || request.status === 'failed') {
-      const claimed = beginRefundExecution(request, now);
+      const claimed = {
+        ...beginRefundExecution(request, now),
+        executionActor: this.executionActorSnapshot(admin, 'execution_claim', now, meta),
+      };
       try {
         await this.refundRequests.save(claimed);
         request = claimed;
       } catch (error) {
         if (!(error instanceof VersionConflictError)) throw error;
         const winner = await this.requireRefundRequest(refundRequestId);
-        if (winner.status === 'settled') return { request: winner, order };
+        if (winner.status === 'settled') {
+          order = await this.requireOrder(order.id);
+          return {
+            request: await this.ensureSettledExecutionIntents(winner, order, admin, meta),
+            order: await this.requireOrder(order.id),
+          };
+        }
         if (winner.status === 'rejected' || winner.status === 'failed') {
           await this.releaseCoverRefundFreeze(order.id, request.id, this.deps.config.clock.now());
         }
@@ -394,6 +693,13 @@ export class RefundService {
       request = recordRefundProviderFact(request, response.id, response.status, now);
       await this.refundRequests.save(request);
     }
+    // A lifecycle change can race the external provider operation. Its saved
+    // fact remains authoritative; separately retain any newly owed components.
+    if (request.refundCause === 'guest_request' && order.refundSnapshot) {
+      const context = await this.authoritativeRefundContext(order);
+      if (context && context.cause !== 'guest_request')
+        await this.recordPromotedPolicyRemedy(request, order, context, admin.id);
+    }
     if (request.providerStatus === 'failed') {
       const recorded = await this.deps.repositories.providerPayments.findByPaymentId(
         order.paymentId,
@@ -451,6 +757,7 @@ export class RefundService {
       refundRequestId: request.id,
       providerRefundId: request.providerRefundId,
       amountPaise: request.amountPaise,
+      ...(request.refundComponents ? { refundComponents: request.refundComponents } : {}),
       previouslyRefundedPaise: orderAlreadyApplied
         ? order.refundedPaise - request.amountPaise
         : order.refundedPaise,
@@ -466,7 +773,28 @@ export class RefundService {
       });
     }
 
-    const refundedOrder = applyOrderRefund(order, request.amountPaise, now, request.id);
+    const selectedTickets =
+      request.scope === 'ticket_lines'
+        ? await Promise.all(request.targetEntitlementIds.map((id) => this.entitlements.getById(id)))
+        : [];
+    const settledTicketClaims = selectedTickets.map((ticket) => {
+      if (!ticket || ticket.orderId !== order.id)
+        throw new InvalidOperationError('Refund ticket selection no longer matches the order');
+      const line = order.lines.find((row) => row.tierId === ticket.tierId);
+      if (!line) throw new InvalidOperationError('Refund ticket tier no longer matches the order');
+      return {
+        entitlementId: ticket.id,
+        tierId: ticket.tierId,
+        ...(line.pricingPhaseId === undefined ? {} : { pricingPhaseId: line.pricingPhaseId }),
+      };
+    });
+    const refundedOrder = applyOrderRefund(
+      order,
+      request.amountPaise,
+      now,
+      request.id,
+      settledTicketClaims,
+    );
     if (refundedOrder !== order) await this.orders.save(refundedOrder);
     if (refundedOrder.status === 'refunded' || request.scope === 'ticket_lines') {
       const targets =
@@ -492,36 +820,115 @@ export class RefundService {
         if (voided !== entitlement) await this.entitlements.save(voided);
       }
     }
-    const settled = markRefundSettled(request, request.providerRefundId, now);
+    const settled = {
+      ...markRefundSettled(request, request.providerRefundId, now),
+      executionActor:
+        request.executionActor ?? this.executionActorSnapshot(admin, 'legacy_recovery', now, meta),
+      settlementAudit: {
+        requestStatusBefore: request.status,
+        orderStatusBefore: order.status,
+        orderStatusAfter: refundedOrder.status,
+        occurredAt: now.getTime(),
+      },
+    };
     await this.refundRequests.save(settled);
-    await emit(
-      this.deps,
-      {
-        userId: admin.id,
+    const repaired = await this.ensureSettledExecutionIntents(settled, refundedOrder, admin, meta);
+    return { request: repaired, order: await this.requireOrder(refundedOrder.id) };
+  }
+
+  private executionActorSnapshot(
+    admin: PlatformAdmin,
+    source: NonNullable<AdminRefundRequest['executionActor']>['source'],
+    now: Date,
+    meta?: AuditRequestMeta,
+  ): NonNullable<AdminRefundRequest['executionActor']> {
+    return {
+      adminId: admin.id,
+      adminRole: admin.role,
+      source,
+      authorizedAt: now.toISOString(),
+      ...(meta?.ipAddress ? { ipAddress: meta.ipAddress } : {}),
+      ...(meta?.userAgent ? { userAgent: meta.userAgent } : {}),
+    };
+  }
+
+  /** Terminal-state retries repair only durable intents, never provider/admission effects. */
+  private async ensureSettledExecutionIntents(
+    request: AdminRefundRequest,
+    order: Order,
+    admin: PlatformAdmin,
+    meta?: AuditRequestMeta,
+  ): Promise<AdminRefundRequest> {
+    if (request.status !== 'settled' || !request.providerRefundId)
+      throw new InvalidOperationError('Refund settlement evidence is incomplete');
+    if (!request.executionActor || !request.settlementAudit) {
+      const now = this.deps.config.clock.now();
+      const recovered = {
+        ...request,
+        version: request.version + 1,
+        updatedAt: now.toISOString(),
+        executionActor:
+          request.executionActor ??
+          this.executionActorSnapshot(admin, 'legacy_recovery', now, meta),
+        settlementAudit: request.settlementAudit ?? {
+          requestStatusBefore: 'unknown',
+          orderStatusBefore: 'unknown',
+          orderStatusAfter: order.status,
+          occurredAt: now.getTime(),
+        },
+      };
+      try {
+        await this.refundRequests.save(recovered);
+        request = recovered;
+      } catch (error) {
+        if (!(error instanceof VersionConflictError)) throw error;
+        request = await this.requireRefundRequest(request.id);
+        if (request.status !== 'settled' || !request.executionActor || !request.settlementAudit)
+          throw new ConflictError('Refund settlement audit recovery changed concurrently');
+      }
+    }
+    const actor = request.executionActor;
+    const audit = request.settlementAudit;
+    const providerRefundId = request.providerRefundId;
+    if (!actor || !audit || !providerRefundId)
+      throw new InvalidOperationError('Refund execution attribution is unavailable');
+    // Keep the existing policy remedy workflow independent and replayable.
+    await this.queueSettledPolicyRemedy(request, admin.id);
+    await this.deps.outbox.append(
+      domainEvent({
+        id: deterministicDomainEventId('finance.refund.settled', request.id),
+        type: 'finance.refund.settled',
+        aggregateId: request.id,
         organizationId: order.organizationId,
-        role: 'owner',
-        capabilities: [],
-      },
-      request.id,
-      'finance.refund.settled',
-      {
-        refundRequestId: request.id,
-        orderId: order.id,
-        amountPaise: request.amountPaise,
-        providerRefundId: request.providerRefundId,
-      },
+        actorId: actor.adminId,
+        payload: {
+          refundRequestId: request.id,
+          orderId: order.id,
+          amountPaise: request.amountPaise,
+          providerRefundId,
+        },
+        occurredAt: audit.occurredAt,
+      }),
     );
-    await this.authority.record(admin, {
+    await this.deps.adminAudit.append({
+      id: deterministicDomainEventId('finance.refund.settled', request.id, 'execution-audit'),
+      adminId: actor.adminId,
+      adminRole: actor.adminRole,
       action: 'FINANCIAL_REFUND.execute',
       targetType: 'refund_request',
       targetId: request.id,
-      before: { status: request.status, orderStatus: order.status },
-      after: { status: settled.status, orderStatus: refundedOrder.status },
+      before: { status: audit.requestStatusBefore, orderStatus: audit.orderStatusBefore },
+      after: {
+        status: 'settled',
+        orderStatus: audit.orderStatusAfter,
+        executionActorSource: actor.source,
+      },
       reason: request.reason,
-      ipAddress: meta?.ipAddress,
-      userAgent: meta?.userAgent,
+      occurredAt: audit.occurredAt,
+      ...(actor.ipAddress ? { ipAddress: actor.ipAddress } : {}),
+      ...(actor.userAgent ? { userAgent: actor.userAgent } : {}),
     });
-    return { request: settled, order: refundedOrder };
+    return request;
   }
 
   /** Records fetched evidence only; existing execute handles internal convergence. */

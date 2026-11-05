@@ -5,7 +5,9 @@ import {
   VersionConflictError,
   InvalidOperationError,
 } from '../../domain/errors.js';
-import { isPublicStatus } from '../../domain/models/event.js';
+import { deterministicDomainEventId, domainEvent } from '../../domain/events.js';
+import { isPublicStatus, postponeEvent } from '../../domain/models/event.js';
+import { createSupportTicket, linkTicket } from '../../domain/models/support-ticket.js';
 import {
   createVenue,
   updateVenue,
@@ -666,6 +668,107 @@ export class VenueSlotRequestService {
       });
     }
     return updated;
+  }
+
+  /** A Venue-initiated cancellation freezes the event before releasing its booking. */
+  async cancelByVenue(
+    actor: ActorContext,
+    slotRequestId: EntityId,
+    reason: string,
+  ): Promise<SlotRequest> {
+    const request = await this.assertOwnedRequest(actor, slotRequestId);
+    if (!reason.trim()) throw new InvalidOperationError('A cancellation reason is required');
+    if (request.status !== 'accepted' && request.status !== 'cancelled') {
+      throw new InvalidOperationError('Only an accepted booking can be cancelled by the Venue');
+    }
+    if (request.status === 'cancelled') return request;
+    if (request.eventId) {
+      const event = await this.deps.repositories.events.getById(request.eventId);
+      if (!event || event.venueId !== request.venueId || event.organizationId !== request.hostId) {
+        throw new InvalidOperationError('The linked event is unavailable');
+      }
+      if (!['cancelled', 'ended', 'archived'].includes(event.status)) {
+        const now = this.deps.config.clock.now();
+        const updated = postponeEvent(event, reason, 'venue', actor.organizationId, now);
+        const notice = domainEvent({
+          id: deterministicDomainEventId(
+            'venue.booking.cancelled',
+            request.id,
+            String(updated.version),
+          ),
+          type: 'event.updated',
+          aggregateId: event.id,
+          organizationId: event.organizationId,
+          actorId: actor.userId,
+          payload: {
+            title: event.title,
+            venueCancellation: {
+              hostId: request.hostId,
+              venueId: request.venueId,
+              slotRequestId: request.id,
+              reason: updated.postponement?.reason ?? reason,
+            },
+            materialChange: {
+              eventVersion: updated.version,
+              previousTitle: event.title,
+              title: event.title,
+              previousStartAt: event.startAt,
+              startAt: event.startAt,
+              previousVenueId: event.venueId,
+              venueId: event.venueId,
+              changeType: 'postponed',
+            },
+          },
+          occurredAt: now.getTime(),
+        });
+        if (updated !== event) await this.deps.repositories.events.save(updated, null, notice);
+        await this.deps.outbox.append(notice);
+        const supportCase = linkTicket(
+          createSupportTicket({
+            id: `SUP-${deterministicDomainEventId('venue.booking.cancelled', request.id).slice(4)}`,
+            subject: `Venue booking cancelled: ${event.title}`,
+            description: `The Venue cancelled an accepted booking. Sales, transfers, QR and admission are frozen. The Host must move the event to an approved Venue, announce a replacement date, or cancel. Reason: ${updated.postponement?.reason ?? reason}`,
+            category: 'event',
+            priority: 'high',
+            requester: { userId: actor.userId, email: null, organizationId: actor.organizationId },
+            now,
+          }),
+          { eventId: event.id, venueId: request.venueId, organizationId: request.hostId },
+          null,
+          now,
+        );
+        await this.deps.repositories.supportTickets.createIfAbsent(supportCase);
+        await this.deps.adminAudit.write({
+          id: deterministicDomainEventId('audit.venue.booking.cancelled', request.id),
+          adminId: actor.userId,
+          actorId: actor.userId,
+          organizationId: request.hostId,
+          action: 'venue.booking.cancelled',
+          targetType: 'event',
+          targetId: event.id,
+          before: { status: event.status, venueId: event.venueId },
+          after: {
+            status: 'postponed',
+            initiatedBy: 'venue',
+            venueOrganizationId: actor.organizationId,
+            resolutionRequired: true,
+            slotRequestId: request.id,
+          },
+          reason: updated.postponement?.reason ?? reason,
+          occurredAt: now.getTime(),
+        });
+      }
+    }
+    const updatedRequest = transitionSlotRequest(
+      request,
+      'cancelled',
+      this.deps.config.clock.now(),
+    );
+    if (updatedRequest !== request) {
+      if (request.slotId) await this.repo.transitionForSlot(request, updatedRequest);
+      else await this.repo.save(updatedRequest);
+    }
+    return updatedRequest;
   }
 
   /**

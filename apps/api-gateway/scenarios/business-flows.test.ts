@@ -11,6 +11,7 @@ import type { MemoryUserAccountRepository } from '@c1rcle/core/infrastructure';
 
 import { buildApp } from '../src/app.js';
 import { createV2Services } from '../src/lib/v2-services.js';
+import { seedVerifiedCheckoutUsers } from '../src/test-utils/verified-test-users.js';
 
 import type { FastifyInstance } from 'fastify';
 
@@ -188,7 +189,7 @@ async function seedPublishedEvent(
       summary: 'A music night at Sky Bar.',
       description: 'Live music and dancing at Sky Bar for the acceptance scenario.',
       venueId,
-      startAt: '2026-09-01T18:00:00Z',
+      startAt: new Date(Date.now() - 60_000).toISOString(),
     },
   });
   expect(event.statusCode, JSON.stringify(event.json())).toBe(201);
@@ -481,6 +482,7 @@ describe('scenario: guest purchase + door check-in + finance settlement', () => 
     const { orgId } = await onboardAndApproveHost(server);
     const { eventId, tierId } = await seedPublishedEvent(server, orgId);
 
+    seedVerifiedCheckoutUsers(['guest_1']);
     // ── Guest checkout ─────────────────────────────────────────────────────
     const quote = await server.inject({
       method: 'POST',
@@ -542,6 +544,13 @@ describe('scenario: guest purchase + door check-in + finance settlement', () => 
     const tickets = wallet.json().items;
     expect(tickets.length).toBe(1);
     const entitlementId: string = tickets[0].id;
+    const credential = await server.inject({
+      method: 'GET',
+      url: `/api/v2/tickets/${entitlementId}/qr`,
+      headers: { 'x-user-id': 'guest_1' },
+    });
+    expect(credential.statusCode, JSON.stringify(credential.json())).toBe(200);
+    const qrPayload: string = credential.json().qrPayload;
 
     // ── Door admission (mint a door code over HTTP, redeem it, scan) ────────
     const codeResponse = await server.inject({
@@ -574,7 +583,7 @@ describe('scenario: guest purchase + door check-in + finance settlement', () => 
       method: 'POST',
       url: '/api/v2/door/check-ins',
       headers: { 'x-organization-id': orgId, 'x-scanner-session-token': scannerToken },
-      payload: { eventId, qrPayload: entitlementId, operatorName: 'Staff One' },
+      payload: { eventId, qrPayload, operatorName: 'Staff One' },
     });
     expect(checkIn.statusCode, JSON.stringify(checkIn.json())).toBe(200);
     expect(checkIn.json()).toMatchObject({ status: 'consumed', checkInId: expect.any(String) });
@@ -585,7 +594,7 @@ describe('scenario: guest purchase + door check-in + finance settlement', () => 
       method: 'POST',
       url: '/api/v2/door/check-ins',
       headers: { 'x-organization-id': orgId, 'x-scanner-session-token': scannerToken },
-      payload: { eventId, qrPayload: entitlementId },
+      payload: { eventId, qrPayload },
     });
     expect(replay.statusCode).toBe(200);
     expect(replay.json()).toMatchObject({ status: 'denied', denyReason: 'already_used' });
@@ -719,7 +728,7 @@ describe('scenario: M4 Promoter campaign attribution over the full API', () => {
         summary: 'A free RSVP music night.',
         description: 'Free RSVP event for testing promoter attribution without paid commission.',
         venueId,
-        startAt: '2026-11-01T18:00:00Z',
+        startAt: new Date(Date.now() + 60 * 60_000).toISOString(),
       },
     });
     expect(freeEvent.statusCode, JSON.stringify(freeEvent.json())).toBe(201);
@@ -868,6 +877,7 @@ describe('scenario: M4 Promoter campaign attribution over the full API', () => {
     expect(invalidCodeClick.json()).toEqual({ accepted: true });
 
     const guestUserId = 'guest_m4_scenario';
+    seedVerifiedCheckoutUsers([guestUserId]);
     const checkoutLines = [{ tierId, quantity: 1 }];
     const quote = await server.inject({
       method: 'POST',

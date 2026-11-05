@@ -1,4 +1,8 @@
-import { NotFoundError } from '../../domain/errors.js';
+import { InvalidOperationError, NotFoundError, UnauthorizedError } from '../../domain/errors.js';
+import {
+  refundReviewEligibility,
+  refundReviewTicketId,
+} from '../../domain/models/refund-review.js';
 import { addCustomerMessage, createSupportTicket } from '../../domain/models/support-ticket.js';
 
 import type { EntityId } from '../../domain/identity.js';
@@ -37,6 +41,64 @@ export class SupportService {
 
   private get tickets() {
     return this.deps.repositories.supportTickets;
+  }
+
+  async requestTicketRefundReview(
+    userId: EntityId,
+    ticketId: EntityId,
+    reason: string,
+  ): Promise<SupportTicket> {
+    if (!userId) throw new UnauthorizedError('Sign in to request a refund');
+    const user = await this.deps.repositories.users.getById(userId);
+    if (!user?.emailVerified) throw new UnauthorizedError('A verified account is required');
+    const ticket = await this.deps.repositories.entitlements.getById(ticketId);
+    const order = ticket ? await this.deps.repositories.orders.getById(ticket.orderId) : null;
+    const event = ticket ? await this.deps.repositories.events.getById(ticket.eventId) : null;
+    if (!ticket || !order || !event || order.userId !== userId)
+      throw new NotFoundError('Ticket', ticketId);
+    const id = refundReviewTicketId(userId, ticketId);
+    const existing = await this.tickets.getById(id);
+    if (existing) return existing;
+    const now = this.deps.config.clock.now();
+    const eligibility = refundReviewEligibility(event, order, ticket, userId, now);
+    if (!eligibility.allowed)
+      throw new InvalidOperationError(
+        eligibility.reason ?? 'This ticket is unavailable for refund review',
+      );
+    if (!reason.trim() || reason.trim().length > 2000)
+      throw new InvalidOperationError('Explain your refund request in up to 2000 characters');
+    const created = createSupportTicket({
+      id,
+      subject: `Refund request: ${event.title}`,
+      description: reason.trim(),
+      category: 'billing',
+      priority: 'medium',
+      requester: { userId, email: null, organizationId: null },
+      now,
+    });
+    const review: SupportTicket = {
+      ...created,
+      links: {
+        ...created.links,
+        orderId: order.id,
+        eventId: event.id,
+        organizationId: order.organizationId,
+        userId,
+      },
+      refundReview: {
+        orderId: order.id,
+        entitlementIds: [ticket.id],
+        eventVersion: event.version,
+        policyKind: event.refundPolicy?.kind ?? 'organizer_reviewed',
+        requestedAt: now.toISOString(),
+      },
+    };
+    if (!(await this.tickets.createIfAbsent(review))) {
+      const winner = await this.tickets.getById(id);
+      if (!winner) throw new NotFoundError('Refund review', id);
+      return winner;
+    }
+    return review;
   }
 
   async submitTicket(

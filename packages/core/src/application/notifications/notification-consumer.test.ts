@@ -537,3 +537,29 @@ describe('notification service', () => {
     expect(after.unreadCount).toBe(0);
   });
 });
+
+describe('Venue cancellation notification', () => {
+  it('notifies the affected Host once, retaining the Venue initiator context', async () => {
+    const { repo, consume } = makeHarness();
+    const fact = event('event.updated', {
+      aggregateId: 'night',
+      payload: {
+        venueCancellation: {
+          hostId: 'host-1',
+          venueId: 'venue-1',
+          slotRequestId: 'booking-1',
+          reason: 'Venue unavailable',
+        },
+      },
+    });
+    await consume(fact);
+    await consume(fact);
+    expect(repo.entries.size).toBe(1);
+    expect(firstOf(repo)).toMatchObject({
+      recipientId: 'host-1',
+      recipientType: 'host',
+      type: 'venue.booking.cancelled',
+      data: { eventId: 'night', venueId: 'venue-1', slotRequestId: 'booking-1' },
+    });
+  });
+});

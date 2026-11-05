@@ -16,7 +16,7 @@ export function validateV2Response(
   payload: unknown,
 ): unknown {
   const result = schema.safeParse(payload);
-  if (result.success) return payload;
+  if (result.success) return result.data;
   const issues = result.error.issues ?? [];
   request.log.error(
     { url: request.url, issues },

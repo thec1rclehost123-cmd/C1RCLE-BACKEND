@@ -17,6 +17,10 @@ export default defineConfig({
       // The webhook route reads this directly and fails closed (503) without
       // it — fixed so the scenario's HMAC can be computed the same way
       // `MemoryPaymentProvider` does (see vitest.config.mjs's comment).
+      // Complete synthetic tuple satisfies the fail-closed configuration;
+      // the memory driver never uses it to contact Razorpay.
+      RAZORPAY_KEY_ID: 'rzp_test_syntheticScenario123',
+      RAZORPAY_KEY_SECRET: 'synthetic-scenario-key-secret',
       RAZORPAY_WEBHOOK_SECRET: 'test_webhook_secret',
       // Quiet the full-app build (buildApp registers real plugins).
       LOG_LEVEL: 'silent',

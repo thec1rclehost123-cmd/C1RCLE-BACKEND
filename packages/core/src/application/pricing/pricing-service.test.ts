@@ -168,3 +168,57 @@ describe('PricingService ticket-tier pricing', () => {
     ).rejects.toThrow(/not available/);
   });
 });
+
+describe('quantity-priced Early Bird allocations', () => {
+  const phase = {
+    id: 'EARLY',
+    name: 'Early Bird',
+    priceInPaise: 25_000,
+    startsAt: '2026-01-01T00:00:00.000Z',
+    endsAt: '2099-01-01T00:00:00.000Z',
+    quantity: 50,
+  };
+  function earlyService(remaining: number) {
+    const eventCatalog = {
+      listTiers: async () => [tier({ priceInPaise: 50_000, pricingPhases: [phase] })],
+      listTicketAddons: async () => [],
+    } as unknown as EventCatalogRepository;
+    return new PricingService({
+      eventCatalog,
+      inventory: { getAvailablePricingPhaseQuantity: async () => remaining },
+    });
+  }
+  it('quotes the phase only while its allocation fits and snapshots phase identity', async () => {
+    const result = await earlyService(1).calculate({
+      eventId: 'EVT-1',
+      lines: [{ tierId: 'TIER-1', quantity: 1 }],
+    });
+    expect(result.lines[0]).toMatchObject({ unitPricePaise: 25_000, pricingPhaseId: 'EARLY' });
+  });
+  it('uses the regular price when the quantity allocation is exhausted', async () => {
+    const result = await earlyService(0).calculate({
+      eventId: 'EVT-1',
+      lines: [{ tierId: 'TIER-1', quantity: 1 }],
+    });
+    expect(result.lines[0]).toMatchObject({ unitPricePaise: 50_000 });
+    expect(result.lines[0]?.pricingPhaseId).toBeNull();
+  });
+  it('does not quote two Early Bird allocations when only one remains', async () => {
+    const result = await earlyService(1).calculate({
+      eventId: 'EVT-1',
+      lines: [{ tierId: 'TIER-1', quantity: 2 }],
+    });
+    expect(result.lines[0]?.unitPricePaise).toBe(50_000);
+  });
+  it('rejects duplicate tier lines that could bypass a server purchase limit', async () => {
+    await expect(
+      service(tier({ maxPerOrder: 1 })).calculate({
+        eventId: 'EVT-1',
+        lines: [
+          { tierId: 'TIER-1', quantity: 1 },
+          { tierId: 'TIER-1', quantity: 1 },
+        ],
+      }),
+    ).rejects.toThrow('only once');
+  });
+});

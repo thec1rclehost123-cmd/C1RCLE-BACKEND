@@ -1,4 +1,8 @@
-import { createPlatformAdmin, DEFAULT_PLATFORM_SETTINGS } from '@c1rcle/core/domain';
+import {
+  createPlatformAdmin,
+  DEFAULT_PLATFORM_SETTINGS,
+  NON_PRODUCTION_BOOKING_FEE_POLICY,
+} from '@c1rcle/core/domain';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { AdminRole, PlatformSettings } from '@c1rcle/core/domain';
@@ -82,6 +86,64 @@ describe('GET /admin/settings/platform', () => {
 });
 
 describe('PUT /admin/settings/platform', () => {
+  it('restricts fee policy changes to financial authority and audits the full versioned policy', async () => {
+    await seedAdmin('support_fee', 'support');
+    const policy = {
+      ...NON_PRODUCTION_BOOKING_FEE_POLICY,
+      version: 'm4-focused-test-v2',
+      platformFeeBasisPoints: 600,
+    };
+    const denied = await server.inject({
+      method: 'PUT',
+      url: '/admin/settings/platform',
+      headers: asUser('support_fee'),
+      payload: { bookingFeePolicy: policy },
+    });
+    expect(denied.statusCode, denied.body).toBe(403);
+    await seedAdmin('finance_fee', 'finance');
+    const updated = await server.inject({
+      method: 'PUT',
+      url: '/admin/settings/platform',
+      headers: asUser('finance_fee'),
+      payload: { bookingFeePolicy: policy },
+    });
+    expect(updated.statusCode, updated.body).toBe(200);
+    expect(updated.json().bookingFeePolicy).toEqual(policy);
+    const saved = await services.repos().platformSettings.get();
+    expect(saved.bookingFeePolicy).toEqual(policy);
+    const audits = await services.adminAudits().listForTarget('singleton', 10);
+    expect(
+      audits.some(
+        (entry) => JSON.stringify(entry.after?.bookingFeePolicy) === JSON.stringify(policy),
+      ),
+    ).toBe(true);
+    const sameVersion = await server.inject({
+      method: 'PUT',
+      url: '/admin/settings/platform',
+      headers: asUser('finance_fee'),
+      payload: { bookingFeePolicy: { ...policy, paymentFeeBasisPoints: 300 } },
+    });
+    expect(sameVersion.statusCode, sameVersion.body).toBe(409);
+    expect((await services.repos().platformSettings.get()).bookingFeePolicy).toEqual(policy);
+  });
+
+  it('refuses any settings change from an admin without financial authority', async () => {
+    await seedAdmin('support_settings', 'support');
+    const before = await services.repos().platformSettings.get();
+    const denied = await server.inject({
+      method: 'PUT',
+      url: '/admin/settings/platform',
+      headers: asUser('support_settings'),
+      payload: { maintenanceMode: true, refundSingleApproverThresholdPaise: 1 },
+    });
+    expect(denied.statusCode, denied.body).toBe(403);
+    const after = await services.repos().platformSettings.get();
+    expect(after.maintenanceMode).toBe(before.maintenanceMode);
+    expect(after.refundSingleApproverThresholdPaise).toBe(
+      before.refundSingleApproverThresholdPaise,
+    );
+  });
+
   it('merge-updates a threshold and persists it for subsequent reads', async () => {
     await seedAdmin('admin_a', 'ops');
 

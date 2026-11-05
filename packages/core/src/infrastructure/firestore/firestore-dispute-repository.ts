@@ -73,6 +73,8 @@ function toDoc(dispute: Dispute): DocumentData {
     organizationId: dispute.organizationId,
     orderId: dispute.orderId,
     ledgerEntryId: dispute.ledgerEntryId,
+    journalId: dispute.journalId ?? null,
+    ...(dispute.resolutionIntent ? { resolutionIntent: dispute.resolutionIntent } : {}),
     raisedBy: dispute.raisedBy,
     reason: dispute.reason,
     amount: dispute.amount,
@@ -92,6 +94,10 @@ function toDispute(data: DocumentData): Dispute {
     organizationId: data.organizationId as string,
     orderId: data.orderId as string,
     ledgerEntryId: data.ledgerEntryId as string | null,
+    journalId: (data.journalId as string | null | undefined) ?? null,
+    ...(data.resolutionIntent
+      ? { resolutionIntent: data.resolutionIntent as NonNullable<Dispute['resolutionIntent']> }
+      : {}),
     raisedBy: data.raisedBy as string,
     reason: data.reason as string,
     amount: data.amount as number,

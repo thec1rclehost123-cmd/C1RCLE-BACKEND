@@ -1,10 +1,11 @@
 import {
   buildRotatingQr,
+  deriveTicketKey,
   checkRotatingQr,
   parseRotatingQr,
   verifyManifest,
 } from '@c1rcle/core/application';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ActorContext } from '@c1rcle/core/application';
 import type { Entitlement } from '@c1rcle/core/domain';
@@ -163,7 +164,42 @@ async function scannerToken(): Promise<string> {
   return openSession(await createDoorCode());
 }
 
-function scan(token: string, qrPayload: string, eventId = EVENT_ID, eligibilityVerified = false) {
+async function readHolderQr(ticket: Entitlement) {
+  const previous = currentActor;
+  const holder =
+    ticket.currentHolderUserId === undefined ? ticket.userId : ticket.currentHolderUserId;
+  if (holder === null) throw new Error('Test fixture must have an assigned holder');
+  currentActor = {
+    userId: holder,
+    organizationId: '',
+    role: 'member',
+    capabilities: [],
+  };
+  try {
+    return await server.inject({ method: 'GET', url: `/tickets/${ticket.id}/qr` });
+  } finally {
+    currentActor = previous;
+  }
+}
+
+async function signedPayload(ticketId: string) {
+  const ticket = await services.repos().entitlements.findById(ticketId);
+  const version = ticket?.credentialVersion ?? 1;
+  return buildRotatingQr(
+    deriveTicketKey(services.config().magicTicketSecret, ticketId, version),
+    ticketId,
+    services.config().clock.now().getTime(),
+    version,
+  );
+}
+
+async function scan(
+  token: string,
+  qrPayload: string,
+  eventId = EVENT_ID,
+  eligibilityVerified = false,
+) {
+  if (!qrPayload.includes(':')) qrPayload = await signedPayload(qrPayload);
   return server.inject({
     method: 'POST',
     url: '/door/check-ins',
@@ -465,8 +501,8 @@ describe('POST /door/check-ins', () => {
 
     try {
       const response = await scan(token, entitlement.id);
-      expect(response.statusCode, response.body).toBe(400);
-      expect(response.json()).toMatchObject({ code: 'validation' });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toMatchObject({ status: 'denied', denyReason: 'event_closed' });
       expect((await services.repos().entitlements.findById(entitlement.id))?.scanCount).toBe(0);
     } finally {
       eventRepository.events.set(EVENT_ID, original);
@@ -507,7 +543,7 @@ describe('POST /door/check-ins', () => {
       method: 'POST',
       url: '/door/lookup',
       headers: { ...HEADERS, 'x-scanner-session-token': token },
-      payload: { eventId: EVENT_ID, qrPayload: entitlement.id },
+      payload: { eventId: EVENT_ID, qrPayload: await signedPayload(entitlement.id) },
     });
     expect(preview.json()).toMatchObject({
       status: 'valid',
@@ -567,7 +603,7 @@ describe('POST /door/check-ins', () => {
       method: 'POST',
       url: '/door/lookup',
       headers: { ...HEADERS, 'x-scanner-session-token': token },
-      payload: { eventId: EVENT_ID, qrPayload: entitlement.id },
+      payload: { eventId: EVENT_ID, qrPayload: await signedPayload(entitlement.id) },
     });
     expect(preview.json()).toMatchObject({
       status: 'valid',
@@ -623,7 +659,7 @@ describe('POST /door/check-ins', () => {
       method: 'POST',
       url: '/door/check-ins',
       headers: HEADERS,
-      payload: { eventId: EVENT_ID, qrPayload: entitlement.id },
+      payload: { eventId: EVENT_ID, qrPayload: await signedPayload(entitlement.id) },
     });
     // The header schema rejects the request before any service runs.
     expect([401, 422]).toContain(response.statusCode);
@@ -676,11 +712,7 @@ describe('POST /door/check-ins', () => {
   it('admits a genuine rotating magic-QR payload', async () => {
     const token = await scannerToken();
     const entitlement = await seedEntitlement('ENT-magic-ok');
-    const qr = await server.inject({
-      method: 'GET',
-      url: `/tickets/${entitlement.id}/qr`,
-      headers: HEADERS,
-    });
+    const qr = await readHolderQr(entitlement);
     expect(qr.statusCode, qr.body).toBe(200);
     const response = await scan(token, qr.json().qrPayload);
     expect(response.json()).toMatchObject({ status: 'consumed' });
@@ -776,7 +808,7 @@ describe('POST /door/check-ins/verify and /door/lookup', () => {
         method: 'POST',
         url,
         headers: { ...HEADERS, 'x-scanner-session-token': token },
-        payload: { eventId: EVENT_ID, qrPayload: entitlement.id },
+        payload: { eventId: EVENT_ID, qrPayload: await signedPayload(entitlement.id) },
       });
       expect(response.statusCode, response.body).toBe(200);
       // 'valid', never 'consumed' — a preview must not read as an admission.
@@ -797,7 +829,7 @@ describe('POST /door/check-ins/verify and /door/lookup', () => {
       method: 'POST',
       url: '/door/lookup',
       headers: { ...HEADERS, 'x-scanner-session-token': token },
-      payload: { eventId: EVENT_ID, qrPayload: entitlement.id },
+      payload: { eventId: EVENT_ID, qrPayload: await signedPayload(entitlement.id) },
     });
     expect(response.json()).toMatchObject({ status: 'invalid', denyReason: 'already_used' });
   });
@@ -837,38 +869,30 @@ describe('GET /door/check-ins/:checkInId', () => {
 });
 
 describe('POST /door/override', () => {
-  it('admits a denied scan, keeps the denial on the record, and serializes', async () => {
+  it.each([
+    ['void', { status: 'void' as const }],
+    [
+      'refund locked',
+      { refundLock: { refundRequestId: 'REF-m3', frozenAt: new Date().toISOString() } },
+    ],
+    ['already admitted', { status: 'redeemed' as const, scanCount: 1 }],
+  ])('cannot override a %s ticket into admission', async (_state, overrides) => {
     const token = await scannerToken();
-    const entitlement = await seedEntitlement('ENT-override-1', { status: 'void' });
+    const entitlement = await seedEntitlement('ENT-override-blocked', overrides);
     const denied = await scan(token, entitlement.id);
-    const checkInId: string = denied.json().checkInId;
-
+    const checkInId = denied.json().checkInId as string;
     const response = await server.inject({
       method: 'POST',
       url: '/door/override',
       headers: HEADERS,
-      payload: { checkInId, reason: 'guest is on the owner list' },
+      payload: { checkInId, reason: 'Admit anyway' },
     });
-    expect(response.statusCode, response.body).toBe(200);
-    expect(response.json()).toMatchObject({
-      checkInId,
-      status: 'overridden',
-      overriddenBy: SEED_ACTOR.userId,
-    });
-
-    // The overridden row still reads back — the detail DTO used to omit
-    // `overridden` from its status enum and 500 here.
-    const read = await server.inject({
-      method: 'GET',
-      url: `/door/check-ins/${checkInId}`,
-      headers: HEADERS,
-    });
-    expect(read.statusCode, read.body).toBe(200);
-    expect(read.json()).toMatchObject({
-      status: 'overridden',
-      denyReason: 'void_ticket',
-      overrideReason: 'guest is on the owner list',
-    });
+    expect(response.statusCode, response.body).toBe(409);
+    const ledger = await services.repos().scanLedger.findById(checkInId);
+    expect(ledger?.status).toBe('denied');
+    expect((await services.repos().entitlements.findById(entitlement.id))?.scanCount).toBe(
+      entitlement.scanCount,
+    );
   });
 
   it('409s when the scan is not currently denied', async () => {
@@ -1025,11 +1049,7 @@ describe('offline verification and sync of rotating QR codes', () => {
     const { manifest } = await manifestFor(token);
     const ticketKey = keyFor(manifest, ticket.id);
 
-    const qr = await server.inject({
-      method: 'GET',
-      url: `/tickets/${ticket.id}/qr`,
-      headers: HEADERS,
-    });
+    const qr = await readHolderQr(ticket);
     const parsed = must(parseRotatingQr(qr.json().qrPayload));
     expect(checkRotatingQr({ ticketKey, parsed, atMs: Date.now() })).toBe(true);
     // The same code does not verify against another ticket's key.
@@ -1188,4 +1208,179 @@ describe('GET /tickets/:ticketId/qr', () => {
     });
     expect(response.statusCode).toBe(404);
   });
+});
+
+describe('M3 current event and credential invariants', () => {
+  it('rejects a bare ticket identifier on the camera path without consuming it', async () => {
+    const token = await scannerToken();
+    const ticket = await seedEntitlement('ENT-m3-bare');
+    const response = await server.inject({
+      method: 'POST',
+      url: '/door/check-ins',
+      headers: { ...HEADERS, 'x-scanner-session-token': token },
+      payload: { eventId: EVENT_ID, qrPayload: ticket.id },
+    });
+    expect(response.json()).toMatchObject({ status: 'denied', denyReason: 'invalid_signature' });
+    expect((await services.repos().entitlements.findById(ticket.id))?.scanCount).toBe(0);
+  });
+  it('withholds QR from tenant staff who are not the holder', async () => {
+    const ticket = await seedEntitlement('ENT-m3-staff-qr');
+    const response = await server.inject({
+      method: 'GET',
+      url: `/tickets/${ticket.id}/qr`,
+      headers: HEADERS,
+    });
+    expect(response.statusCode).toBe(404);
+  });
+  it.each([
+    ['too early', { startAt: new Date(Date.now() + 60 * 60_000).toISOString(), endAt: null }],
+    [
+      'closed',
+      {
+        startAt: new Date(Date.now() - 3 * 60 * 60_000).toISOString(),
+        endAt: new Date(Date.now() + 4 * 60_000).toISOString(),
+      },
+    ],
+    ['postponed', { status: 'postponed' as const }],
+    ['cancelled', { status: 'cancelled' as const }],
+  ])('does not consume a ticket when the event is %s', async (_label, changes) => {
+    const token = await scannerToken();
+    const ticket = await seedEntitlement('ENT-m3-event-gate');
+    const original = await services.repos().events.getById(EVENT_ID);
+    if (!original) throw new Error('Event fixture missing');
+    await services.repos().events.save({ ...original, ...changes, version: original.version + 1 });
+    try {
+      const response = await scan(token, ticket.id);
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ status: 'denied', denyReason: 'event_closed' });
+      expect((await services.repos().entitlements.findById(ticket.id))?.scanCount).toBe(0);
+    } finally {
+      const latest = await services.repos().events.getById(EVENT_ID);
+      if (latest) await services.repos().events.save({ ...original, version: latest.version + 1 });
+    }
+  });
+});
+
+describe('M3 foreign credential concealment', () => {
+  it('returns wrong-event without foreign holder details even when that credential was replaced', async () => {
+    const token = await scannerToken();
+    const ticket = await seedEntitlement('ENT-m3-foreign-stale', {
+      eventId: OTHER_EVENT_ID,
+      organizationId: OTHER_ORG_ID,
+      holderName: 'Private foreign holder',
+      credentialVersion: 2,
+    });
+    const oldQr = buildRotatingQr(
+      deriveTicketKey(services.config().magicTicketSecret, ticket.id, 1),
+      ticket.id,
+      Date.now(),
+      1,
+    );
+    const response = await scan(token, oldQr);
+    expect(response.json()).toMatchObject({ status: 'denied', denyReason: 'wrong_event' });
+    expect(response.json()).not.toHaveProperty('entitlement');
+    const ledger = await services.repos().scanLedger.findById(response.json().checkInId);
+    expect(ledger).toMatchObject({ guestName: null, tierName: null, tierId: null });
+  });
+  it('records no foreign summary or guest data when the requested event is closed', async () => {
+    const token = await scannerToken();
+    const ticket = await seedEntitlement('ENT-m3-foreign-closed', {
+      eventId: OTHER_EVENT_ID,
+      organizationId: OTHER_ORG_ID,
+      holderName: 'Private foreign holder',
+    });
+    const original = await services.repos().events.getById(EVENT_ID);
+    if (!original) throw new Error('Event fixture missing');
+    await services
+      .repos()
+      .events.save({ ...original, status: 'cancelled', version: original.version + 1 });
+    try {
+      const response = await scan(token, ticket.id);
+      expect(response.json()).toMatchObject({ status: 'denied' });
+      expect(response.json()).not.toHaveProperty('entitlement');
+      const ledger = await services.repos().scanLedger.findById(response.json().checkInId);
+      expect(ledger).toMatchObject({ guestName: null, tierName: null, tierId: null });
+      expect((await services.repos().entitlements.findById(ticket.id))?.scanCount).toBe(0);
+    } finally {
+      const latest = await services.repos().events.getById(EVENT_ID);
+      if (latest) await services.repos().events.save({ ...original, version: latest.version + 1 });
+    }
+  });
+});
+
+it('returns the canonical atomic admission even when the separate ledger writer is unavailable', async () => {
+  const token = await scannerToken();
+  const ticket = await seedEntitlement('ENT-m3-ledger-failure');
+  const writer = vi
+    .spyOn(services.repos().scanLedger, 'create')
+    .mockRejectedValue(new Error('Synthetic ledger writer unavailable'));
+  try {
+    const response = await scan(token, ticket.id);
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({ status: 'consumed' });
+    expect(writer).not.toHaveBeenCalled();
+    const stored = await services.repos().scanLedger.findById(response.json().checkInId);
+    expect(stored).toMatchObject({
+      status: 'consumed',
+      entitlementId: ticket.id,
+      admittedCount: 1,
+      operatorUid: SEED_ACTOR.userId,
+    });
+    expect((await services.repos().entitlements.findById(ticket.id))?.scanCount).toBe(1);
+  } finally {
+    writer.mockRestore();
+  }
+});
+
+it('cannot override event cancellation into an admission', async () => {
+  const token = await scannerToken();
+  const ticket = await seedEntitlement('ENT-m3-override-cancelled');
+  const original = await services.repos().events.getById(EVENT_ID);
+  if (!original) throw new Error('Event fixture missing');
+  await services
+    .repos()
+    .events.save({ ...original, status: 'cancelled', version: original.version + 1 });
+  try {
+    const denied = await scan(token, ticket.id);
+    const response = await server.inject({
+      method: 'POST',
+      url: '/door/override',
+      headers: HEADERS,
+      payload: { checkInId: denied.json().checkInId, reason: 'Admit anyway' },
+    });
+    expect(response.statusCode, response.body).toBe(409);
+    expect((await services.repos().entitlements.findById(ticket.id))?.scanCount).toBe(0);
+  } finally {
+    const latest = await services.repos().events.getById(EVENT_ID);
+    if (latest) await services.repos().events.save({ ...original, version: latest.version + 1 });
+  }
+});
+
+describe('M3 admission survives auxiliary write failures', () => {
+  it.each(['admin audit', 'device touch', 'code counters'] as const)(
+    'returns canonical camera success when %s is unavailable',
+    async (fault) => {
+      const token = await scannerToken();
+      const ticket = await seedEntitlement('ENT-m3-aux-camera');
+      const failure = new Error('Synthetic auxiliary writer failure');
+      const writer =
+        fault === 'admin audit'
+          ? vi.spyOn(services.adminAudits(), 'write').mockRejectedValue(failure)
+          : fault === 'device touch'
+            ? vi.spyOn(services.repos().scannerDevices, 'touch').mockRejectedValue(failure)
+            : vi
+                .spyOn(services.repos().eventCodes, 'incrementScanCount')
+                .mockRejectedValue(failure);
+      try {
+        const response = await scan(token, ticket.id);
+        expect(response.statusCode, response.body).toBe(200);
+        expect(response.json()).toMatchObject({ status: 'consumed' });
+        const ledger = await services.repos().scanLedger.findById(response.json().checkInId);
+        expect(ledger).toMatchObject({ status: 'consumed', admittedCount: 1 });
+        expect((await services.repos().entitlements.findById(ticket.id))?.scanCount).toBe(1);
+      } finally {
+        writer.mockRestore();
+      }
+    },
+  );
 });

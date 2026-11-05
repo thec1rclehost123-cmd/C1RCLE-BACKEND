@@ -1,12 +1,26 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createCoreConfig } from '../../config/index.js';
 import { ForbiddenError } from '../../domain/errors.js';
-import { issueEntitlements } from '../../domain/models/entitlement.js';
+import { NON_PRODUCTION_BOOKING_FEE_POLICY } from '../../domain/models/booking-fee-policy.js';
+import {
+  freezeEntitlementForRefund,
+  voidEntitlement,
+  issueEntitlements,
+} from '../../domain/models/entitlement.js';
 import { createPromoCode, createTicketTier } from '../../domain/models/event-catalog.js';
 import { createEvent, transitionEvent } from '../../domain/models/event.js';
-import { attachPaymentIntent, createOrder, markPaid } from '../../domain/models/order.js';
+import {
+  applyOrderRefund,
+  lockOrderForRefund,
+  attachPaymentIntent,
+  createOrder,
+  markPaid,
+} from '../../domain/models/order.js';
+import { createPartnership } from '../../domain/models/partnership.js';
+import { applyProviderPaymentEvent } from '../../domain/models/provider-payment.js';
 import { createTicketAddon } from '../../domain/models/ticket-addon.js';
+import { MemoryPaymentProvider } from '../../domain/ports/payment-provider.js';
 import { MemoryFinancialJournalRepository } from '../../infrastructure/memory/memory-financial-journal-repository.js';
 import { MemoryLeaderboardRepository } from '../../infrastructure/memory/memory-leaderboard-repository.js';
 import { MemoryLedgerRepository } from '../../infrastructure/memory/memory-ledger-repository.js';
@@ -15,6 +29,7 @@ import { MemoryOutboxStore } from '../../infrastructure/memory/memory-outbox-sto
 import { MemoryPartnershipRepository } from '../../infrastructure/memory/memory-partnership-repository.js';
 import { MemoryProviderFinancialEventRepository } from '../../infrastructure/memory/memory-provider-financial-event-repository.js';
 import { MemoryProviderPaymentRepository } from '../../infrastructure/memory/memory-provider-payment-repository.js';
+import { MemoryRefundRequestRepository } from '../../infrastructure/memory/memory-refund-request-repository.js';
 import {
   MemoryCartReservationRepository,
   MemoryEntitlementRepository,
@@ -26,8 +41,10 @@ import {
 } from '../../infrastructure/memory/memory-repositories.js';
 import { InventoryService } from '../inventory/inventory-service.js';
 import { PricingService } from '../pricing/pricing-service.js';
+import { TicketService } from '../tickets/ticket-service.js';
 
 import { CheckoutService } from './checkout-service.js';
+import { FulfilmentRepairService } from './fulfilment-repair-service.js';
 
 import type { Order } from '../../domain/models/order.js';
 import type { ActorContext, ServiceDeps } from '../context.js';
@@ -60,7 +77,9 @@ async function build(
 ) {
   const events = new MemoryEventRepository();
   const catalog = new MemoryEventCatalogRepository();
-  const orders = new MemoryOrderRepository();
+  const entitlements = new MemoryEntitlementRepository();
+  const refundRequests = new MemoryRefundRequestRepository();
+  const orders = new MemoryOrderRepository(undefined, { entitlements, refundRequests, events });
   const carts = new MemoryCartReservationRepository();
   const providerPayments = new MemoryProviderPaymentRepository();
   const providerFinancialEvents = new MemoryProviderFinancialEventRepository();
@@ -75,10 +94,14 @@ async function build(
     }),
     repositories: {
       events,
+      users: {
+        getById: async (id: string) => ({ id, email: `${id}@example.test`, emailVerified: true }),
+      },
       catalog,
       cartReservations: carts,
       orders,
-      entitlements: new MemoryEntitlementRepository(),
+      entitlements,
+      refundRequests,
       ledger: new MemoryLedgerRepository(),
       financialJournals: new MemoryFinancialJournalRepository(),
       leaderboard: new MemoryLeaderboardRepository(),
@@ -90,6 +113,18 @@ async function build(
       platformSettings: new MemoryPlatformSettingsRepository(),
     },
   } as unknown as ServiceDeps;
+  orders.fulfilmentStore = {
+    carts,
+    events,
+    entitlements: deps.repositories.entitlements as MemoryEntitlementRepository,
+    ledger: deps.repositories.ledger as MemoryLedgerRepository,
+    journals: deps.repositories.financialJournals as MemoryFinancialJournalRepository,
+    outbox: deps.outbox as MemoryOutboxStore,
+    providerPayments: deps.repositories.providerPayments as MemoryProviderPaymentRepository,
+  };
+  (deps.repositories.entitlements as MemoryEntitlementRepository).issuanceOutbox =
+    deps.outbox as MemoryOutboxStore;
+  (deps.repositories.entitlements as MemoryEntitlementRepository).admissionOrders = orders;
 
   let event = createEvent({
     id: 'evt_1',
@@ -797,6 +832,8 @@ describe('payment retries respect a pending refund lock', () => {
       version: 1,
     } as unknown as Order;
     await orders.save(order);
+    // A legitimate replay retains the original server-owned provider binding.
+    await deps.repositories.cartReservations.bindProviderOrder(hold.id, 'pi-refund-requested');
 
     const result = await service.confirmPayment({
       actor: actor('user_1'),
@@ -1117,4 +1154,657 @@ describe('an amount the payment provider would refuse is refused up front', () =
       }),
     ).rejects.toBeInstanceOf(ForbiddenError);
   });
+});
+
+describe('M4 provider order uncertainty boundary', () => {
+  it('allows only one provider POST for concurrent fresh attempt keys', async () => {
+    const state = await build();
+    await seedTier(state.catalog);
+    const hold = await holdFor(state.service, 'user_1', 'm4-concurrent');
+    const provider = new MemoryPaymentProvider('synthetic');
+    state.deps.paymentProvider = provider;
+    const create = vi.spyOn(provider, 'createOrder');
+    const attempts = await Promise.allSettled(
+      ['one', 'two'].map((idempotencyKey) =>
+        state.service.createPaymentIntent({
+          actor: actor('user_1'),
+          holdId: hold.id,
+          idempotencyKey,
+        }),
+      ),
+    );
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(attempts.some((attempt) => attempt.status === 'fulfilled')).toBe(true);
+    const stored = await state.carts.getById(hold.id);
+    expect(stored?.providerOrderCreation?.receipt.length).toBeLessThanOrEqual(40);
+    expect(stored?.providerOrderCreation).toMatchObject({
+      amountPaise: hold.pricing.grandTotalPaise,
+      currency: 'INR',
+      holdId: hold.id,
+    });
+  });
+
+  it('recovers a lost create response after service restart without another POST', async () => {
+    const state = await build();
+    await seedTier(state.catalog);
+    const hold = await holdFor(state.service, 'user_1', 'm4-lost-response');
+    const provider = new MemoryPaymentProvider('synthetic');
+    state.deps.paymentProvider = provider;
+    const realCreate = provider.createOrder.bind(provider);
+    const create = vi.spyOn(provider, 'createOrder');
+    create.mockImplementationOnce(async (request) => {
+      await realCreate(request);
+      throw new Error('Lost provider response');
+    });
+    await expect(
+      state.service.createPaymentIntent({
+        actor: actor('user_1'),
+        holdId: hold.id,
+        idempotencyKey: 'first',
+      }),
+    ).rejects.toThrow();
+    const restarted = new CheckoutService(state.deps);
+    const recovered = await restarted.createPaymentIntent({
+      actor: actor('user_1'),
+      holdId: hold.id,
+      idempotencyKey: 'fresh-key',
+    });
+    expect(create).toHaveBeenCalledTimes(1);
+    expect((await state.carts.getById(hold.id))?.providerOrderId).toBe(recovered.paymentIntentId);
+  });
+
+  it.each([
+    'ambiguous',
+    'wrong receipt',
+    'wrong hold',
+    'wrong event',
+    'wrong organization',
+    'wrong amount',
+    'wrong currency',
+    'unavailable',
+  ] as const)('keeps uncertain creation closed when lookup is %s', async (failure) => {
+    const state = await build();
+    await seedTier(state.catalog);
+    const hold = await holdFor(state.service, 'user_1', `m4-lookup-${failure}`);
+    const provider = new MemoryPaymentProvider('synthetic');
+    state.deps.paymentProvider = provider;
+    const realCreate = provider.createOrder.bind(provider);
+    const create = vi.spyOn(provider, 'createOrder').mockImplementationOnce(async (request) => {
+      await realCreate(request);
+      throw new Error('Lost provider response');
+    });
+    await expect(
+      state.service.createPaymentIntent({
+        actor: actor('user_1'),
+        holdId: hold.id,
+        idempotencyKey: 'first',
+      }),
+    ).rejects.toThrow();
+    const snapshot = (await state.carts.getById(hold.id))?.providerOrderCreation;
+    if (!snapshot) throw new Error('Expected a durable provider claim');
+    const facts = await provider.findOrdersByReceipt(snapshot.receipt);
+    const fact = facts[0];
+    if (!fact) throw new Error('Expected a provider-created order');
+    vi.spyOn(provider, 'findOrdersByReceipt').mockImplementation(async () => {
+      if (failure === 'unavailable') throw new Error('Lookup offline');
+      if (failure === 'ambiguous') return [fact, { ...fact, id: 'second-order' }];
+      if (failure === 'wrong receipt') return [{ ...fact, receipt: 'other' }];
+      if (failure === 'wrong hold')
+        return [{ ...fact, metadata: { ...fact.metadata, holdId: 'other' } }];
+      if (failure === 'wrong event')
+        return [{ ...fact, metadata: { ...fact.metadata, eventId: 'other' } }];
+      if (failure === 'wrong organization')
+        return [{ ...fact, metadata: { ...fact.metadata, organizationId: 'other' } }];
+      if (failure === 'wrong currency') return [{ ...fact, currency: 'USD' }];
+      return [{ ...fact, amountPaise: fact.amountPaise + 1 }];
+    });
+    await expect(
+      new CheckoutService(state.deps).createPaymentIntent({
+        actor: actor('user_1'),
+        holdId: hold.id,
+        idempotencyKey: 'retry',
+      }),
+    ).rejects.toThrow(/requires_support/);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect((await state.carts.getById(hold.id))?.providerOrderId).toBe(hold.providerOrderId);
+    expect(await state.service.getPaymentRecoveryStatus(actor('user_1'), hold.id)).toMatchObject({
+      status: 'requires_support',
+      orderId: null,
+    });
+    await expect(state.service.getPaymentRecoveryStatus(actor('other'), hold.id)).rejects.toThrow();
+  });
+
+  it('never returns a newly bound provider order as payable when its hold expires during provider creation', async () => {
+    const state = await build();
+    await seedTier(state.catalog);
+    const hold = await holdFor(state.service, 'user_1', 'm4-crossed-ttl');
+    const provider = new MemoryPaymentProvider('synthetic');
+    state.deps.paymentProvider = provider;
+    const original = provider.createOrder.bind(provider);
+    const create = vi.spyOn(provider, 'createOrder').mockImplementation(async (request) => {
+      const result = await original(request);
+      const latest = await state.carts.getById(hold.id);
+      if (!latest) throw new Error('Missing claimed hold');
+      state.carts.reservations.set(hold.id, {
+        ...latest,
+        expiresAt: new Date(Date.now() - 1).toISOString(),
+      });
+      return result;
+    });
+    await expect(
+      state.service.createPaymentIntent({
+        actor: actor('user_1'),
+        holdId: hold.id,
+        idempotencyKey: 'attempt',
+      }),
+    ).rejects.toThrow(/requires_support|expired/);
+    expect((await state.carts.getById(hold.id))?.providerOrderId).toBeTruthy();
+    await expect(
+      state.service.createPaymentIntent({
+        actor: actor('user_1'),
+        holdId: hold.id,
+        idempotencyKey: 'retry',
+      }),
+    ).rejects.toThrow();
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers lost-response identity after TTL expiry without reopening payment or creating another order', async () => {
+    const state = await build();
+    await seedTier(state.catalog);
+    const hold = await holdFor(state.service, 'user_1', 'm4-expired-uncertainty');
+    const provider = new MemoryPaymentProvider('synthetic');
+    state.deps.paymentProvider = provider;
+    const original = provider.createOrder.bind(provider);
+    const create = vi.spyOn(provider, 'createOrder').mockImplementationOnce(async (request) => {
+      await original(request);
+      throw new Error('Lost provider response');
+    });
+    await expect(
+      state.service.createPaymentIntent({
+        actor: actor('user_1'),
+        holdId: hold.id,
+        idempotencyKey: 'first',
+      }),
+    ).rejects.toThrow();
+    const claimed = await state.carts.getById(hold.id);
+    if (!claimed) throw new Error('Missing durable claim');
+    state.carts.reservations.set(hold.id, {
+      ...claimed,
+      expiresAt: new Date(Date.now() - 1).toISOString(),
+    });
+    await expect(
+      new CheckoutService(state.deps).createPaymentIntent({
+        actor: actor('user_1'),
+        holdId: hold.id,
+        idempotencyKey: 'retry',
+      }),
+    ).rejects.toThrow(/expired/);
+    expect((await state.carts.getById(hold.id))?.providerOrderId).toBeTruthy();
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it('rechecks TTL when the durable claim observes an already bound concurrent winner', async () => {
+    const state = await build();
+    await seedTier(state.catalog);
+    const hold = await holdFor(state.service, 'user_1', 'm4-bound-claim-race');
+    const provider = new MemoryPaymentProvider('synthetic');
+    state.deps.paymentProvider = provider;
+    const realClaim = state.carts.claimProviderOrderCreation.bind(state.carts);
+    vi.spyOn(state.carts, 'claimProviderOrderCreation').mockImplementationOnce(
+      async (id, receipt, now) => {
+        const winner = await realClaim(id, receipt, now);
+        const snapshot = winner?.hold.providerOrderCreation;
+        if (!snapshot) throw new Error('Missing winner claim');
+        const order = await provider.createOrder({
+          amountPaise: snapshot.amountPaise,
+          currency: snapshot.currency,
+          idempotencyKey: receipt,
+          metadata: { holdId: hold.id, eventId: hold.eventId, organizationId: hold.organizationId },
+        });
+        await state.carts.bindProviderOrder(id, order.id);
+        const latest = await state.carts.getById(id);
+        if (!latest) throw new Error('Missing bound hold');
+        state.carts.reservations.set(id, {
+          ...latest,
+          expiresAt: new Date(Date.now() - 1).toISOString(),
+        });
+        return realClaim(id, receipt, now);
+      },
+    );
+    await expect(
+      state.service.createPaymentIntent({
+        actor: actor('user_1'),
+        holdId: hold.id,
+        idempotencyKey: 'contender',
+      }),
+    ).rejects.toThrow(/expired/);
+    expect((await state.carts.getById(hold.id))?.providerOrderId).toBeTruthy();
+  });
+
+  it('does not repeat a provider POST when its outcome cannot be recovered', async () => {
+    const state = await build();
+    await seedTier(state.catalog);
+    const hold = await holdFor(state.service, 'user_1', 'm4-unknown');
+    const provider = new MemoryPaymentProvider('synthetic');
+    state.deps.paymentProvider = provider;
+    const create = vi
+      .spyOn(provider, 'createOrder')
+      .mockRejectedValue(new Error('Network timeout'));
+    for (const key of ['one', 'two']) {
+      await expect(
+        state.service.createPaymentIntent({
+          actor: actor('user_1'),
+          holdId: hold.id,
+          idempotencyKey: key,
+        }),
+      ).rejects.toThrow();
+    }
+    expect(create).toHaveBeenCalledTimes(1);
+    expect((await state.carts.getById(hold.id))?.providerOrderCreation?.state).toBe(
+      'requires_support',
+    );
+  });
+});
+
+describe('M4 mandatory fulfillment completion', () => {
+  async function purchase(venueShareRate?: number) {
+    const state = await build();
+    if (venueShareRate !== undefined)
+      await state.deps.repositories.partnerships.save({
+        ...createPartnership({
+          id: 'PART-original',
+          hostOrganizationId: 'org_1',
+          venueOrganizationId: 'ORG-original-venue',
+          venueId: 'ven_1',
+          initiatedBy: 'host',
+          venueShareRate,
+          now: NOW,
+        }),
+        status: 'active',
+      });
+    await seedTier(state.catalog);
+    const provider = new MemoryPaymentProvider('synthetic');
+    state.deps.paymentProvider = provider;
+    const hold = await holdFor(state.service, 'user_1', 'm4-completion');
+    const attempt = await state.service.createPaymentIntent({
+      actor: actor('user_1'),
+      holdId: hold.id,
+      idempotencyKey: 'attempt',
+    });
+    provider.simulateCapture(
+      'pay-completion',
+      hold.pricing.grandTotalPaise,
+      attempt.paymentIntentId,
+    );
+    const confirm = () =>
+      state.service.confirmPayment({
+        actor: actor('user_1'),
+        paymentId: 'pay-completion',
+        paymentIntentId: attempt.paymentIntentId,
+        holdId: hold.id,
+        _idempotencyKey: 'confirm',
+      });
+    return { ...state, provider, hold, confirm };
+  }
+
+  it('freezes sale allocation before capture and repairs refund-locked accounting without issuing rights or reading changed terms', async () => {
+    const f = await purchase(20);
+    expect(f.hold.saleAllocation).toMatchObject({
+      grossPaise: 100000,
+      hostOrganizationId: 'org_1',
+      venuePaise: 20000,
+      venueOrganizationId: 'ORG-original-venue',
+      partnershipId: 'PART-original',
+      partnershipVersion: 1,
+    });
+    const partnership = await f.deps.repositories.partnerships.getById('PART-original');
+    if (!partnership) throw new Error('Missing partnership');
+    await f.deps.repositories.partnerships.save({
+      ...partnership,
+      venueShareRate: 40,
+      version: partnership.version + 1,
+    });
+    vi.spyOn(f.deps.repositories.financialJournals, 'postBatch').mockRejectedValueOnce(
+      new Error('sale crash'),
+    );
+    await expect(f.confirm()).rejects.toThrow('sale crash');
+    const original = await f.orders.getByPaymentId('pay-completion');
+    if (!original) throw new Error('Missing captured order');
+    // Model the already-stranded pre-fix state: one staged unit precedes accounting.
+    const staged = issueEntitlements({ order: original, now: NOW });
+    await f.deps.repositories.entitlements.saveMany(staged);
+    await f.orders.save(lockOrderForRefund(original, NOW));
+    const event = await f.events.getById(original.eventId);
+    if (!event) throw new Error('Missing event');
+    await f.events.save(transitionEvent(event, 'cancelled', NOW));
+    const terms = vi
+      .spyOn(f.deps.repositories.onboarding, 'findByProvisionedOrganizationId')
+      .mockRejectedValue(new Error('Live terms must not be read'));
+    await f.service.repairSaleAccounting(original.id);
+    expect(terms).not.toHaveBeenCalled();
+    const saved = await f.orders.getById(original.id);
+    expect(saved).toMatchObject({
+      status: 'refund_requested',
+      fulfillmentState: 'pending',
+      saleAllocation: f.hold.saleAllocation,
+    });
+    expect(await f.deps.repositories.entitlements.getByOrderId(original.id)).toEqual(staged);
+    const journals = await f.deps.repositories.financialJournals.findByOrderId(original.id);
+    expect(journals).toHaveLength(2);
+    expect(journals.flatMap((journal) => journal.lines)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          account: 'venue_payable',
+          amountPaise: 20000,
+          organizationId: 'ORG-original-venue',
+        }),
+      ]),
+    );
+    await f.service.repairSaleAccounting(original.id);
+    expect(await f.deps.repositories.financialJournals.findByOrderId(original.id)).toHaveLength(2);
+  });
+
+  it('confirms only with durable completion and original structured receipt facts', async () => {
+    const f = await purchase();
+    const result = await f.confirm();
+    expect(result.order).toMatchObject({
+      fulfillmentState: 'complete',
+      bookedAt: f.hold.createdAt,
+      receiptFacts: {
+        currency: 'INR',
+        grandTotalPaise: f.hold.pricing.grandTotalPaise,
+        providerPaymentId: 'pay-completion',
+      },
+    });
+    const event = (f.deps.outbox as MemoryOutboxStore)
+      .all()
+      .find((row) => row.type === 'order.fulfilled');
+    expect(event).toMatchObject({
+      payload: { payload: { receiptFacts: result.order.receiptFacts } },
+    });
+  });
+
+  it('keeps staged purchases pending and unusable after interrupted issuance until repair completes', async () => {
+    const f = await purchase();
+    const save = f.deps.repositories.entitlements.save.bind(f.deps.repositories.entitlements);
+    vi.spyOn(f.deps.repositories.entitlements, 'save').mockImplementationOnce(async (...args) => {
+      await save(...args);
+      throw new Error('Synthetic issuance interruption');
+    });
+    await expect(f.confirm()).rejects.toThrow(/issuance interruption/);
+    const order = await f.orders.getByPaymentId('pay-completion');
+    if (!order) throw new Error('Paid order must be durable before repair');
+    expect(order.fulfillmentState).toBe('pending');
+    const tickets = await f.deps.repositories.entitlements.getByOrderId(order.id);
+    expect(tickets).toHaveLength(1);
+    const ticket = tickets[0];
+    if (!ticket) throw new Error('Missing staged ticket');
+    expect(ticket.fulfillmentRequired).toBe(true);
+    const wallet = new TicketService(f.deps);
+    expect(
+      (await wallet.listForUser(actor('user_1'), { limit: 100, cursor: null })).items,
+    ).toHaveLength(0);
+    await expect(wallet.getById(ticket.id, actor('user_1'))).rejects.toThrow();
+    expect(await wallet.getManagement(ticket.id, actor('user_1'))).toMatchObject({
+      status: 'processing',
+      canPresent: false,
+      canTransfer: false,
+      qrUnavailableReason: 'Payment is still processing.',
+    });
+
+    expect(
+      (await f.deps.repositories.entitlements.claimAdmission(ticket.id, ticket.eventId)).admitted,
+    ).toBe(false);
+    expect((await f.service.getPaymentRecoveryStatus(actor('user_1'), f.hold.id)).status).toBe(
+      'processing',
+    );
+    await f.service.repairFulfilment(order.id);
+    expect((await f.orders.getById(order.id))?.fulfillmentState).toBe('complete');
+    expect(
+      (await f.deps.repositories.entitlements.claimAdmission(ticket.id, ticket.eventId)).admitted,
+    ).toBe(true);
+  });
+
+  it('finds a durable capture stranded before the order write and repairs it only after provider re-verification', async () => {
+    const f = await purchase();
+    vi.spyOn(f.orders, 'save').mockRejectedValueOnce(
+      new Error('Synthetic paid-order interruption'),
+    );
+    await expect(f.confirm()).rejects.toThrow(/paid-order interruption/);
+    expect(await f.orders.getByPaymentId('pay-completion')).toBeNull();
+    const lookup = vi.spyOn(f.provider, 'getPayment');
+    const sweep = new FulfilmentRepairService(f.deps, f.service);
+    const preview = await sweep.sweep({ dryRun: true, settleMs: 0 });
+    expect(preview.findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          paymentId: 'pay-completion',
+          missing: ['order'],
+          outcome: 'found',
+        }),
+      ]),
+    );
+    expect(lookup).not.toHaveBeenCalled();
+    const repaired = await sweep.sweep({ dryRun: false, settleMs: 0 });
+    expect(lookup).toHaveBeenCalledWith('pay-completion');
+    expect(repaired.findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ paymentId: 'pay-completion', outcome: 'repaired' }),
+      ]),
+    );
+    expect((await f.orders.getByPaymentId('pay-completion'))?.fulfillmentState).toBe('complete');
+  });
+
+  it('replays a completed purchase after a partial refund without reopening or overwriting its void ticket', async () => {
+    const f = await purchase();
+    const first = await f.confirm();
+    const selected = first.entitlements[0];
+    if (!selected) throw new Error('Missing completed ticket');
+    const locked = lockOrderForRefund(first.order);
+    await f.orders.save(locked);
+    const refunded = applyOrderRefund(locked, 1000, undefined, 'REF-partial');
+    await f.orders.save(refunded);
+    const frozen = freezeEntitlementForRefund(selected, 'REF-partial');
+    await f.deps.repositories.entitlements.save(frozen);
+    const revoked = voidEntitlement(frozen, undefined, 'REF-partial');
+    await f.deps.repositories.entitlements.save(revoked);
+    const payment = await f.providerPayments.findByPaymentId('pay-completion');
+    if (!payment) throw new Error('Missing capture');
+    await f.providerPayments.save(
+      applyProviderPaymentEvent(
+        payment,
+        {
+          type: 'refund_processed',
+          paymentId: payment.id,
+          refundId: 'rfnd-partial',
+          amountPaise: 1000,
+          currency: payment.currency,
+        },
+        new Date(),
+      ),
+    );
+    const replay = await f.confirm();
+    expect(replay.order).toEqual(refunded);
+    expect(await f.deps.repositories.entitlements.getById(selected.id)).toEqual(revoked);
+  });
+
+  it('rejects a second captured payment for an already converted hold without binding it as fulfilled', async () => {
+    const f = await purchase();
+    const first = await f.confirm();
+    const providerOrderId = first.order.paymentIntentId;
+    if (!providerOrderId) throw new Error('Missing first provider binding');
+    f.provider.simulateCapture(
+      'pay-contradictory-second',
+      f.hold.pricing.grandTotalPaise,
+      providerOrderId,
+    );
+    const verified = await f.provider.getPayment('pay-contradictory-second');
+    if (!verified) throw new Error('Missing synthetic second capture');
+    const tickets = await f.deps.repositories.entitlements.getByOrderId(first.order.id);
+    const journals = await f.deps.repositories.financialJournals.findByOrderId(first.order.id);
+    await expect(
+      f.service.confirmPayment({
+        actor: actor('user_1'),
+        paymentId: verified.paymentId,
+        paymentIntentId: providerOrderId,
+        holdId: f.hold.id,
+        _idempotencyKey: 'contradictory-capture',
+        _verifiedPayment: verified,
+      }),
+    ).rejects.toThrow(/different payment|does not match/);
+    expect(await f.orders.getByPaymentId(verified.paymentId)).toBeNull();
+    expect(await f.providerPayments.findByPaymentId(verified.paymentId)).toMatchObject({
+      orderId: null,
+      processingState: 'requires_support',
+      capturedPaise: f.hold.pricing.grandTotalPaise,
+    });
+    expect(await f.orders.getById(first.order.id)).toEqual(first.order);
+    expect(await f.deps.repositories.entitlements.getByOrderId(first.order.id)).toEqual(tickets);
+    expect(await f.deps.repositories.financialJournals.findByOrderId(first.order.id)).toEqual(
+      journals,
+    );
+  });
+
+  it('rejects an existing payment order with another provider binding before any fulfillment work', async () => {
+    const f = await purchase();
+    const first = await f.confirm();
+    await f.orders.save({
+      ...first.order,
+      paymentIntentId: 'order-foreign',
+      version: first.order.version + 1,
+    });
+    const post = vi.spyOn(f.deps.repositories.financialJournals, 'postBatch');
+    const complete = vi.spyOn(f.orders, 'completeFulfilment');
+    await expect(f.confirm()).rejects.toThrow();
+    expect(post).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it('converges concurrent callback/webhook confirmations on one complete sale and receipt intent', async () => {
+    const f = await purchase();
+    const results = await Promise.all([f.confirm(), f.confirm()]);
+    expect(results.map(({ order }) => order.fulfillmentState)).toEqual(['complete', 'complete']);
+    expect(results[0]?.order.id).toBe(results[1]?.order.id);
+    expect(
+      (f.deps.outbox as MemoryOutboxStore).all().filter((row) => row.type === 'order.fulfilled'),
+    ).toHaveLength(1);
+    const tickets = await f.deps.repositories.entitlements.getByOrderId(results[0]?.order.id ?? '');
+    expect(tickets).toHaveLength(1);
+    expect(tickets[0]?.version).toBe(1);
+  });
+
+  it('detects and repairs a missing mandatory order intent instead of reporting fulfilled', async () => {
+    const f = await purchase();
+    vi.spyOn(f.orders, 'completeFulfilment').mockRejectedValueOnce(
+      new Error('Synthetic completion interruption'),
+    );
+    await expect(f.confirm()).rejects.toThrow();
+    const order = await f.orders.getByPaymentId('pay-completion');
+    if (!order) throw new Error('Missing durable paid order');
+    expect((await f.service.assessFulfilment(order)).missing).toContain('order_outbox');
+  });
+});
+
+describe('M4 captured admission failures use canonical compensation intake', () => {
+  it.each(['capacity_unavailable', 'promotion_unavailable', 'event_unavailable'] as const)(
+    'persists %s with original money, no admissions, and no provider refund POST',
+    async (reason) => {
+      const state = await build();
+      state.deps.pricing = new PricingService({
+        eventCatalog: state.catalog,
+        bookingFeePolicy: async () => NON_PRODUCTION_BOOKING_FEE_POLICY,
+      });
+      await seedTier(state.catalog, 1);
+      if (reason === 'promotion_unavailable')
+        await state.catalog.savePromo(
+          createPromoCode({
+            id: 'PROMO-compensation',
+            eventId: 'evt_1',
+            organizationId: 'org_1',
+            code: 'COMPENSATE',
+            discountType: 'fixed',
+            discountValue: 1000,
+            discountFundingOwner: 'platform',
+            maxRedemptions: 1,
+          }),
+        );
+      const hold = await holdFor(
+        state.service,
+        'user_1',
+        'compensation-original',
+        reason === 'promotion_unavailable' ? 'COMPENSATE' : null,
+      );
+      const provider = new MemoryPaymentProvider('synthetic');
+      state.deps.paymentProvider = provider;
+      const attempt = await state.service.createPaymentIntent({
+        actor: actor('user_1'),
+        holdId: hold.id,
+        idempotencyKey: 'attempt',
+      });
+      provider.simulateCapture(
+        'pay-compensation',
+        hold.pricing.grandTotalPaise,
+        attempt.paymentIntentId,
+      );
+      const refund = vi.spyOn(provider, 'refundPayment');
+      if (reason === 'capacity_unavailable') {
+        const current = await state.carts.getById(hold.id);
+        if (!current) throw new Error('Missing hold');
+        state.carts.reservations.set(hold.id, {
+          ...current,
+          expiresAt: new Date(Date.now() - 1).toISOString(),
+        });
+        await holdFor(state.service, 'user_2', 'compensation-new-buyer');
+      }
+      if (reason === 'promotion_unavailable')
+        await state.redemptions.create({
+          id: 'RED-other',
+          promoId: 'PROMO-compensation',
+          orderId: 'ORD-other',
+          userId: 'user_2',
+          redeemedAt: new Date().toISOString(),
+        });
+      if (reason === 'event_unavailable') {
+        const event = await state.events.getById('evt_1');
+        if (!event) throw new Error('Missing event');
+        await state.events.save(transitionEvent(event, 'cancelled'));
+      }
+      const confirm = () =>
+        state.service.confirmPayment({
+          actor: actor('user_1'),
+          holdId: hold.id,
+          paymentId: 'pay-compensation',
+          paymentIntentId: attempt.paymentIntentId,
+          _idempotencyKey: 'confirm',
+        });
+      const result = await confirm();
+      expect(result.order).toMatchObject({
+        status: 'refund_requested',
+        fulfillmentState: 'pending',
+        bookedAt: hold.createdAt,
+        compensationRequired: { reason },
+      });
+      expect(result.entitlements).toHaveLength(0);
+      const requests = await state.deps.repositories.refundRequests.listByOrder(result.order.id);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({
+        amountPaise: hold.pricing.grandTotalPaise,
+        refundCause: 'fulfillment_failure',
+        scope: 'amount_only',
+        targetEntitlementIds: [],
+        approversRequired: 1,
+      });
+      await confirm();
+      expect(
+        await state.deps.repositories.refundRequests.listByOrder(result.order.id),
+      ).toHaveLength(1);
+      expect(refund).not.toHaveBeenCalled();
+      expect(
+        (state.deps.outbox as MemoryOutboxStore)
+          .all()
+          .filter((row) => row.type === 'order.fulfilled'),
+      ).toHaveLength(0);
+    },
+  );
 });

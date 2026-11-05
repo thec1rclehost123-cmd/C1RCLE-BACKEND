@@ -1,6 +1,10 @@
+import { VersionConflictError } from '../../domain/errors.js';
+
 import { compareAndSet } from './compare-and-set.js';
+import { outboxDocument } from './firestore-outbox-store.js';
 import { paginateQuery } from './pagination.js';
 
+import type { DomainEvent } from '../../domain/events.js';
 import type { EntityId } from '../../domain/identity.js';
 import type { Event } from '../../domain/models/event.js';
 import type {
@@ -68,9 +72,22 @@ export class FirestoreEventRepository implements EventRepository {
     return snap.docs.map((doc) => toEvent(doc.data()));
   }
 
-  async save(event: Event, _tx?: TxContext | null): Promise<void> {
-    // Compare-and-set: a write of version N must find N-1 (see compare-and-set.ts).
-    await compareAndSet(this.db, this.collection, event, toDoc);
+  async save(event: Event, _tx?: TxContext | null, outboxEvent?: DomainEvent): Promise<void> {
+    if (!outboxEvent) {
+      await compareAndSet(this.db, this.collection, event, toDoc);
+      return;
+    }
+    const ref = this.collection.doc(event.id);
+    const outboxRef = this.db.collection('v2_outbox').doc(outboxEvent.id);
+    await this.db.runTransaction(async (tx) => {
+      const [stored, queued] = await Promise.all([tx.get(ref), tx.get(outboxRef)]);
+      const storedVersion = Number(stored.data()?.version ?? 0);
+      if (event.version > 1 && (!stored.exists || storedVersion !== event.version - 1)) {
+        throw new VersionConflictError(event.version - 1, storedVersion);
+      }
+      tx.set(ref, toDoc(event));
+      if (!queued.exists) tx.create(outboxRef, outboxDocument(outboxEvent));
+    });
   }
 
   async delete(eventId: EntityId, _tx?: TxContext | null): Promise<void> {
@@ -91,12 +108,16 @@ function toEvent(data: DocumentData): Event {
     title: data.title as string,
     summary: data.summary as string,
     description: data.description as string,
+    ...(data.entryRules ? { entryRules: data.entryRules as NonNullable<Event['entryRules']> } : {}),
     ...(data.media ? { media: data.media as NonNullable<Event['media']> } : {}),
     imageUrl: (data.imageUrl as string | null) ?? null,
     privateImageStoragePath: (data.privateImageStoragePath as string | null | undefined) ?? null,
     startAt: data.startAt as string,
     endAt: (data.endAt as string | null) ?? null,
     status: data.status as Event['status'],
+    ...(data.postponement
+      ? { postponement: data.postponement as NonNullable<Event['postponement']> }
+      : {}),
     isPublic: data.isPublic as boolean,
     visibilityMode: (data.visibilityMode as Event['visibilityMode'] | undefined) ?? 'public',
     addressDisclosure: data.addressDisclosure as Event['addressDisclosure'] | undefined,
@@ -104,6 +125,12 @@ function toEvent(data: DocumentData): Event {
     startingPricePaise: (data.startingPricePaise as number | null) ?? null,
     isFree: data.isFree as boolean,
     cancellationReason: (data.cancellationReason as string | null) ?? null,
+    ...(data.refundPolicy
+      ? { refundPolicy: data.refundPolicy as NonNullable<Event['refundPolicy']> }
+      : {}),
+    ...(typeof data.lastMaterialChangeAt === 'string'
+      ? { lastMaterialChangeAt: data.lastMaterialChangeAt }
+      : {}),
     compensation: (data.compensation as Event['compensation']) ?? null,
     // Documents written before the field existed read as "not configured",
     // which is exactly what `null` already means here.

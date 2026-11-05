@@ -151,6 +151,24 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
     const venueSlots = new MemoryVenueSlotRepository();
     const users = new MemoryUserAccountRepository();
     const organizations = new MemoryOrganizationRepository();
+    const events = new MemoryEventRepository();
+    const catalog = new MemoryEventCatalogRepository();
+    const cartReservations = new MemoryCartReservationRepository();
+    const entitlements = new MemoryEntitlementRepository();
+    entitlements.admissionEvents = events;
+    const scanLedger = new MemoryScanLedgerRepository();
+    entitlements.admissionLedger = scanLedger;
+    const refundRequests = new MemoryRefundRequestRepository();
+    const orders = new MemoryOrderRepository(
+      {
+        catalog,
+        carts: cartReservations,
+        entitlements,
+        events,
+      },
+      { refundRequests, entitlements },
+    );
+    catalog.inventoryClaims = { orders, carts: cartReservations };
     return {
       organizations,
       invitations: new MemoryInvitationRepository(organizations, users),
@@ -160,19 +178,19 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
       venues: new MemoryVenueRepository(),
       slotRequests: new MemorySlotRequestRepository(venueSlots),
       venueSlots,
-      events: new MemoryEventRepository(),
-      catalog: new MemoryEventCatalogRepository(),
+      events,
+      catalog,
       analytics: new MemoryAnalyticsReadModelRepository(),
       onboarding: new MemoryOnboardingRepository(),
       platformAdmins: new MemoryPlatformAdminRepository(),
       proposals: new MemoryProposedActionRepository(),
       verificationAttempts: new MemoryVerificationAttemptRepository(),
-      cartReservations: new MemoryCartReservationRepository(),
-      orders: new MemoryOrderRepository(),
-      entitlements: new MemoryEntitlementRepository(),
+      cartReservations,
+      orders,
+      entitlements,
       promoRedemptions: new MemoryPromoRedemptionRepository(),
       // Phase 5 repositories
-      scanLedger: new MemoryScanLedgerRepository(),
+      scanLedger,
       eventCodes: new MemoryEventCodeRepository(),
       ticketAccess: new MemoryTicketAccessRepository(),
       scannerSessions: new MemoryScannerSessionRepository(),
@@ -198,7 +216,7 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
       // Phase 8
       follows: new MemoryFollowRepository(),
       socialNotifications: new MemorySocialNotificationRepository(),
-      refundRequests: new MemoryRefundRequestRepository(),
+      refundRequests,
       providerPayments: new MemoryProviderPaymentRepository(),
       providerFinancialEvents: new MemoryProviderFinancialEventRepository(),
       reconciliations: new MemoryReconciliationRepository(),

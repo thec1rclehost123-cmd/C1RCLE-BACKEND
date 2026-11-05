@@ -8,7 +8,7 @@ import { issueTicketAddonEntitlements } from './ticket-addon.js';
 
 import type { EntityId, VersionedEntity } from '../identity.js';
 import type { Order } from './order.js';
-import type { ScanDenyReason } from './scan-ledger.js';
+import type { ScanDenyReason, ScanLedger } from './scan-ledger.js';
 import type { TicketAddonEntitlement } from './ticket-addon.js';
 
 /**
@@ -83,6 +83,8 @@ const ENTITLEMENT_TRANSITIONS: Readonly<Record<EntitlementStatus, readonly Entit
 };
 
 export interface Entitlement extends VersionedEntity {
+  /** New paid units require canonical order completion before presentation/admission. */
+  fulfillmentRequired?: boolean;
   /** `entitlementId(orderId, tierId, index)` — deterministic, see above. */
   id: EntityId;
   orderId: EntityId;
@@ -209,6 +211,7 @@ export function issueEntitlements(input: IssueEntitlementsInput): Entitlement[] 
         tierId: line.tierId,
         tierName: line.tierName,
         userId: order.userId,
+        ...(order.fulfillmentState !== undefined ? { fulfillmentRequired: true } : {}),
         unitKind: input.unitKind ?? (order.id.startsWith('RSVP-') ? 'free_rsvp' : 'paid'),
         currentHolderUserId: purchaserAssigned ? order.userId : null,
         credentialVersion: 1,
@@ -543,6 +546,15 @@ export function evaluateAdmission(
       scansAllowed: 0,
     };
   }
+  if (currentEntitlementHolderId(entitlement) === null) {
+    return {
+      admitted: false,
+      denyReason: 'void_ticket',
+      denyMessage: 'This ticket has not been assigned to an attendee',
+      scansUsed,
+      scansAllowed,
+    };
+  }
   if (entitlement.status === 'void') {
     return {
       admitted: false,
@@ -561,7 +573,7 @@ export function evaluateAdmission(
       scansAllowed,
     };
   }
-  if (scansUsed >= scansAllowed) {
+  if (entitlement.status === 'redeemed' || scansUsed >= scansAllowed) {
     return {
       admitted: false,
       denyReason: 'already_used',
@@ -579,6 +591,7 @@ export function evaluateAdmission(
  * post-state the adapter must persist.
  */
 export interface AdmissionClaim {
+  scan?: ScanLedger;
   admitted: boolean;
   denyReason: ScanDenyReason | null;
   denyMessage: string | null;
@@ -617,8 +630,19 @@ export function admitSeats(
   options: AdmitSeatsOptions = {},
 ): AdmissionClaim {
   const seats = options.seats ?? 1;
+  if (!Number.isSafeInteger(seats) || seats < 1) {
+    return {
+      admitted: false,
+      denyReason: 'override_required',
+      denyMessage: 'A valid admission count is required',
+      entitlement,
+      scansUsed: entitlement?.scanCount ?? 0,
+      scansAllowed: entitlement?.scanCountAllowed ?? 0,
+    };
+  }
   if (
     entitlement &&
+    entitlement.eventId === eventId &&
     options.expectedCredentialVersion !== undefined &&
     entitlementCredentialVersion(entitlement) !== options.expectedCredentialVersion
   ) {
@@ -642,8 +666,19 @@ export function admitSeats(
       scansAllowed: decision.scansAllowed,
     };
   }
+  if (entitlement.scanCountAllowed === 2 && (seats !== 2 || entitlement.scanCount !== 0)) {
+    return {
+      admitted: false,
+      denyReason: 'override_required',
+      denyMessage: 'Couple admission requires both guests together',
+      entitlement,
+      scansUsed: entitlement.scanCount,
+      scansAllowed: entitlement.scanCountAllowed,
+    };
+  }
   if (
-    (entitlementRequiresEligibilityVerification(entitlement) ||
+    (entitlement.scanCountAllowed === 2 ||
+      entitlementRequiresEligibilityVerification(entitlement) ||
       options.eligibilityRequired === true) &&
     options.eligibilityVerified !== true
   ) {

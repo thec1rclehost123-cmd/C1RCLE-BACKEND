@@ -2,10 +2,16 @@ import { createHash } from 'node:crypto';
 
 import { InvalidOperationError } from '../../domain/errors.js';
 import { computeSettlementSplit, createLedgerEntry } from '../../domain/models/ledger.js';
+import { validateSaleAllocation } from '../../domain/models/sale-allocation.js';
 import { requireOrgAccess } from '../context.js';
 
+import { stagedSettlement } from './settlement-policy.js';
+
 import type { EntityId } from '../../domain/identity.js';
+import type { Dispute } from '../../domain/models/dispute.js';
 import type { LedgerEntry, LedgerEntryType } from '../../domain/models/ledger.js';
+import type { ReconciliationDiscrepancy } from '../../domain/models/reconciliation.js';
+import type { SaleAllocationSnapshot } from '../../domain/models/sale-allocation.js';
 import type {
   EventRepository,
   FinancialJournalRepository,
@@ -33,9 +39,14 @@ export interface FinanceServiceDeps {
   events: EventRepository;
   reconciliations: ReconciliationRepository;
   config: ServiceDeps['config'];
+  financialExposure?: Pick<
+    ServiceDeps['repositories'],
+    'orders' | 'refundRequests' | 'providerPayments' | 'disputes'
+  >;
 }
 
 export interface RecordTicketSaleInput {
+  allocation?: SaleAllocationSnapshot;
   organizationId: EntityId; // the organization the order belongs to (host org)
   orderId: EntityId;
   eventId: EntityId;
@@ -62,8 +73,12 @@ export interface BalanceSummary {
     cancellationPaise: number;
     chargebackPaise: number;
     reconciliationPaise: number;
+    refundPaise?: number;
+    disputePaise?: number;
+    providerUncertaintyPaise?: number;
   };
   readModel: 'legacy_ledger_v1' | 'financial_journal_v2';
+  settlementUnavailableReason?: string | null;
 }
 
 export interface FinanceService {
@@ -112,18 +127,29 @@ export function createFinanceService(deps: FinanceServiceDeps): FinanceService {
     requireOrgAccess(actor, input.organizationId);
 
     const existing = await ledger.findByOrder(input.orderId);
-    if (existing.length > 0) {
+    if (existing.length > 0 && !input.allocation) {
       // Already recorded — idempotent replay, not a re-computation.
       return existing;
     }
 
-    const calculated = computeSettlementSplit(
-      input.grossAmount,
-      input.platformFeeRate,
-      input.venueShareRate,
-      input.promoterCommissionRate,
-    );
-    const promoterCommission = input.promoterCommissionPaise ?? calculated.promoterCommission;
+    const frozen = input.allocation
+      ? validateSaleAllocation(input.allocation, input.grossAmount, input.hostOrganizationId)
+      : null;
+    const calculated = frozen
+      ? {
+          platformFee: frozen.platformPaise,
+          venueShare: frozen.venuePaise,
+          promoterCommission: frozen.promoterPaise,
+          hostPayout: frozen.hostPaise,
+        }
+      : computeSettlementSplit(
+          input.grossAmount,
+          input.platformFeeRate,
+          input.venueShareRate,
+          input.promoterCommissionRate,
+        );
+    const promoterCommission =
+      frozen?.promoterPaise ?? input.promoterCommissionPaise ?? calculated.promoterCommission;
     if (
       promoterCommission < 0 ||
       promoterCommission > input.grossAmount - calculated.platformFee - calculated.venueShare
@@ -207,6 +233,35 @@ export function createFinanceService(deps: FinanceServiceDeps): FinanceService {
       );
     }
 
+    if (frozen) {
+      const validateExisting = (rows: LedgerEntry[]): void => {
+        const saleRows = rows.filter((row) => row.entryType !== 'refund');
+        for (const row of saleRows) {
+          const expected = entries.find((candidate) => candidate.entryType === row.entryType);
+          if (
+            !expected ||
+            saleRows.filter((candidate) => candidate.entryType === row.entryType).length !== 1 ||
+            row.orderId !== expected.orderId ||
+            row.eventId !== expected.eventId ||
+            row.organizationId !== expected.organizationId ||
+            row.amount !== expected.amount
+          )
+            throw new InvalidOperationError(
+              'Original sale allocation conflicts with immutable ledger',
+            );
+        }
+      };
+      validateExisting(existing);
+      const missing = entries.filter(
+        (entry) => !existing.some((row) => row.entryType === entry.entryType),
+      );
+      if (missing.length > 0) await ledger.createBatch(missing);
+      const persisted = await ledger.findByOrder(input.orderId);
+      validateExisting(persisted);
+      if (entries.some((entry) => !persisted.some((row) => row.entryType === entry.entryType)))
+        throw new InvalidOperationError('Original sale compatibility ledger is incomplete');
+      return persisted;
+    }
     return ledger.createBatch(entries);
   }
 
@@ -217,31 +272,53 @@ export function createFinanceService(deps: FinanceServiceDeps): FinanceService {
     requireOrgAccess(actor, organizationId);
     const transition = await deps.journalTransition.get();
     if (transition.readModel === 'financial_journal_v2') {
-      const [lines, reserved, paid, unresolved] = await Promise.all([
+      const [lines, reserved, paid] = await Promise.all([
         deps.financialJournals.listPayableLinesByOrganization(organizationId),
         deps.payouts.sumRequestedOrProcessingByOrganization(organizationId),
         deps.payouts.sumPaidByOrganization(organizationId),
-        deps.reconciliations.listDiscrepancies({ organizationId, limit: 1_000 }),
       ]);
+      const unresolved: ReconciliationDiscrepancy[] = [];
+      let discrepancyCursor: string | null = null;
+      do {
+        const page = await deps.reconciliations.listDiscrepancies({
+          organizationId,
+          cursor: discrepancyCursor,
+          limit: 250,
+        });
+        unresolved.push(...page.items.filter((item) => item.state !== 'resolved'));
+        discrepancyCursor = page.nextCursor;
+      } while (discrepancyCursor !== null);
+      const disputes: Dispute[] = [];
+      if (deps.financialExposure) {
+        let cursor: string | null = null;
+        do {
+          const page = await deps.financialExposure.disputes.listByOrganization(organizationId, {
+            cursor,
+            limit: 250,
+          });
+          disputes.push(...page.items.filter((item) => item.status !== 'resolved'));
+          cursor = page.nextCursor;
+        } while (cursor !== null);
+      }
       let net = 0;
       let pending = 0;
       let policyReserve = 0;
-      const chargebackHolds = new Map<EntityId, { amountPaise: number; closed: boolean }>();
       let cancellationHeld = 0;
       let lifetime = 0;
-      let holdOnUnresolvedReconciliation = false;
+      let totalEligible = 0;
+      let totalRemaining = 0;
+      let refundHeld = 0;
+      let disputeHeld = 0;
+      let providerHeld = 0;
+      let reconciliationHeld = 0;
+      const chargebackHolds = new Map<EntityId, { amountPaise: number; closed: boolean }>();
       const eventCache = new Map<EntityId, Awaited<ReturnType<EventRepository['getById']>>>();
       const orderBalances = new Map<
         EntityId,
-        {
-          credits: (typeof lines)[number][];
-          debitPaise: number;
-        }
+        { credits: (typeof lines)[number][]; debitPaise: number }
       >();
       for (const payableLine of lines) {
-        const signed =
-          payableLine.side === 'credit' ? payableLine.amountPaise : -payableLine.amountPaise;
-        net += signed;
+        net += payableLine.side === 'credit' ? payableLine.amountPaise : -payableLine.amountPaise;
         if (payableLine.source.type === 'chargeback' && payableLine.side === 'debit') {
           const current = chargebackHolds.get(payableLine.source.id);
           chargebackHolds.set(payableLine.source.id, {
@@ -267,80 +344,163 @@ export function createFinanceService(deps: FinanceServiceDeps): FinanceService {
           else group.debitPaise += payableLine.amountPaise;
           orderBalances.set(payableLine.source.orderId, group);
         }
-        if (
-          payableLine.side !== 'credit' ||
-          payableLine.source.type === 'payout_failure_reversal'
-        ) {
+        if (payableLine.side === 'credit' && payableLine.source.type !== 'payout_failure_reversal')
+          lifetime += payableLine.amountPaise;
+      }
+      for (const [orderId, group] of orderBalances) {
+        const remaining = Math.max(
+          0,
+          group.credits.reduce((sum, row) => sum + row.amountPaise, 0) - group.debitPaise,
+        );
+        const representative = group.credits[0];
+        if (!representative || remaining === 0) continue;
+        totalRemaining += remaining;
+        const eventId = representative.source.eventId;
+        let event = eventId ? eventCache.get(eventId) : null;
+        if (event === undefined && eventId) {
+          event = await deps.events.getById(eventId);
+          eventCache.set(eventId, event);
+        }
+        const staged = stagedSettlement(event ?? null, remaining, config.clock.now());
+        pending += staged.pendingPaise;
+        policyReserve += staged.reservePaise;
+        cancellationHeld += staged.cancellationPaise;
+        totalEligible += staged.eligiblePaise;
+        let available = staged.eligiblePaise;
+        if (available === 0) continue;
+        const exposure = deps.financialExposure;
+        if (!exposure) {
+          providerHeld += available;
           continue;
         }
-        lifetime += payableLine.amountPaise;
-        holdOnUnresolvedReconciliation ||=
-          payableLine.accountingPolicy.holdsOnUnresolvedReconciliation;
-      }
-
-      // Classify the remaining liability for each order, not its historical
-      // gross credit. Refund/adjustment/chargeback debits therefore reduce the
-      // amount that can still be pending, reserved, or cancellation-held.
-      for (const group of orderBalances.values()) {
-        const creditPaise = group.credits.reduce((sum, line) => sum + line.amountPaise, 0);
-        const remainingPaise = Math.max(0, creditPaise - group.debitPaise);
-        const representative = group.credits[0];
-        if (!representative || remainingPaise === 0) continue;
-        const eligibleAt =
-          new Date(representative.postedAt).getTime() +
-          representative.accountingPolicy.settlementDelayDays * 86_400_000;
-        let eventComplete = true;
+        const [order, requests] = await Promise.all([
+          exposure.orders.getById(orderId),
+          exposure.refundRequests.listByOrder(orderId),
+        ]);
         if (
-          (representative.accountingPolicy.requiresEventCompletion ||
-            representative.accountingPolicy.holdsOnCancellation) &&
-          representative.source.eventId !== null
+          !order ||
+          order.eventId !== eventId ||
+          order.fulfillmentState === 'pending' ||
+          !['paid', 'refund_requested', 'refunded'].includes(order.status)
         ) {
-          let event = eventCache.get(representative.source.eventId);
-          if (event === undefined) {
-            event = await deps.events.getById(representative.source.eventId);
-            eventCache.set(representative.source.eventId, event);
-          }
-          if (representative.accountingPolicy.requiresEventCompletion) {
-            eventComplete = event?.status === 'ended' || event?.status === 'archived';
-          }
+          providerHeld += available;
+          continue;
         }
-        const event =
-          representative.source.eventId === null
-            ? null
-            : (eventCache.get(representative.source.eventId) ?? null);
-        if (representative.accountingPolicy.holdsOnCancellation && event?.status === 'cancelled') {
-          cancellationHeld += remainingPaise;
-        } else if (config.clock.now().getTime() < eligibleAt || !eventComplete) {
-          pending += remainingPaise;
-        } else {
-          policyReserve += Math.round(
-            (remainingPaise * representative.accountingPolicy.reserveBasisPoints) / 10_000,
+        const active = requests.filter((request) =>
+          ['pending', 'approved', 'executing'].includes(request.status),
+        );
+        const refundExposure = active.length
+          ? active.reduce((sum, request) => sum + request.amountPaise, 0)
+          : order.status === 'refund_requested'
+            ? remaining
+            : 0;
+        const refund = Math.min(available, refundExposure);
+        refundHeld += refund;
+        available -= refund;
+        const businessExposure = disputes
+          .filter((dispute) => dispute.orderId === orderId)
+          .reduce((sum, dispute) => sum + dispute.amount, 0);
+        const businessHold = Math.min(available, businessExposure);
+        disputeHeld += businessHold;
+        available -= businessHold;
+        const payment = order.paymentId
+          ? await exposure.providerPayments.findByPaymentId(order.paymentId)
+          : null;
+        let uncertain =
+          order.grandTotalPaise > 0 &&
+          (!payment ||
+            !['fulfilled', 'refunded'].includes(payment.processingState) ||
+            payment.orderId !== order.id ||
+            payment.currency !== order.currency ||
+            payment.capturedPaise !== order.grandTotalPaise)
+            ? remaining
+            : 0;
+        if (payment) {
+          uncertain = Math.max(
+            uncertain,
+            Object.values(payment.refunds).reduce((sum, amount) => sum + amount, 0) -
+              order.refundedPaise,
           );
+          const unpostedDisputes = Object.entries(payment.disputes)
+            .filter(
+              ([id, dispute]) =>
+                !['won', 'closed'].includes(dispute.status) && !chargebackHolds.has(id),
+            )
+            .reduce((sum, [, dispute]) => sum + dispute.amountPaise, 0);
+          const held = Math.min(available, unpostedDisputes);
+          disputeHeld += held;
+          available -= held;
+        }
+        const provider = Math.min(available, Math.max(0, uncertain));
+        providerHeld += provider;
+        available -= provider;
+        const scoped = unresolved.filter(
+          (item) =>
+            item.orderId === orderId ||
+            (item.orderId === null &&
+              item.paymentId !== null &&
+              item.paymentId === order.paymentId),
+        );
+        const risks = new Map<string, number>();
+        for (const item of scoped)
+          risks.set(
+            `${item.kind}:${item.paymentId ?? ''}`,
+            Math.max(
+              risks.get(`${item.kind}:${item.paymentId ?? ''}`) ?? 0,
+              item.amountPaise ?? remaining,
+            ),
+          );
+        reconciliationHeld += Math.min(
+          available,
+          [...risks.values()].reduce((sum, amount) => sum + amount, 0),
+        );
+      }
+      // Unknown-scope evidence cannot safely be assigned to a particular order.
+      const unscoped: ReconciliationDiscrepancy[] = [];
+      for (const item of unresolved) {
+        if (item.orderId !== null) {
+          if (!orderBalances.has(item.orderId)) unscoped.push(item);
+        } else if (item.paymentId === null) {
+          unscoped.push(item);
+        } else {
+          const payment = await deps.financialExposure?.providerPayments.findByPaymentId(
+            item.paymentId,
+          );
+          if (!payment?.orderId || !orderBalances.has(payment.orderId)) unscoped.push(item);
         }
       }
+      const unscopedAmount = unscoped.some((item) => item.amountPaise === null)
+        ? totalEligible
+        : unscoped.reduce((sum, item) => sum + (item.amountPaise ?? 0), 0);
+      reconciliationHeld += Math.min(
+        Math.max(0, totalEligible - refundHeld - disputeHeld - providerHeld - reconciliationHeld),
+        unscopedAmount,
+      );
       const chargebackHeld = [...chargebackHolds.values()].reduce(
         (sum, hold) => sum + (hold.closed ? 0 : hold.amountPaise),
         0,
       );
-      const unresolvedForOrganization = unresolved.items.filter(
-        (item) => item.state !== 'resolved',
-      );
-      const reconciliationHeld = !holdOnUnresolvedReconciliation
-        ? 0
-        : unresolvedForOrganization.some((item) => item.amountPaise === null)
-          ? Math.max(0, net - pending - policyReserve - cancellationHeld)
-          : Math.min(
-              Math.max(0, net - pending - policyReserve - cancellationHeld),
-              unresolvedForOrganization.reduce((sum, item) => sum + (item.amountPaise ?? 0), 0),
-            );
+      const commitments = Math.max(0, totalRemaining - net, reserved + paid);
       return {
         availablePaise: Math.max(
           0,
-          net - pending - policyReserve - cancellationHeld - reconciliationHeld,
+          totalEligible -
+            refundHeld -
+            disputeHeld -
+            providerHeld -
+            reconciliationHeld -
+            commitments,
         ),
         pendingPaise: pending,
         reservedPaise: reserved,
-        heldPaise: chargebackHeld + policyReserve + cancellationHeld + reconciliationHeld,
+        heldPaise:
+          chargebackHeld +
+          policyReserve +
+          cancellationHeld +
+          refundHeld +
+          disputeHeld +
+          providerHeld +
+          reconciliationHeld,
         paidPaise: paid,
         lifetimePaise: lifetime,
         holds: {
@@ -348,8 +508,12 @@ export function createFinanceService(deps: FinanceServiceDeps): FinanceService {
           cancellationPaise: cancellationHeld,
           chargebackPaise: chargebackHeld,
           reconciliationPaise: reconciliationHeld,
+          refundPaise: refundHeld,
+          disputePaise: disputeHeld,
+          providerUncertaintyPaise: providerHeld,
         },
         readModel: 'financial_journal_v2',
+        settlementUnavailableReason: null,
       };
     }
 
@@ -398,8 +562,8 @@ export function createFinanceService(deps: FinanceServiceDeps): FinanceService {
     } while (cursor !== null);
 
     return {
-      availablePaise: Math.max(0, settled - paidOut - reserved - paid - cancellationHeld),
-      pendingPaise: pending,
+      availablePaise: 0,
+      pendingPaise: pending + Math.max(0, settled - paidOut - reserved - paid - cancellationHeld),
       reservedPaise: reserved,
       heldPaise: cancellationHeld,
       paidPaise: paid,
@@ -411,6 +575,8 @@ export function createFinanceService(deps: FinanceServiceDeps): FinanceService {
         reconciliationPaise: 0,
       },
       readModel: 'legacy_ledger_v1',
+      settlementUnavailableReason:
+        'Settlement eligibility requires the controlled journal transition.',
     };
   }
 
