@@ -1078,7 +1078,7 @@ describe('transactional email consumer', () => {
   it('sends idempotent, escaped onboarding status email to the applicant on file', async () => {
     const emailDeliveries = new MemoryEmailDeliveryRepository();
     const sent: { to: string; subject: string; html: string; idempotencyKey: string }[] = [];
-    let status: 'submitted' | 'approved' | 'rejected' = 'submitted';
+    let status: 'submitted' | 'changes_requested' | 'approved' | 'rejected' = 'submitted';
     const application = {
       id: 'request_1',
       userId: 'user_1',
@@ -1091,6 +1091,7 @@ describe('transactional email consumer', () => {
       config: createCoreConfig({
         redis: { url: 'redis://localhost:6379' },
         firestore: { projectId: 'tests' },
+        partnerDashboardUrl: 'https://partners-staging.example.test',
       }),
       emailDeliveries,
       emailSender: {
@@ -1105,50 +1106,40 @@ describe('transactional email consumer', () => {
       },
     } as unknown as ServiceDeps;
     const handler = createTransactionalEmailConsumer(deps);
-    const events = [
-      {
-        type: 'promoter.onboarding.submitted' as const,
-        payload: { requestId: application.id },
-      },
-      {
-        type: 'promoter.onboarding.approved' as const,
-        payload: { requestId: application.id, promoterId: 'promoter_1' },
-      },
-      {
-        type: 'promoter.onboarding.rejected' as const,
-        payload: { requestId: application.id },
-      },
-    ];
+    const statuses = ['submitted', 'changes_requested', 'approved', 'rejected'] as const;
 
-    for (const [index, item] of events.entries()) {
-      status = item.type.endsWith('submitted')
-        ? 'submitted'
-        : item.type.endsWith('approved')
-          ? 'approved'
-          : 'rejected';
+    for (const [index, emailStatus] of statuses.entries()) {
+      status = emailStatus;
       const event = domainEvent({
         id: `onboarding-event-${index}`,
-        type: item.type,
+        type: 'partner.onboarding.email_requested',
         aggregateId: application.id,
         organizationId: 'user_1',
         actorId: 'actor_1',
-        payload: item.payload,
+        payload: { requestId: application.id, status: emailStatus },
         occurredAt: Date.now(),
       });
       await handler(event);
       await handler(event);
     }
 
-    expect(sent).toHaveLength(3);
+    expect(sent).toHaveLength(4);
     expect(sent[0]?.to).toBe('applicant@partner.test');
     expect(sent.map((message) => message.idempotencyKey)).toEqual([
       'promoter-onboarding:request_1:submitted',
+      'promoter-onboarding:request_1:changes_requested',
       'promoter-onboarding:request_1:approved',
       'promoter-onboarding:request_1:rejected',
     ]);
-    expect(sent[2]?.html).toContain('&lt;Need one more document&gt;');
-    expect(sent[2]?.html).not.toContain('<Need one more document>');
-    expect([...emailDeliveries.records.values()]).toHaveLength(3);
+    expect(sent[0]?.html).toContain('https://partners-staging.example.test/onboard');
+    expect(sent[1]?.subject).toBe('Action needed: update your C1RCLE application');
+    expect(sent[1]?.html).toContain('https://partners-staging.example.test/onboard');
+    expect(sent[2]?.html).toContain(
+      'https://partners-staging.example.test/partner/promoter/overview',
+    );
+    expect(sent[3]?.html).toContain('&lt;Need one more document&gt;');
+    expect(sent[3]?.html).not.toContain('<Need one more document>');
+    expect([...emailDeliveries.records.values()]).toHaveLength(4);
     expect(
       [...emailDeliveries.records.values()].every((row) => !row.recipientHash.includes('@')),
     ).toBe(true);
