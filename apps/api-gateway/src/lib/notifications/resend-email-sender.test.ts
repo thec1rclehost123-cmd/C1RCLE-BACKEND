@@ -15,18 +15,34 @@ describe('ResendEmailSender transactional delivery', () => {
         new Response(JSON.stringify({ id: 'email_1' }), { status: 200 }),
     );
     vi.stubGlobal('fetch', fetchMock);
-    const sender = new ResendEmailSender('test-key', 'test', noopLogger);
+    const sender = new ResendEmailSender(
+      'test-key',
+      'test',
+      noopLogger,
+      'THE C1RCLE <test@example.test>',
+      'guest@example.test',
+    );
     await expect(
       sender.sendTransactionalEmail({
         to: 'guest@example.test',
         subject: 'Receipt',
+        preheader: 'Your ticket is ready.',
         html: '<p>Safe</p>',
+        text: 'Safe text',
         idempotencyKey: 'booking-receipt:ord_1:fulfilled',
       }),
     ).resolves.toEqual({ outcome: 'accepted_by_provider', providerMessageId: 'email_1' });
     const init = fetchMock.mock.calls[0]?.[1];
     expect(init?.headers).toMatchObject({
       'Idempotency-Key': 'booking-receipt:ord_1:fulfilled',
+    });
+    const requestBody = typeof init?.body === 'string' ? JSON.parse(init.body) : null;
+    expect(requestBody).toMatchObject({
+      from: 'THE C1RCLE <test@example.test>',
+      to: 'guest@example.test',
+      subject: 'Receipt',
+      html: '<p>Safe</p>',
+      text: 'Safe text',
     });
     expect(fetchMock).toHaveBeenCalledWith(
       'https://api.resend.com/emails',
@@ -39,7 +55,13 @@ describe('ResendEmailSender transactional delivery', () => {
       'fetch',
       vi.fn(async () => new Response('sensitive provider response', { status: 422 })),
     );
-    const sender = new ResendEmailSender('test-key', 'test', noopLogger);
+    const sender = new ResendEmailSender(
+      'test-key',
+      'test',
+      noopLogger,
+      'THE C1RCLE <test@example.test>',
+      'guest@example.test',
+    );
     await expect(
       sender.sendTransactionalEmail({
         to: 'guest@example.test',
@@ -50,12 +72,71 @@ describe('ResendEmailSender transactional delivery', () => {
     ).rejects.toBeInstanceOf(PermanentEmailDeliveryError);
   });
 
+  it('fails closed when provider credentials exist without a configured sender identity', async () => {
+    const sender = new ResendEmailSender(
+      'test-key',
+      'test',
+      noopLogger,
+      undefined,
+      'guest@example.test',
+    );
+    await expect(
+      sender.sendTransactionalEmail({
+        to: 'guest@example.test',
+        subject: 'Receipt',
+        html: '<p>Safe</p>',
+        idempotencyKey: 'booking-receipt:ord_1:fulfilled',
+      }),
+    ).rejects.toThrow('Resend sender identity not configured');
+  });
+
+  it('never falls back to local capture for production transactional mail', async () => {
+    const sender = new ResendEmailSender(
+      undefined,
+      'production',
+      noopLogger,
+      'THE C1RCLE <test@example.test>',
+    );
+    await expect(
+      sender.sendTransactionalEmail({
+        to: 'guest@example.test',
+        subject: 'Receipt',
+        html: '<p>Safe</p>',
+        idempotencyKey: 'booking-receipt:ord_1:fulfilled',
+      }),
+    ).rejects.toThrow('Email provider not configured');
+    expect(sender.localCaptures).toHaveLength(0);
+  });
+
+  it('captures instead of sending to non-allowlisted recipients outside production', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const sender = new ResendEmailSender(
+      'test-key',
+      'development',
+      noopLogger,
+      'THE C1RCLE <test@example.test>',
+      'founder@example.test',
+    );
+    await expect(
+      sender.sendTransactionalEmail({
+        to: 'guest@example.test',
+        subject: 'Receipt',
+        html: '<p>Captured safely</p>',
+        idempotencyKey: 'receipt:order-1',
+      }),
+    ).resolves.toEqual({ outcome: 'captured_locally', providerMessageId: null });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(sender.localCaptures[0]?.recipient).toBe('guest@example.test');
+  });
+
   it('captures transactional content locally without claiming provider acceptance', async () => {
     const sender = new ResendEmailSender(undefined, 'development', noopLogger);
     await expect(
       sender.sendTransactionalEmail({
         to: 'guest@example.test',
         subject: 'Receipt',
+        preheader: 'Your ticket is ready.',
         html: '<p>Safe receipt</p>',
         text: 'Safe receipt',
         templateType: 'booking_receipt',
@@ -67,9 +148,11 @@ describe('ResendEmailSender transactional delivery', () => {
       recipient: 'guest@example.test',
       templateType: 'booking_receipt',
       subject: 'Receipt',
+      preheader: 'Your ticket is ready.',
       html: '<p>Safe receipt</p>',
       text: 'Safe receipt',
       idempotencyKey: 'booking-receipt:ord_1:fulfilled',
+      sender: null,
     });
   });
 

@@ -225,6 +225,10 @@ const envSchema = z.object({
   ENCRYPTION_SALT: z.string().min(1).optional(),
   /** Email OTP delivery and at-rest OTP HMAC key. */
   RESEND_API_KEY: z.string().min(1).optional(),
+  /** Verified Resend sender identity, e.g. `THE C1RCLE <hello@example.com>`. */
+  RESEND_FROM_EMAIL: z.string().trim().min(1).optional(),
+  /** Exact allowlisted recipient for intentional non-production provider acceptance. */
+  RESEND_NON_PROD_TEST_RECIPIENT: z.email().trim().toLowerCase().optional(),
   EMAIL_OTP_SECRET: z.string().min(1).optional(),
   /**
    * Public origin of the partner dashboard (e.g. https://partners.thec1rcle.com).

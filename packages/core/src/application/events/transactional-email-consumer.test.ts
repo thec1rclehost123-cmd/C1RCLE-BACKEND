@@ -16,15 +16,20 @@ import type { ServiceDeps } from '../context.js';
 describe('transactional email consumer', () => {
   it('records local capture separately from provider acceptance', async () => {
     const emailDeliveries = new MemoryEmailDeliveryRepository();
+    let captured:
+      { html: string; text?: string; preheader?: string; deliveryIntentId?: string } | undefined;
     const consumer = createTransactionalEmailConsumer({
-      config: { clock: { now: () => new Date('2026-11-05T12:00:00.000Z') } },
+      config: {
+        guestPortalUrl: 'https://guest-staging.example.test',
+        clock: { now: () => new Date('2026-11-05T12:00:00.000Z') },
+      },
       emailDeliveries,
       emailSender: {
         name: 'capture',
-        sendTransactionalEmail: async () => ({
-          outcome: 'captured_locally',
-          providerMessageId: null,
-        }),
+        sendTransactionalEmail: async (message: typeof captured & {}) => {
+          captured = message;
+          return { outcome: 'captured_locally', providerMessageId: null };
+        },
       },
       repositories: {
         orders: {
@@ -54,6 +59,16 @@ describe('transactional email consumer', () => {
     expect([...emailDeliveries.records.values()]).toMatchObject([
       { status: 'captured', providerMessageId: null, sentAt: null, kind: 'booking_receipt' },
     ]);
+    const delivery = [...emailDeliveries.records.values()][0];
+    expect(captured).toMatchObject({
+      deliveryIntentId: delivery?.id,
+      preheader: 'Your tickets for Captured Event are ready.',
+    });
+    expect(captured?.html).toContain('https://guest-staging.example.test/tickets');
+    expect(captured?.html).toContain('display:none!important');
+    expect(captured?.text).toContain(
+      'View your tickets (https://guest-staging.example.test/tickets)',
+    );
   });
 
   it('retries staged ticket delivery until canonical completion, then sends the existing notice once', async () => {

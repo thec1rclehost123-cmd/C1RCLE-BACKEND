@@ -435,4 +435,34 @@ describe('AdminOperationsService — promoter & settings authority', () => {
       balanced: true,
     });
   });
+
+  it('restricts email delivery evidence to Admin and never exposes rendered content', async () => {
+    const { deps, repositories } = makeDeps();
+    await seedAdmin(repositories.platformAdmins, 'admin_support', 'support');
+    const delivery = {
+      id: 'MAIL-safe',
+      aggregateId: 'ORD-private',
+      kind: 'booking_receipt',
+      status: 'sent' as const,
+      recipientHash: 'hashed-recipient',
+      retryCount: 1,
+      providerMessageId: 'provider-request-id',
+      createdAt: 1,
+      updatedAt: 2,
+      sentAt: 2,
+      lastError: null,
+      leaseExpiresAt: null,
+    };
+    await deps.emailDeliveries.createIfAbsent(delivery);
+    const ops = new AdminOperationsService(deps, new AdminAuthorityService(deps));
+
+    await expect(ops.listEmailDeliveries('guest_1', 'ORD-private')).rejects.toThrow(
+      'Platform admin authority required',
+    );
+    await expect(ops.listEmailDeliveries('admin_support', 'ORD-private')).resolves.toEqual([
+      delivery,
+    ]);
+    expect(JSON.stringify(delivery)).not.toContain('html');
+    expect(JSON.stringify(delivery)).not.toContain('recipient@example.test');
+  });
 });

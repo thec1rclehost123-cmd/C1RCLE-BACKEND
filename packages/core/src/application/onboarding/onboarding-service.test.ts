@@ -613,13 +613,15 @@ describe('OnboardingService — KYC document desk', () => {
     expect(updated.status).toBe('changes_requested');
     expect(emailSender.sent).toHaveLength(0);
     expect(
-      outbox
-        .all()
-        .some(
-          (event) =>
-            event.type === 'partner.onboarding.email_requested' &&
-            event.payload.payload.status === 'changes_requested',
-        ),
+      outbox.all().some(
+        (event) =>
+          event.type === 'partner.onboarding.email_requested' &&
+          (
+            event.payload as {
+              payload: { status: string };
+            }
+          ).payload.status === 'changes_requested',
+      ),
     ).toBe(true);
   });
 

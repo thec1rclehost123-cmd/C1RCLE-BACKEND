@@ -25,9 +25,12 @@ import type {
 export class ResendEmailSender implements EmailSender {
   readonly name = 'resend';
   readonly localCaptures: {
+    deliveryIntentId: string | null;
+    sender: string | null;
     recipient: string;
     templateType: string;
     subject: string;
+    preheader: string | null;
     html: string;
     text: string | null;
     idempotencyKey: string;
@@ -38,10 +41,12 @@ export class ResendEmailSender implements EmailSender {
     private readonly apiKey: string | undefined,
     private readonly nodeEnv: 'development' | 'test' | 'production',
     private readonly logger: Logger,
+    private readonly fromEmail?: string,
+    private readonly nonProductionTestRecipient?: string,
   ) {}
 
   async sendOtpEmail(recipient: string, code: string): Promise<void> {
-    if (!this.apiKey) {
+    if (!this.canSendToProvider(recipient)) {
       if (this.nodeEnv === 'production') {
         throw new Error('Email provider not configured');
       }
@@ -56,7 +61,7 @@ export class ResendEmailSender implements EmailSender {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        from: 'noreply@thec1rcle.com',
+        from: this.requireFromEmail(),
         to: recipient,
         subject: 'Your Access Key',
         html: `
@@ -77,7 +82,7 @@ export class ResendEmailSender implements EmailSender {
   }
 
   async sendStaffInvitationEmail(invitation: StaffInvitationEmail): Promise<void> {
-    if (!this.apiKey) {
+    if (!this.canSendToProvider(invitation.to)) {
       if (this.nodeEnv === 'production') {
         throw new Error('Email provider not configured');
       }
@@ -112,7 +117,7 @@ export class ResendEmailSender implements EmailSender {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        from: 'noreply@thec1rcle.com',
+        from: this.requireFromEmail(),
         to: invitation.to,
         subject: `Join ${invitation.orgName} on THE C1RCLE`,
         html: `
@@ -136,7 +141,7 @@ export class ResendEmailSender implements EmailSender {
   }
 
   async sendPasswordResetEmail(recipient: string, resetUrl: string): Promise<void> {
-    if (!this.apiKey) {
+    if (!this.canSendToProvider(recipient)) {
       if (this.nodeEnv === 'production') {
         throw new Error('Email provider not configured');
       }
@@ -151,7 +156,7 @@ export class ResendEmailSender implements EmailSender {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        from: 'noreply@thec1rcle.com',
+        from: this.requireFromEmail(),
         to: recipient,
         subject: 'Reset your password',
         html: `
@@ -180,7 +185,7 @@ export class ResendEmailSender implements EmailSender {
     recipient: string,
     params: OnboardingChangesRequestedEmailParams,
   ): Promise<void> {
-    if (!this.apiKey) {
+    if (!this.canSendToProvider(recipient)) {
       if (this.nodeEnv === 'production') {
         throw new Error('Email provider not configured');
       }
@@ -199,7 +204,7 @@ export class ResendEmailSender implements EmailSender {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        from: 'noreply@thec1rcle.com',
+        from: this.requireFromEmail(),
         to: recipient,
         subject: 'Action needed on your C1RCLE partner application',
         html: `
@@ -221,20 +226,20 @@ export class ResendEmailSender implements EmailSender {
     }
   }
 
-  async sendTransactionalEmail(
-    message: TransactionalEmail,
-  ): Promise<{
+  async sendTransactionalEmail(message: TransactionalEmail): Promise<{
     outcome: 'accepted_by_provider' | 'captured_locally';
     providerMessageId: string | null;
   }> {
-    if (!this.apiKey) {
+    if (!this.canSendToProvider(message.to)) {
       if (this.nodeEnv === 'production') throw new Error('Email provider not configured');
       this.localCaptures.push({
+        deliveryIntentId: message.deliveryIntentId ?? null,
+        sender: this.fromEmail ?? null,
         recipient: message.to,
         templateType: message.templateType ?? 'transactional',
         subject: message.subject,
+        preheader: message.preheader ?? null,
         html: message.html,
-        ...(message.text ? { text: message.text } : {}),
         text: message.text ?? null,
         idempotencyKey: message.idempotencyKey,
         capturedAt: new Date().toISOString(),
@@ -253,10 +258,11 @@ export class ResendEmailSender implements EmailSender {
         'Idempotency-Key': message.idempotencyKey,
       },
       body: JSON.stringify({
-        from: 'noreply@thec1rcle.com',
+        from: this.requireFromEmail(),
         to: message.to,
         subject: message.subject,
         html: message.html,
+        ...(message.text ? { text: message.text } : {}),
       }),
       signal: AbortSignal.timeout(10_000),
     });
@@ -274,6 +280,20 @@ export class ResendEmailSender implements EmailSender {
     if (typeof result.id !== 'string' || !result.id)
       throw new Error('Email provider response missing message id');
     return { outcome: 'accepted_by_provider', providerMessageId: result.id };
+  }
+
+  private requireFromEmail(): string {
+    if (this.fromEmail) return this.fromEmail;
+    throw new Error('Resend sender identity not configured');
+  }
+
+  private canSendToProvider(recipient: string): boolean {
+    if (!this.apiKey) return false;
+    if (this.nodeEnv === 'production') return true;
+    return (
+      this.nonProductionTestRecipient !== undefined &&
+      recipient.trim().toLowerCase() === this.nonProductionTestRecipient.trim().toLowerCase()
+    );
   }
 }
 
