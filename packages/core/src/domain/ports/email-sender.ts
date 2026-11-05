@@ -38,8 +38,11 @@ export interface OnboardingChangesRequestedEmailParams {
 }
 
 export interface TransactionalEmail {
+  /** Durable delivery-intent ID used to correlate local capture evidence. */
+  deliveryIntentId?: string;
   to: string;
   subject: string;
+  preheader?: string;
   html: string;
   text?: string;
   templateType?: string;

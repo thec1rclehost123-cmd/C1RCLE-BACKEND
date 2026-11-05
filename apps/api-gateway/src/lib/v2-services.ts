@@ -507,6 +507,8 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     gwConfig.RESEND_API_KEY,
     gwConfig.NODE_ENV,
     resolvedLogger,
+    gwConfig.RESEND_FROM_EMAIL,
+    gwConfig.RESEND_NON_PROD_TEST_RECIPIENT,
   );
 
   // B10: auth is only real on the firestore driver — see plugins/auth.ts and

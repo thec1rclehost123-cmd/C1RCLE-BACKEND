@@ -57,18 +57,35 @@ async function deliverMessage(
     leaseExpiresAt: null,
   });
   if (!(await deps.emailDeliveries.claim(id, now, now + LEASE_MS))) return;
+  const attemptCount = (await deps.emailDeliveries.get(id))?.retryCount ?? 1;
   try {
     if (!deps.emailSender.sendTransactionalEmail)
       throw new Error('Transactional email sender unavailable');
-    const result = await deps.emailSender.sendTransactionalEmail(message);
+    const result = await deps.emailSender.sendTransactionalEmail({
+      ...message,
+      deliveryIntentId: id,
+    });
     if (result.outcome === 'captured_locally') {
       await deps.emailDeliveries.markCaptured(id, deps.config.clock.now().getTime());
+      deps.logger?.info('transactional_email_delivery', {
+        intentId: id,
+        templateType: message.kind,
+        outcome: 'captured_locally',
+        attemptCount,
+      });
     } else if (result.providerMessageId) {
       await deps.emailDeliveries.markSent(
         id,
         result.providerMessageId,
         deps.config.clock.now().getTime(),
       );
+      deps.logger?.info('transactional_email_delivery', {
+        intentId: id,
+        templateType: message.kind,
+        outcome: 'accepted_by_provider',
+        providerMessageId: result.providerMessageId,
+        attemptCount,
+      });
     } else {
       throw new Error('Email sender did not report a delivery outcome');
     }
@@ -81,6 +98,12 @@ async function deliverMessage(
         'Transactional email permanently rejected',
         deps.config.clock.now().getTime(),
       );
+      deps.logger?.warn('transactional_email_delivery', {
+        intentId: id,
+        templateType: message.kind,
+        outcome: 'permanent_failure',
+        attemptCount,
+      });
       return;
     }
     await deps.emailDeliveries.markFailed(
@@ -88,6 +111,12 @@ async function deliverMessage(
       'Transactional email provider failure',
       deps.config.clock.now().getTime(),
     );
+    deps.logger?.warn('transactional_email_delivery', {
+      intentId: id,
+      templateType: message.kind,
+      outcome: 'retryable_failure',
+      attemptCount,
+    });
     throw new Error('Transactional email delivery failed');
   }
 }
@@ -104,10 +133,16 @@ async function buildFormerHolderTransferMessage(event: DomainEvent, deps: Servic
   if (!eventRecord) return null;
   const portal = guestPortalOrigin(deps.config.guestPortalUrl);
   const walletUrl = new URL('/tickets', portal).toString();
+  const html = renderEmailLayout(
+    'Ticket transfer complete',
+    `<p>Your ticket for <strong>${escapeHtml(eventRecord.title)}</strong> was transferred to its new holder.</p><p><a href="${escapeHtml(walletUrl)}" style="color:#ff5a00">View your tickets</a></p>`,
+    'The ticket is now held by its new owner.',
+  );
   return {
     to: formerHolder.email,
     subject: 'Your C1RCLE ticket transfer is complete',
-    html: `<div style="background:#080808;color:#f7f7f7;padding:32px;font-family:Arial,sans-serif;max-width:620px;margin:auto"><div style="color:#ff5a00;font-weight:800;letter-spacing:3px">THE C1RCLE</div><h1>Ticket transfer complete</h1><p>Your ticket for <strong>${escapeHtml(eventRecord.title)}</strong> was transferred to its new holder.</p><p><a href="${escapeHtml(walletUrl)}" style="color:#ff5a00">View your tickets</a></p></div>`,
+    html,
+    preheader: 'The ticket is now held by its new owner.',
     text: `Ticket transfer complete\n\nYour ticket for ${eventRecord.title} was transferred to its new holder.\n\nView your tickets: ${walletUrl}`,
     templateType: 'ticket_transfer_former_holder',
     idempotencyKey: `ticket-transfer-former-holder:${transfer.id}:${payload.credentialVersion}`,
@@ -788,9 +823,10 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
     order && eventRecord?.venueId
       ? await deps.repositories.venues.getById(eventRecord.venueId)
       : null;
-  const actionUrl = 'https://thec1rcle.com/tickets';
-  const supportUrl = 'https://thec1rcle.com/help';
-  const termsUrl = 'https://thec1rcle.com/terms';
+  const guestOrigin = guestPortalOrigin(deps.config.guestPortalUrl);
+  const actionUrl = new URL('/tickets', guestOrigin).toString();
+  const supportUrl = new URL('/help', guestOrigin).toString();
+  const termsUrl = new URL('/terms', guestOrigin).toString();
   const footer = order
     ? `<p>Event: <strong>${escapeHtml(eventRecord?.title ?? order.eventCancellation?.eventTitle ?? 'Event details unavailable')}</strong></p>${eventRecord ? `<p>Venue: ${escapeHtml(venue?.public.name ?? 'Venue details unavailable')}</p>${Number.isFinite(Date.parse(eventRecord.startAt)) ? `<p>Date and time: ${escapeHtml(new Intl.DateTimeFormat('en-IN', { dateStyle: 'long', timeStyle: 'short', timeZone: 'Asia/Kolkata' }).format(new Date(eventRecord.startAt)))} (Asia/Kolkata)</p>` : ''}` : ''}<p>Order reference: ${escapeHtml(order.id)}</p>${event.type === 'order.fulfilled' ? receiptAmounts(order) : ''}<p><a href="${actionUrl}" style="color:#ff5a00">View your tickets</a></p><p>Need help? <a href="${supportUrl}" style="color:#ff5a00">Contact support</a> and quote ${escapeHtml(order.bookingReference ?? order.id)}.</p><p><a href="${termsUrl}" style="color:#999">Terms</a></p>`
     : event.type === 'ticket.transfer.created' || event.type === 'ticket.transfer.invitation_resent'
@@ -806,10 +842,16 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
                 event.type === 'promoter.assignment.expired'
               ? '<p>Review your assignments in the C1RCLE partner workspace.</p>'
               : '<p>Review the Finance section in your partner workspace for details.</p>';
-  const html = `<div style="background:#080808;color:#f7f7f7;padding:32px;font-family:Arial,sans-serif;max-width:620px;margin:auto"><div style="color:#ff5a00;font-weight:800;letter-spacing:3px">THE C1RCLE</div><h1>${escapeHtml(heading)}</h1>${details}<hr style="border-color:#333">${footer}</div>`;
+  const preheader = createPreheader(kind, heading, eventRecord?.title);
+  const html = renderEmailLayout(
+    heading,
+    `${details}<hr style="border:0;border-top:1px solid #333;margin:24px 0">${footer}`,
+    preheader,
+  );
   return {
     to,
     subject,
+    preheader,
     html,
     text: `${heading}\n\n${htmlToPlainText(details)}\n\n${htmlToPlainText(footer)}`,
     templateType: kind,
@@ -817,6 +859,22 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
     kind,
     aggregateId: deliveryAggregateId,
   };
+}
+
+function createPreheader(kind: string, heading: string, eventTitle?: string): string {
+  if (eventTitle && kind === 'booking_receipt') return `Your tickets for ${eventTitle} are ready.`;
+  if (kind.includes('refund')) return 'A final update about your refund request.';
+  if (kind.includes('cancellation')) return 'Important information about your event and tickets.';
+  if (kind.includes('material_change') || kind.includes('postpon'))
+    return 'Important information about a change to your event.';
+  if (kind.includes('onboarding')) return 'Review the latest update to your application.';
+  if (kind.includes('transfer')) return 'An update about a ticket transfer.';
+  return heading;
+}
+
+/** Email-safe shared C1RCLE shell; table layout and inline styles target narrow clients. */
+function renderEmailLayout(heading: string, content: string, preheader: string): string {
+  return `<div style="display:none!important;visibility:hidden;opacity:0;color:transparent;height:0;width:0;max-height:0;max-width:0;overflow:hidden;mso-hide:all">${escapeHtml(preheader)}&#847;&zwnj;&nbsp;</div><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#080808;width:100%;"><tr><td align="center" style="padding:20px 12px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:620px;background:#080808;color:#f7f7f7;font-family:Arial,Helvetica,sans-serif;"><tr><td style="padding:24px 20px;"><div style="color:#ff5a00;font-weight:800;letter-spacing:3px;font-size:14px;">THE C1RCLE</div><h1 style="margin:24px 0 16px;color:#f7f7f7;font-size:24px;line-height:1.25;font-weight:700;">${escapeHtml(heading)}</h1><div style="font-size:16px;line-height:1.55;overflow-wrap:anywhere;">${content}</div></td></tr></table></td></tr></table>`;
 }
 
 async function refundRecipient(order: Order, deps: ServiceDeps): Promise<string | null> {
@@ -833,6 +891,7 @@ async function refundRecipient(order: Order, deps: ServiceDeps): Promise<string 
 
 function htmlToPlainText(html: string): string {
   return html
+    .replace(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, '$2 ($1)')
     .replace(/<\/(p|li|h[1-6]|div|tr)>/gi, '\n')
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<[^>]+>/g, '')
