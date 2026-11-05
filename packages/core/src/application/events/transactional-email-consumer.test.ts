@@ -1295,6 +1295,68 @@ describe('transactional email consumer', () => {
     expect(html).not.toContain('provider-refund');
   });
 
+  it('notifies only the verified purchaser when a refund is canonically rejected', async () => {
+    const sent: { to: string; html: string; idempotencyKey: string }[] = [];
+    const deps = {
+      config: createCoreConfig({
+        redis: { url: 'redis://localhost:6379' },
+        firestore: { projectId: 'tests' },
+      }),
+      emailDeliveries: new MemoryEmailDeliveryRepository(),
+      emailSender: {
+        sendTransactionalEmail: async (message: (typeof sent)[number]) => {
+          sent.push(message);
+          return { providerMessageId: 'refund-declined' };
+        },
+      },
+      repositories: {
+        orders: {
+          getById: async () => ({
+            id: 'order-refund-rejected',
+            status: 'paid',
+            userId: 'purchaser',
+            contact: { email: 'untrusted-contact@real.test' },
+            bookingReference: 'C1-R',
+          }),
+        },
+        refundRequests: { getById: async () => ({ id: 'refund-rejected', status: 'rejected' }) },
+        users: {
+          getById: async () => ({
+            id: 'purchaser',
+            email: 'purchaser@real.test',
+            emailVerified: true,
+          }),
+        },
+        events: {
+          getById: async () => ({
+            title: 'Refund Event',
+            startAt: '2026-11-06T18:00:00Z',
+            venueId: null,
+          }),
+        },
+      },
+    } as unknown as ServiceDeps;
+    await createTransactionalEmailConsumer(deps)(
+      domainEvent({
+        id: 'refund-finalized-rejected',
+        type: 'finance.refund.finalized',
+        aggregateId: 'refund-rejected',
+        organizationId: 'org',
+        actorId: 'admin',
+        occurredAt: 1,
+        payload: {
+          refundRequestId: 'refund-rejected',
+          orderId: 'order-refund-rejected',
+          status: 'rejected',
+        },
+      }),
+    );
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.to).toBe('purchaser@real.test');
+    expect(sent[0]?.html).toContain('No refund was issued');
+    expect(sent[0]?.idempotencyKey).toBe('refund-not-completed:refund-rejected:rejected');
+  });
+
   it('renders cancellation updates with stable per-event-version delivery identity', async () => {
     let key = '';
     let html = '';
