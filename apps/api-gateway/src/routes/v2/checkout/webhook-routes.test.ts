@@ -4,6 +4,7 @@ import { MemoryPaymentProvider } from '@c1rcle/core/domain';
 import { describe, expect, it } from 'vitest';
 
 import { createV2Services } from '../../../lib/v2-services.js';
+import { seedApprovedPartnerOrganization } from '../../../test-utils/approved-partner-organization.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 import { publishEventForTest } from '../../../test-utils/publish-event.js';
 import { seedVerifiedCheckoutUsers } from '../../../test-utils/verified-test-users.js';
@@ -61,13 +62,12 @@ const write = (org: string) => ({
 
 async function seedHold(server: Server): Promise<{ holdId: string; grandTotalPaise: number }> {
   seedVerifiedCheckoutUsers(['user_1']);
-  const created = await server.inject({
-    method: 'POST',
-    url: '/organizations',
-    headers: { 'x-organization-id': 'org_seed', 'idempotency-key': `seed-${++keySeq}` },
-    payload: { name: 'Skyline', slug: `skyline-${keySeq}` },
+  ++keySeq;
+  const created = await seedApprovedPartnerOrganization({
+    name: 'Skyline',
+    slug: `skyline-${keySeq}`,
   });
-  const org: string = created.json().id;
+  const org: string = created.id;
   const venue = await server.inject({
     method: 'POST',
     url: `/organizations/${org}/venues`,
@@ -121,22 +121,20 @@ async function seedHoldWithPartnership(
 ): Promise<{ holdId: string; grandTotalPaise: number; venueOwnerOrgId: string }> {
   seedVerifiedCheckoutUsers(['user_1']);
   // Host org
-  const hostCreated = await server.inject({
-    method: 'POST',
-    url: '/organizations',
-    headers: { 'x-organization-id': 'org_partner_host', 'idempotency-key': `seed-${++keySeq}` },
-    payload: { name: 'Skyline', slug: `skyline-p-${keySeq}` },
+  ++keySeq;
+  const hostCreated = await seedApprovedPartnerOrganization({
+    name: 'Skyline',
+    slug: `skyline-p-${keySeq}`,
   });
-  const hostOrg: string = hostCreated.json().id;
+  const hostOrg: string = hostCreated.id;
 
   // Venue-owner org
-  const venueOwnerCreated = await server.inject({
-    method: 'POST',
-    url: '/organizations',
-    headers: { 'x-organization-id': 'org_partner_venue', 'idempotency-key': `seed-${++keySeq}` },
-    payload: { name: 'Venue Co', slug: `venue-co-${keySeq}` },
+  ++keySeq;
+  const venueOwnerCreated = await seedApprovedPartnerOrganization({
+    name: 'Venue Co',
+    slug: `venue-co-${keySeq}`,
   });
-  const venueOwnerOrg: string = venueOwnerCreated.json().id;
+  const venueOwnerOrg: string = venueOwnerCreated.id;
 
   // Venue owned by the venue-owner org
   const venueCreated = await server.inject({

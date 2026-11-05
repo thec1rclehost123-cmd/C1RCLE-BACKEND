@@ -6,6 +6,7 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 
 import { createV2Services } from '../../../lib/v2-services.js';
+import { seedApprovedPartnerOrganization } from '../../../test-utils/approved-partner-organization.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 import { publishEventForTest } from '../../../test-utils/publish-event.js';
 import { seedVerifiedCheckoutUsers } from '../../../test-utils/verified-test-users.js';
@@ -52,13 +53,12 @@ function memoryProvider(): MemoryPaymentProvider {
 /** Seeds org -> venue -> event -> tier -> hold -> paid order, returns its ticket id. */
 async function seedTicket(server: Server): Promise<string> {
   seedVerifiedCheckoutUsers(['user_1']);
-  const created = await server.inject({
-    method: 'POST',
-    url: '/organizations',
-    headers: { 'x-organization-id': 'org_seed', 'idempotency-key': `seed-${++keySeq}` },
-    payload: { name: 'Skyline', slug: `skyline-${keySeq}` },
+  ++keySeq;
+  const created = await seedApprovedPartnerOrganization({
+    name: 'Skyline',
+    slug: `skyline-${keySeq}`,
   });
-  const org: string = created.json().id;
+  const org: string = created.id;
   const venue = await server.inject({
     method: 'POST',
     url: `/organizations/${org}/venues`,

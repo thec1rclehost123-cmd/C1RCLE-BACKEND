@@ -9,6 +9,8 @@ import {
 } from '@c1rcle/contracts/client';
 import { z } from 'zod';
 
+import type { SupportTimelineEvent } from '@c1rcle/core/domain';
+
 import { isIdempotencyConflict, runIdempotent } from '../../../lib/v2-idempotency.js';
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
@@ -43,7 +45,7 @@ function toSupportTicketDto(ticket: {
   assignee: unknown;
   messages: unknown;
   internalNotes: unknown;
-  timeline: unknown;
+  timeline: SupportTimelineEvent[];
   links: unknown;
   refundReview?: unknown;
   sla: unknown;
@@ -68,8 +70,10 @@ function toSupportTicketDto(ticket: {
     requester: ticket.requester,
     assignee: ticket.assignee,
     messages: ticket.messages,
-    internalNotes: ticket.internalNotes,
-    timeline: ticket.timeline,
+    internalNotes: [],
+    timeline: ticket.timeline
+      .filter((entry) => ['created', 'reply', 'status_change'].includes(entry.type))
+      .map((entry) => ({ ...entry, detail: null, actorId: null })),
     links: ticket.links,
     ...(ticket.refundReview ? { refundReview: ticket.refundReview } : {}),
     sla: ticket.sla,
@@ -87,6 +91,9 @@ function toSupportTicketDto(ticket: {
 }
 
 export default async function supportIntakeRoutes(fastify: FastifyInstance) {
+  fastify.addHook('onSend', async (_request, reply) => {
+    reply.header('cache-control', 'private, no-store');
+  });
   fastify.post(
     '/support/tickets',
     {

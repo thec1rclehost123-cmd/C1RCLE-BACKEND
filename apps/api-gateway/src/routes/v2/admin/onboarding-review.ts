@@ -72,6 +72,10 @@ const adminListSchema = paginatedSchema(platformAdminDtoSchema);
 const auditListSchema = z.object({ items: z.array(adminAuditRecordDtoSchema) });
 
 export default async function adminRoutes(fastify: FastifyInstance) {
+  fastify.addHook('onSend', async (_request, reply, payload) => {
+    reply.header('cache-control', 'private, no-store');
+    return payload;
+  });
   /* ─── Onboarding review queue ──────────────────────────────────────────── */
 
   fastify.get(
@@ -344,11 +348,11 @@ export default async function adminRoutes(fastify: FastifyInstance) {
     },
   );
 
-  registerReview(fastify, 'reject', (userId, requestId, note) =>
-    services.onboarding.reject(userId, { requestId, note }),
+  registerReview(fastify, 'reject', (userId, requestId, note, meta) =>
+    services.onboarding.reject(userId, { requestId, note }, meta),
   );
-  registerReview(fastify, 'request-changes', (userId, requestId, note) =>
-    services.onboarding.requestChanges(userId, { requestId, note }),
+  registerReview(fastify, 'request-changes', (userId, requestId, note, meta) =>
+    services.onboarding.requestChanges(userId, { requestId, note }, meta),
   );
 
   /* ─── Dual-control proposal desk ───────────────────────────────────────── */

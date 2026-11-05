@@ -18,6 +18,24 @@
       "types": "./src/client.ts",
       "import": "./src/client.ts",
       "default": "./dist/client.js"
+    },
+    "./guest-onboarding": {
+      "types": "./src/contracts/guest-onboarding.ts",
+      "import": "./src/contracts/guest-onboarding.ts",
+      "default": "./dist/contracts/guest-onboarding.js"
+    },
+    "./guest-social": {
+      "types": "./src/contracts/guest-social.ts",
+      "import": "./src/contracts/guest-social.ts",
+      "default": "./dist/contracts/guest-social.js"
+    },
+    "./saved-events": {
+      "types": "./src/contracts/saved-events.ts",
+      "import": "./src/contracts/saved-events.ts"
+    },
+    "./partner-marketing": {
+      "types": "./src/contracts/partner-marketing.ts",
+      "import": "./src/contracts/partner-marketing.ts"
     }
   },
   "scripts": {

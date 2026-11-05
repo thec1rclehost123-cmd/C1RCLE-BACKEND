@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 
-import { createEmailOtpService } from '@c1rcle/core/application';
+import { createGuestProfileService, createEmailOtpService } from '@c1rcle/core/application';
 import { MemoryStaffRotationStore } from '@c1rcle/core/domain';
 import {
+  FirestoreGuestProfileRepository,
   FirestoreEmailOtpRepository,
   FirestoreOrganizationRepository,
   FirestoreUserAccountRepository,
@@ -168,6 +169,22 @@ describe.runIf(EMULATOR)('OTP account verification and existing sessions (local 
       });
       expect(await users.getByEmail(otherEmail)).toMatchObject({ emailVerified: false });
       expect(await otp.get(email)).toBeNull();
+      const guestOnboarding = createGuestProfileService({
+        guestProfiles: new FirestoreGuestProfileRepository(db),
+        config: { clock: { now: () => new Date() } } as never,
+      });
+      expect((await guestOnboarding.getOnboarding(login.user.id)).complete).toBe(false);
+      await guestOnboarding.saveOnboarding(login.user.id, {
+        displayName: login.user.name,
+        dateOfBirth: '2000-01-01',
+      });
+      await guestOnboarding.verifyPhone(login.user.id, '+919876543210', 'synthetic-proof', {
+        name: 'fixture',
+        verify: async () => ({ passed: true, provider: 'firebase-phone' }),
+      });
+      await guestOnboarding.saveOnboarding(login.user.id, { tastes: ['House'] });
+      expect((await guestOnboarding.getOnboarding(login.user.id)).complete).toBe(true);
+
       for (const sessionHeaders of [headers, { cookie }]) {
         const session = await app.inject({
           method: 'GET',

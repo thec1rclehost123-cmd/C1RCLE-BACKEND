@@ -73,12 +73,12 @@ describe('PUT /profile/me', () => {
     await server.close();
   });
 
-  it('422s short tastes lists and unknown keys (strict body)', async () => {
+  it('422s empty tastes lists and unknown keys (strict body)', async () => {
     const server = await buildServer();
     const short = await server.inject({
       method: 'PUT',
       url: '/profile/me',
-      payload: { ...BODY, tastes: ['Rooftops'] },
+      payload: { ...BODY, tastes: [] },
     });
     expect(short.statusCode).toBe(422);
 
@@ -103,6 +103,28 @@ describe('PUT /profile/me', () => {
       code: 'validation',
       message: 'Guest must be at least 18 years old.',
     });
+    await server.close();
+  });
+});
+
+describe('Pass 4 private profile acceptance', () => {
+  it('accepts a complete Pass 2 profile without introducing extra required fields', async () => {
+    const server = await buildServer();
+    const result = await server.inject({
+      method: 'PUT',
+      url: '/profile/me',
+      headers: { 'x-user-id': 'pass4-guest' },
+      payload: { ...BODY, city: '', tastes: ['House'], intents: [] },
+    });
+    expect(result.statusCode).toBe(200);
+    expect(result.headers['cache-control']).toBe('private, no-store');
+    await server.close();
+  });
+  it('does not cache caller-specific profile reads', async () => {
+    const server = await buildServer();
+    await server.inject({ method: 'PUT', url: '/profile/me', payload: BODY });
+    const result = await server.inject({ method: 'GET', url: '/profile/me' });
+    expect(result.headers['cache-control']).toBe('private, no-store');
     await server.close();
   });
 });

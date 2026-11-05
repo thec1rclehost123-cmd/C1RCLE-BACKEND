@@ -6,8 +6,11 @@ import type { GuestProfile } from '@c1rcle/core/domain';
 import { validateV2Response } from '../../lib/v2-response-validation.js';
 import { createV2Services } from '../../lib/v2-services.js';
 
+import { registerGuestOnboarding } from './guest-onboarding.js';
+import guestSocialRoutes from './guest-social.js';
 import { requireUserId } from './onboarding.js';
 import { mapDomainError } from './partner/events.js';
+import savedEventRoutes from './saved-events.js';
 
 import type { FastifyInstance } from 'fastify';
 import type { z } from 'zod';
@@ -27,6 +30,12 @@ import type { z } from 'zod';
 const services = createV2Services();
 
 export default async function guestProfileRoutes(fastify: FastifyInstance) {
+  fastify.addHook('onSend', async (_request, reply) => {
+    reply.header('cache-control', 'private, no-store');
+  });
+  await registerGuestOnboarding(fastify, services.guestProfile);
+  await fastify.register(guestSocialRoutes);
+  await fastify.register(savedEventRoutes);
   fastify.get(
     '/profile/me',
     { preHandler: [fastify.rateLimit('AUTH_READ')] },
@@ -38,7 +47,7 @@ export default async function guestProfileRoutes(fastify: FastifyInstance) {
         .getMine(userId)
         .catch((error: unknown) => mapDomainError(reply, request, userId, error));
       if (found === undefined) return reply;
-      if (found === null) {
+      if (found === null || !found.dateOfBirth || found.tastes.length < 1) {
         mapDomainError(reply, request, userId, new NotFoundError('Guest profile', userId));
         return reply;
       }
@@ -85,6 +94,7 @@ export function toDto(profile: GuestProfile) {
     userId: profile.userId,
     displayName: profile.displayName,
     dateOfBirth: profile.dateOfBirth,
+    phoneNumber: profile.phoneVerifiedAt ? (profile.phoneNumber ?? null) : null,
     city: profile.city,
     tastes: profile.tastes,
     intents: profile.intents,

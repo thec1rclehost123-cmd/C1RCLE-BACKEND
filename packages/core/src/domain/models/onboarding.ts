@@ -60,6 +60,22 @@ export function platformFeePercentFor(plan: OnboardingPlan): number {
  * applicant may set is enumerated, so a future field cannot arrive carrying
  * authority with it.
  */
+export interface ApplicantKycIdentity {
+  idType: 'aadhaar' | 'passport' | 'driving_licence' | 'voter_id';
+  idNumber: string;
+}
+export interface ApplicantKycDetails {
+  identity?: ApplicantKycIdentity;
+  business?: { pan: string; gst?: string; address: string };
+  signatory?: ApplicantKycIdentity & {
+    fullName: string;
+    designation: string;
+    email: string;
+    phone?: string;
+    declared: true;
+  };
+}
+
 export interface OnboardingProfile {
   legalName: string;
   contactPerson: string;
@@ -73,6 +89,8 @@ export interface OnboardingProfile {
   businessType?: string;
   registrationNumber?: string;
   entityType?: string;
+  /** Private applicant/Admin review data. No provider verification authority. */
+  kyc?: ApplicantKycDetails;
 }
 
 export type OnboardingDocumentStatus = 'pending' | 'verified' | 'rejected';
@@ -152,7 +170,11 @@ export function updateOnboardingProfile(
   }
   return {
     ...bumpVersion(request, now ?? new Date()),
-    profile: { ...request.profile, ...profile },
+    profile: {
+      ...request.profile,
+      ...profile,
+      ...(profile.kyc ? { kyc: { ...request.profile.kyc, ...profile.kyc } } : {}),
+    },
   };
 }
 
@@ -161,8 +183,8 @@ export function addOnboardingDocument(
   document: { label: string; storagePath: string },
   now?: Date,
 ): OnboardingRequest {
-  if (request.status === 'approved' || request.status === 'rejected') {
-    throw new InvalidOperationError('A decided onboarding request cannot take new documents');
+  if (request.status !== 'draft' && request.status !== 'changes_requested') {
+    throw new InvalidOperationError('Only an editable onboarding request can take new documents');
   }
   const at = now ?? new Date();
   // Re-uploading a label replaces it: the newest copy of an ID is the one an
@@ -280,12 +302,36 @@ export function missingDocuments(request: OnboardingRequest): string[] {
   return required.filter((label) => !present.has(label));
 }
 
+function assertRequiredKycDetails(request: OnboardingRequest): void {
+  const kyc = request.profile.kyc;
+  if (request.profile.entityType === 'business') {
+    const signatory = kyc?.signatory;
+    if (
+      !kyc?.business?.pan ||
+      !kyc.business.address ||
+      !signatory?.fullName ||
+      !signatory.designation ||
+      !signatory.email ||
+      !signatory.idType ||
+      !signatory.idNumber ||
+      !signatory.declared
+    ) {
+      throw new InvalidOperationError(
+        'Complete the required business and representative details before submitting.',
+      );
+    }
+  } else if (!kyc?.identity?.idType || !kyc.identity.idNumber) {
+    throw new InvalidOperationError('Complete the required identity details before submitting.');
+  }
+}
+
 export function submitOnboardingRequest(request: OnboardingRequest, now?: Date): OnboardingRequest {
   const missing = missingDocuments(request);
   if (missing.length > 0) {
     // Fail here rather than let an admin discover it mid-review.
     throw new InvalidOperationError(`Missing required documents: ${missing.join(', ')}`);
   }
+  assertRequiredKycDetails(request);
   const at = now ?? new Date();
   const next = transitionStatus(request.status, 'submitted', ONBOARDING_TRANSITIONS);
   return { ...bumpVersion(request, at), status: next, submittedAt: at.toISOString() };
@@ -339,6 +385,7 @@ export function approveOnboardingRequest(
       'All required documents must be verified on the KYC desk before this application can be approved',
     );
   }
+  assertRequiredKycDetails(request);
   const reviewed = review(request, 'approved', input);
   return { ...reviewed, provisionedOrganizationId: input.provisionedOrganizationId };
 }
@@ -383,10 +430,29 @@ export function sanitizeApplicantProfile(
     'businessType',
     'registrationNumber',
     'entityType',
+    'kyc',
   ];
   const profile: Record<string, unknown> = {};
   for (const key of allowed) {
-    if (input[key] !== undefined) profile[key] = input[key];
+    if (input[key] !== undefined && key !== 'kyc') profile[key] = input[key];
+    if (key === 'kyc' && input[key] && typeof input[key] === 'object') {
+      const raw = input[key] as Record<string, unknown>;
+      const kyc: Record<string, unknown> = {};
+      const fields = {
+        identity: ['idType', 'idNumber'],
+        business: ['pan', 'gst', 'address'],
+        signatory: ['idType', 'idNumber', 'fullName', 'designation', 'email', 'phone', 'declared'],
+      };
+      for (const [section, keys] of Object.entries(fields)) {
+        const value = raw[section];
+        if (!value || typeof value !== 'object') continue;
+        const data = value as Record<string, unknown>;
+        kyc[section] = Object.fromEntries(
+          keys.filter((field) => data[field] !== undefined).map((field) => [field, data[field]]),
+        );
+      }
+      profile[key] = kyc;
+    }
   }
   return profile;
 }

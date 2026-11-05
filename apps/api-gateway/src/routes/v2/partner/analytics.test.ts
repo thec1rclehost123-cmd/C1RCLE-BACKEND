@@ -13,6 +13,7 @@ import { describe, expect, it } from 'vitest';
 import type { MemoryAnalyticsReadModelRepository } from '@c1rcle/core/infrastructure/memory';
 
 import { createV2Services } from '../../../lib/v2-services.js';
+import { seedApprovedPartnerOrganization } from '../../../test-utils/approved-partner-organization.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 
 import partnerAnalyticsRoutes from './analytics.js';
@@ -41,14 +42,13 @@ const buildServer = (cache = false) =>
 type Server = Awaited<ReturnType<typeof buildServer>>;
 const read = (org: string) => ({ 'x-organization-id': org });
 
-async function seedOrganization(server: Server): Promise<string> {
-  const created = await server.inject({
-    method: 'POST',
-    url: '/organizations',
-    headers: { 'x-organization-id': 'org_seed', 'idempotency-key': `seed-${++keySeq}` },
-    payload: { name: 'Skyline', slug: `skyline-${keySeq}` },
+async function seedOrganization(_server: Server): Promise<string> {
+  ++keySeq;
+  const created = await seedApprovedPartnerOrganization({
+    name: 'Skyline',
+    slug: `skyline-${keySeq}`,
   });
-  const id: string = created.json().id;
+  const id: string = created.id;
   return id;
 }
 

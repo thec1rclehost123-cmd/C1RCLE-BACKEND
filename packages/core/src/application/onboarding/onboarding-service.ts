@@ -153,7 +153,10 @@ export class OnboardingService {
 
   /** The applicant's own application, if any. `null` rather than a 404. */
   async getMine(userId: EntityId): Promise<OnboardingRequest | null> {
-    return this.repo.findOpenForUser(userId);
+    const open = await this.repo.findOpenForUser(userId);
+    if (open) return open;
+    const latest = await this.repo.listForUser(userId, { limit: 1, cursor: null });
+    return latest.items[0] ?? null;
   }
 
   async listMine(userId: EntityId, query: PaginationQuery) {
@@ -225,6 +228,12 @@ export class OnboardingService {
     command: IssueUploadUrlCommand,
   ): Promise<UploadUrlGrant> {
     const request = await this.requireOwn(userId, command.requestId);
+
+    if (request.status !== 'draft' && request.status !== 'changes_requested') {
+      throw new InvalidOperationError(
+        'Documents can only be uploaded while editing an application',
+      );
+    }
 
     // Validated against both entity-type label sets, not just this applicant's:
     // `entityType` can still change while the request is a draft, and minting
@@ -457,10 +466,9 @@ export class OnboardingService {
   /**
    * Approves an application and provisions the organization it asked for.
    *
-   * The two writes are ordered organization-first: a failure after the
-   * organization exists leaves the request still `submitted`, which an admin
-   * can retry — the opposite order would leave an approved request pointing at
-   * an organization that was never created, which nothing can repair.
+   * Persist the approval before granting membership. A deterministic workspace
+   * id lets an authorized retry repair provisioning after a storage failure,
+   * without ever granting operational access to a still-pending applicant.
    *
    * Note what is *not* here: no automatic approval on a passing verification.
    * The provider is advisory (see `ports/verification.ts`); a human at TIER2
@@ -473,7 +481,7 @@ export class OnboardingService {
   ): Promise<{ request: OnboardingRequest; organization: Organization }> {
     const admin = await this.authority.authorize(adminUserId, 'ONBOARDING_APPROVE');
     const request = await this.requireRequest(command.requestId);
-    if (request.status !== 'submitted') {
+    if (request.status !== 'submitted' && request.status !== 'approved') {
       throw new InvalidOperationError(`Only a submitted application can be approved`);
     }
     // Enforce the KYC gate BEFORE provisioning: `approveOnboardingRequest`
@@ -486,8 +494,24 @@ export class OnboardingService {
     }
 
     const now = this.deps.config.clock.now();
+    const organizationId = request.provisionedOrganizationId ?? `onboarding_${request.id}`;
+    if (request.status === 'approved') {
+      const existing = await this.deps.repositories.organizations.getById(organizationId);
+      if (existing) return { request, organization: existing };
+    }
+    const approved =
+      request.status === 'approved'
+        ? request
+        : approveOnboardingRequest(request, {
+            reviewedBy: admin.id,
+            note: command.note,
+            provisionedOrganizationId: organizationId,
+            now,
+          });
+    if (request.status !== 'approved') await this.repo.save(approved);
+
     const organization = createOrganization({
-      id: this.deps.config.ids(),
+      id: organizationId,
       name: request.profile.legalName,
       slug: slugFor(request.profile.legalName, request.id),
       ownerId: request.userId,
@@ -498,11 +522,9 @@ export class OnboardingService {
       settings: { name: request.profile.legalName, timezone: 'Asia/Kolkata' },
       now,
     });
-    await this.deps.repositories.organizations.save(organization);
-
     if (request.requestedType === 'venue' && this.deps.repositories.venues) {
       const venue = createVenue({
-        id: this.deps.config.ids(),
+        id: `onboarding_venue_${request.id}`,
         organizationId: organization.id,
         ownerId: request.userId,
         name: request.profile.legalName,
@@ -512,16 +534,11 @@ export class OnboardingService {
         city: request.profile.city ?? null,
         now,
       });
-      await this.deps.repositories.venues.save(venue);
+      if (!(await this.deps.repositories.venues.getById(venue.id))) {
+        await this.deps.repositories.venues.save(venue);
+      }
     }
-
-    const approved = approveOnboardingRequest(request, {
-      reviewedBy: admin.id,
-      note: command.note,
-      provisionedOrganizationId: organization.id,
-      now,
-    });
-    await this.repo.save(approved);
+    await this.deps.repositories.organizations.save(organization);
 
     await this.authority.record(admin, {
       action: 'ONBOARDING_APPROVE',

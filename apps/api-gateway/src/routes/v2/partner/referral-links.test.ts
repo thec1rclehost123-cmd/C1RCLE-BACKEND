@@ -11,6 +11,7 @@ import {
 import { describe, expect, it } from 'vitest';
 
 import { createV2Services } from '../../../lib/v2-services.js';
+import { seedApprovedPartnerOrganization } from '../../../test-utils/approved-partner-organization.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 
 import partnerEventCatalogRoutes from './event-catalog.js';
@@ -43,13 +44,12 @@ const read = (org: string) => ({ 'x-organization-id': org });
 const write = (org: string) => ({ ...read(org), 'idempotency-key': `ref-key-${++keySeq}` });
 
 async function seed(server: Server): Promise<{ org: string; eventId: string }> {
-  const created = await server.inject({
-    method: 'POST',
-    url: '/organizations',
-    headers: { 'x-organization-id': 'org_seed', 'idempotency-key': `seed-${++keySeq}` },
-    payload: { name: 'Skyline', slug: `skyline-${keySeq}` },
+  ++keySeq;
+  const created = await seedApprovedPartnerOrganization({
+    name: 'Skyline',
+    slug: `skyline-${keySeq}`,
   });
-  const org: string = created.json().id;
+  const org: string = created.id;
 
   const venue = await server.inject({
     method: 'POST',

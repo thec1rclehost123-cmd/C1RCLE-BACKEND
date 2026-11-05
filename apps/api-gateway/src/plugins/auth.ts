@@ -30,6 +30,7 @@ import type {
 } from '@c1rcle/core/domain';
 import type { Firestore } from '@c1rcle/core/infrastructure';
 
+import { getGoogleAuthConfig } from '../config/google-auth.js';
 import {
   allowedBrowserOrigins,
   getBetterAuthTrustedOrigins,
@@ -64,7 +65,29 @@ export type BetterAuthInstance = ReturnType<typeof buildBetterAuth>;
  */
 export function buildBetterAuth(gw: GatewayConfig, db: Firestore, emailSender: EmailSender) {
   const userBans = new FirestoreUserBanRepository(db);
+  const google = getGoogleAuthConfig();
+  if (google && !getBetterAuthTrustedOrigins(gw).includes(new URL(google.redirectURI).origin))
+    throw new Error('Google callback origin must be a configured trusted frontend origin.');
   return betterAuth({
+    socialProviders: google
+      ? {
+          google: {
+            ...google,
+            mapProfileToUser: (profile) => {
+              if (!profile.email_verified)
+                throw new APIError('FORBIDDEN', { message: 'Verified email required' });
+              return { role: 'guest' };
+            },
+          },
+        }
+      : {},
+    account: {
+      accountLinking: {
+        enabled: true,
+        allowDifferentEmails: false,
+        requireLocalEmailVerified: true,
+      },
+    },
     databaseHooks: {
       session: {
         create: {
@@ -80,6 +103,7 @@ export function buildBetterAuth(gw: GatewayConfig, db: Firestore, emailSender: E
     },
     secret: gw.BETTER_AUTH_SECRET,
     baseURL: gw.BETTER_AUTH_URL,
+    basePath: '/api/v2/auth',
     database: firestoreAdapter({
       firestore: db,
       collections: {
