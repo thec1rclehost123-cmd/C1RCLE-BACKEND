@@ -23,7 +23,7 @@ describe('ResendEmailSender transactional delivery', () => {
         html: '<p>Safe</p>',
         idempotencyKey: 'booking-receipt:ord_1:fulfilled',
       }),
-    ).resolves.toEqual({ providerMessageId: 'email_1' });
+    ).resolves.toEqual({ outcome: 'accepted_by_provider', providerMessageId: 'email_1' });
     const init = fetchMock.mock.calls[0]?.[1];
     expect(init?.headers).toMatchObject({
       'Idempotency-Key': 'booking-receipt:ord_1:fulfilled',
@@ -48,6 +48,29 @@ describe('ResendEmailSender transactional delivery', () => {
         idempotencyKey: 'booking-receipt:ord_1:fulfilled',
       }),
     ).rejects.toBeInstanceOf(PermanentEmailDeliveryError);
+  });
+
+  it('captures transactional content locally without claiming provider acceptance', async () => {
+    const sender = new ResendEmailSender(undefined, 'development', noopLogger);
+    await expect(
+      sender.sendTransactionalEmail({
+        to: 'guest@example.test',
+        subject: 'Receipt',
+        html: '<p>Safe receipt</p>',
+        text: 'Safe receipt',
+        templateType: 'booking_receipt',
+        idempotencyKey: 'booking-receipt:ord_1:fulfilled',
+      }),
+    ).resolves.toEqual({ outcome: 'captured_locally', providerMessageId: null });
+    expect(sender.localCaptures).toHaveLength(1);
+    expect(sender.localCaptures[0]).toMatchObject({
+      recipient: 'guest@example.test',
+      templateType: 'booking_receipt',
+      subject: 'Receipt',
+      html: '<p>Safe receipt</p>',
+      text: 'Safe receipt',
+      idempotencyKey: 'booking-receipt:ord_1:fulfilled',
+    });
   });
 
   it('does not log credentials or recipient data when development email delivery is suppressed', async () => {

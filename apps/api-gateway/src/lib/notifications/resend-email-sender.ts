@@ -24,6 +24,15 @@ import type {
  */
 export class ResendEmailSender implements EmailSender {
   readonly name = 'resend';
+  readonly localCaptures: {
+    recipient: string;
+    templateType: string;
+    subject: string;
+    html: string;
+    text: string | null;
+    idempotencyKey: string;
+    capturedAt: string;
+  }[] = [];
 
   constructor(
     private readonly apiKey: string | undefined,
@@ -214,14 +223,27 @@ export class ResendEmailSender implements EmailSender {
 
   async sendTransactionalEmail(
     message: TransactionalEmail,
-  ): Promise<{ providerMessageId: string }> {
+  ): Promise<{
+    outcome: 'accepted_by_provider' | 'captured_locally';
+    providerMessageId: string | null;
+  }> {
     if (!this.apiKey) {
       if (this.nodeEnv === 'production') throw new Error('Email provider not configured');
-      this.logger.info('dev_email_transactional', {
-        idempotencyKey: message.idempotencyKey,
+      this.localCaptures.push({
+        recipient: message.to,
+        templateType: message.templateType ?? 'transactional',
         subject: message.subject,
+        html: message.html,
+        ...(message.text ? { text: message.text } : {}),
+        text: message.text ?? null,
+        idempotencyKey: message.idempotencyKey,
+        capturedAt: new Date().toISOString(),
       });
-      return { providerMessageId: `dev-${message.idempotencyKey}` };
+      this.logger.info('dev_email_transactional', {
+        delivery: 'captured_locally',
+        template: message.templateType ?? 'transactional',
+      });
+      return { outcome: 'captured_locally', providerMessageId: null };
     }
     const response = await fetch('https://api.resend.com/emails', {
       method: 'POST',
@@ -251,7 +273,7 @@ export class ResendEmailSender implements EmailSender {
     const result = (await response.json()) as { id?: unknown };
     if (typeof result.id !== 'string' || !result.id)
       throw new Error('Email provider response missing message id');
-    return { providerMessageId: result.id };
+    return { outcome: 'accepted_by_provider', providerMessageId: result.id };
   }
 }
 
