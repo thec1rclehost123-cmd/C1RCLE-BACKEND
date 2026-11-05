@@ -1,16 +1,31 @@
 import { describe, expect, it } from 'vitest';
 
+import { createCartReservation } from '../../domain/models/cart-reservation.js';
 import { issueEntitlements } from '../../domain/models/entitlement.js';
+import { createTicketTier } from '../../domain/models/event-catalog.js';
+import { createOrder, lockOrderForRefund, applyOrderRefund } from '../../domain/models/order.js';
+import { calculatePricing } from '../../domain/models/pricing.js';
+import { applyProviderPaymentEvent } from '../../domain/models/provider-payment.js';
+import { quoteOriginalRefund } from '../../domain/models/purchase-refund-snapshot.js';
+import {
+  createRefundRequest,
+  approveRefundRequest,
+  beginRefundExecution,
+  recordRefundProviderFact,
+  markRefundSettled,
+} from '../../domain/models/refund-request.js';
 import { MemoryFinancialJournalRepository } from '../../infrastructure/memory/memory-financial-journal-repository.js';
 import { MemoryReconciliationRepository } from '../../infrastructure/memory/memory-reconciliation-repository.js';
 
 import { FinancialPostingService } from './financial-posting-service.js';
 import { ReconciliationService } from './reconciliation-service.js';
 
+import type { CartReservation } from '../../domain/models/cart-reservation.js';
 import type { Entitlement } from '../../domain/models/entitlement.js';
 import type { Order } from '../../domain/models/order.js';
 import type { Payout } from '../../domain/models/payout.js';
 import type { ProviderPayment } from '../../domain/models/provider-payment.js';
+import type { AdminRefundRequest } from '../../domain/models/refund-request.js';
 import type { ServiceDeps } from '../context.js';
 
 const NOW = new Date('2026-10-16T12:00:00.000Z');
@@ -89,6 +104,8 @@ function build(input: {
   payments?: ProviderPayment[];
   payouts?: Payout[];
   tickets?: Entitlement[];
+  holds?: CartReservation[];
+  refunds?: AdminRefundRequest[];
   failOrders?: boolean;
 }) {
   const reconciliations = new MemoryReconciliationRepository();
@@ -107,7 +124,14 @@ function build(input: {
       providerPayments: { listAll: async () => page(input.payments ?? []) },
       entitlements: { listAll: async () => page(input.tickets ?? []) },
       payouts: { listByStatus: async () => page(input.payouts ?? []) },
-      cartReservations: { getByProviderOrderId: async () => null },
+      cartReservations: {
+        getByProviderOrderId: async (id: string) =>
+          input.holds?.find((hold) => hold.providerOrderId === id) ?? null,
+      },
+      refundRequests: {
+        listByOrder: async (id: string) =>
+          input.refunds?.filter((request) => request.orderId === id) ?? [],
+      },
       financialJournals: journals,
     },
   } as unknown as ServiceDeps;
@@ -387,4 +411,211 @@ describe('M3 legitimate issuance and lifecycle reconciliation', () => {
       ),
     ).toBe(true);
   });
+});
+
+describe('M4 intentional zero-rights capture compensation', () => {
+  async function compensated(stage: 'approved' | 'settled') {
+    const tier = createTicketTier({
+      id: 'comp-tier',
+      eventId: 'comp-event',
+      organizationId: 'comp-org',
+      name: 'Entry',
+      quantity: 10,
+      priceInPaise: 1000,
+      now: NOW,
+    });
+    const pricing = calculatePricing({ lines: [{ tier, quantity: 1 }] });
+    const paid: Order = {
+      ...createOrder({
+        id: 'comp-order',
+        eventId: tier.eventId,
+        organizationId: tier.organizationId,
+        userId: 'comp-buyer',
+        contact: { name: 'Synthetic', email: '', phone: '' },
+        pricing,
+        now: NOW,
+      }),
+      status: 'paid',
+      paymentId: 'pay-comp',
+      paymentIntentId: 'provider-comp',
+      fulfillmentState: 'pending',
+      compensationRequired: { reason: 'capacity_unavailable', requestedAt: NOW.toISOString() },
+    };
+    const quote = quoteOriginalRefund(
+      paid,
+      paid.refundSnapshot?.tickets.map((ticket) => ticket.entitlementId) ?? [],
+      'fulfillment_failure',
+    );
+    let request = createRefundRequest({
+      id: 'comp-request',
+      orderId: paid.id,
+      organizationId: paid.organizationId,
+      requestedBy: 'system_checkout_compensation',
+      reason: 'Captured purchase could not grant admission',
+      amountPaise: quote.amountPaise,
+      refundCause: quote.cause,
+      refundComponents: quote.components,
+      purchasePolicyVersion: quote.purchasePolicyVersion,
+      sourceEventVersion: 1,
+      intakeFingerprint: 'comp-intent',
+      scope: 'amount_only',
+      targetEntitlementIds: [],
+      ticketLines: [],
+      hasRedeemedEntitlement: false,
+      thresholds: { singleApproverCeilingPaise: 1, dualApproverCeilingPaise: 100000 },
+      now: NOW,
+    });
+    request = approveRefundRequest(request, 'finance-approver', NOW);
+    let current = lockOrderForRefund(paid, NOW);
+    let payment = applyProviderPaymentEvent(
+      null,
+      {
+        type: 'captured',
+        paymentId: 'pay-comp',
+        providerOrderId: paid.paymentIntentId,
+        orderId: null,
+        correlated: true,
+        amountPaise: paid.grandTotalPaise,
+        currency: 'INR',
+        feePaise: 0,
+        taxOnFeePaise: 0,
+        occurredAt: NOW.toISOString(),
+      },
+      NOW,
+    );
+    if (stage === 'settled') {
+      request = recordRefundProviderFact(
+        beginRefundExecution(request, NOW),
+        'rfnd-comp',
+        'processed',
+        NOW,
+      );
+      payment = applyProviderPaymentEvent(
+        payment,
+        {
+          type: 'refund_processed',
+          paymentId: payment.id,
+          refundId: 'rfnd-comp',
+          amountPaise: paid.grandTotalPaise,
+          currency: 'INR',
+        },
+        NOW,
+      );
+      current = applyOrderRefund(current, paid.grandTotalPaise, NOW, request.id);
+      request = markRefundSettled(request, 'rfnd-comp', NOW);
+    }
+    const hold = {
+      ...createCartReservation({
+        id: 'comp-hold',
+        eventId: paid.eventId,
+        organizationId: paid.organizationId,
+        userId: paid.userId,
+        lines: [{ tierId: tier.id, tierName: tier.name, quantity: 1, unitPricePaise: 1000 }],
+        pricing,
+        appliedPromoCode: null,
+        attribution: null,
+        idempotencyKey: 'comp-hold',
+        now: NOW,
+      }),
+      providerOrderId: paid.paymentIntentId,
+      status: 'released' as const,
+    };
+    const input = {
+      orders: [current],
+      payments: [payment],
+      holds: [hold],
+      refunds: [request],
+      tickets: [] as Entitlement[],
+    };
+    const f = build(input),
+      posting = new FinancialPostingService(f.journals);
+    await posting.postTicketSale({
+      organizationId: paid.organizationId,
+      orderId: paid.id,
+      eventId: paid.eventId,
+      paymentId: paid.paymentId,
+      sourceType: 'online_payment_capture',
+      providerConfirmed: true,
+      currency: 'INR',
+      ticketFaceValuePaise: 1000,
+      discountPaise: 0,
+      discountFundingOwner: null,
+      netTicketRevenuePaise: 1000,
+      gstPaise: paid.gstPaise,
+      platformFeePaise: paid.platformFeePaise,
+      paymentFeePaise: paid.paymentFeePaise,
+      allocation: {
+        platformPaise: 0,
+        hostOrganizationId: paid.organizationId,
+        hostPaise: 1000,
+        venueOrganizationId: null,
+        venuePaise: 0,
+        promoterOrganizationId: null,
+        promoterPaise: 0,
+      },
+      postedAt: NOW,
+    });
+    if (stage === 'settled')
+      await posting.postRefund({
+        organizationId: paid.organizationId,
+        orderId: paid.id,
+        eventId: paid.eventId,
+        paymentId: payment.id,
+        refundRequestId: request.id,
+        providerRefundId: 'rfnd-comp',
+        amountPaise: request.amountPaise,
+        refundComponents: request.refundComponents,
+        previouslyRefundedPaise: 0,
+        postedAt: NOW,
+      });
+    return { ...f, input, paid, request, current, payment, hold };
+  }
+  it.each(['approved', 'settled'] as const)(
+    'recognizes %s full-original compensation without demanding admissions or a converted hold',
+    async (stage) => {
+      const f = await compensated(stage);
+      await f.service.run('finance-admin');
+      expect((await f.reconciliations.listDiscrepancies({ limit: 100 })).items).toEqual([]);
+    },
+  );
+  it.each(['valid', 'void'] as const)(
+    'flags any %s ticket issued for a blocked compensation order',
+    async (status) => {
+      const f = await compensated('settled');
+      f.input.tickets.push(
+        ...issueEntitlements({ order: f.paid, now: NOW }).map((ticket) => ({ ...ticket, status })),
+      );
+      await f.service.run('finance-admin');
+      expect((await f.reconciliations.listDiscrepancies({ limit: 100 })).items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: 'paid_order_without_ticket',
+            evidence: expect.objectContaining({ expectedTickets: 0, actualTickets: 1 }),
+          }),
+        ]),
+      );
+    },
+  );
+  it.each(['request', 'capture', 'refund', 'journal', 'refund_journal', 'binding'] as const)(
+    'does not let the compensation marker hide missing %s evidence',
+    async (missing) => {
+      const f = await compensated('settled');
+      if (missing === 'request') f.input.refunds.length = 0;
+      if (missing === 'capture') f.input.payments.length = 0;
+      if (missing === 'refund') f.input.payments[0] = { ...f.payment, refunds: {} };
+      if (missing === 'journal') f.journals.journals.clear();
+      if (missing === 'refund_journal') {
+        for (const journal of f.journals.journals.values())
+          if (journal.idempotencyKey.endsWith(':provider-settlement'))
+            f.journals.journals.delete(journal.id);
+      }
+      if (missing === 'binding') f.input.holds[0] = { ...f.hold, userId: 'wrong-buyer' };
+      await f.service.run('finance-admin');
+      expect(
+        (await f.reconciliations.listDiscrepancies({ limit: 100 })).items.some(
+          (item) => item.kind === 'paid_order_without_ticket',
+        ),
+      ).toBe(true);
+    },
+  );
 });
