@@ -746,11 +746,12 @@ async function enqueueMaterialChangeRecipients(
       if (!noticeEntitlements.has(recipientGroup))
         noticeEntitlements.set(recipientGroup, entitlement.id);
     }
-    // The purchaser remains the financial owner even after ticket transfer,
-    // so preserve their order-level notice alongside current-holder notices.
-    // Recipient-hash idempotency in buildMessage deduplicates this when both
-    // roles intentionally use the same address.
-    noticeEntitlements.set(`order-contact:${order.id}`, null);
+    // Operational event-change notices follow the current holder. The
+    // purchaser remains the financial owner and is notified separately for
+    // refund outcomes; do not send event-change notices to a former holder
+    // after assignment or transfer. Fall back to the purchaser only for an
+    // order that has no surviving entitlement to identify a current holder.
+    if (noticeEntitlements.size === 0) noticeEntitlements.set(`order-contact:${order.id}`, null);
 
     for (const entitlementId of noticeEntitlements.values()) {
       await deps.outbox.append(

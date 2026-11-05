@@ -1381,11 +1381,10 @@ describe('transactional email consumer', () => {
     const affected = outbox
       .all()
       .filter((row) => row.type === 'event.material_change.order_affected');
-    expect(affected).toHaveLength(2);
+    expect(affected).toHaveLength(1);
     expect(affected[0]?.aggregateId).toBe('paid_1');
     expect(affected).toMatchObject([
       { payload: { payload: { entitlementId: 'entitlement_paid_1' } } },
-      { payload: { payload: { entitlementId: null } } },
     ]);
   });
 
