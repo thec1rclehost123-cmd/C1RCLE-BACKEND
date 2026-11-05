@@ -494,7 +494,7 @@ describe('transactional email consumer', () => {
     ]);
   });
 
-  it('notifies only the verified current holder after an accepted transfer and deduplicates retries', async () => {
+  it('notifies both verified holders after an accepted transfer and deduplicates retries', async () => {
     const sent: { to: string; subject: string; html: string; idempotencyKey: string }[] = [];
     const emailDeliveries = new MemoryEmailDeliveryRepository();
     const deps = {
@@ -511,6 +511,12 @@ describe('transactional email consumer', () => {
       },
       repositories: {
         entitlements: {
+          getTicketTransfer: async () => ({
+            id: 'TRF-notice',
+            senderUserId: 'former_holder',
+            eventId: 'EVT-transfer-notice',
+            status: 'accepted',
+          }),
           getById: async () => ({
             id: 'ENT-transfer-notice',
             eventId: 'EVT-transfer-notice',
@@ -524,7 +530,9 @@ describe('transactional email consumer', () => {
           getById: async (id: string) =>
             id === 'verified_holder'
               ? { id, email: 'holder@real.test', emailVerified: true }
-              : null,
+              : id === 'former_holder'
+                ? { id, email: 'former-holder@real.test', emailVerified: true }
+                : null,
         },
         events: { getById: async () => ({ title: '<Private Event>' }) },
       },
@@ -549,13 +557,15 @@ describe('transactional email consumer', () => {
     await handler(event);
     await handler(event);
 
-    expect(sent).toHaveLength(1);
+    expect(sent).toHaveLength(2);
     expect(sent[0]?.to).toBe('holder@real.test');
+    expect(sent[1]?.to).toBe('former-holder@real.test');
     expect(sent[0]?.idempotencyKey).toBe('ticket-transfer-accepted:TRF-notice:4');
     expect(sent[0]?.html).toContain('&lt;Private Event&gt;');
     expect(sent[0]?.html).not.toContain('TRF-notice');
     expect([...emailDeliveries.records.values()]).toMatchObject([
       { kind: 'ticket_transfer_accepted', status: 'sent' },
+      { kind: 'ticket_transfer_former_holder', status: 'sent' },
     ]);
   });
 
