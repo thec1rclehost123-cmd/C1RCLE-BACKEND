@@ -42,6 +42,7 @@ import partnerAnalyticsRoutes from './partner/analytics.js';
 import partnerDiscoveryRoutes from './partner/discover.js';
 import partnerEventCatalogRoutes from './partner/event-catalog.js';
 import partnerEventRoutes from './partner/events.js';
+import partnerMarketingRoutes from './partner/marketing.js';
 import partnerOrganizationRoutes from './partner/organizations.js';
 import partnerPartnershipRoutes from './partner/partnerships.js';
 import promoterConnectionRoutes from './partner/promoter-connections.js';
@@ -130,6 +131,7 @@ export async function registerV2Routes(
       await partnerPartnershipRoutes(v2);
       await partnerDiscoveryRoutes(v2);
       await partnerAnalyticsRoutes(v2);
+      await partnerMarketingRoutes(v2);
       await partnerReferralLinkRoutes(v2);
       await promoterConnectionRoutes(v2);
       // Phase 2: not org-scoped — an applicant has no organization yet, and a

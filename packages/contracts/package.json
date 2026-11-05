@@ -32,6 +32,10 @@
     "./saved-events": {
       "types": "./src/contracts/saved-events.ts",
       "import": "./src/contracts/saved-events.ts"
+    },
+    "./partner-marketing": {
+      "types": "./src/contracts/partner-marketing.ts",
+      "import": "./src/contracts/partner-marketing.ts"
     }
   },
   "scripts": {
