@@ -781,12 +781,15 @@ export class AdminOperationsService {
     meta?: AdminRequestMeta,
   ): Promise<PlatformSettings> {
     const admin = await this.authority.requireAdmin(adminUserId);
+    // Every settings field (fees, refund thresholds, maintenance) moves money
+    // or availability, so the financial tier is required unconditionally rather
+    // than only when the request happens to carry a booking fee policy.
+    await this.authority.authorize(adminUserId, 'FINANCIAL_REFUND');
     const current = await this.deps.repositories.platformSettings.get();
     const bookingFeePolicy = patch.bookingFeePolicy
       ? snapshotBookingFeePolicy(patch.bookingFeePolicy)
       : current.bookingFeePolicy;
     if (patch.bookingFeePolicy) {
-      await this.authority.authorize(adminUserId, 'FINANCIAL_REFUND');
       const next = snapshotBookingFeePolicy(patch.bookingFeePolicy);
       if (
         current.bookingFeePolicy?.version === next.version &&

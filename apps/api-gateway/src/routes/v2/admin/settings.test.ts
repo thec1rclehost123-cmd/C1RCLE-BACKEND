@@ -127,6 +127,23 @@ describe('PUT /admin/settings/platform', () => {
     expect((await services.repos().platformSettings.get()).bookingFeePolicy).toEqual(policy);
   });
 
+  it('refuses any settings change from an admin without financial authority', async () => {
+    await seedAdmin('support_settings', 'support');
+    const before = await services.repos().platformSettings.get();
+    const denied = await server.inject({
+      method: 'PUT',
+      url: '/admin/settings/platform',
+      headers: asUser('support_settings'),
+      payload: { maintenanceMode: true, refundSingleApproverThresholdPaise: 1 },
+    });
+    expect(denied.statusCode, denied.body).toBe(403);
+    const after = await services.repos().platformSettings.get();
+    expect(after.maintenanceMode).toBe(before.maintenanceMode);
+    expect(after.refundSingleApproverThresholdPaise).toBe(
+      before.refundSingleApproverThresholdPaise,
+    );
+  });
+
   it('merge-updates a threshold and persists it for subsequent reads', async () => {
     await seedAdmin('admin_a', 'ops');
 
