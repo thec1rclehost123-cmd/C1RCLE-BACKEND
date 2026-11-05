@@ -173,7 +173,7 @@ describe('client schemas — canonical fixtures', () => {
     expect(eventDtoSchema.safeParse({ status: 'live' }).success).toBe(false);
   });
 
-  it('parses a guest profile upsert and dto, rejecting short tastes', () => {
+  it('parses a guest profile upsert and dto with the accepted one-interest minimum', () => {
     const body = {
       displayName: 'Aayush',
       dateOfBirth: '2000-01-01',
@@ -192,8 +192,16 @@ describe('client schemas — canonical fixtures', () => {
       }).userId,
     ).toBe('user_1');
     expect(upsertGuestProfileSchema.safeParse({ ...body, tastes: ['Rooftops'] }).success).toBe(
-      false,
+      true,
     );
+    expect(upsertGuestProfileSchema.safeParse({ ...body, tastes: [] }).success).toBe(false);
+    expect(upsertGuestProfileSchema.safeParse({ ...body, tastes: [' '] }).success).toBe(false);
+    expect(
+      upsertGuestProfileSchema.safeParse({
+        ...body,
+        tastes: Array.from({ length: 21 }, () => 'Rooftops'),
+      }).success,
+    ).toBe(false);
     expect(upsertGuestProfileSchema.safeParse({ ...body, extra: 1 }).success).toBe(false);
   });
 });
