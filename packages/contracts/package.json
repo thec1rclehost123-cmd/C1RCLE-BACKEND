@@ -28,6 +28,10 @@
       "types": "./src/contracts/guest-social.ts",
       "import": "./src/contracts/guest-social.ts",
       "default": "./dist/contracts/guest-social.js"
+    },
+    "./saved-events": {
+      "types": "./src/contracts/saved-events.ts",
+      "import": "./src/contracts/saved-events.ts"
     }
   },
   "scripts": {

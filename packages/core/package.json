@@ -39,6 +39,10 @@
     "./guest-social": {
       "types": "./src/guest-social.ts",
       "import": "./src/guest-social.ts"
+    },
+    "./saved-events": {
+      "types": "./src/saved-events.ts",
+      "import": "./src/saved-events.ts"
     }
   },
   "scripts": {

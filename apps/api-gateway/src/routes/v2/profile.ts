@@ -10,6 +10,7 @@ import { registerGuestOnboarding } from './guest-onboarding.js';
 import guestSocialRoutes from './guest-social.js';
 import { requireUserId } from './onboarding.js';
 import { mapDomainError } from './partner/events.js';
+import savedEventRoutes from './saved-events.js';
 
 import type { FastifyInstance } from 'fastify';
 import type { z } from 'zod';
@@ -34,6 +35,7 @@ export default async function guestProfileRoutes(fastify: FastifyInstance) {
   });
   await registerGuestOnboarding(fastify, services.guestProfile);
   await fastify.register(guestSocialRoutes);
+  await fastify.register(savedEventRoutes);
   fastify.get(
     '/profile/me',
     { preHandler: [fastify.rateLimit('AUTH_READ')] },
