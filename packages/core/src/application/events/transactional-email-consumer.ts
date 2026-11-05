@@ -487,7 +487,8 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
     const refund = await deps.repositories.refundRequests.getById(payload.refundRequestId);
     if (!order || !refund || refund.status !== 'settled') return null;
     deliveryAggregateId = order.id;
-    if (!isDeliverableRecipient(order.contact.email)) return null;
+    explicitRecipient = await refundRecipient(order, deps);
+    if (!explicitRecipient) return null;
     kind = 'refund_completed';
     idempotencyKey = `refund-completed:${refund.id}`;
     subject = 'Your C1RCLE refund is complete';
@@ -498,6 +499,28 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
       (ticket) => ticket.status === 'valid' && !ticket.refundLock,
     ).length;
     details = `<p>Refunded amount: <strong>${money(refund.amountPaise)}</strong></p><p>Affected tickets: ${refundedCount}</p><p>Remaining valid tickets: ${remaining}</p><p>Your bank or payment provider may take additional time to reflect the credit.</p><p>Support reference: ${escapeHtml(order.bookingReference ?? order.id)}</p>`;
+  } else if (event.type === 'finance.refund.finalized') {
+    const payload = event.payload as EventPayloads['finance.refund.finalized'];
+    order = await deps.repositories.orders.getById(payload.orderId);
+    const refund = await deps.repositories.refundRequests.getById(payload.refundRequestId);
+    if (
+      !order ||
+      !refund ||
+      !['rejected', 'failed'].includes(refund.status) ||
+      refund.status !== payload.status
+    )
+      return null;
+    explicitRecipient = await refundRecipient(order, deps);
+    if (!explicitRecipient) return null;
+    deliveryAggregateId = order.id;
+    kind = 'refund_not_completed';
+    idempotencyKey = `refund-not-completed:${refund.id}:${refund.status}`;
+    subject = 'Update on your C1RCLE refund';
+    heading = refund.status === 'rejected' ? 'Refund request declined' : 'Refund not completed';
+    details =
+      refund.status === 'rejected'
+        ? `<p>Your refund request was declined after review. No refund was issued.</p><p>Reference: ${escapeHtml(order.bookingReference ?? order.id)}</p><p>Contact support if you have questions.</p>`
+        : `<p>The payment provider did not complete this refund. No successful refund is recorded.</p><p>Reference: ${escapeHtml(order.bookingReference ?? order.id)}</p><p>Contact support if you need help.</p>`;
   } else if (event.type === 'event.cancellation.email_requested') {
     const payload = event.payload as EventPayloads['event.cancellation.email_requested'];
     order = await deps.repositories.orders.getById(payload.orderId);
@@ -787,6 +810,18 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
     kind,
     aggregateId: deliveryAggregateId,
   };
+}
+
+async function refundRecipient(order: Order, deps: ServiceDeps): Promise<string | null> {
+  if (order.userId) {
+    const purchaser = await deps.repositories.users.getById(order.userId);
+    return purchaser?.emailVerified && isDeliverableRecipient(purchaser.email)
+      ? purchaser.email.trim().toLowerCase()
+      : null;
+  }
+  return isDeliverableRecipient(order.contact.email)
+    ? order.contact.email.trim().toLowerCase()
+    : null;
 }
 
 function htmlToPlainText(html: string): string {
