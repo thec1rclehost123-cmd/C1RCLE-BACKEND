@@ -23,6 +23,11 @@
       "types": "./src/contracts/guest-onboarding.ts",
       "import": "./src/contracts/guest-onboarding.ts",
       "default": "./dist/contracts/guest-onboarding.js"
+    },
+    "./guest-social": {
+      "types": "./src/contracts/guest-social.ts",
+      "import": "./src/contracts/guest-social.ts",
+      "default": "./dist/contracts/guest-social.js"
     }
   },
   "scripts": {

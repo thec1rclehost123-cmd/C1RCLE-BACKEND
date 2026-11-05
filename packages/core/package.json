@@ -35,6 +35,10 @@
     "./infrastructure/firestore": {
       "types": "./src/infrastructure/firestore/index.ts",
       "import": "./src/infrastructure/firestore/index.ts"
+    },
+    "./guest-social": {
+      "types": "./src/guest-social.ts",
+      "import": "./src/guest-social.ts"
     }
   },
   "scripts": {

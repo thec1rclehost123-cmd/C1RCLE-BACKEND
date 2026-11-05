@@ -7,6 +7,7 @@ import { validateV2Response } from '../../lib/v2-response-validation.js';
 import { createV2Services } from '../../lib/v2-services.js';
 
 import { registerGuestOnboarding } from './guest-onboarding.js';
+import guestSocialRoutes from './guest-social.js';
 import { requireUserId } from './onboarding.js';
 import { mapDomainError } from './partner/events.js';
 
@@ -32,6 +33,7 @@ export default async function guestProfileRoutes(fastify: FastifyInstance) {
     reply.header('cache-control', 'private, no-store');
   });
   await registerGuestOnboarding(fastify, services.guestProfile);
+  await fastify.register(guestSocialRoutes);
   fastify.get(
     '/profile/me',
     { preHandler: [fastify.rateLimit('AUTH_READ')] },
