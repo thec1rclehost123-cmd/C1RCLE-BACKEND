@@ -35,6 +35,24 @@ describe('CheckoutService canonical financial posting', () => {
       userId: 'user_1',
       contact: { name: 'Test Buyer', email: 'buyer@example.test', phone: '' },
       status: 'paid',
+      // Original fixture commercial terms: basic plan (15%), no Venue or Promoter share.
+      // Recovery must use these frozen amounts rather than resolve current terms.
+      saleAllocation: {
+        version: 'sale-allocation-v1',
+        grossPaise: 90_000,
+        platformPaise: 13_500,
+        hostPaise: 76_500,
+        venuePaise: 0,
+        promoterPaise: 0,
+        hostOrganizationId: 'org_host',
+        venueOrganizationId: 'org_host',
+        promoterOrganizationId: null,
+        partnershipId: null,
+        partnershipVersion: null,
+        onboardingId: null,
+        onboardingVersion: null,
+        capturedAt: NOW.toISOString(),
+      },
       lines: [
         {
           tierId: 'tier_1',

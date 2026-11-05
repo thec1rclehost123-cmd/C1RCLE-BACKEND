@@ -14,7 +14,9 @@ import { MemoryFinancialJournalRepository } from '../../infrastructure/memory/me
 import { MemoryGuestProfileRepository } from '../../infrastructure/memory/memory-guest-profile-repository.js';
 import { MemoryLeaderboardRepository } from '../../infrastructure/memory/memory-leaderboard-repository.js';
 import { MemoryLedgerRepository } from '../../infrastructure/memory/memory-ledger-repository.js';
+import { MemoryOnboardingRepository } from '../../infrastructure/memory/memory-onboarding-repository.js';
 import { MemoryOutboxStore } from '../../infrastructure/memory/memory-outbox-store.js';
+import { MemoryPartnershipRepository } from '../../infrastructure/memory/memory-partnership-repository.js';
 import { MemoryProviderPaymentRepository } from '../../infrastructure/memory/memory-provider-payment-repository.js';
 import {
   MemoryCartReservationRepository,
@@ -100,6 +102,8 @@ function buildService(serviceConfig = config) {
       financialJournals: new MemoryFinancialJournalRepository(),
       providerPayments: new MemoryProviderPaymentRepository(),
       leaderboard: new MemoryLeaderboardRepository(),
+      onboarding: new MemoryOnboardingRepository(),
+      partnerships: new MemoryPartnershipRepository(),
     },
   } as unknown as ServiceDeps;
   orders.fulfilmentStore = {
