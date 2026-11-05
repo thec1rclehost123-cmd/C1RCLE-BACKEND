@@ -40,7 +40,13 @@ export async function registerGuestOnboarding(
 ) {
   fastify.get(
     '/profile/onboarding',
-    { preHandler: [fastify.rateLimit('AUTH_READ'), requireAuthenticatedGuest] },
+    {
+      config: { rateLimit: { max: 240, timeWindow: '1 minute' } },
+      preHandler: [fastify.rateLimit('AUTH_READ'), requireAuthenticatedGuest],
+    },
+    // codeql[js/missing-rate-limiting] rate limiting IS applied via the
+    // preHandler list (fastify.rateLimit('AUTH_READ')). CodeQL cannot see
+    // through the plugin-decorated preHandler.
     async (request, reply) => {
       const userId = authenticatedUserId(request);
       const state = await service.getOnboarding(userId);
@@ -61,12 +67,16 @@ export async function registerGuestOnboarding(
   fastify.put(
     '/profile/onboarding',
     {
+      config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
       preHandler: [
         fastify.rateLimit('STANDARD_COMMAND'),
         fastify.validateV2({ body: guestOnboardingPatchSchema }),
         requireAuthenticatedGuest,
       ],
     },
+    // codeql[js/missing-rate-limiting] rate limiting IS applied via the
+    // preHandler list (fastify.rateLimit('STANDARD_COMMAND')). CodeQL cannot
+    // see through the plugin-decorated preHandler.
     async (request, reply) => {
       const userId = authenticatedUserId(request);
       try {
@@ -80,12 +90,16 @@ export async function registerGuestOnboarding(
   fastify.post(
     '/profile/onboarding/phone',
     {
+      config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
       preHandler: [
         fastify.rateLimit('OTP_VERIFY'),
         fastify.validateV2({ body: guestPhoneProofSchema }),
         requireAuthenticatedGuest,
       ],
     },
+    // codeql[js/missing-rate-limiting] rate limiting IS applied via the
+    // preHandler list (fastify.rateLimit('OTP_VERIFY')). CodeQL cannot see
+    // through the plugin-decorated preHandler.
     async (request, reply) => {
       const userId = authenticatedUserId(request);
       const body = guestPhoneProofSchema.parse(request.body);
