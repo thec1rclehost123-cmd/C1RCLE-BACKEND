@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createV2Services } from '../../../lib/v2-services.js';
+import { seedApprovedPartnerOrganization } from '../../../test-utils/approved-partner-organization.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 import partnerOrganizationRoutes from '../partner/organizations.js';
 
@@ -24,14 +25,13 @@ type Server = Awaited<ReturnType<typeof buildServer>>;
 /** Fixed instant for seeded commissions; see the `leaderboard/me` block below. */
 const SEED_AT = new Date('2026-09-08T12:00:00.000Z');
 
-async function seedOrganization(server: Server): Promise<string> {
-  const created = await server.inject({
-    method: 'POST',
-    url: '/organizations',
-    headers: { 'x-organization-id': 'org_seed', 'idempotency-key': `seed-${++keySeq}` },
-    payload: { name: 'Leaderboard Test Promoter', slug: `leaderboard-org-${++keySeq}` },
+async function seedOrganization(_server: Server): Promise<string> {
+  ++keySeq;
+  const created = await seedApprovedPartnerOrganization({
+    name: 'Leaderboard Test Promoter',
+    slug: `leaderboard-org-${++keySeq}`,
   });
-  return created.json().id as string;
+  return created.id;
 }
 
 describe('GET /leaderboard', () => {

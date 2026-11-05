@@ -2,6 +2,7 @@ import { suspendOrganization } from '@c1rcle/core/domain';
 import { describe, expect, it } from 'vitest';
 
 import { createV2Services } from '../../../lib/v2-services.js';
+import { seedApprovedPartnerOrganization } from '../../../test-utils/approved-partner-organization.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 
 import partnerOrganizationRoutes from './organizations.js';
@@ -21,14 +22,10 @@ type Server = Awaited<ReturnType<typeof buildServer>>;
 const read = (org: string) => ({ 'x-organization-id': org });
 const write = (org: string) => ({ ...read(org), 'idempotency-key': `pc-key-${++keySeq}` });
 
-async function createOrganization(server: Server): Promise<string> {
-  const created = await server.inject({
-    method: 'POST',
-    url: '/organizations',
-    headers: { 'x-organization-id': 'org_seed', 'idempotency-key': `seed-${++keySeq}` },
-    payload: { name: 'Org', slug: `org-${keySeq}` },
-  });
-  const id: string = created.json().id;
+async function createOrganization(_server: Server): Promise<string> {
+  ++keySeq;
+  const created = await seedApprovedPartnerOrganization({ name: 'Org', slug: `org-${keySeq}` });
+  const id: string = created.id;
   return id;
 }
 

@@ -2,6 +2,7 @@ import { MemoryPaymentProvider } from '@c1rcle/core/domain';
 import { describe, expect, it } from 'vitest';
 
 import { createV2Services } from '../../../lib/v2-services.js';
+import { seedApprovedPartnerOrganization } from '../../../test-utils/approved-partner-organization.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 import { publishEventForTest } from '../../../test-utils/publish-event.js';
 import checkoutRoutes from '../checkout/checkout-routes.js';
@@ -47,14 +48,13 @@ const write = (org: string) => ({
   'idempotency-key': `finance-key-${++keySeq}`,
 });
 
-async function seedOrganization(server: Server): Promise<string> {
-  const created = await server.inject({
-    method: 'POST',
-    url: '/organizations',
-    headers: { 'x-organization-id': 'org_seed', 'idempotency-key': `seed-${++keySeq}` },
-    payload: { name: 'Finance Test Org', slug: `finance-org-${++keySeq}` },
+async function seedOrganization(_server: Server): Promise<string> {
+  ++keySeq;
+  const created = await seedApprovedPartnerOrganization({
+    name: 'Finance Test Org',
+    slug: `finance-org-${++keySeq}`,
   });
-  return created.json().id as string;
+  return created.id;
 }
 
 describe('GET /organizations/:organizationId/finance/balance', () => {

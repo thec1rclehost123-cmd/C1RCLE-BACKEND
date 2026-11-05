@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { seedApprovedPartnerOrganization } from '../../../test-utils/approved-partner-organization.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 
 import partnerDiscoveryRoutes from './discover.js';
@@ -36,13 +37,12 @@ const write = (org: string) => ({
 });
 
 async function createOrganization(server: Server, name: string): Promise<string> {
-  const created = await server.inject({
-    method: 'POST',
-    url: '/organizations',
-    headers: { 'x-organization-id': 'org_seed', 'idempotency-key': `seed-${++keySeq}` },
-    payload: { name, slug: `${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${keySeq}` },
+  ++keySeq;
+  const created = await seedApprovedPartnerOrganization({
+    name,
+    slug: `${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${keySeq}`,
   });
-  const id: string = created.json().id;
+  const id: string = created.id;
   return id;
 }
 

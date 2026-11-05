@@ -1,6 +1,7 @@
 import { checkoutQuoteResponseSchema } from '@c1rcle/contracts';
 import { describe, expect, it } from 'vitest';
 
+import { seedApprovedPartnerOrganization } from '../../../test-utils/approved-partner-organization.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 import { publishEventForTest } from '../../../test-utils/publish-event.js';
 import partnerEventCatalogRoutes from '../partner/event-catalog.js';
@@ -42,13 +43,12 @@ async function seed(
   server: Server,
   options: { priceInPaise?: number; quantity?: number; maxPerUser?: number } = {},
 ): Promise<{ org: string; eventId: string; tierId: string; priceInPaise: number }> {
-  const created = await server.inject({
-    method: 'POST',
-    url: '/organizations',
-    headers: { 'x-organization-id': 'org_seed', 'idempotency-key': `seed-${++keySeq}` },
-    payload: { name: 'Skyline', slug: `skyline-${keySeq}` },
+  ++keySeq;
+  const created = await seedApprovedPartnerOrganization({
+    name: 'Skyline',
+    slug: `skyline-${keySeq}`,
   });
-  const org: string = created.json().id;
+  const org: string = created.id;
 
   const venue = await server.inject({
     method: 'POST',

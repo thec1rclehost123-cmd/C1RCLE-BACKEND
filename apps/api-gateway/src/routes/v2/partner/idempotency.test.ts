@@ -1,11 +1,24 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
+import { seedApprovedPartnerOrganization } from '../../../test-utils/approved-partner-organization.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 
 import partnerOrganizationRoutes from './organizations.js';
 import partnerVenueRoutes from './venues.js';
 
-const buildOrgServer = () => buildPartnerTestServer({ routes: [partnerOrganizationRoutes] });
+// Replay/conflict is exercised on venue creation within an approved workspace.
+// Applicant organization creation is forbidden and cannot seed this precondition.
+const buildOrgServer = () =>
+  buildPartnerTestServer({ routes: [partnerOrganizationRoutes, partnerVenueRoutes] });
+
+beforeAll(async () => {
+  await seedApprovedPartnerOrganization({
+    id: 'org_1',
+    name: 'Approved workspace',
+    slug: 'approved-workspace',
+  });
+});
+
 const buildVenueServer = () => buildPartnerTestServer({ routes: [partnerVenueRoutes] });
 
 const HEADERS = (key: string) => ({
@@ -23,7 +36,7 @@ describe('V2 idempotency + optimistic locking (B08)', () => {
       const server = await buildOrgServer();
       const response = await server.inject({
         method: 'POST',
-        url: '/organizations',
+        url: '/organizations/org_1/venues',
         headers: { 'x-organization-id': 'org_1' },
         payload: { name: 'X Events', slug: 'x-events' },
       });
@@ -37,14 +50,14 @@ describe('V2 idempotency + optimistic locking (B08)', () => {
       const payload = { name: 'Replay Events', slug: 'replay-events' };
       const first = await server.inject({
         method: 'POST',
-        url: '/organizations',
+        url: '/organizations/org_1/venues',
         headers: HEADERS('idem-replay-1'),
         payload,
       });
       expect(first.statusCode).toBe(201);
       const second = await server.inject({
         method: 'POST',
-        url: '/organizations',
+        url: '/organizations/org_1/venues',
         headers: HEADERS('idem-replay-1'),
         payload,
       });
@@ -52,7 +65,7 @@ describe('V2 idempotency + optimistic locking (B08)', () => {
       expect(second.json()).toEqual(first.json());
       const list = await server.inject({
         method: 'GET',
-        url: '/organizations',
+        url: '/organizations/org_1/venues',
         headers: { 'x-organization-id': 'org_1' },
       });
       const items = list.json().items ?? [];
@@ -65,13 +78,13 @@ describe('V2 idempotency + optimistic locking (B08)', () => {
       const payload = { name: 'Conflict Events', slug: 'conflict-events' };
       await server.inject({
         method: 'POST',
-        url: '/organizations',
+        url: '/organizations/org_1/venues',
         headers: HEADERS('idem-conflict-1'),
         payload,
       });
       const second = await server.inject({
         method: 'POST',
-        url: '/organizations',
+        url: '/organizations/org_1/venues',
         headers: HEADERS('idem-conflict-1'),
         payload: { name: 'Different Name', slug: 'different-slug' },
       });
@@ -85,14 +98,14 @@ describe('V2 idempotency + optimistic locking (B08)', () => {
       const payload = { name: 'Race Events', slug: 'race-events' };
       const first = server.inject({
         method: 'POST',
-        url: '/organizations',
+        url: '/organizations/org_1/venues',
         headers: HEADERS('idem-race-1'),
         payload,
       });
       // Second attempt arrives while the first is still in flight.
       const second = await server.inject({
         method: 'POST',
-        url: '/organizations',
+        url: '/organizations/org_1/venues',
         headers: HEADERS('idem-race-1'),
         payload,
       });
@@ -101,7 +114,7 @@ describe('V2 idempotency + optimistic locking (B08)', () => {
       expect([201, 409]).toContain(second.statusCode);
       const list = await server.inject({
         method: 'GET',
-        url: '/organizations',
+        url: '/organizations/org_1/venues',
         headers: { 'x-organization-id': 'org_1' },
       });
       const items = list.json().items ?? [];
