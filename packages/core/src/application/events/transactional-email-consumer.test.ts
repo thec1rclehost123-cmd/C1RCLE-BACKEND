@@ -1372,6 +1372,48 @@ describe('transactional email consumer', () => {
     expect(sent[0]?.idempotencyKey).toBe('refund-not-completed:refund-rejected:rejected');
   });
 
+  it('does not email a provider-failed refund outcome under the completed-or-declined policy', async () => {
+    const send = vi.fn(async () => ({ providerMessageId: 'must-not-send' }));
+    const emailDeliveries = new MemoryEmailDeliveryRepository();
+    const deps = {
+      config: createCoreConfig({
+        redis: { url: 'redis://localhost:6379' },
+        firestore: { projectId: 'tests' },
+      }),
+      emailDeliveries,
+      emailSender: { sendTransactionalEmail: send },
+      repositories: {
+        orders: {
+          getById: async () => ({
+            id: 'order-refund-failed',
+            status: 'paid',
+            contact: { email: 'purchaser@real.test' },
+          }),
+        },
+        refundRequests: { getById: async () => ({ id: 'refund-failed', status: 'failed' }) },
+      },
+    } as unknown as ServiceDeps;
+
+    await createTransactionalEmailConsumer(deps)(
+      domainEvent({
+        id: 'refund-finalized-failed',
+        type: 'finance.refund.finalized',
+        aggregateId: 'refund-failed',
+        organizationId: 'org',
+        actorId: 'system:internal',
+        occurredAt: 1,
+        payload: {
+          refundRequestId: 'refund-failed',
+          orderId: 'order-refund-failed',
+          status: 'failed',
+        },
+      }),
+    );
+
+    expect(send).not.toHaveBeenCalled();
+    expect(emailDeliveries.records.size).toBe(0);
+  });
+
   it('renders cancellation updates with stable per-event-version delivery identity', async () => {
     let key = '';
     let html = '';
