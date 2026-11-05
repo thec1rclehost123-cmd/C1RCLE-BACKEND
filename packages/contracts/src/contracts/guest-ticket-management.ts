@@ -14,7 +14,7 @@ export const managedTicketSchema = z.object({
   holderName: z.string().nullable(),
   ownership: z.enum(['you', 'unassigned', 'transferred']),
   unitKind: z.enum(['paid', 'free_rsvp', 'complimentary']),
-  status: z.enum(['active', 'used', 'cancelled', 'refund_pending', 'refunded']),
+  status: z.enum(['processing', 'active', 'used', 'cancelled', 'refund_pending', 'refunded']),
   eventTitle: z.string(),
   eventSlug: z.string().nullable(),
   startsAt: z.string().nullable(),

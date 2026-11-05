@@ -1,3 +1,5 @@
+import { SYSTEM_ACTOR } from '../context.js';
+
 import type { EntityId } from '../../domain/identity.js';
 import type { ServiceDeps } from '../context.js';
 import type { CheckoutService, FulfilmentGap } from './checkout-service.js';
@@ -22,6 +24,7 @@ export const DEFAULT_REPAIR_OPTIONS: FulfilmentRepairOptions = {
 
 export interface FulfilmentRepairFinding {
   orderId: EntityId;
+  paymentId?: string;
   missing: FulfilmentGap[];
   /** `repaired` / `still_incomplete` / `error` only when not a dry run. */
   outcome: 'found' | 'repaired' | 'still_incomplete' | 'error';
@@ -67,6 +70,8 @@ export class FulfilmentRepairService {
       truncated: false,
     };
 
+    await this.examineStrandedCaptures(options, oldest, newest, report);
+    if (report.truncated) return report;
     let cursor: string | null = null;
     for (;;) {
       // Newest first, so the scan can stop as soon as it passes the window.
@@ -83,6 +88,80 @@ export class FulfilmentRepairService {
         await this.examine(order.id, options.dryRun, report);
       }
       if (page.nextCursor === null) return report;
+      cursor = page.nextCursor;
+    }
+  }
+
+  /** A capture can be durable even when a crash prevented the first order write. */
+  private async examineStrandedCaptures(
+    options: FulfilmentRepairOptions,
+    oldest: number,
+    newest: number,
+    report: FulfilmentRepairReport,
+  ): Promise<void> {
+    let cursor: string | null = null;
+    let visited = 0;
+    for (;;) {
+      const page = await this.deps.repositories.providerPayments.listAll({
+        limit: Math.min(PAGE_SIZE, options.maxOrders),
+        cursor,
+      });
+      for (const payment of page.items) {
+        if (visited >= options.maxOrders || report.scanned >= options.maxOrders) {
+          report.truncated = true;
+          return;
+        }
+        visited += 1;
+        const capturedAt = Date.parse(payment.capturedAt ?? payment.createdAt);
+        if (
+          payment.capturedPaise <= 0 ||
+          capturedAt < oldest ||
+          capturedAt > newest ||
+          payment.processingState === 'refunded' ||
+          Object.values(payment.refunds).some((amount) => amount > 0)
+        )
+          continue;
+        if (await this.deps.repositories.orders.getByPaymentId(payment.id)) continue;
+        report.scanned += 1;
+        const orderId = `ORD-${payment.id}`;
+        const finding = { orderId, paymentId: payment.id, missing: ['order'] as FulfilmentGap[] };
+        try {
+          const hold = payment.providerOrderId
+            ? await this.deps.repositories.cartReservations.getByProviderOrderId(
+                payment.providerOrderId,
+              )
+            : null;
+          if (!hold) {
+            report.findings.push({
+              ...finding,
+              outcome: 'still_incomplete',
+              detail:
+                'Captured payment has no exact provider-order/hold binding; support is required',
+            });
+            continue;
+          }
+          if (options.dryRun) {
+            report.findings.push({ ...finding, outcome: 'found' });
+            continue;
+          }
+          // Recovery re-fetches provider capture and enters the same verified confirmation path.
+          const result = await this.checkout.reconcilePaymentRecovery(SYSTEM_ACTOR, hold.id);
+          report.findings.push({
+            ...finding,
+            outcome: result.status === 'fulfilled' ? 'repaired' : 'still_incomplete',
+            ...(result.status === 'fulfilled'
+              ? {}
+              : { detail: `Capture recovery is ${result.status}` }),
+          });
+        } catch (error) {
+          report.findings.push({
+            ...finding,
+            outcome: 'error',
+            detail: error instanceof Error ? error.message : 'unknown error',
+          });
+        }
+      }
+      if (page.nextCursor === null) return;
       cursor = page.nextCursor;
     }
   }

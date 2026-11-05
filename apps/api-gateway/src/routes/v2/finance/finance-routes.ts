@@ -22,7 +22,8 @@ import { z } from 'zod';
 import type { FinanceOrderRow } from '@c1rcle/core/application';
 import type { BankAccount, Dispute, LedgerEntry, Payout } from '@c1rcle/core/domain';
 
-import { requirePayoutsEnabled } from '../../../lib/payouts-gate.js';
+import { getGatewayConfig } from '../../../config/index.js';
+import { payoutsEnabled, requirePayoutsEnabled } from '../../../lib/payouts-gate.js';
 import { isIdempotencyConflict, runIdempotent } from '../../../lib/v2-idempotency.js';
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
 import { createV2Services } from '../../../lib/v2-services.js';
@@ -71,7 +72,10 @@ export default async function financeRoutes(fastify: FastifyInstance) {
         .getBalances(organizationId, actor)
         .catch((error: unknown) => mapDomainError(reply, request, organizationId, error));
       if (balances === undefined) return reply;
-      const validated = validateV2Response(reply, request, balanceSummaryResponseSchema, balances);
+      const validated = validateV2Response(reply, request, balanceSummaryResponseSchema, {
+        ...balances,
+        payoutsEnabled: payoutsEnabled(getGatewayConfig()),
+      });
       if (validated === undefined) return reply;
       return reply.send(validated);
     },
@@ -416,6 +420,7 @@ export default async function financeRoutes(fastify: FastifyInstance) {
             organizationId,
             orderId: body.orderId,
             ledgerEntryId: body.ledgerEntryId,
+            journalId: body.journalId,
             reason: body.reason,
             amount: body.amountPaise,
           },
@@ -620,6 +625,7 @@ function disputeToDto(dispute: Dispute) {
     organizationId: dispute.organizationId,
     orderId: dispute.orderId,
     ledgerEntryId: dispute.ledgerEntryId,
+    journalId: dispute.journalId ?? null,
     raisedBy: dispute.raisedBy,
     reason: dispute.reason,
     amountPaise: dispute.amount,

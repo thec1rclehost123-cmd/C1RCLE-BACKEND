@@ -83,12 +83,20 @@ import {
   FormatCheckVerificationProvider,
   CompositeVerificationProvider,
   MemoryPaymentProvider,
+  NON_PRODUCTION_BOOKING_FEE_POLICY,
   MemoryStaffCredentialProvisioner,
   MemoryStaffRotationStore,
   MemoryStaffUserDirectory,
 } from '@c1rcle/core/domain';
 import {
   MemoryOutboxStore,
+  MemoryOrderRepository,
+  MemoryEntitlementRepository,
+  MemoryCartReservationRepository,
+  MemoryLedgerRepository,
+  MemoryFinancialJournalRepository,
+  MemoryProviderPaymentRepository,
+  MemoryEventRepository,
   FirestoreOutboxStore,
   MemoryEmailDeliveryRepository,
   FirestoreEmailDeliveryRepository,
@@ -376,6 +384,39 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     gw.STORAGE_DRIVER === 'memory'
       ? new MemoryOutboxStore()
       : new FirestoreOutboxStore(firestoreClient(gw));
+  if (gw.STORAGE_DRIVER === 'memory' && outboxStore instanceof MemoryOutboxStore) {
+    const {
+      orders,
+      entitlements,
+      cartReservations,
+      ledger,
+      financialJournals,
+      providerPayments,
+      events,
+    } = repositories;
+    if (
+      !(orders instanceof MemoryOrderRepository) ||
+      !(entitlements instanceof MemoryEntitlementRepository) ||
+      !(cartReservations instanceof MemoryCartReservationRepository) ||
+      !(ledger instanceof MemoryLedgerRepository) ||
+      !(financialJournals instanceof MemoryFinancialJournalRepository) ||
+      !(providerPayments instanceof MemoryProviderPaymentRepository) ||
+      !(events instanceof MemoryEventRepository)
+    ) {
+      throw new Error('Canonical memory fulfillment storage is unavailable');
+    }
+    orders.fulfilmentStore = {
+      carts: cartReservations,
+      entitlements,
+      ledger,
+      journals: financialJournals,
+      outbox: outboxStore,
+      providerPayments,
+      events,
+    };
+    entitlements.issuanceOutbox = outboxStore;
+    entitlements.admissionOrders = orders;
+  }
   const audits = new MemoryAuditRepository();
   const eventBus = new InProcessEventBus(outboxStore);
   eventBus.subscribe('event.published', createAuditConsumer(audits));
@@ -432,7 +473,14 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     cartReservation: repositories.cartReservations,
     order: repositories.orders,
   });
-  const pricing = new PricingService({ eventCatalog: repositories.catalog, inventory });
+  const pricing = new PricingService({
+    eventCatalog: repositories.catalog,
+    inventory,
+    bookingFeePolicy: async () => {
+      const settings = await repositories.platformSettings.get();
+      return settings.bookingFeePolicy ?? NON_PRODUCTION_BOOKING_FEE_POLICY;
+    },
+  });
 
   // Phone verification: real GCP Identity Platform check when firestore
   // credentials exist (see `firebase-phone-verifier.ts`); on the memory
@@ -676,6 +724,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
 
   // Phase 6 services
   const finance = createFinanceService({
+    financialExposure: repositories,
     ledger: repositories.ledger,
     financialJournals: repositories.financialJournals,
     journalTransition: repositories.journalTransition,
@@ -686,6 +735,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   });
 
   const payout = createPayoutService({
+    financialExposure: repositories,
     payouts: repositories.payouts,
     bankAccounts: repositories.bankAccounts,
     ledger: repositories.ledger,

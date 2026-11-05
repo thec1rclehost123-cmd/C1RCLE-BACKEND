@@ -48,6 +48,23 @@ describe('CartReservationRepository.bindProviderOrder', () => {
     expect((await repo.getById('HOLD-1'))?.providerOrderId).toBe('order_A');
   });
 
+  it('preserves a durable provider creation claim when hold creation is replayed', async () => {
+    const repo = new MemoryCartReservationRepository();
+    const initial = hold();
+    await repo.create(initial);
+    const claim = await repo.claimProviderOrderCreation(initial.id, 'stable-receipt', new Date());
+    expect(claim?.claimed).toBe(true);
+    await repo.markProviderOrderRequiresSupport(initial.id, 'stable-receipt');
+    const replay = await repo.create(initial);
+    expect(replay.providerOrderCreation).toMatchObject({
+      receipt: 'stable-receipt',
+      state: 'requires_support',
+    });
+    expect(
+      (await repo.claimProviderOrderCreation(initial.id, 'different', new Date()))?.claimed,
+    ).toBe(false);
+  });
+
   it('returns null for an unknown hold', async () => {
     const repo = new MemoryCartReservationRepository();
     expect(await repo.bindProviderOrder('HOLD-nope', 'order_A')).toBeNull();

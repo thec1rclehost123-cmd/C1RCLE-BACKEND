@@ -6,6 +6,7 @@ import {
   eventQrUnavailableReason,
   eventTransferUnavailableReason,
 } from '../../domain/models/event-policy.js';
+import { fulfilmentPending } from '../../domain/models/fulfilment.js';
 import {
   refundReviewTicketId,
   refundReviewEligibility,
@@ -106,6 +107,7 @@ export async function managedTicketRow(
           request.targetEntitlementIds.includes(ticket.id),
       );
   }
+  const processing = fulfilmentPending(ticket, order);
   const status = refundPending
     ? ('refund_pending' as const)
     : event?.status === 'cancelled' || order?.eventCancellation
@@ -114,9 +116,12 @@ export async function managedTicketRow(
         ? (order?.refundedPaise ?? 0) > 0
           ? ('refunded' as const)
           : ('cancelled' as const)
-        : ticket.status === 'redeemed'
-          ? ('used' as const)
-          : ('active' as const);
+        : processing
+          ? ('processing' as const)
+          : ticket.status === 'redeemed'
+            ? ('used' as const)
+            : ('active' as const);
+  if (status === 'processing') reason = 'Payment is still processing.';
   if (!reason && status !== 'active') reason = 'This ticket cannot be transferred.';
   return {
     id: ticket.id,
@@ -147,11 +152,13 @@ export async function managedTicketRow(
       event !== null &&
       eventQrUnavailableReason(event, deps.config.clock.now()) === null,
     qrUnavailableReason:
-      ownership !== 'you'
-        ? 'Accept an assignment before using this ticket.'
-        : !event
-          ? 'Event unavailable'
-          : eventQrUnavailableReason(event, deps.config.clock.now()),
+      status === 'processing'
+        ? 'Payment is still processing.'
+        : ownership !== 'you'
+          ? 'Accept an assignment before using this ticket.'
+          : !event
+            ? 'Event unavailable'
+            : eventQrUnavailableReason(event, deps.config.clock.now()),
     venueId: event?.venueId ?? null,
     venueName: venue?.public.name ?? null,
     venueCity: venue?.public.address.city ?? null,

@@ -14,6 +14,67 @@ import { createTransactionalEmailConsumer } from './transactional-email-consumer
 import type { ServiceDeps } from '../context.js';
 
 describe('transactional email consumer', () => {
+  it('retries staged ticket delivery until canonical completion, then sends the existing notice once', async () => {
+    const sent = vi.fn(async () => ({ providerMessageId: 'synthetic-completion-notice' }));
+    const emailDeliveries = new MemoryEmailDeliveryRepository();
+    let complete = false;
+    const ticket = {
+      id: 'ENT-completion',
+      orderId: 'ORD-completion',
+      eventId: 'EVT-completion',
+      userId: 'USR-purchaser',
+      currentHolderUserId: 'USR-purchaser',
+      status: 'valid',
+      fulfillmentRequired: true,
+      upgradeFromEntitlementId: 'ENT-original',
+    };
+    const deps = {
+      config: { clock: { now: () => new Date('2026-11-04T12:00:00.000Z') } },
+      logger: noopLogger,
+      emailDeliveries,
+      emailSender: { name: 'synthetic', sendTransactionalEmail: sent },
+      repositories: {
+        entitlements: { getById: async () => ticket },
+        orders: {
+          getById: async () => ({
+            id: ticket.orderId,
+            status: 'paid',
+            fulfillmentState: complete ? 'complete' : 'pending',
+          }),
+        },
+        users: { getById: async () => ({ email: 'synthetic@real.test', emailVerified: true }) },
+        events: { getById: async () => ({ title: 'Authoritative event title' }) },
+      },
+    } as unknown as ServiceDeps;
+    const event = domainEvent({
+      id: 'ticket-completion-issued',
+      type: 'ticket.issued',
+      aggregateId: ticket.id,
+      organizationId: 'ORG-completion',
+      actorId: ticket.userId,
+      occurredAt: 1,
+      payload: {
+        entitlementId: ticket.id,
+        orderId: ticket.orderId,
+        eventId: ticket.eventId,
+        purchaserUserId: ticket.userId,
+        holderUserId: ticket.userId,
+        upgradeFromEntitlementId: ticket.upgradeFromEntitlementId,
+      },
+    });
+    const consumer = createTransactionalEmailConsumer(deps);
+    await expect(consumer(event)).rejects.toThrow(/waiting for payment completion/);
+    expect(sent).not.toHaveBeenCalled();
+    expect(emailDeliveries.records.size).toBe(0);
+    complete = true;
+    await consumer(event);
+    await consumer(event);
+    expect(sent).toHaveBeenCalledTimes(1);
+    expect([...emailDeliveries.records.values()]).toEqual([
+      expect.objectContaining({ status: 'sent', kind: 'ticket_upgrade_confirmed' }),
+    ]);
+  });
+
   it('delivers a pending invitation only to its persisted verified recipient account', async () => {
     const sent: { to: string; subject: string; html: string; idempotencyKey: string }[] = [];
     const emailDeliveries = new MemoryEmailDeliveryRepository();

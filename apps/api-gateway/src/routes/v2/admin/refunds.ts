@@ -10,6 +10,7 @@ import {
   reconcileRefundRequestSchema,
   requestRefundSchema,
 } from '@c1rcle/contracts/client';
+import { IdempotencyFailedError, IdempotencyInFlightError } from '@c1rcle/core/domain';
 import { z } from 'zod';
 
 import type { AdminRefundRequest, Order } from '@c1rcle/core/domain';
@@ -57,9 +58,14 @@ const refundListSchema = adminRefundRequestListResponseSchema;
 function toRefundDto(request: AdminRefundRequest) {
   return {
     id: request.id,
+    sourceEventVersion: request.sourceEventVersion,
+    remedyForRefundRequestId: request.remedyForRefundRequestId,
     orderId: request.orderId,
     organizationId: request.organizationId,
     amountPaise: request.amountPaise,
+    refundCause: request.refundCause,
+    refundComponents: request.refundComponents,
+    purchasePolicyVersion: request.purchasePolicyVersion,
     requestedBy: request.requestedBy,
     reason: request.reason,
     scope: request.scope,
@@ -103,6 +109,7 @@ export default async function adminRefundRoutes(fastify: FastifyInstance) {
       if (userId === undefined) return reply;
       const body = request.body as z.infer<typeof requestRefundSchema>;
       const v2Headers = request.v2Headers ?? {};
+      const command = { ...body, intakeKey: v2Headers['idempotency-key'] };
 
       const result = await runIdempotent({
         idempotency: services.idempotency,
@@ -114,13 +121,7 @@ export default async function adminRefundRoutes(fastify: FastifyInstance) {
         run: async () => {
           const outcome = await services.refund.requestRefund(
             userId,
-            {
-              orderId: body.orderId,
-              amountPaise: body.amountPaise,
-              reason: body.reason,
-              ticketLines: body.ticketLines,
-              targetEntitlementIds: body.targetEntitlementIds,
-            },
+            command,
             requestMeta(request),
           );
           const validated = validateV2Response(
@@ -132,13 +133,31 @@ export default async function adminRefundRoutes(fastify: FastifyInstance) {
           if (validated === undefined) throw new Error('v2 response validation failed');
           return { statusCode: 201, body: validated };
         },
-      }).catch((error: unknown) =>
-        isIdempotencyConflict(error)
+      }).catch(async (error: unknown) => {
+        if (error instanceof IdempotencyFailedError || error instanceof IdempotencyInFlightError) {
+          const recovered = await services.refund
+            .replayIntake(userId, command)
+            .catch((recoveryError: unknown) =>
+              mapDomainError(reply, request, body.orderId, recoveryError),
+            );
+          if (reply.sent) return undefined;
+          if (recovered) {
+            const validated = validateV2Response(
+              reply,
+              request,
+              refundOutcomeSchema,
+              toOutcomeDto(recovered),
+            );
+            if (validated === undefined) return undefined;
+            return { replayed: true, statusCode: 201, body: validated };
+          }
+        }
+        return isIdempotencyConflict(error)
           ? mapDomainError(reply, request, body.orderId, error, {
               conflictId: v2Headers['idempotency-key'],
             })
-          : mapDomainError(reply, request, body.orderId, error),
-      );
+          : mapDomainError(reply, request, body.orderId, error);
+      });
       if (result === undefined) return reply;
       return reply.status(result.statusCode).send(result.body);
     },
@@ -189,6 +208,47 @@ export default async function adminRefundRoutes(fastify: FastifyInstance) {
             })
           : mapDomainError(reply, request, refundRequestId, error),
       );
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
+
+  fastify.post(
+    '/admin/refunds/:refundRequestId/policy-remedy',
+    {
+      preHandler: [
+        fastify.rateLimit('SENSITIVE_COMMAND'),
+        fastify.validateV2({ params: refundIdParam, headers: commandHeaders }),
+      ],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+      const { refundRequestId } = request.params as z.infer<typeof refundIdParam>;
+      const v2Headers = request.v2Headers ?? {};
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: userId,
+        commandName: 'admin.refund.policy_remedy',
+        idempotencyKey: v2Headers['idempotency-key'],
+        context: { path: { refundRequestId }, body: {} },
+        run: async () => {
+          const outcome = await services.refund.requestPolicyRemedy(
+            userId,
+            refundRequestId,
+            requestMeta(request),
+          );
+          const validated = validateV2Response(
+            reply,
+            request,
+            refundOutcomeSchema,
+            toOutcomeDto(outcome),
+          );
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 201, body: validated };
+        },
+      }).catch((error: unknown) => mapDomainError(reply, request, refundRequestId, error));
       if (result === undefined) return reply;
       return reply.status(result.statusCode).send(result.body);
     },

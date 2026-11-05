@@ -26,6 +26,7 @@ import {
   eventAdmissionUnavailableReason,
   eventQrUnavailableReason,
 } from '../../domain/models/event-policy.js';
+import { fulfilmentPending } from '../../domain/models/fulfilment.js';
 import {
   bindScannerDevice,
   isDeviceAuthorized,
@@ -1322,6 +1323,11 @@ function createScannerServiceImpl(deps: ScannerServiceDeps): ScannerService {
       throw new ConflictError('A ticket QR is available only while the entitlement is active.');
     }
 
+    if (entitlement.fulfillmentRequired) {
+      const order = await deps.repositories.orders.getById(entitlement.orderId);
+      if (fulfilmentPending(entitlement, order))
+        throw new ConflictError('Payment is still processing.');
+    }
     const event = await deps.repositories.events.findById(entitlement.eventId);
     if (!event || event.organizationId !== entitlement.organizationId)
       throw new ConflictError('The event is unavailable.');

@@ -3,6 +3,7 @@ import { assertPromoUsable } from '../../domain/models/event-catalog.js';
 import { calculatePricing } from '../../domain/models/pricing.js';
 
 import type { EntityId } from '../../domain/identity.js';
+import type { BookingFeePolicy } from '../../domain/models/booking-fee-policy.js';
 import type { PromoCode } from '../../domain/models/event-catalog.js';
 import type { PricingBreakdown } from '../../domain/models/pricing.js';
 import type { TicketAddonSelection } from '../../domain/models/ticket-addon.js';
@@ -20,6 +21,7 @@ export class PricingService {
     private readonly deps: {
       eventCatalog: EventCatalogRepository;
       inventory?: Pick<InventoryService, 'getAvailablePricingPhaseQuantity'>;
+      bookingFeePolicy?: () => Promise<BookingFeePolicy>;
     },
   ) {}
 
@@ -150,6 +152,7 @@ export class PricingService {
     }
 
     const pricing = calculatePricing({
+      ...(this.deps.bookingFeePolicy ? { feePolicy: await this.deps.bookingFeePolicy() } : {}),
       lines: pricingLines,
       promo: promo ?? undefined,
       currency: 'INR',

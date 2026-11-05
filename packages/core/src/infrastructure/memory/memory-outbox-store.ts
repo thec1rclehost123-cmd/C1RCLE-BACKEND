@@ -17,7 +17,16 @@ import type { EntityId } from '../../domain/identity.js';
 export class MemoryOutboxStore implements OutboxStore {
   private readonly rows = new Map<EntityId, OutboxRecord>();
 
+  async hasEvent(id: EntityId): Promise<boolean> {
+    return this.rows.has(id);
+  }
+
   async append(event: DomainEvent): Promise<void> {
+    this.persist(event);
+  }
+
+  /** Synchronous insertion for memory aggregate transactions; dispatch remains separate. */
+  persist(event: DomainEvent): void {
     if (this.rows.has(event.id)) return;
     const record: OutboxRecord = {
       id: event.id,

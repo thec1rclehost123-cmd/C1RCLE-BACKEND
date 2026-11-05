@@ -21,6 +21,19 @@ export interface Dispute extends VersionedEntity {
   organizationId: EntityId;
   orderId: EntityId;
   ledgerEntryId: EntityId | null;
+  /** Explicit canonical journal identity; never inferred from the claim amount. */
+  journalId?: EntityId | null;
+  /** Durable CAS claim prevents an opposite resolution racing its financial effect. */
+  resolutionIntent?: {
+    outcome: DisputeResolutionOutcome;
+    resolutionNote: string;
+    claimedBy: EntityId;
+    claimedRole: string;
+    ipAddress?: string;
+    userAgent?: string;
+    claimedAt: string;
+    journalId: EntityId | null;
+  };
   raisedBy: EntityId;
   reason: string;
   amount: number; // paise
@@ -35,6 +48,7 @@ export interface DisputeCreateInput {
   organizationId: EntityId;
   orderId: EntityId;
   ledgerEntryId?: EntityId | null;
+  journalId?: EntityId | null;
   raisedBy: EntityId;
   reason: string;
   amount: number;
@@ -51,6 +65,7 @@ export function createDispute(input: DisputeCreateInput): Dispute {
     organizationId: input.organizationId,
     orderId: input.orderId,
     ledgerEntryId: input.ledgerEntryId ?? null,
+    journalId: input.journalId ?? null,
     raisedBy: input.raisedBy,
     reason: input.reason,
     amount: input.amount,
@@ -79,6 +94,8 @@ export function resolveDispute(
   if (dispute.status === 'resolved') {
     throw new InvalidOperationError('Dispute is already resolved');
   }
+  if (dispute.resolutionIntent)
+    throw new InvalidOperationError('Admin resolution is already in progress');
   return {
     ...bumpVersion(dispute, now),
     status: 'resolved',
@@ -90,7 +107,7 @@ export function resolveDispute(
 /**
  * Admin resolution — same terminal transition as `resolveDispute`, but
  * records an `outcome`, which the application layer uses to decide whether
- * to write a correcting ledger entry (`upheld`) or leave the ledger
+ * to reverse an exact canonical payable entry (`upheld`) or leave money
  * untouched (`denied`). The ledger mutation itself lives in
  * `admin-dispute-service.ts`, not here — this function only owns the
  * dispute's own state.

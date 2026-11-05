@@ -1,18 +1,32 @@
 import { ConflictError, InvalidOperationError } from '../../domain/errors.js';
 import { deterministicDomainEventId, domainEvent } from '../../domain/events.js';
+import { completeOrderFulfilment } from '../../domain/models/fulfilment.js';
 import { bookingReferenceForOrderId } from '../../domain/models/order.js';
+import { prepareRefundIntake } from '../../domain/models/refund-intake.js';
 import { assertRsvpCapacity, cancelledRsvp } from '../../domain/models/rsvp.js';
 
 import { compareAndSet } from './compare-and-set.js';
 import { entitlementToDoc, entitlementFromDoc } from './firestore-entitlement-repository.js';
+import {
+  financialJournalFromDocument,
+  financialJournalLineDocument,
+  JOURNAL_COLLECTION,
+  JOURNAL_LINE_COLLECTION,
+} from './firestore-financial-journal-repository.js';
 import { outboxDocument } from './firestore-outbox-store.js';
+import { refundRequestFromDoc, refundRequestToDoc } from './firestore-refund-request-repository.js';
 import { paginateQuery, paginateUnordered } from './pagination.js';
 
+import type { DomainEvent } from '../../domain/events.js';
 import type { EntityId } from '../../domain/identity.js';
 import type { CartReservation } from '../../domain/models/cart-reservation.js';
 import type { TicketTier } from '../../domain/models/event-catalog.js';
 import type { Event } from '../../domain/models/event.js';
+import type { FulfilmentCompletionInput } from '../../domain/models/fulfilment.js';
+import type { LedgerEntry } from '../../domain/models/ledger.js';
 import type { Order, OrderStatus } from '../../domain/models/order.js';
+import type { ProviderPayment } from '../../domain/models/provider-payment.js';
+import type { RefundIntakeInput } from '../../domain/models/refund-intake.js';
 import type {
   RsvpAcquisition,
   OrderRepository,
@@ -34,6 +48,118 @@ export class FirestoreOrderRepository implements OrderRepository {
 
   private get collection() {
     return this.db.collection(COLLECTION);
+  }
+
+  async completeFulfilment(input: FulfilmentCompletionInput) {
+    const orderRef = this.collection.doc(input.orderId);
+    const eventRef = this.db.collection('v2_outbox').doc(input.event.id);
+    return this.db.runTransaction(async (tx) => {
+      const [orderSnap, holdSnap, ticketsSnap, ledgerSnap, journalsSnap, eventSnap] =
+        await Promise.all([
+          tx.get(orderRef),
+          tx.get(this.db.collection('v2_cart_reservations').doc(input.holdId)),
+          tx.get(this.db.collection('v2_entitlements').where('orderId', '==', input.orderId)),
+          tx.get(this.db.collection('v2_partner_ledger').where('orderId', '==', input.orderId)),
+          tx.get(this.db.collection(JOURNAL_COLLECTION).where('sourceId', '==', input.orderId)),
+          tx.get(eventRef),
+        ]);
+      const orderData = orderSnap.data();
+      const order = orderData ? toOrder(orderData) : null;
+      const tickets = ticketsSnap.docs.map((doc) => entitlementFromDoc(doc.data()));
+      const issuanceSnaps = await Promise.all(
+        tickets.map((ticket) =>
+          tx.get(
+            this.db
+              .collection('v2_outbox')
+              .doc(deterministicDomainEventId('ticket.issued', ticket.id)),
+          ),
+        ),
+      );
+      const journals = journalsSnap.docs.map((doc) => financialJournalFromDocument(doc.data()));
+      const lines = journals.flatMap((journal) => journal.lines.map((line) => ({ journal, line })));
+      const lineSnaps = await Promise.all(
+        lines.map(({ line }) => tx.get(this.db.collection(JOURNAL_LINE_COLLECTION).doc(line.id))),
+      );
+      if (
+        !lineSnaps.every((snap, index) => {
+          const item = lines[index];
+          return (
+            item &&
+            snap.exists &&
+            Object.entries(financialJournalLineDocument(item.journal, item.line)).every(
+              ([key, value]) => JSON.stringify(snap.data()?.[key]) === JSON.stringify(value),
+            )
+          );
+        })
+      )
+        throw new ConflictError('Fulfillment journal lines are incomplete');
+      const paymentSnap = order?.paymentId
+        ? await tx.get(this.db.collection('v2_provider_payments').doc(order.paymentId))
+        : null;
+      const eventState = order
+        ? await tx.get(this.db.collection('v2_events').doc(order.eventId))
+        : null;
+      const result = completeOrderFulfilment(input, {
+        order,
+        event: eventState?.exists ? (eventState.data() as Event) : null,
+        hold: holdSnap.exists ? (holdSnap.data() as CartReservation) : null,
+        tickets,
+        issuanceEvents: issuanceSnaps
+          .filter((snap) => snap.exists)
+          .map((snap) => snap.data()?.payload as DomainEvent),
+        ledger: ledgerSnap.docs.map((doc) => doc.data() as LedgerEntry),
+        journals,
+        providerPayment: paymentSnap?.exists ? (paymentSnap.data() as ProviderPayment) : null,
+      });
+      const storedEvent = eventSnap.exists ? (eventSnap.data()?.payload as DomainEvent) : null;
+      if (
+        storedEvent &&
+        (storedEvent.type !== 'order.fulfilled' ||
+          storedEvent.aggregateId !== result.id ||
+          storedEvent.organizationId !== result.organizationId ||
+          storedEvent.payload.orderId !== result.id ||
+          (storedEvent.payload.receiptFacts &&
+            JSON.stringify(storedEvent.payload.receiptFacts) !==
+              JSON.stringify(input.event.payload.receiptFacts)))
+      )
+        throw new ConflictError('Fulfillment intent identity conflict');
+      if (result !== order) tx.set(orderRef, toDoc(result));
+      if (!storedEvent) tx.create(eventRef, outboxDocument(input.event));
+      else if (!storedEvent.payload.receiptFacts) tx.update(eventRef, { payload: input.event });
+      return result;
+    });
+  }
+
+  async beginRefundRequest(input: RefundIntakeInput) {
+    const orderRef = this.collection.doc(input.request.orderId);
+    const requestRef = this.db.collection('v2_refund_requests').doc(input.request.id);
+    return this.db.runTransaction(async (tx) => {
+      const [orderSnap, requestSnap, ticketsSnap] = await Promise.all([
+        tx.get(orderRef),
+        tx.get(requestRef),
+        tx.get(this.db.collection('v2_entitlements').where('orderId', '==', input.request.orderId)),
+      ]);
+      const orderData = orderSnap.data();
+      const requestData = requestSnap.data();
+      const eventSnap =
+        input.expectedEventVersion === undefined || !orderData
+          ? null
+          : await tx.get(this.db.collection('v2_events').doc(orderData.eventId as string));
+      const result = prepareRefundIntake(
+        input,
+        orderData ? toOrder(orderData) : null,
+        ticketsSnap.docs.map((doc) => entitlementFromDoc(doc.data())),
+        requestData ? refundRequestFromDoc(requestData) : null,
+        eventSnap?.exists ? (eventSnap.data() as Event) : null,
+      );
+      if (!result.replay) {
+        tx.set(orderRef, toDoc(result.order));
+        for (const ticket of result.entitlements)
+          tx.set(this.db.collection('v2_entitlements').doc(ticket.id), entitlementToDoc(ticket));
+        tx.create(requestRef, refundRequestToDoc(result.request));
+      }
+      return { request: result.request, order: result.order };
+    });
   }
 
   async acquireRsvp(input: RsvpAcquisition) {
@@ -304,6 +430,13 @@ export class FirestoreOrderRepository implements OrderRepository {
 function toDoc(order: Order): DocumentData {
   return {
     id: order.id,
+    ...(order.compensationRequired ? { compensationRequired: order.compensationRequired } : {}),
+    ...(order.fulfillmentState ? { fulfillmentState: order.fulfillmentState } : {}),
+    ...(order.fulfillmentCompletedAt
+      ? { fulfillmentCompletedAt: order.fulfillmentCompletedAt }
+      : {}),
+    ...(order.receiptFacts ? { receiptFacts: order.receiptFacts } : {}),
+    ...(order.bookedAt ? { bookedAt: order.bookedAt } : {}),
     bookingReference: order.bookingReference ?? bookingReferenceForOrderId(order.id),
     eventId: order.eventId,
     organizationId: order.organizationId,
@@ -312,6 +445,9 @@ function toDoc(order: Order): DocumentData {
     status: order.status,
     lines: order.lines,
     currency: order.currency,
+    ...(order.feePolicy ? { feePolicy: order.feePolicy } : {}),
+    ...(order.accountingPolicy ? { accountingPolicy: order.accountingPolicy } : {}),
+    ...(order.refundSnapshot ? { refundSnapshot: order.refundSnapshot } : {}),
     subtotalPaise: order.subtotalPaise,
     discountPaise: order.discountPaise,
     discountFundingOwner: order.discountFundingOwner ?? null,
@@ -340,6 +476,17 @@ function toDoc(order: Order): DocumentData {
 function toOrder(data: DocumentData): Order {
   return {
     id: data.id as string,
+    ...(data.compensationRequired
+      ? { compensationRequired: data.compensationRequired as Order['compensationRequired'] }
+      : {}),
+    ...(data.fulfillmentState
+      ? { fulfillmentState: data.fulfillmentState as Order['fulfillmentState'] }
+      : {}),
+    ...(data.fulfillmentCompletedAt
+      ? { fulfillmentCompletedAt: data.fulfillmentCompletedAt as string }
+      : {}),
+    ...(data.receiptFacts ? { receiptFacts: data.receiptFacts as Order['receiptFacts'] } : {}),
+    ...(typeof data.bookedAt === 'string' ? { bookedAt: data.bookedAt } : {}),
     bookingReference:
       (data.bookingReference as string | undefined) ??
       bookingReferenceForOrderId(data.id as string),
@@ -350,6 +497,13 @@ function toOrder(data: DocumentData): Order {
     status: data.status as OrderStatus,
     lines: data.lines as Order['lines'],
     currency: data.currency as string,
+    ...(data.feePolicy ? { feePolicy: data.feePolicy as Order['feePolicy'] } : {}),
+    ...(data.accountingPolicy
+      ? { accountingPolicy: data.accountingPolicy as Order['accountingPolicy'] }
+      : {}),
+    ...(data.refundSnapshot
+      ? { refundSnapshot: data.refundSnapshot as Order['refundSnapshot'] }
+      : {}),
     subtotalPaise: data.subtotalPaise as number,
     discountPaise: data.discountPaise as number,
     discountFundingOwner:

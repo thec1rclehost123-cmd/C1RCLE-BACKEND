@@ -1,4 +1,4 @@
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 
 import {
   DefiniteProviderFailureError,
@@ -15,6 +15,7 @@ import type {
   RefundRequest,
   RefundResponse,
   ProviderRefund,
+  ProviderOrder,
 } from '@c1rcle/core/domain/ports';
 
 interface RazorpayErrorResponse {
@@ -162,6 +163,7 @@ export class RazorpayPaymentProvider {
       keySecret: string;
       webhookSecret: string;
       baseUrl?: string;
+      requestTimeoutMs?: number;
     },
   ) {}
 
@@ -175,6 +177,9 @@ export class RazorpayPaymentProvider {
 
   async createOrder(request: PaymentOrderRequest): Promise<PaymentOrderResponse> {
     const response = await fetch(`${this.baseUrl}/orders`, {
+      signal: AbortSignal.timeout(
+        Math.max(1, Math.min(this.config.requestTimeoutMs ?? 10_000, 10_000)),
+      ),
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -216,6 +221,57 @@ export class RazorpayPaymentProvider {
     };
   }
 
+  /** Razorpay documents GET /orders?receipt=...; no create POST is used here. */
+  async findOrdersByReceipt(receipt: string): Promise<ProviderOrder[]> {
+    if (!receipt || receipt.length > 40)
+      throw new InvalidOperationError('Invalid provider receipt');
+    const response = await fetch(
+      `${this.baseUrl}/orders?${new URLSearchParams({ receipt, count: '2' })}`,
+      {
+        method: 'GET',
+        signal: AbortSignal.timeout(
+          Math.max(1, Math.min(this.config.requestTimeoutMs ?? 10_000, 10_000)),
+        ),
+        headers: { Authorization: this.authHeader },
+      },
+    );
+    if (!response.ok) throw new InvalidOperationError('Razorpay order lookup unavailable');
+    const data: unknown = await response.json();
+    if (
+      !data ||
+      typeof data !== 'object' ||
+      !('items' in data) ||
+      !Array.isArray(data.items) ||
+      !('count' in data) ||
+      data.count !== data.items.length ||
+      data.items.length > 2
+    ) {
+      throw new InvalidOperationError('Invalid Razorpay order lookup response');
+    }
+    return data.items.map((item: unknown) => {
+      if (
+        !isRazorpayOrderResponse(item) ||
+        !('receipt' in item) ||
+        item.receipt !== receipt ||
+        !('notes' in item) ||
+        !item.notes ||
+        typeof item.notes !== 'object' ||
+        Array.isArray(item.notes) ||
+        Object.values(item.notes).some((value) => typeof value !== 'string')
+      ) {
+        throw new InvalidOperationError('Invalid Razorpay order identity');
+      }
+      return {
+        id: item.id,
+        amountPaise: item.amount,
+        currency: item.currency,
+        status: item.status,
+        receipt,
+        metadata: item.notes as Record<string, string>,
+      };
+    });
+  }
+
   async verifyPayment(request: PaymentVerificationRequest): Promise<PaymentVerificationResponse> {
     // HMAC verification is NOT optional (D-022). `safeHexEqual` never throws on
     // a wrong-length signature, so a forged one is a clean 4xx, not a 500.
@@ -239,6 +295,9 @@ export class RazorpayPaymentProvider {
   ): Promise<PaymentVerificationResponse> {
     const id = assertProviderId(paymentId, 'payment id');
     const response = await fetch(`${this.baseUrl}/payments/${id}/capture`, {
+      signal: AbortSignal.timeout(
+        Math.max(1, Math.min(this.config.requestTimeoutMs ?? 10_000, 10_000)),
+      ),
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -275,11 +334,20 @@ export class RazorpayPaymentProvider {
 
   async refundPayment(request: RefundRequest): Promise<RefundResponse> {
     const id = assertProviderId(request.paymentId, 'payment id');
+    if (!request.idempotencyKey.trim())
+      throw new InvalidOperationError('Refund requires a canonical idempotency key');
+    // Razorpay's refund idempotency header permits only alphanumerics, '-' and
+    // '_'. Preserve the canonical receipt used by provider-fact reconciliation.
+    const providerKey = `c1r_${createHash('sha256').update(request.idempotencyKey).digest('hex')}`;
     const response = await fetch(`${this.baseUrl}/payments/${id}/refund`, {
+      signal: AbortSignal.timeout(
+        Math.max(1, Math.min(this.config.requestTimeoutMs ?? 10_000, 10_000)),
+      ),
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: this.authHeader,
+        'X-Refund-Idempotency': providerKey,
       },
       body: JSON.stringify({
         amount: request.amountPaise,
@@ -312,6 +380,9 @@ export class RazorpayPaymentProvider {
     const payment = assertProviderId(paymentId, 'payment id');
     const refund = assertProviderId(refundId, 'refund id');
     const response = await fetch(`${this.baseUrl}/payments/${payment}/refunds/${refund}`, {
+      signal: AbortSignal.timeout(
+        Math.max(1, Math.min(this.config.requestTimeoutMs ?? 10_000, 10_000)),
+      ),
       headers: { Authorization: this.authHeader },
     });
     // Missing, failed or malformed lookups do not prove refund failure/absence.
@@ -344,6 +415,9 @@ export class RazorpayPaymentProvider {
   async getPayment(paymentId: string): Promise<PaymentVerificationResponse> {
     const id = assertProviderId(paymentId, 'payment id');
     const response = await fetch(`${this.baseUrl}/payments/${id}`, {
+      signal: AbortSignal.timeout(
+        Math.max(1, Math.min(this.config.requestTimeoutMs ?? 10_000, 10_000)),
+      ),
       headers: {
         Authorization: this.authHeader,
       },

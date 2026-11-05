@@ -191,7 +191,17 @@ export class ReconciliationService {
       set.push(ticket);
       ticketsByOrder.set(ticket.orderId, set);
       const order = ordersById.get(ticket.orderId);
-      if (!order || !['paid', 'refund_requested', 'refunded'].includes(order.status)) {
+      const intentionalFreeCancellation =
+        order?.status === 'cancelled' &&
+        order.grandTotalPaise === 0 &&
+        ticket.status === 'void' &&
+        (ticket.unitKind === 'free_rsvp' ||
+          ticket.unitKind === 'complimentary' ||
+          order.id.startsWith('RSVP-'));
+      if (
+        !intentionalFreeCancellation &&
+        (!order || !['paid', 'refund_requested', 'refunded'].includes(order.status))
+      ) {
         found.push(
           this.discrepancy(runId, now, 'ticket_without_paid_order', {
             organizationId: ticket.organizationId,
@@ -224,7 +234,7 @@ export class ReconciliationService {
     for (const order of orders) {
       const payment = order.paymentId ? paymentsById.get(order.paymentId) : undefined;
       if (['paid', 'refund_requested', 'refunded'].includes(order.status)) {
-        if (!payment || payment.capturedPaise <= 0) {
+        if (order.grandTotalPaise > 0 && (!payment || payment.capturedPaise <= 0)) {
           found.push(
             this.discrepancy(runId, now, 'paid_order_without_capture', {
               organizationId: order.organizationId,
@@ -237,7 +247,12 @@ export class ReconciliationService {
             }),
           );
         }
-        const expectedTickets = order.lines.reduce((sum, item) => sum + item.quantity, 0);
+        const expectedTickets = order.lines.reduce(
+          (sum, item) =>
+            sum +
+            item.quantity * (item.admissionMode === 'per_person' ? (item.guestCount ?? 1) : 1),
+          0,
+        );
         const actualTickets = ticketsByOrder.get(order.id)?.length ?? 0;
         if (actualTickets !== expectedTickets) {
           found.push(
@@ -346,6 +361,25 @@ export class ReconciliationService {
       }
 
       const journals = await this.deps.repositories.financialJournals.findByOrderId(order.id);
+      const journalRefundedPaise = journals
+        .filter(
+          (journal) =>
+            journal.source.type === 'refund' && journal.idempotencyKey.endsWith(':recognition'),
+        )
+        .reduce((sum, journal) => sum + (journal.components?.refundPaise ?? 0), 0);
+      if (journalRefundedPaise !== order.refundedPaise) {
+        found.push(
+          this.discrepancy(runId, now, 'refund_mismatch', {
+            organizationId: order.organizationId,
+            orderId: order.id,
+            paymentId: order.paymentId,
+            amountPaise: Math.abs(journalRefundedPaise - order.refundedPaise),
+            currency: order.currency,
+            evidence: { orderRefundedPaise: order.refundedPaise, journalRefundedPaise },
+            state: 'finance_review',
+          }),
+        );
+      }
       const keys = new Set<string>();
       for (const journal of journals) {
         const totals = journalTotals(journal);
@@ -376,7 +410,10 @@ export class ReconciliationService {
         }
         keys.add(journal.idempotencyKey);
       }
-      if (order.status === 'paid' && order.grandTotalPaise > 0) {
+      if (
+        ['paid', 'refund_requested', 'refunded'].includes(order.status) &&
+        order.grandTotalPaise > 0
+      ) {
         for (const suffix of [':collection', ':allocation']) {
           if (!journals.some((journal) => journal.idempotencyKey.endsWith(suffix))) {
             found.push(

@@ -64,7 +64,9 @@ export default async function walletRoutes(fastify: FastifyInstance) {
           const orders = await services.orders.listForUser(actor, { limit: 100, cursor: null });
           return {
             activeTicketCount: tickets.items.filter((t) => t.status === 'valid').length,
-            upcomingOrderCount: orders.items.filter((o) => o.status === 'paid').length,
+            upcomingOrderCount: orders.items.filter(
+              (o) => o.status === 'paid' && o.fulfillmentState !== 'pending',
+            ).length,
           };
         })
         .catch((error: unknown) => mapDomainError(reply, request, 'self', error));

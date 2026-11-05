@@ -8,7 +8,7 @@ import {
 } from '../../domain/models/payout.js';
 import { requireOrgAccess } from '../context.js';
 
-import { createFinanceService } from './finance-service.js';
+import { createFinanceService, type FinanceServiceDeps } from './finance-service.js';
 import { FinancialPostingService } from './financial-posting-service.js';
 import { appendPayoutStatusEvent } from './payout-events.js';
 
@@ -35,6 +35,7 @@ import type { ServiceDeps, ActorContext } from '../context.js';
  */
 
 export interface PayoutServiceDeps {
+  financialExposure?: FinanceServiceDeps['financialExposure'];
   payouts: PayoutRepository;
   bankAccounts: BankAccountRepository;
   ledger: LedgerRepository;
@@ -84,6 +85,7 @@ export function createPayoutService(deps: PayoutServiceDeps): PayoutService {
     payouts: deps.payouts,
     events: deps.events,
     reconciliations: deps.reconciliations,
+    ...(deps.financialExposure ? { financialExposure: deps.financialExposure } : {}),
     config: deps.config,
   });
 

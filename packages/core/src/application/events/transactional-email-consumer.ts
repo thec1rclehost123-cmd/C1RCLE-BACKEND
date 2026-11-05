@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { guestPortalOrigin } from '../../config/index.js';
+import { ConflictError } from '../../domain/errors.js';
 import { deterministicDomainEventId, domainEvent } from '../../domain/events.js';
 import { currentEntitlementHolderId } from '../../domain/models/entitlement.js';
 import { PermanentEmailDeliveryError } from '../../domain/ports/email-sender.js';
@@ -79,7 +80,7 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
   if (event.type === 'order.fulfilled') {
     const { orderId } = event.payload as { orderId: EntityId };
     order = await deps.repositories.orders.getById(orderId);
-    if (!order || order.status !== 'paid') return null;
+    if (!order || order.status !== 'paid' || order.fulfillmentState === 'pending') return null;
     if (!isDeliverableRecipient(order.contact.email)) return null;
     const isRsvp = order.grandTotalPaise === 0;
     kind = isRsvp ? 'rsvp_confirmation' : 'booking_receipt';
@@ -195,6 +196,11 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
       }
       const entitlement = await deps.repositories.entitlements.getById(payload.entitlementId);
       if (!entitlement || entitlement.status === 'void') return null;
+      if (entitlement.fulfillmentRequired) {
+        const paidOrder = await deps.repositories.orders.getById(entitlement.orderId);
+        if (!paidOrder || paidOrder.fulfillmentState !== 'complete')
+          throw new ConflictError('Ticket delivery is waiting for payment completion');
+      }
       const currentHolderUserId = currentEntitlementHolderId(entitlement);
       if (!currentHolderUserId) return null;
       if (

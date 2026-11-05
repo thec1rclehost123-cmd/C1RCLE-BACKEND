@@ -15,6 +15,7 @@ import { MemoryGuestProfileRepository } from '../../infrastructure/memory/memory
 import { MemoryLeaderboardRepository } from '../../infrastructure/memory/memory-leaderboard-repository.js';
 import { MemoryLedgerRepository } from '../../infrastructure/memory/memory-ledger-repository.js';
 import { MemoryOutboxStore } from '../../infrastructure/memory/memory-outbox-store.js';
+import { MemoryProviderPaymentRepository } from '../../infrastructure/memory/memory-provider-payment-repository.js';
 import {
   MemoryCartReservationRepository,
   MemoryEntitlementRepository,
@@ -97,9 +98,23 @@ function buildService(serviceConfig = config) {
       users,
       ledger: new MemoryLedgerRepository(),
       financialJournals: new MemoryFinancialJournalRepository(),
+      providerPayments: new MemoryProviderPaymentRepository(),
       leaderboard: new MemoryLeaderboardRepository(),
     },
   } as unknown as ServiceDeps;
+  orders.fulfilmentStore = {
+    carts,
+    events,
+    entitlements: deps.repositories.entitlements as MemoryEntitlementRepository,
+    ledger: deps.repositories.ledger as MemoryLedgerRepository,
+    journals: deps.repositories.financialJournals as MemoryFinancialJournalRepository,
+    outbox: deps.outbox as MemoryOutboxStore,
+    providerPayments: deps.repositories.providerPayments as MemoryProviderPaymentRepository,
+  };
+  (deps.repositories.entitlements as MemoryEntitlementRepository).issuanceOutbox =
+    deps.outbox as MemoryOutboxStore;
+  (deps.repositories.entitlements as MemoryEntitlementRepository).admissionOrders = orders;
+
   return {
     deps,
     outbox,

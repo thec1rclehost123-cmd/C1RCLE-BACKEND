@@ -65,6 +65,7 @@ import type {
   FinancialJournal,
   PostingSourceType,
 } from '../models/financial-journal.js';
+import type { FulfilmentCompletionInput } from '../models/fulfilment.js';
 import type { GuestProfile } from '../models/guest-profile.js';
 import type { JournalTransitionState } from '../models/journal-transition.js';
 import type {
@@ -94,6 +95,7 @@ import type {
   ReconciliationRun,
 } from '../models/reconciliation.js';
 import type { ReferralLink } from '../models/referral-link.js';
+import type { RefundIntakeInput } from '../models/refund-intake.js';
 import type { AdminRefundRequest, AdminRefundRequestStatus } from '../models/refund-request.js';
 import type {
   SafetyReport,
@@ -723,6 +725,17 @@ export interface CartReservationRepository {
   release(reservationId: EntityId, tx?: TxContext | null): Promise<void>;
   /** Converts a hold to an order (atomic with order creation). */
   convertToOrder(reservationId: EntityId, orderId: EntityId, tx?: TxContext | null): Promise<void>;
+  /** Atomic durable claim made BEFORE any provider POST; exactly one caller wins. */
+  claimProviderOrderCreation(
+    reservationId: EntityId,
+    receipt: string,
+    now: Date,
+  ): Promise<{
+    hold: CartReservation;
+    claimed: boolean;
+  } | null>;
+  /** Records unresolved provider create/lookup outcomes without granting a new POST. */
+  markProviderOrderRequiresSupport(reservationId: EntityId, receipt: string): Promise<void>;
   /**
    * Binds the provider order to the hold, first writer wins, and returns the
    * order id that ended up bound (the caller's, or the one an earlier/racing
@@ -782,6 +795,13 @@ export interface RsvpAcquisition {
 }
 
 export interface OrderRepository {
+  /** Commit completion and its mandatory receipt/order intent only with durable sale evidence. */
+  completeFulfilment(input: FulfilmentCompletionInput): Promise<Order>;
+  /** One atomic intake: exact paid-order/ticket versions, request creation and selected-ticket freeze. */
+  beginRefundRequest(
+    input: RefundIntakeInput,
+  ): Promise<{ request: AdminRefundRequest; order: Order }>;
+
   /** Serializes capacity with paid holds and atomically persists the order and admission. */
   acquireRsvp(input: RsvpAcquisition): Promise<{ order: Order; entitlements: Entitlement[] }>;
   /** Owner-only, unused free admission cancellation; release is idempotent. */
@@ -1491,6 +1511,8 @@ export interface LedgerRepository {
  * key may never be reused for different journal content.
  */
 export interface FinancialJournalRepository {
+  /** Includes the materialized companion line records used by settlement. */
+  hasAllLines?(journalId: EntityId): Promise<boolean>;
   postBatch(journals: FinancialJournal[]): Promise<FinancialJournal[]>;
   findById(id: EntityId): Promise<FinancialJournal | null>;
   findByIdempotencyKey(idempotencyKey: string): Promise<FinancialJournal | null>;

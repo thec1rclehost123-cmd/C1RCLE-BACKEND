@@ -9,6 +9,7 @@ import {
 import { deterministicDomainEventId, domainEvent } from '../../domain/events.js';
 import { currentEntitlementHolderId } from '../../domain/models/entitlement.js';
 import { eventTransferUnavailableReason } from '../../domain/models/event-policy.js';
+import { fulfilmentPending } from '../../domain/models/fulfilment.js';
 import { eventMaterialChangeSubjectId, notificationId } from '../../domain/models/social.js';
 import { createTicketTransfer } from '../../domain/models/ticket-transfer.js';
 
@@ -51,6 +52,15 @@ export class TicketService {
     if (!entitlement || holderUserId !== actor.userId) {
       throw new NotFoundError('Ticket', ticketId);
     }
+    if (
+      entitlement.status !== 'void' &&
+      entitlement.fulfillmentRequired &&
+      fulfilmentPending(
+        entitlement,
+        await this.deps.repositories.orders.getById(entitlement.orderId),
+      )
+    )
+      throw new NotFoundError('Ticket', ticketId);
     return entitlement;
   }
 
@@ -171,6 +181,14 @@ export class TicketService {
     if (!entitlement || (holderUserId !== actor.userId && !isPurchaserCustodian)) {
       throw new NotFoundError('Ticket', ticketId);
     }
+    if (
+      entitlement.fulfillmentRequired &&
+      fulfilmentPending(
+        entitlement,
+        await this.deps.repositories.orders.getById(entitlement.orderId),
+      )
+    )
+      throw new ConflictError('Payment is still processing.');
     if (isFreeRsvp(entitlement)) {
       throw new ConflictError('Free RSVPs cannot be transferred');
     }
@@ -498,7 +516,17 @@ export class TicketService {
 
   async listForUser(actor: ActorContext, query: PaginationQuery): Promise<Page<Entitlement>> {
     if (!actor.userId) throw new UnauthorizedError('A session is required to list tickets');
-    return this.deps.repositories.entitlements.listByHolder(actor.userId, query);
+    const page = await this.deps.repositories.entitlements.listByHolder(actor.userId, query);
+    const visibility = await Promise.all(
+      page.items.map(
+        async (ticket) =>
+          ticket.status === 'void' ||
+          !ticket.fulfillmentRequired ||
+          !fulfilmentPending(ticket, await this.deps.repositories.orders.getById(ticket.orderId)),
+      ),
+    );
+    const items = page.items.filter((_ticket, index) => visibility[index]);
+    return { ...page, items, total: page.total - (page.items.length - items.length) };
   }
 }
 

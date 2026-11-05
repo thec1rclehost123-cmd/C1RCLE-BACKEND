@@ -1,5 +1,12 @@
 import { InvalidOperationError } from '../errors.js';
 
+import {
+  feeAtBasisPoints,
+  NON_PRODUCTION_BOOKING_FEE_POLICY,
+  snapshotBookingFeePolicy,
+  type BookingFeePolicy,
+} from './booking-fee-policy.js';
+
 import type { EntityId } from '../identity.js';
 import type { PromoCode, TicketTier } from './event-catalog.js';
 import type { DiscountFundingOwner } from './financial-journal.js';
@@ -79,6 +86,8 @@ export interface PricingLine {
 }
 
 export interface PricingBreakdown {
+  /** Frozen server policy; absent only on pre-M4 persisted purchases. */
+  feePolicy?: BookingFeePolicy;
   lines: PricingLine[];
   /** Σ(unit × qty), before any discount. */
   subtotalPaise: number;
@@ -101,6 +110,7 @@ export interface PricingBreakdown {
 }
 
 export interface CalculatePricingInput {
+  feePolicy?: BookingFeePolicy;
   lines: PricingLineInput[];
   /** Already validated as redeemable by the caller; this only does the maths. */
   promo?: PromoCode | null;
@@ -195,11 +205,22 @@ export function calculatePricing(input: CalculatePricingInput): PricingBreakdown
   // Fees are charged on what the guest actually pays for tickets, not on the
   // pre-discount figure — otherwise a promo costs the guest less but the
   // platform still bills fees as though it had not applied.
-  const platformFeePaise = applyPercent(discountedSubtotalPaise, PLATFORM_FEE_PERCENT);
-  const paymentFeePaise = applyPercent(discountedSubtotalPaise, PAYMENT_FEE_PERCENT);
-  const gstPaise = applyPercent(platformFeePaise + paymentFeePaise, GST_PERCENT);
+  const feePolicy = snapshotBookingFeePolicy(input.feePolicy ?? NON_PRODUCTION_BOOKING_FEE_POLICY);
+  const platformFeePaise = feeAtBasisPoints(
+    discountedSubtotalPaise,
+    feePolicy.platformFeeBasisPoints,
+  );
+  const paymentFeePaise = feeAtBasisPoints(
+    discountedSubtotalPaise,
+    feePolicy.paymentFeeBasisPoints,
+  );
+  const gstPaise = feeAtBasisPoints(
+    platformFeePaise + paymentFeePaise,
+    feePolicy.feeTaxBasisPoints,
+  );
 
   const breakdown: PricingBreakdown = {
+    feePolicy,
     lines,
     subtotalPaise,
     admissionSubtotalPaise,

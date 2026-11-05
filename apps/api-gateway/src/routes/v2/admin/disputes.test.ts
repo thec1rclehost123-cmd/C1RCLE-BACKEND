@@ -2,6 +2,8 @@ import {
   attachPaymentIntent,
   calculatePricing,
   createDispute,
+  createPostedJournal,
+  DEFAULT_ACCOUNTING_POLICY,
   createOrder,
   createPlatformAdmin,
   markPaid,
@@ -82,11 +84,16 @@ async function seedPaidOrder(suffix: number) {
   return paid;
 }
 
-async function seedDispute(order: Awaited<ReturnType<typeof seedPaidOrder>>, suffix: number) {
+async function seedDispute(
+  order: Awaited<ReturnType<typeof seedPaidOrder>>,
+  suffix: number,
+  journalId?: string,
+) {
   const dispute = createDispute({
     organizationId: order.organizationId,
     orderId: order.id,
     raisedBy: 'user_1',
+    ...(journalId ? { journalId } : {}),
     reason: 'Payout amount does not match the ticket count',
     amount: 20_000,
     now: new Date(),
@@ -118,10 +125,43 @@ beforeEach(async () => {
 });
 
 describe('POST /admin/disputes/:disputeId/resolve', () => {
-  it('upheld writes a correcting ledger entry for the disputed amount', async () => {
+  it('upheld reverses only the explicitly identified canonical payable journal', async () => {
     await seedAdmin('admin_a', 'finance');
     const order = await seedPaidOrder(1);
-    const dispute = await seedDispute(order, 1);
+    const journal = createPostedJournal({
+      organizationId: order.organizationId,
+      currency: 'INR',
+      source: {
+        type: 'legacy_backfill',
+        id: 'entry-http-1',
+        orderId: order.id,
+        eventId: order.eventId,
+        paymentId: null,
+      },
+      idempotencyKey: 'original-http-dispute-1',
+      accountingPolicy: DEFAULT_ACCOUNTING_POLICY,
+      postedAt: new Date(),
+      lines: [
+        {
+          account: 'ticket_collection_control',
+          component: null,
+          memo: 'Synthetic correction regression',
+          side: 'debit',
+          amountPaise: 20_000,
+          organizationId: order.organizationId,
+        },
+        {
+          account: 'host_payable',
+          component: null,
+          memo: 'Synthetic correction regression',
+          side: 'credit',
+          amountPaise: 20_000,
+          organizationId: order.organizationId,
+        },
+      ],
+    });
+    await services.repos().financialJournals.postBatch([journal]);
+    const dispute = await seedDispute(order, 1, journal.id);
 
     const response = await server.inject({
       method: 'POST',
@@ -136,10 +176,27 @@ describe('POST /admin/disputes/:disputeId/resolve', () => {
     expect(body.resolution).toBe('upheld');
 
     const entries = await services.repos().ledger.findByOrder(order.id);
-    const correction = entries.find((e) => e.entryType === 'refund');
-    expect(correction).toBeDefined();
-    expect(correction?.amount).toBe(20_000);
-    expect(correction?.status).toBe('settled');
+    expect(entries).toHaveLength(0);
+    const reversals = await services.repos().financialJournals.findReversals(journal.id);
+    expect(reversals).toHaveLength(1);
+    expect(reversals[0]?.source.type).toBe('partner_dispute_reversal');
+    expect(reversals[0]?.source.id).toBe(dispute.id);
+  });
+
+  it('rejects an unlinked upheld claim without financial or resolution mutations', async () => {
+    await seedAdmin('admin_a', 'finance');
+    const order = await seedPaidOrder(6);
+    const dispute = await seedDispute(order, 6);
+    const response = await server.inject({
+      method: 'POST',
+      url: `/admin/disputes/${dispute.id}/resolve`,
+      headers: asUser('admin_a'),
+      payload: { outcome: 'upheld', resolutionNote: 'Unlinked claim' },
+    });
+    expect(response.statusCode).toBe(409);
+    expect((await services.repos().disputes.findById(dispute.id))?.status).toBe('open');
+    expect(await services.repos().ledger.findByOrder(order.id)).toHaveLength(0);
+    expect(await services.repos().financialJournals.findByOrderId(order.id)).toHaveLength(0);
   });
 
   it('denied resolves the dispute without touching the ledger', async () => {

@@ -4,9 +4,20 @@ import { InvalidOperationError } from '../errors.js';
 import { transitionStatus } from '../fsm.js';
 import { bumpVersion, newVersionedEntity } from '../identity.js';
 
+import {
+  M4_ACCOUNTING_POLICY,
+  type AccountingPolicySnapshot,
+  type DiscountFundingOwner,
+} from './financial-journal.js';
+import {
+  snapshotOriginalPurchase,
+  type OriginalPurchaseRefundSnapshot,
+} from './purchase-refund-snapshot.js';
+
+import type { OrderReceiptFacts } from './fulfilment.js';
 import type { EntityId, VersionedEntity } from '../identity.js';
+import type { BookingFeePolicy } from './booking-fee-policy.js';
 import type { CommissionTerms } from './event-catalog.js';
-import type { DiscountFundingOwner } from './financial-journal.js';
 import type { PricingBreakdown } from './pricing.js';
 import type { TicketAddonSelection } from './ticket-addon.js';
 
@@ -74,6 +85,10 @@ const ORDER_TRANSITIONS: Readonly<Record<OrderStatus, readonly OrderStatus[]>> =
 
 /** A line as sold. Immutable once the order leaves `pending`. */
 export interface OrderLine {
+  admissionSubtotalPaise?: number;
+  discountedAdmissionSubtotalPaise?: number;
+  coverSubtotalPaise?: number;
+  addOnSubtotalPaise?: number;
   tierId: EntityId;
   tierName: string;
   pricingPhaseId?: string | null;
@@ -146,6 +161,20 @@ export interface RefundedTicketClaim {
 }
 
 export interface Order extends VersionedEntity {
+  /** Original hold creation time, independent of later capture/retry timing. */
+  bookedAt?: string;
+  /** Present only for new paid online purchases; legacy orders retain existing semantics. */
+  fulfillmentState?: 'pending' | 'complete';
+  compensationRequired?: {
+    reason: 'capacity_unavailable' | 'promotion_unavailable' | 'event_unavailable';
+    requestedAt: string;
+  };
+  fulfillmentCompletedAt?: string;
+  receiptFacts?: OrderReceiptFacts;
+  /** Original disclosed fee/refund policy, never recomputed from current settings. */
+  feePolicy?: BookingFeePolicy;
+  accountingPolicy?: AccountingPolicySnapshot;
+  refundSnapshot?: OriginalPurchaseRefundSnapshot;
   id: EntityId;
   /** Stable, support-safe reference shown to guests instead of the internal id. */
   bookingReference?: string;
@@ -236,7 +265,7 @@ export function createOrder(input: CreateOrderInput): Order {
   const ttl = input.reservationTtlMs ?? DEFAULT_RESERVATION_TTL_MS;
   const pricing = input.pricing;
 
-  return {
+  const order: Order = {
     id: input.id,
     bookingReference: bookingReferenceForOrderId(input.id),
     eventId: input.eventId,
@@ -246,6 +275,8 @@ export function createOrder(input: CreateOrderInput): Order {
     status: 'pending',
     lines: pricing.lines.map((line) => ({ ...line })),
     currency: pricing.currency,
+    accountingPolicy: Object.freeze({ ...M4_ACCOUNTING_POLICY, capturedAt: now.toISOString() }),
+    ...(pricing.feePolicy ? { feePolicy: Object.freeze({ ...pricing.feePolicy }) } : {}),
     subtotalPaise: pricing.subtotalPaise,
     discountPaise: pricing.discountPaise,
     discountFundingOwner: pricing.discountFundingOwner ?? null,
@@ -270,6 +301,7 @@ export function createOrder(input: CreateOrderInput): Order {
     appliedRefundRequestIds: [],
     ...newVersionedEntity(now),
   };
+  return order.feePolicy ? { ...order, refundSnapshot: snapshotOriginalPurchase(order) } : order;
 }
 
 /** Total ticket units across all lines — what inventory and issuance count. */

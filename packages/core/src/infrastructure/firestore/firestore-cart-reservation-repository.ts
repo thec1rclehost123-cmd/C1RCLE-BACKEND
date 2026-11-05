@@ -1,3 +1,5 @@
+import { claimCartReservationProviderOrderCreation } from '../../domain/models/cart-reservation.js';
+
 import type { EntityId } from '../../domain/identity.js';
 import type {
   CartReservation,
@@ -110,6 +112,33 @@ export class FirestoreCartReservationRepository implements CartReservationReposi
     });
   }
 
+  async claimProviderOrderCreation(reservationId: EntityId, receipt: string, now: Date) {
+    const ref = this.collection.doc(reservationId);
+    return this.db.runTransaction(async (tx) => {
+      const data = (await tx.get(ref)).data();
+      if (!data) return null;
+      const result = claimCartReservationProviderOrderCreation(
+        toCartReservation(data),
+        receipt,
+        now,
+      );
+      if (result.claimed)
+        tx.update(ref, { providerOrderCreation: result.hold.providerOrderCreation });
+      return result;
+    });
+  }
+
+  async markProviderOrderRequiresSupport(reservationId: EntityId, receipt: string): Promise<void> {
+    const ref = this.collection.doc(reservationId);
+    await this.db.runTransaction(async (tx) => {
+      const data = (await tx.get(ref)).data();
+      if (!data) return;
+      const hold = toCartReservation(data);
+      if (hold.providerOrderId || hold.providerOrderCreation?.receipt !== receipt) return;
+      tx.update(ref, { 'providerOrderCreation.state': 'requires_support' });
+    });
+  }
+
   async bindProviderOrder(
     reservationId: EntityId,
     providerOrderId: string,
@@ -125,7 +154,10 @@ export class FirestoreCartReservationRepository implements CartReservationReposi
       if (!data) return null;
       const existing = data.providerOrderId as string | null | undefined;
       if (existing) return existing;
-      tx.set(ref, toDoc({ ...toCartReservation(data), providerOrderId }));
+      tx.update(ref, {
+        providerOrderId,
+        ...(data.providerOrderCreation ? { 'providerOrderCreation.state': 'bound' } : {}),
+      });
       return providerOrderId;
     });
   }
@@ -228,6 +260,7 @@ function toDoc(reservation: CartReservation): DocumentData {
     expiresAt: reservation.expiresAt,
     convertedOrderId: reservation.convertedOrderId,
     providerOrderId: reservation.providerOrderId ?? null,
+    providerOrderCreation: reservation.providerOrderCreation ?? null,
     attendee: reservation.attendee ?? null,
     ...(reservation.upgrade ? { upgrade: reservation.upgrade } : {}),
     sequence: reservation.sequence ?? null,
@@ -252,6 +285,8 @@ function toCartReservation(data: DocumentData): CartReservation {
     expiresAt: data.expiresAt as string,
     convertedOrderId: data.convertedOrderId as string | null,
     providerOrderId: (data.providerOrderId as string | null | undefined) ?? null,
+    providerOrderCreation:
+      (data.providerOrderCreation as CartReservation['providerOrderCreation']) ?? null,
     attendee: (data.attendee as CartReservation['attendee'] | undefined) ?? null,
     ...(data.upgrade ? { upgrade: data.upgrade as CartReservation['upgrade'] } : {}),
     sequence: (data.sequence as number | null | undefined) ?? null,

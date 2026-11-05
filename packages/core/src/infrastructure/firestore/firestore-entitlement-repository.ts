@@ -141,6 +141,19 @@ export class FirestoreEntitlementRepository implements EntitlementRepository {
         tx.get(entitlementRef),
         tx.get(outboxRef),
       ]);
+      if (initialIssuance && !entitlementSnap.exists && entitlement.fulfillmentRequired) {
+        const orderSnap = await tx.get(this.db.collection('v2_orders').doc(entitlement.orderId));
+        const order = orderSnap.data();
+        if (
+          !order ||
+          order.status !== 'paid' ||
+          order.compensationRequired ||
+          order.eventId !== entitlement.eventId ||
+          order.organizationId !== entitlement.organizationId ||
+          order.userId !== entitlement.userId
+        )
+          throw new ConflictError('The captured order is not eligible to issue this ticket');
+      }
       if (initialIssuance && entitlementSnap.exists) {
         const existing = entitlementFromDoc(entitlementSnap.data() ?? {});
         if (
@@ -321,6 +334,24 @@ export class FirestoreEntitlementRepository implements EntitlementRepository {
           scansUsed: 0,
           scansAllowed: 0,
         };
+      if (current?.fulfillmentRequired) {
+        const orderSnap = await tx.get(this.db.collection('v2_orders').doc(current.orderId));
+        const completion = orderSnap.data();
+        if (
+          !completion ||
+          completion.fulfillmentState !== 'complete' ||
+          completion.eventId !== current.eventId ||
+          completion.organizationId !== current.organizationId
+        )
+          return {
+            admitted: false,
+            denyReason: 'void_ticket' as const,
+            denyMessage: 'Payment is still processing.',
+            entitlement: current,
+            scansUsed: current.scanCount,
+            scansAllowed: current.scanCountAllowed,
+          };
+      }
       let admissionEvent: Event | null = null;
       if (options?.requireEventValidation || options?.admissionAudit) {
         const eventSnap = await tx.get(this.db.collection('v2_events').doc(eventId));
@@ -667,6 +698,9 @@ export class FirestoreEntitlementRepository implements EntitlementRepository {
 export function entitlementToDoc(entitlement: Entitlement): DocumentData {
   return {
     id: entitlement.id,
+    ...(entitlement.fulfillmentRequired === undefined
+      ? {}
+      : { fulfillmentRequired: entitlement.fulfillmentRequired }),
     orderId: entitlement.orderId,
     eventId: entitlement.eventId,
     organizationId: entitlement.organizationId,
@@ -707,6 +741,9 @@ export function entitlementToDoc(entitlement: Entitlement): DocumentData {
 export function entitlementFromDoc(data: DocumentData): Entitlement {
   return {
     id: data.id as string,
+    ...(data.fulfillmentRequired === undefined
+      ? {}
+      : { fulfillmentRequired: data.fulfillmentRequired as boolean }),
     orderId: data.orderId as string,
     eventId: data.eventId as string,
     organizationId: data.organizationId as string,

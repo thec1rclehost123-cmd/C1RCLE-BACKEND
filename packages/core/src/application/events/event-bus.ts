@@ -51,6 +51,10 @@ export class InProcessEventBus implements OutboxWriter {
     this.now = options.now ?? Date.now;
   }
 
+  async hasEvent(id: EntityId): Promise<boolean> {
+    return this.store.hasEvent ? this.store.hasEvent(id) : false;
+  }
+
   /** Persist and dispatch this event without claiming unrelated backlog. */
   async append(event: DomainEvent): Promise<void> {
     await this.store.append(event);

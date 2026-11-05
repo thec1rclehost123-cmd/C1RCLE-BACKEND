@@ -161,7 +161,15 @@ describe('GET /orders/:id/status', () => {
     const response = await server.inject({ method: 'GET', url: `/orders/${orderId}/status` });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ id: orderId, status: 'paid', version: 1 });
+    const full = await server.inject({ method: 'GET', url: `/orders/${orderId}` });
+    expect(full.statusCode).toBe(200);
+    const persisted = full.json<{ version: number; updatedAt: string }>();
+    expect(response.json()).toEqual({
+      id: orderId,
+      status: 'paid',
+      version: persisted.version,
+      updatedAt: persisted.updatedAt,
+    });
     await server.close();
   });
 });

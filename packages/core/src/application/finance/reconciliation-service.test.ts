@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
+import { issueEntitlements } from '../../domain/models/entitlement.js';
 import { MemoryFinancialJournalRepository } from '../../infrastructure/memory/memory-financial-journal-repository.js';
 import { MemoryReconciliationRepository } from '../../infrastructure/memory/memory-reconciliation-repository.js';
 
+import { FinancialPostingService } from './financial-posting-service.js';
 import { ReconciliationService } from './reconciliation-service.js';
 
+import type { Entitlement } from '../../domain/models/entitlement.js';
 import type { Order } from '../../domain/models/order.js';
 import type { Payout } from '../../domain/models/payout.js';
 import type { ProviderPayment } from '../../domain/models/provider-payment.js';
@@ -17,7 +20,8 @@ function page<T>(items: T[]) {
 }
 
 function order(input: Partial<Order> & Pick<Order, 'id' | 'status'>): Order {
-  return {
+  const value = input.grandTotalPaise === 0 ? 0 : 1000;
+  const base: Order = {
     id: input.id,
     eventId: 'event_1',
     organizationId: 'org_1',
@@ -25,17 +29,23 @@ function order(input: Partial<Order> & Pick<Order, 'id' | 'status'>): Order {
     contact: { name: 'Test', email: 'test@example.invalid', phone: '0000000000' },
     status: input.status,
     lines: [
-      { tierId: 'tier_1', tierName: 'GA', quantity: 1, unitPricePaise: 1000, subtotalPaise: 1000 },
+      {
+        tierId: 'tier_1',
+        tierName: 'GA',
+        quantity: 1,
+        unitPricePaise: value,
+        subtotalPaise: value,
+      },
     ],
     currency: 'INR',
-    subtotalPaise: 1000,
+    subtotalPaise: value,
     discountPaise: 0,
     discountFundingOwner: null,
-    discountedSubtotalPaise: 1000,
+    discountedSubtotalPaise: value,
     platformFeePaise: 0,
     paymentFeePaise: 0,
     gstPaise: 0,
-    grandTotalPaise: 1000,
+    grandTotalPaise: value,
     appliedPromoCode: null,
     attribution: null,
     paymentIntentId: input.paymentIntentId ?? null,
@@ -49,6 +59,7 @@ function order(input: Partial<Order> & Pick<Order, 'id' | 'status'>): Order {
     createdAt: input.createdAt ?? NOW.toISOString(),
     updatedAt: input.updatedAt ?? NOW.toISOString(),
   };
+  return { ...base, ...input };
 }
 
 function providerPayment(
@@ -77,6 +88,7 @@ function build(input: {
   orders?: Order[];
   payments?: ProviderPayment[];
   payouts?: Payout[];
+  tickets?: Entitlement[];
   failOrders?: boolean;
 }) {
   const reconciliations = new MemoryReconciliationRepository();
@@ -93,13 +105,13 @@ function build(input: {
         },
       },
       providerPayments: { listAll: async () => page(input.payments ?? []) },
-      entitlements: { listAll: async () => page([]) },
+      entitlements: { listAll: async () => page(input.tickets ?? []) },
       payouts: { listByStatus: async () => page(input.payouts ?? []) },
       cartReservations: { getByProviderOrderId: async () => null },
       financialJournals: journals,
     },
   } as unknown as ServiceDeps;
-  return { service: new ReconciliationService(deps), reconciliations };
+  return { service: new ReconciliationService(deps), reconciliations, journals };
 }
 
 describe('ReconciliationService', () => {
@@ -167,5 +179,212 @@ describe('ReconciliationService', () => {
       status: 'failed',
       failureReason: 'orders unavailable',
     });
+  });
+});
+
+describe('M3 legitimate issuance and lifecycle reconciliation', () => {
+  it.each(['RSVP-free', 'COMP-free'])(
+    'does not demand a provider capture for %s zero-value issuance',
+    async (id) => {
+      const free = order({
+        id,
+        status: 'paid',
+        grandTotalPaise: 0,
+        lines: [
+          {
+            tierId: 'free-tier',
+            tierName: 'Free',
+            quantity: 1,
+            unitPricePaise: 0,
+            subtotalPaise: 0,
+          },
+        ],
+      });
+      const tickets = issueEntitlements({
+        order: free,
+        unitKind: id.startsWith('RSVP') ? 'free_rsvp' : 'complimentary',
+        now: NOW,
+      });
+      const { service, reconciliations } = build({ orders: [free], tickets });
+      await service.run('admin');
+      expect((await reconciliations.listDiscrepancies({ limit: 100 })).items).toEqual([]);
+    },
+  );
+
+  it('retains intentional cancelled RSVP void history without raising an orphan ticket', async () => {
+    const paidFree = order({ id: 'RSVP-cancelled', status: 'paid', grandTotalPaise: 0 });
+    const tickets = issueEntitlements({ order: paidFree, unitKind: 'free_rsvp', now: NOW }).map(
+      (ticket) => ({ ...ticket, status: 'void' as const }),
+    );
+    const { service, reconciliations } = build({
+      orders: [{ ...paidFree, status: 'cancelled' }],
+      tickets,
+    });
+    await service.run('admin');
+    expect((await reconciliations.listDiscrepancies({ limit: 100 })).items).toEqual([]);
+  });
+
+  it('counts each person issued by a group line while still detecting a missing person', async () => {
+    const freeGroup = order({
+      id: 'group-issued',
+      status: 'paid',
+      grandTotalPaise: 0,
+      lines: [
+        {
+          tierId: 'group-tier',
+          tierName: 'Group',
+          quantity: 2,
+          guestCount: 3,
+          admissionMode: 'per_person',
+          unitPricePaise: 0,
+          subtotalPaise: 0,
+        },
+      ],
+    });
+    const tickets = issueEntitlements({ order: freeGroup, now: NOW });
+    expect(tickets).toHaveLength(6);
+    const complete = build({ orders: [freeGroup], tickets });
+    await complete.service.run('admin');
+    expect((await complete.reconciliations.listDiscrepancies({ limit: 100 })).items).toEqual([]);
+    const incomplete = build({ orders: [freeGroup], tickets: tickets.slice(0, 5) });
+    await incomplete.service.run('admin');
+    expect(
+      (await incomplete.reconciliations.listDiscrepancies({ limit: 100 })).items,
+    ).toMatchObject([
+      { kind: 'paid_order_without_ticket', evidence: { expectedTickets: 6, actualTickets: 5 } },
+    ]);
+  });
+
+  it('still reports a valid ticket attached to cancelled RSVP or a genuinely missing order', async () => {
+    const paidFree = order({ id: 'RSVP-invalid-history', status: 'paid', grandTotalPaise: 0 });
+    const tickets = issueEntitlements({ order: paidFree, now: NOW });
+    const first = tickets[0];
+    if (!first) throw new Error('Issued fixture ticket missing');
+    const { service, reconciliations } = build({
+      orders: [{ ...paidFree, status: 'cancelled' }],
+      tickets: [...tickets, { ...first, id: 'orphan', orderId: 'missing-order' }],
+    });
+    await service.run('admin');
+    expect(
+      (await reconciliations.listDiscrepancies({ limit: 100 })).items.filter(
+        (item) => item.kind === 'ticket_without_paid_order',
+      ),
+    ).toHaveLength(2);
+  });
+
+  it.each(['refund_requested', 'refunded'] as const)(
+    'checks original journals for %s positive-paid orders',
+    async (status) => {
+      const paid = order({ id: 'paid-original', status: 'paid', paymentId: 'pay-original' });
+      const tickets = issueEntitlements({ order: paid, now: NOW });
+      const f = build({
+        orders: [{ ...paid, status }],
+        payments: [providerPayment({ id: 'pay-original', orderId: paid.id })],
+        tickets,
+      });
+      await f.service.run('admin');
+      expect(
+        (await f.reconciliations.listDiscrepancies({ limit: 100 })).items.filter(
+          (item) => item.kind === 'missing_journal',
+        ),
+      ).toHaveLength(2);
+    },
+  );
+
+  it('accepts a partial settled exact-ticket refund with original void history and detects refund drift', async () => {
+    const paid = order({
+      id: 'partial-paid',
+      status: 'paid',
+      paymentId: 'pay-partial',
+      lines: [
+        { tierId: 'tier_1', tierName: 'GA', quantity: 2, unitPricePaise: 500, subtotalPaise: 1000 },
+      ],
+      refundedPaise: 500,
+    });
+    const tickets = issueEntitlements({ order: paid, now: NOW }).map((ticket, index) => ({
+      ...ticket,
+      ...(index === 0 ? { status: 'void' as const } : {}),
+    }));
+    const f = build({
+      orders: [paid],
+      payments: [
+        providerPayment({
+          id: 'pay-partial',
+          orderId: paid.id,
+          refunds: { 'refund-partial': 500 },
+        }),
+      ],
+      tickets,
+    });
+    await new FinancialPostingService(f.journals).postTicketSale({
+      organizationId: paid.organizationId,
+      orderId: paid.id,
+      eventId: paid.eventId,
+      paymentId: paid.paymentId,
+      sourceType: 'online_payment_capture',
+      providerConfirmed: true,
+      currency: 'INR',
+      ticketFaceValuePaise: 1000,
+      discountPaise: 0,
+      discountFundingOwner: null,
+      netTicketRevenuePaise: 1000,
+      gstPaise: 0,
+      platformFeePaise: 0,
+      paymentFeePaise: 0,
+      allocation: {
+        platformPaise: 0,
+        hostOrganizationId: paid.organizationId,
+        hostPaise: 1000,
+        venueOrganizationId: null,
+        venuePaise: 0,
+        promoterOrganizationId: null,
+        promoterPaise: 0,
+      },
+      postedAt: NOW,
+    });
+    const missingRefundJournal = await f.service.run('admin');
+    expect(
+      (
+        await f.reconciliations.listDiscrepancies({ limit: 100, runId: missingRefundJournal.id })
+      ).items.some((item) => item.kind === 'refund_mismatch'),
+    ).toBe(true);
+    await new FinancialPostingService(f.journals).postRefund({
+      organizationId: paid.organizationId,
+      orderId: paid.id,
+      eventId: paid.eventId,
+      paymentId: 'pay-partial',
+      refundRequestId: 'request-partial',
+      providerRefundId: 'refund-partial',
+      amountPaise: 500,
+      previouslyRefundedPaise: 0,
+      postedAt: NOW,
+    });
+    const completed = await f.service.run('admin');
+    expect(
+      (await f.reconciliations.listDiscrepancies({ limit: 100, runId: completed.id })).items,
+    ).toEqual([]);
+    // Fresh reconciliation does not silently resolve the earlier operator-owned finding.
+    expect(
+      (
+        await f.reconciliations.listDiscrepancies({ limit: 100, runId: missingRefundJournal.id })
+      ).items.some((item) => item.state === 'finance_review'),
+    ).toBe(true);
+    const drift = build({
+      orders: [paid],
+      payments: [
+        providerPayment({
+          id: 'pay-partial',
+          orderId: paid.id,
+          refunds: { 'refund-partial': 501 },
+        }),
+      ],
+      tickets,
+    });
+    await drift.service.run('admin');
+    expect(
+      (await drift.reconciliations.listDiscrepancies({ limit: 100 })).items.some(
+        (item) => item.kind === 'refund_mismatch',
+      ),
+    ).toBe(true);
   });
 });

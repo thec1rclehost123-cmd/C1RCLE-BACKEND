@@ -6,6 +6,7 @@ import {
 } from '../../domain/errors.js';
 import { bumpVersion } from '../../domain/identity.js';
 import { admissionLedger } from '../../domain/models/admission-ledger.js';
+import { claimCartReservationProviderOrderCreation } from '../../domain/models/cart-reservation.js';
 import {
   admitSeats,
   changeEntitlementHolder,
@@ -18,8 +19,10 @@ import {
   eventAdmissionUnavailableReason,
   eventTransferUnavailableReason,
 } from '../../domain/models/event-policy.js';
+import { completeOrderFulfilment, fulfilmentPending } from '../../domain/models/fulfilment.js';
 import { bookingReferenceForOrderId } from '../../domain/models/order.js';
 import { DEFAULT_PLATFORM_SETTINGS } from '../../domain/models/platform-settings.js';
+import { prepareRefundIntake } from '../../domain/models/refund-intake.js';
 import { assertRsvpCapacity, cancelledRsvp } from '../../domain/models/rsvp.js';
 import { resolveTicketTransfer } from '../../domain/models/ticket-transfer.js';
 import { committedTierQuantity } from '../../domain/models/tier-inventory.js';
@@ -35,6 +38,11 @@ import {
  * storage driver (`buildRepositories` in `infrastructure/utils.ts`).
  */
 
+import type { MemoryFinancialJournalRepository } from './memory-financial-journal-repository.js';
+import type { MemoryLedgerRepository } from './memory-ledger-repository.js';
+import type { MemoryOutboxStore } from './memory-outbox-store.js';
+import type { MemoryProviderPaymentRepository } from './memory-provider-payment-repository.js';
+import type { MemoryRefundRequestRepository } from './memory-refund-request-repository.js';
 import type { MemoryScanLedgerRepository } from './memory-scan-ledger-repository.js';
 import type { DomainEvent } from '../../domain/events.js';
 import type { EntityId } from '../../domain/identity.js';
@@ -47,9 +55,11 @@ import type {
   PromoterAssignment,
 } from '../../domain/models/event-catalog.js';
 import type { Event } from '../../domain/models/event.js';
+import type { FulfilmentCompletionInput } from '../../domain/models/fulfilment.js';
 import type { Order } from '../../domain/models/order.js';
 import type { Organization, OrganizationMember } from '../../domain/models/organization.js';
 import type { PlatformSettings } from '../../domain/models/platform-settings.js';
+import type { RefundIntakeInput } from '../../domain/models/refund-intake.js';
 import type { TicketAddon } from '../../domain/models/ticket-addon.js';
 import type { TicketTransfer } from '../../domain/models/ticket-transfer.js';
 import type { Venue, VenueSlot, SlotRequest } from '../../domain/models/venue.js';
@@ -654,6 +664,8 @@ export class MemoryCartReservationRepository implements CartReservationRepositor
   private eventSequence = new Map<EntityId, number>();
 
   async create(reservation: CartReservation, _tx?: TxContext | null): Promise<CartReservation> {
+    const existing = this.reservations.get(reservation.id);
+    if (existing) return existing;
     // Synchronous, so no two holds for an event can take the same number.
     const sequence = (this.eventSequence.get(reservation.eventId) ?? 0) + 1;
     this.eventSequence.set(reservation.eventId, sequence);
@@ -704,6 +716,23 @@ export class MemoryCartReservationRepository implements CartReservationRepositor
     }
   }
 
+  async claimProviderOrderCreation(reservationId: EntityId, receipt: string, now: Date) {
+    const hold = this.reservations.get(reservationId);
+    if (!hold) return null;
+    const result = claimCartReservationProviderOrderCreation(hold, receipt, now);
+    if (result.claimed) this.reservations.set(reservationId, result.hold);
+    return result;
+  }
+
+  async markProviderOrderRequiresSupport(reservationId: EntityId, receipt: string): Promise<void> {
+    const hold = this.reservations.get(reservationId);
+    if (!hold || hold.providerOrderId || hold.providerOrderCreation?.receipt !== receipt) return;
+    this.reservations.set(reservationId, {
+      ...hold,
+      providerOrderCreation: { ...hold.providerOrderCreation, state: 'requires_support' },
+    });
+  }
+
   async bindProviderOrder(
     reservationId: EntityId,
     providerOrderId: string,
@@ -712,7 +741,13 @@ export class MemoryCartReservationRepository implements CartReservationRepositor
     const r = this.reservations.get(reservationId);
     if (!r) return null;
     if (r.providerOrderId) return r.providerOrderId;
-    this.reservations.set(reservationId, { ...r, providerOrderId });
+    this.reservations.set(reservationId, {
+      ...r,
+      providerOrderId,
+      ...(r.providerOrderCreation
+        ? { providerOrderCreation: { ...r.providerOrderCreation, state: 'bound' as const } }
+        : {}),
+    });
     return providerOrderId;
   }
 
@@ -773,7 +808,87 @@ export class MemoryOrderRepository implements OrderRepository {
       entitlements: MemoryEntitlementRepository;
       events: MemoryEventRepository;
     },
+    private readonly refundIntake?: {
+      refundRequests: MemoryRefundRequestRepository;
+      entitlements: MemoryEntitlementRepository;
+      events?: MemoryEventRepository;
+    },
   ) {}
+
+  fulfilmentStore?: {
+    carts: MemoryCartReservationRepository;
+    entitlements: MemoryEntitlementRepository;
+    ledger: MemoryLedgerRepository;
+    journals: MemoryFinancialJournalRepository;
+    outbox: MemoryOutboxStore;
+    events: MemoryEventRepository;
+    providerPayments: MemoryProviderPaymentRepository;
+  };
+
+  async completeFulfilment(input: FulfilmentCompletionInput) {
+    const store = this.fulfilmentStore;
+    if (!store) throw new InvalidOperationError('Atomic fulfillment storage is unavailable');
+    const order = this.orders.get(input.orderId) ?? null;
+    const result = completeOrderFulfilment(input, {
+      order,
+      event: order ? (store.events.events.get(order.eventId) ?? null) : null,
+      hold: store.carts.reservations.get(input.holdId) ?? null,
+      tickets: [...store.entitlements.entitlements.values()].filter(
+        (ticket) => ticket.orderId === input.orderId,
+      ),
+      issuanceEvents: store.outbox.all().map((row) => row.payload as DomainEvent),
+      ledger: [...store.ledger.entries.values()],
+      journals: [...store.journals.journals.values()],
+      providerPayment: order?.paymentId
+        ? (store.providerPayments.payments.get(order.paymentId) ?? null)
+        : null,
+    });
+    const storedEvent = store.outbox.all().find((row) => row.id === input.event.id)?.payload as
+      DomainEvent | undefined;
+    if (
+      storedEvent &&
+      (storedEvent.type !== 'order.fulfilled' ||
+        storedEvent.aggregateId !== result.id ||
+        storedEvent.organizationId !== result.organizationId ||
+        storedEvent.payload.orderId !== result.id ||
+        (storedEvent.payload.receiptFacts &&
+          JSON.stringify(storedEvent.payload.receiptFacts) !==
+            JSON.stringify(input.event.payload.receiptFacts)))
+    )
+      throw new ConflictError('Fulfillment intent identity conflict');
+    // No await: the receipt intent and completed marker share one storage critical section.
+    store.outbox.persist(input.event);
+    if (result !== order) {
+      this.orders.set(result.id, result);
+      if (result.paymentId) this.byPaymentId.set(result.paymentId, result);
+    }
+    return result;
+  }
+
+  async beginRefundRequest(input: RefundIntakeInput) {
+    if (!this.refundIntake)
+      throw new InvalidOperationError('Atomic refund intake storage is unavailable');
+    const result = prepareRefundIntake(
+      input,
+      this.orders.get(input.request.orderId) ?? null,
+      [...this.refundIntake.entitlements.entitlements.values()].filter(
+        (ticket) => ticket.orderId === input.request.orderId,
+      ),
+      this.refundIntake.refundRequests.requests.get(input.request.id) ?? null,
+      (this.refundIntake.events ?? this.rsvp?.events)?.events.get(
+        this.orders.get(input.request.orderId)?.eventId ?? '',
+      ) ?? null,
+    );
+    // No await: validate everything before this synchronous storage critical section.
+    if (!result.replay) {
+      this.orders.set(result.order.id, result.order);
+      if (result.order.paymentId) this.byPaymentId.set(result.order.paymentId, result.order);
+      this.refundIntake.refundRequests.requests.set(result.request.id, result.request);
+      for (const ticket of result.entitlements)
+        this.refundIntake.entitlements.entitlements.set(ticket.id, ticket);
+    }
+    return { request: result.request, order: result.order };
+  }
 
   async acquireRsvp(input: RsvpAcquisition) {
     const line = input.order.lines[0];
@@ -947,6 +1062,8 @@ export class MemoryOrderRepository implements OrderRepository {
 
 export class MemoryEntitlementRepository implements EntitlementRepository {
   admissionEvents?: MemoryEventRepository;
+  admissionOrders?: MemoryOrderRepository;
+  issuanceOutbox?: MemoryOutboxStore;
   admissionLedger?: MemoryScanLedgerRepository;
   entitlements = new Map<EntityId, Entitlement>();
   transfers = new Map<EntityId, TicketTransfer>();
@@ -1010,6 +1127,18 @@ export class MemoryEntitlementRepository implements EntitlementRepository {
         throw new ConflictError('Issuance event does not match its ticket');
       }
       const existing = this.entitlements.get(entitlement.id);
+      if (!existing && entitlement.fulfillmentRequired) {
+        const order = this.admissionOrders?.orders.get(entitlement.orderId);
+        if (
+          !order ||
+          order.status !== 'paid' ||
+          order.compensationRequired ||
+          order.eventId !== entitlement.eventId ||
+          order.organizationId !== entitlement.organizationId ||
+          order.userId !== entitlement.userId
+        )
+          throw new ConflictError('The captured order is not eligible to issue this ticket');
+      }
       if (existing) {
         if (
           existing.orderId !== entitlement.orderId ||
@@ -1024,10 +1153,12 @@ export class MemoryEntitlementRepository implements EntitlementRepository {
         ) {
           throw new ConflictError('Ticket id is already associated with a different issuance');
         }
+        this.issuanceOutbox?.persist(_outboxEvent);
         return;
       }
     }
     casSet(this.entitlements, entitlement);
+    if (_outboxEvent) this.issuanceOutbox?.persist(_outboxEvent);
   }
 
   async saveMany(entitlements: Entitlement[], _tx?: TxContext | null): Promise<void> {
@@ -1124,6 +1255,18 @@ export class MemoryEntitlementRepository implements EntitlementRepository {
     options?: ClaimAdmissionOptions,
   ): Promise<AdmissionClaim> {
     const current = this.entitlements.get(entitlementId) ?? null;
+    if (
+      current &&
+      fulfilmentPending(current, this.admissionOrders?.orders.get(current.orderId) ?? null)
+    )
+      return {
+        admitted: false,
+        denyReason: 'void_ticket' as const,
+        denyMessage: 'Payment is still processing.',
+        entitlement: current,
+        scansUsed: current.scanCount,
+        scansAllowed: current.scanCountAllowed,
+      };
     if (current && current.eventId !== eventId)
       return {
         admitted: false,

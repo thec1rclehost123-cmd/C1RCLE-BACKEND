@@ -1,4 +1,5 @@
 import { IdempotencyConflictError } from '../../domain/errors.js';
+import { assertPayableCorrections } from '../financial-journal-correction-guard.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type { FinancialJournal, PostingSourceType } from '../../domain/models/financial-journal.js';
@@ -30,6 +31,10 @@ export class MemoryFinancialJournalRepository implements FinancialJournalReposit
   readonly journals = new Map<EntityId, FinancialJournal>();
   readonly byIdempotencyKey = new Map<string, EntityId>();
 
+  async hasAllLines(journalId: EntityId): Promise<boolean> {
+    return (this.journals.get(journalId)?.lines.length ?? 0) >= 2;
+  }
+
   async postBatch(journals: FinancialJournal[]): Promise<FinancialJournal[]> {
     const resolved = journals.map((journal) => {
       const existingId = this.byIdempotencyKey.get(journal.idempotencyKey);
@@ -41,6 +46,7 @@ export class MemoryFinancialJournalRepository implements FinancialJournalReposit
       return existing;
     });
 
+    assertPayableCorrections([...this.journals.values()], resolved);
     for (const journal of resolved) {
       if (this.byIdempotencyKey.has(journal.idempotencyKey)) continue;
       this.journals.set(journal.id, journal);

@@ -158,12 +158,16 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
     entitlements.admissionEvents = events;
     const scanLedger = new MemoryScanLedgerRepository();
     entitlements.admissionLedger = scanLedger;
-    const orders = new MemoryOrderRepository({
-      catalog,
-      carts: cartReservations,
-      entitlements,
-      events,
-    });
+    const refundRequests = new MemoryRefundRequestRepository();
+    const orders = new MemoryOrderRepository(
+      {
+        catalog,
+        carts: cartReservations,
+        entitlements,
+        events,
+      },
+      { refundRequests, entitlements },
+    );
     catalog.inventoryClaims = { orders, carts: cartReservations };
     return {
       organizations,
@@ -212,7 +216,7 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
       // Phase 8
       follows: new MemoryFollowRepository(),
       socialNotifications: new MemorySocialNotificationRepository(),
-      refundRequests: new MemoryRefundRequestRepository(),
+      refundRequests,
       providerPayments: new MemoryProviderPaymentRepository(),
       providerFinancialEvents: new MemoryProviderFinancialEventRepository(),
       reconciliations: new MemoryReconciliationRepository(),

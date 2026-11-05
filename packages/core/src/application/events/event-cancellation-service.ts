@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+
+import { ConflictError } from '../../domain/errors.js';
 import {
   deterministicDomainEventId,
   domainEvent,
@@ -7,6 +10,7 @@ import {
 } from '../../domain/events.js';
 import { freezeEntitlementForRefund, voidEntitlement } from '../../domain/models/entitlement.js';
 import { markOrderEventCancelled, refundableBalance } from '../../domain/models/order.js';
+import { quoteOriginalRefund } from '../../domain/models/purchase-refund-snapshot.js';
 import { createRefundRequest } from '../../domain/models/refund-request.js';
 
 import type { EntityId } from '../../domain/identity.js';
@@ -151,8 +155,99 @@ export class EventCancellationService {
           initialOrder.eventCancellation?.eventVersion === eventVersion)) &&
       initialOrder.paymentId !== null &&
       remainingPaise > 0 &&
+      !initialOrder.compensationRequired &&
       !otherActiveRefund &&
       existingCancellationRefund === null;
+    if (canCreateRefund && initialOrder.refundSnapshot) {
+      const event = await this.deps.repositories.events.getById(initialOrder.eventId);
+      if (!event || event.status !== 'cancelled' || event.version !== eventVersion)
+        throw new ConflictError('Cancellation changed before original-purchase refund intake');
+      const targets = entitlements
+        .filter((ticket) => ticket.status !== 'void')
+        .sort((left, right) => left.id.localeCompare(right.id));
+      const quoted = quoteOriginalRefund(
+        initialOrder,
+        initialOrder.refundSnapshot.tickets.map((ticket) => ticket.entitlementId),
+        'organizer_cancel',
+      );
+      // Retained fees on void admissions remain owed; inventory targets stay active-only.
+      const settled = orderRefunds.filter((request) => request.status === 'settled');
+      if (
+        settled.some((request) => !request.refundComponents) ||
+        settled.reduce((sum, request) => sum + request.amountPaise, 0) !==
+          initialOrder.refundedPaise
+      )
+        throw new ConflictError('Cancellation requires reconciled original refund components');
+      for (const request of settled) {
+        for (const key of Object.keys(quoted.components) as (keyof typeof quoted.components)[])
+          quoted.components[key] -= request.refundComponents?.[key] ?? 0;
+      }
+      const componentValues = [
+        quoted.components.admissionPaise,
+        quoted.components.platformFeePaise,
+        quoted.components.paymentFeePaise,
+        quoted.components.feeTaxPaise,
+        quoted.components.otherPaidPaise,
+      ];
+      quoted.amountPaise = componentValues.reduce((sum, amount) => sum + amount, 0);
+      if (
+        componentValues.some((amount) => !Number.isSafeInteger(amount) || amount < 0) ||
+        quoted.amountPaise !== remainingPaise
+      )
+        throw new ConflictError('Cancellation original refund components do not reconcile');
+      const quantities = new Map<EntityId, number>();
+      for (const ticket of targets)
+        quantities.set(ticket.tierId, (quantities.get(ticket.tierId) ?? 0) + 1);
+      const settings = await this.deps.repositories.platformSettings.get();
+      const request = createRefundRequest({
+        id: refundId,
+        orderId: initialOrder.id,
+        organizationId: initialOrder.organizationId,
+        requestedBy: actorId,
+        reason: `Event cancelled: ${reason}`,
+        intakeFingerprint: createHash('sha256')
+          .update(
+            JSON.stringify({
+              orderId: initialOrder.id,
+              eventVersion,
+              reason,
+              cause: quoted.cause,
+              targets: targets.map((ticket) => ticket.id),
+              components: quoted.components,
+            }),
+          )
+          .digest('hex'),
+        amountPaise: quoted.amountPaise,
+        refundCause: quoted.cause,
+        refundComponents: quoted.components,
+        purchasePolicyVersion: quoted.purchasePolicyVersion,
+        sourceEventVersion: eventVersion,
+        scope: targets.length ? 'ticket_lines' : 'amount_only',
+        targetEntitlementIds: targets.map((ticket) => ticket.id),
+        ticketLines: [...quantities].map(([tierId, quantity]) => ({ tierId, quantity })),
+        hasRedeemedEntitlement: entitlements.some(
+          (ticket) =>
+            ticket.status === 'redeemed' ||
+            ticket.scanCount > 0 ||
+            ticket.ticketAddons?.some((addon) => addon.status === 'redeemed'),
+        ),
+        thresholds: {
+          singleApproverCeilingPaise: settings.refundSingleApproverThresholdPaise,
+          dualApproverCeilingPaise: settings.refundDualApproverThresholdPaise,
+        },
+        now,
+      });
+      const intake = await this.deps.repositories.orders.beginRefundRequest({
+        request,
+        expectedOrderVersion: initialOrder.version,
+        expectedEventVersion: eventVersion,
+        expectedEntitlementVersions: entitlements.map(({ id, version }) => ({ id, version })),
+        now,
+      });
+      // Retry-safe metadata/audit delivery follows the canonical atomic intake.
+      await this.processOrder(intake.order, reason, eventVersion, eventTitle, actorId);
+      return;
+    }
     const shouldRemainLocked =
       canCreateRefund ||
       (existingCancellationRefund !== null &&

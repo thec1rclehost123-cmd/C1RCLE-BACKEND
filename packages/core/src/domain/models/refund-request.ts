@@ -1,7 +1,9 @@
 import { ForbiddenError, InvalidOperationError } from '../errors.js';
 import { bumpVersion, newVersionedEntity } from '../identity.js';
 
+import type { AdminRole } from './admin-authority.js';
 import type { EntityId, VersionedEntity } from '../identity.js';
+import type { RefundCause, RefundComponents } from './purchase-refund-snapshot.js';
 
 /**
  * ─── Admin refund request (Phase 6 admin) ────────────────────────────────────
@@ -49,7 +51,30 @@ export interface RefundTicketLine {
 }
 
 export interface AdminRefundRequest extends VersionedEntity {
+  /** Server-only authorization captured by the winning execution claim. */
+  executionActor?: {
+    adminId: EntityId;
+    adminRole: AdminRole;
+    source: 'execution_claim' | 'legacy_recovery';
+    authorizedAt: string;
+    ipAddress?: string;
+    userAgent?: string;
+  };
+  /** Stable audit facts committed together with the settled state. */
+  settlementAudit?: {
+    requestStatusBefore: string;
+    orderStatusBefore: string;
+    orderStatusAfter: string;
+    occurredAt: number;
+  };
+
   id: EntityId;
+  readonly intakeFingerprint?: string;
+  readonly sourceEventVersion?: number;
+  readonly remedyForRefundRequestId?: EntityId;
+  readonly refundCause?: RefundCause;
+  readonly refundComponents?: Readonly<RefundComponents>;
+  readonly purchasePolicyVersion?: string;
   orderId: EntityId;
   organizationId: EntityId;
   /** Paise. Must not exceed the order's refundable balance at request time. */
@@ -81,6 +106,12 @@ export interface AdminRefundRequest extends VersionedEntity {
 }
 
 export interface CreateAdminRefundRequestInput {
+  intakeFingerprint?: string;
+  sourceEventVersion?: number;
+  remedyForRefundRequestId?: EntityId;
+  refundCause?: RefundCause;
+  refundComponents?: RefundComponents;
+  purchasePolicyVersion?: string;
   id: EntityId;
   orderId: EntityId;
   organizationId: EntityId;
@@ -122,7 +153,29 @@ export function approversRequiredFor(
 }
 
 export function createRefundRequest(input: CreateAdminRefundRequestInput): AdminRefundRequest {
-  if (input.amountPaise <= 0) {
+  if (input.refundComponents) {
+    const amounts = [
+      input.refundComponents.admissionPaise,
+      input.refundComponents.platformFeePaise,
+      input.refundComponents.paymentFeePaise,
+      input.refundComponents.feeTaxPaise,
+      input.refundComponents.otherPaidPaise,
+    ];
+    if (
+      !input.refundCause ||
+      !['guest_request', 'organizer_cancel', 'material_change', 'fulfillment_failure'].includes(
+        input.refundCause,
+      ) ||
+      !input.purchasePolicyVersion ||
+      amounts.some((amount) => !Number.isSafeInteger(amount) || amount < 0) ||
+      amounts.reduce((sum, amount) => sum + amount, 0) !== input.amountPaise
+    ) {
+      throw new InvalidOperationError('Refund components must match the original quoted amount');
+    }
+  } else if (input.refundCause || input.purchasePolicyVersion) {
+    throw new InvalidOperationError('Original refund components are required with purchase policy');
+  }
+  if (!Number.isSafeInteger(input.amountPaise) || input.amountPaise <= 0) {
     throw new InvalidOperationError('Refund amount must be positive');
   }
   if (input.reason.trim().length === 0) {
@@ -159,6 +212,20 @@ export function createRefundRequest(input: CreateAdminRefundRequestInput): Admin
 
   return {
     id: input.id,
+    ...(input.remedyForRefundRequestId
+      ? { remedyForRefundRequestId: input.remedyForRefundRequestId }
+      : {}),
+    ...(input.intakeFingerprint ? { intakeFingerprint: input.intakeFingerprint } : {}),
+    ...(input.sourceEventVersion !== undefined
+      ? { sourceEventVersion: input.sourceEventVersion }
+      : {}),
+    ...(input.refundComponents
+      ? {
+          refundComponents: { ...input.refundComponents },
+          refundCause: input.refundCause,
+          purchasePolicyVersion: input.purchasePolicyVersion,
+        }
+      : {}),
     orderId: input.orderId,
     organizationId: input.organizationId,
     amountPaise: input.amountPaise,
@@ -229,6 +296,34 @@ export function rejectRefundRequest(
   if (reason.trim().length === 0) {
     throw new InvalidOperationError('Rejecting a refund request requires a reason');
   }
+  return {
+    ...bumpVersion(request, now ?? new Date()),
+    status: 'rejected',
+    rejectedBy: adminId,
+    rejectionReason: reason.trim(),
+  };
+}
+
+/** The service must establish an authoritative promoted cause before this safety-only replacement. */
+export function rejectUnexecutedRefundForPolicyChange(
+  request: AdminRefundRequest,
+  adminId: EntityId,
+  reason: string,
+  now?: Date,
+): AdminRefundRequest {
+  if (
+    request.status !== 'approved' ||
+    request.executionAttempts !== 0 ||
+    request.providerRefundId ||
+    request.refundCause !== 'guest_request' ||
+    !request.purchasePolicyVersion
+  ) {
+    throw new InvalidOperationError(
+      'Only an unexecuted original-purchase refund can be replaced for a policy change',
+    );
+  }
+  if (!reason.trim())
+    throw new InvalidOperationError('Rejecting a refund request requires a reason');
   return {
     ...bumpVersion(request, now ?? new Date()),
     status: 'rejected',

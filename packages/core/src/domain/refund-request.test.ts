@@ -11,6 +11,7 @@ import {
   markRefundSettled,
   recordRefundProviderFact,
   rejectRefundRequest,
+  rejectUnexecutedRefundForPolicyChange,
 } from './models/refund-request.js';
 
 const T0 = new Date('2026-08-14T12:00:00.000Z');
@@ -147,5 +148,59 @@ describe('settlement', () => {
     r = markRefundFailed(r, 'Provider timeout', T0);
     expect(r.status).toBe('failed');
     expect(r.failureReason).toBe('Provider timeout');
+  });
+});
+
+describe('approved original-purchase policy replacement safety', () => {
+  it('allows the service-validated unexecuted M4 policy replacement without changing amount or provider key', () => {
+    const original = request({
+      amountPaise: 10_000,
+      refundCause: 'guest_request',
+      refundComponents: {
+        admissionPaise: 10_000,
+        platformFeePaise: 0,
+        paymentFeePaise: 0,
+        feeTaxPaise: 0,
+        otherPaidPaise: 0,
+      },
+      purchasePolicyVersion: 'm4-test',
+    });
+    expect(() => rejectRefundRequest(original, 'admin_b', 'Ordinary rejection', T0)).toThrow();
+    const rejected = rejectUnexecutedRefundForPolicyChange(
+      original,
+      'admin_b',
+      'Authoritative policy promoted',
+      T0,
+    );
+    expect(rejected).toMatchObject({
+      status: 'rejected',
+      amountPaise: original.amountPaise,
+      executionIdempotencyKey: original.executionIdempotencyKey,
+      refundComponents: original.refundComponents,
+    });
+    expect(() =>
+      rejectUnexecutedRefundForPolicyChange(
+        beginRefundExecution(original, T0),
+        'admin_b',
+        'Too late',
+        T0,
+      ),
+    ).toThrow();
+    expect(() =>
+      rejectUnexecutedRefundForPolicyChange(
+        { ...original, providerRefundId: 'known-provider-fact' },
+        'admin_b',
+        'Too late',
+        T0,
+      ),
+    ).toThrow();
+    expect(() =>
+      rejectUnexecutedRefundForPolicyChange(
+        request({ amountPaise: 10_000 }),
+        'admin_b',
+        'Legacy not eligible',
+        T0,
+      ),
+    ).toThrow();
   });
 });

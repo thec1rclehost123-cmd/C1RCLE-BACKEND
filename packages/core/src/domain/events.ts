@@ -8,6 +8,7 @@
 import { createHash } from 'node:crypto';
 
 import type { EntityId } from './identity.js';
+import type { OrderReceiptFacts } from './models/fulfilment.js';
 
 /** Bump when a payload shape changes in a breaking way. */
 export const DOMAIN_EVENT_SCHEMA_VERSION = 1;
@@ -124,7 +125,7 @@ export interface EventPayloads {
     refundRequestId: EntityId | null;
     reason: string;
   };
-  'order.fulfilled': { orderId: EntityId; eventId: EntityId };
+  'order.fulfilled': { orderId: EntityId; eventId: EntityId; receiptFacts?: OrderReceiptFacts };
   /** Durable per-entitlement issuance fact with explicit purchaser/holder roles. */
   'ticket.issued': {
     entitlementId: EntityId;

@@ -78,6 +78,17 @@ export interface CartReservation extends VersionedEntity {
    * fulfil another. First writer wins (see `bindProviderOrder`).
    */
   providerOrderId?: string | null;
+  /** Durable pre-provider claim. Never retried with a second create POST. */
+  providerOrderCreation?: {
+    receipt: string;
+    amountPaise: number;
+    currency: string;
+    holdId: EntityId;
+    eventId: EntityId;
+    organizationId: EntityId;
+    claimedAt: string;
+    state: 'creating' | 'requires_support' | 'bound';
+  } | null;
   /** Who the tickets are for, captured at hold time; becomes the order contact. */
   attendee?: OrderContact | null;
   /** Present only for the bounded one-ticket paid upgrade flow. */
@@ -164,4 +175,33 @@ export function releaseCartReservation(reservation: CartReservation, now?: Date)
 
 export function isCartReservationExpired(reservation: CartReservation, now: Date): boolean {
   return now.getTime() > Date.parse(reservation.expiresAt);
+}
+
+/** Only the first durable claimant may call the provider's create endpoint. */
+export function claimCartReservationProviderOrderCreation(
+  hold: CartReservation,
+  receipt: string,
+  now: Date,
+): { hold: CartReservation; claimed: boolean } {
+  if (hold.providerOrderCreation || hold.providerOrderId) return { hold, claimed: false };
+  if (hold.status !== 'active' || Date.parse(hold.expiresAt) < now.getTime()) {
+    throw new InvalidOperationError('Cannot begin payment for an inactive or expired hold');
+  }
+  if (!receipt || receipt.length > 40) throw new InvalidOperationError('Invalid provider receipt');
+  return {
+    claimed: true,
+    hold: {
+      ...hold,
+      providerOrderCreation: {
+        receipt,
+        amountPaise: hold.pricing.grandTotalPaise,
+        currency: hold.pricing.currency,
+        holdId: hold.id,
+        eventId: hold.eventId,
+        organizationId: hold.organizationId,
+        claimedAt: now.toISOString(),
+        state: 'creating',
+      },
+    },
+  };
 }

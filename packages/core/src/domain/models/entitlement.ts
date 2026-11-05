@@ -83,6 +83,8 @@ const ENTITLEMENT_TRANSITIONS: Readonly<Record<EntitlementStatus, readonly Entit
 };
 
 export interface Entitlement extends VersionedEntity {
+  /** New paid units require canonical order completion before presentation/admission. */
+  fulfillmentRequired?: boolean;
   /** `entitlementId(orderId, tierId, index)` — deterministic, see above. */
   id: EntityId;
   orderId: EntityId;
@@ -209,6 +211,7 @@ export function issueEntitlements(input: IssueEntitlementsInput): Entitlement[] 
         tierId: line.tierId,
         tierName: line.tierName,
         userId: order.userId,
+        ...(order.fulfillmentState !== undefined ? { fulfillmentRequired: true } : {}),
         unitKind: input.unitKind ?? (order.id.startsWith('RSVP-') ? 'free_rsvp' : 'paid'),
         currentHolderUserId: purchaserAssigned ? order.userId : null,
         credentialVersion: 1,

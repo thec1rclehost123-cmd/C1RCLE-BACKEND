@@ -29,13 +29,22 @@ export interface FinancialComponentBreakdown {
   readonly venueAllocationPaise: number;
   readonly promoterAllocationPaise: number;
   readonly refundPaise: number;
+  /** Exact original-paid component deltas for a component-aware refund. */
+  readonly refundedAdmissionPaise?: number;
+  readonly refundedPlatformFeePaise?: number;
+  readonly refundedPaymentFeePaise?: number;
+  readonly refundedFeeTaxPaise?: number;
+  readonly refundedOtherPaidPaise?: number;
   readonly chargebackPaise: number;
   readonly reservePaise: number;
   readonly payoutPaise: number;
   readonly roundingAdjustmentPaise: number;
 }
 
+export type SettlementReleaseSchedule = 'event_end_24h_75_72h_100';
+
 export interface AccountingPolicySnapshot {
+  readonly releaseSchedule?: SettlementReleaseSchedule;
   readonly version: string;
   readonly capturedAt: string;
   readonly settlementDelayDays: number;
@@ -55,6 +64,14 @@ export const DEFAULT_ACCOUNTING_POLICY: AccountingPolicySnapshot = Object.freeze
   holdsOnCancellation: true,
   holdsOnDispute: true,
   holdsOnUnresolvedReconciliation: true,
+});
+
+/** New sale snapshots identify M4 policy; historical journal snapshots stay immutable. */
+export const M4_ACCOUNTING_POLICY: AccountingPolicySnapshot = Object.freeze({
+  ...DEFAULT_ACCOUNTING_POLICY,
+  version: 'm4-staged-settlement-v1',
+  releaseSchedule: 'event_end_24h_75_72h_100',
+  reserveBasisPoints: 0,
 });
 
 export type AccountCode =
@@ -112,6 +129,7 @@ export type PostingSourceType =
   | 'event_cover_redemption'
   | 'event_cover_redemption_reversal'
   | 'manual_adjustment'
+  | 'partner_dispute_reversal'
   | 'legacy_backfill';
 
 export interface PostingSource {

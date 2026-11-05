@@ -12,9 +12,9 @@ import type { ServiceDeps, ActorContext } from '../context.js';
  *
  * A partner's challenge against a ledger entry or payout amount. Minimal FSM
  * (`open -> under_review -> resolved`, `domain/models/dispute.ts`) — no
- * automatic linkage back into the ledger (a resolved dispute does not itself
- * mutate ledger entries; that stays a manual operator follow-up until a
- * richer reconciliation flow is scoped).
+ * financial correction on this Partner route. AdminDisputeService separately
+ * applies approved exact-entry canonical journal reversals; unlinked claims
+ * require a separately approved adjustment.
  */
 
 export interface DisputeServiceDeps {
@@ -26,6 +26,7 @@ export interface RaiseDisputeInput {
   organizationId: EntityId;
   orderId: EntityId;
   ledgerEntryId?: EntityId | null;
+  journalId?: EntityId | null;
   reason: string;
   amount: number; // paise
 }
@@ -52,6 +53,7 @@ export function createDisputeService(deps: DisputeServiceDeps): DisputeService {
       organizationId: input.organizationId,
       orderId: input.orderId,
       ledgerEntryId: input.ledgerEntryId,
+      journalId: input.journalId,
       raisedBy: actor.userId,
       reason: input.reason,
       amount: input.amount,

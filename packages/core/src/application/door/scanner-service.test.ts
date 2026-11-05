@@ -46,7 +46,11 @@ const EVENT = {
   }),
   status: 'published' as const,
 };
-function serviceFor(entitlement: Entitlement | null, event: Event = EVENT) {
+function serviceFor(
+  entitlement: Entitlement | null,
+  event: Event = EVENT,
+  completion?: 'pending' | 'complete' | null,
+) {
   const findById = vi.fn(async () => entitlement);
   const deps = {
     scanLedger: {},
@@ -54,7 +58,21 @@ function serviceFor(entitlement: Entitlement | null, event: Event = EVENT) {
     scannerSessions: {},
     scannerDevices: {},
     entitlements: { findById },
-    repositories: { events: { findById: vi.fn(async () => event) } },
+    repositories: {
+      events: { findById: vi.fn(async () => event) },
+      orders: {
+        getById: vi.fn(async () =>
+          completion
+            ? {
+                id: entitlement?.orderId,
+                eventId: entitlement?.eventId,
+                organizationId: entitlement?.organizationId,
+                fulfillmentState: completion,
+              }
+            : null,
+        ),
+      },
+    },
     config: {
       magicTicketSecret: 'test-only-secret-not-used-as-a-real-key',
       clock: { now: () => NOW },
@@ -68,6 +86,30 @@ function serviceFor(entitlement: Entitlement | null, event: Event = EVENT) {
 }
 
 describe('generateMagicTicketQr', () => {
+  it.each([null, 'pending'] as const)(
+    'fails closed for completion-required ticket with %s order completion',
+    async (completion) => {
+      const { scanner } = serviceFor(
+        { ...BASE_ENTITLEMENT, fulfillmentRequired: true },
+        EVENT,
+        completion,
+      );
+      await expect(scanner.generateMagicTicketQr(BASE_ENTITLEMENT.id, HOLDER)).rejects.toThrow(
+        /processing/,
+      );
+    },
+  );
+  it('permits QR presentation after canonical paid completion', async () => {
+    const { scanner } = serviceFor(
+      { ...BASE_ENTITLEMENT, fulfillmentRequired: true },
+      EVENT,
+      'complete',
+    );
+    await expect(scanner.generateMagicTicketQr(BASE_ENTITLEMENT.id, HOLDER)).resolves.toMatchObject(
+      { refreshIntervalSec: 30 },
+    );
+  });
+
   it('mints a short-lived credential for the authorized active holder', async () => {
     const { scanner } = serviceFor(BASE_ENTITLEMENT);
 

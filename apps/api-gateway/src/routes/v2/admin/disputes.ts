@@ -26,7 +26,7 @@ import type { FastifyInstance } from 'fastify';
  * `partner/finance-routes.ts`'s dispute endpoints are org-scoped and never
  * mutate the ledger on resolution — this desk is the follow-up. TIER2,
  * single admin. See `application/finance/admin-dispute-service.ts` for why
- * `upheld` writes a correcting ledger entry and `denied` does not.
+ * `upheld` reverses an exact identified canonical payable entry; `denied` has no money effect.
  *
  * Platform authority, same as every other admin route in this repo: no
  * `requirePermission` here, `services.adminDispute` begins with
@@ -47,6 +47,7 @@ function disputeToDto(dispute: Dispute) {
     organizationId: dispute.organizationId,
     orderId: dispute.orderId,
     ledgerEntryId: dispute.ledgerEntryId,
+    journalId: dispute.journalId ?? null,
     raisedBy: dispute.raisedBy,
     reason: dispute.reason,
     amountPaise: dispute.amount,

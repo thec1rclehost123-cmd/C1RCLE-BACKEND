@@ -367,7 +367,9 @@ describe('POST /webhooks/payments/razorpay', () => {
     });
     expect(recheck.statusCode).toBe(200);
     expect(recheck.json().order.id).toBe(redirectResponse.json().order.id);
-    expect(recheck.json().order.version).toBe(1);
+    expect(recheck.json().order.version).toBe(2);
+    expect(recheck.json().order.fulfillmentState).toBe('complete');
+    expect(recheck.json().order.receiptFacts).toMatchObject({ providerPaymentId: paymentId });
     await server.close();
   });
 

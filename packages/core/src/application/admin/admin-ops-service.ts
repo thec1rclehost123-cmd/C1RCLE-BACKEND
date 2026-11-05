@@ -1,6 +1,7 @@
 import { ConflictError, InvalidOperationError, NotFoundError } from '../../domain/errors.js';
 import { deterministicDomainEventId, domainEvent } from '../../domain/events.js';
 import { isExecutable } from '../../domain/models/admin-authority.js';
+import { snapshotBookingFeePolicy } from '../../domain/models/booking-fee-policy.js';
 import { currentEntitlementHolderId } from '../../domain/models/entitlement.js';
 import {
   reinstatePromoterAssignment,
@@ -781,9 +782,23 @@ export class AdminOperationsService {
   ): Promise<PlatformSettings> {
     const admin = await this.authority.requireAdmin(adminUserId);
     const current = await this.deps.repositories.platformSettings.get();
+    const bookingFeePolicy = patch.bookingFeePolicy
+      ? snapshotBookingFeePolicy(patch.bookingFeePolicy)
+      : current.bookingFeePolicy;
+    if (patch.bookingFeePolicy) {
+      await this.authority.authorize(adminUserId, 'FINANCIAL_REFUND');
+      const next = snapshotBookingFeePolicy(patch.bookingFeePolicy);
+      if (
+        current.bookingFeePolicy?.version === next.version &&
+        JSON.stringify(snapshotBookingFeePolicy(current.bookingFeePolicy)) !== JSON.stringify(next)
+      ) {
+        throw new ConflictError('A changed booking fee policy requires a new version');
+      }
+    }
     const updated: PlatformSettings = {
       ...current,
       ...patch,
+      ...(bookingFeePolicy ? { bookingFeePolicy } : {}),
       featureFlags: patch.featureFlags ?? current.featureFlags,
       accountingPolicy: patch.accountingPolicy ?? current.accountingPolicy,
       updatedAt: this.deps.config.clock.now().toISOString(),
@@ -799,6 +814,7 @@ export class AdminOperationsService {
         refundDualApproverThresholdPaise: current.refundDualApproverThresholdPaise,
         maintenanceMode: current.maintenanceMode,
         accountingPolicyVersion: current.accountingPolicy.version,
+        bookingFeePolicy: current.bookingFeePolicy ?? null,
       },
       after: {
         platformFeeRate: updated.platformFeeRate,
@@ -806,6 +822,7 @@ export class AdminOperationsService {
         refundDualApproverThresholdPaise: updated.refundDualApproverThresholdPaise,
         maintenanceMode: updated.maintenanceMode,
         accountingPolicyVersion: updated.accountingPolicy.version,
+        bookingFeePolicy: updated.bookingFeePolicy ?? null,
       },
       reason: null,
       ipAddress: meta?.ipAddress,
