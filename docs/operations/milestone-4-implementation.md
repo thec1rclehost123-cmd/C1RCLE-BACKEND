@@ -94,7 +94,7 @@ The single accumulated comprehensive affected gate passed: **45 steps passed, 1 
 | Core affected invariants | 594 |
 | Memory repositories | 15 |
 | Native Firestore/concurrency | 121 |
-| Gateway routes/adapters | 465 |
+| Gateway routes/adapters | 478 |
 | Real Redis rate limiting | 18 |
 | Post-acceptance Admin/refund/native regression | 22 |
 | Guest affected | 166 |
@@ -128,3 +128,10 @@ Frontend `b8ad579` adds exact-M4-branch `git.deploymentEnabled=false` in all thr
 Both CI parity repository variables currently select staging, which lacks the paired M3/M4 contracts. The existing backend `frontend_ref` and frontend `backend_ref` workflow-dispatch inputs support exact-pair CI without changing those variables or protections. Preserve any automatic staging-parity mismatch and distinguish supported exact-pair CI evidence; never claim current staging contains the candidate.
 
 RAZORPAY TEST ORDER ONLY VERIFIED: one real Test order creation plus later exact read-only recovery. Real Test payment/capture/refund, hosted callback/webhook races and M4 staging acceptance remain UNVERIFIED. M3 backend #158 still requires legitimate independent review/merge/hosted acceptance before M4 merge/deployment. No bypass, production/Live operation, real-project finance cutover, worker/payout enablement or M5 work is included. Full M4 remains incomplete until its required hosted/real Test acceptance passes.
+
+
+### Required pre-push fixture correction
+
+The repository's unmodified pre-push hook additionally ran its full unit-test gate. The first attempt stopped publication: contracts passed 39; Core passed 1322 with 166 conditional integration skips; Gateway passed 1163 with four failures and five conditional skips. Skips are not passes and do not replace the separately verified native/Redis stages. All first-attempt package logs were preserved.
+
+The four failures were outdated fixture assumptions, corrected in `0656f88`: the production actor-denial fixture explicitly selects approved `c1rcle-v2` (config/actor only, no database operation), and three in-memory payout release/batch/RBAC tests explicitly opt in so they exercise their original assertions behind the new safe default. Runtime guard code and all authorization assertions are unchanged. The three focused suites passed 16 tests. The original Gateway affected stage now includes both demonstrated affected files and passes 478 tests; backend types/affected lint/format passed again. Unchanged financial/native/browser/build evidence was retained. Required hooks and normal CI are not bypassed.
