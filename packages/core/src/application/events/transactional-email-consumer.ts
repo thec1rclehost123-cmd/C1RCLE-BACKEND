@@ -545,12 +545,7 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
     const payload = event.payload as EventPayloads['finance.refund.finalized'];
     order = await deps.repositories.orders.getById(payload.orderId);
     const refund = await deps.repositories.refundRequests.getById(payload.refundRequestId);
-    if (
-      !order ||
-      !refund ||
-      !['rejected', 'failed'].includes(refund.status) ||
-      refund.status !== payload.status
-    )
+    if (!order || !refund || refund.status !== 'rejected' || refund.status !== payload.status)
       return null;
     explicitRecipient = await refundRecipient(order, deps);
     if (!explicitRecipient) return null;
@@ -558,11 +553,8 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
     kind = 'refund_not_completed';
     idempotencyKey = `refund-not-completed:${refund.id}:${refund.status}`;
     subject = 'Update on your C1RCLE refund';
-    heading = refund.status === 'rejected' ? 'Refund request declined' : 'Refund not completed';
-    details =
-      refund.status === 'rejected'
-        ? `<p>Your refund request was declined after review. No refund was issued.</p><p>Reference: ${escapeHtml(order.bookingReference ?? order.id)}</p><p>Contact support if you have questions.</p>`
-        : `<p>The payment provider did not complete this refund. No successful refund is recorded.</p><p>Reference: ${escapeHtml(order.bookingReference ?? order.id)}</p><p>Contact support if you need help.</p>`;
+    heading = 'Refund request declined';
+    details = `<p>Your refund request was declined after review. No refund was issued.</p><p>Reference: ${escapeHtml(order.bookingReference ?? order.id)}</p><p>Contact support if you have questions.</p>`;
   } else if (event.type === 'event.cancellation.email_requested') {
     const payload = event.payload as EventPayloads['event.cancellation.email_requested'];
     order = await deps.repositories.orders.getById(payload.orderId);
@@ -864,7 +856,8 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
 function createPreheader(kind: string, heading: string, eventTitle?: string): string {
   if (eventTitle && kind === 'booking_receipt') return `Your tickets for ${eventTitle} are ready.`;
   if (kind.includes('refund')) return 'A final update about your refund request.';
-  if (kind.includes('cancellation')) return 'Important information about your event and tickets.';
+  if (kind.includes('cancellation') || kind === 'event_cancelled')
+    return 'Important information about your event and tickets.';
   if (kind.includes('material_change') || kind.includes('postpon'))
     return 'Important information about a change to your event.';
   if (kind.includes('onboarding')) return 'Review the latest update to your application.';
