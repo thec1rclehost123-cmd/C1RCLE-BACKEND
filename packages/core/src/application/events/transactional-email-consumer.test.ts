@@ -1327,20 +1327,23 @@ describe('transactional email consumer', () => {
     await createTransactionalEmailConsumer(deps)(
       domainEvent({
         id: 'order-affected',
-        type: 'event.cancellation.order_affected',
+        type: 'event.cancellation.email_requested',
         aggregateId: order.id,
         organizationId: 'org',
         actorId: 'partner',
         payload: {
           eventId: 'event_c',
           orderId: order.id,
-          refundRequestId: 'refund_c',
+          entitlementId: null,
+          eventVersion: 7,
           reason: '<Weather>',
         },
         occurredAt: Date.now(),
       }),
     );
-    expect(key).toBe('event-change:event_c:7:order_c');
+    expect(key).toBe(
+      `event-cancelled:event_c:7:order_c:${createHash('sha256').update('guest@real.test').digest('hex')}`,
+    );
     expect(html).toContain('&lt;Cancelled&gt;');
     expect(html).toContain('&lt;Weather&gt;');
     expect(html).toContain('existing review process');
