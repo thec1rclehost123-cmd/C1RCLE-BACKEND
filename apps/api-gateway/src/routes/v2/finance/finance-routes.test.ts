@@ -449,7 +449,6 @@ describe('GET /organizations/:organizationId/payouts', () => {
       organizationId: org,
       role: 'owner',
       capabilities: [],
-      platformRole: 'partner',
     });
     expect(balance.availablePaise).toBe(100_000);
     const added = await server.inject({
