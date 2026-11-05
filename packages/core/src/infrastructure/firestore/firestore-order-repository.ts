@@ -436,6 +436,7 @@ function toDoc(order: Order): DocumentData {
       ? { fulfillmentCompletedAt: order.fulfillmentCompletedAt }
       : {}),
     ...(order.receiptFacts ? { receiptFacts: order.receiptFacts } : {}),
+    ...(order.saleAllocation ? { saleAllocation: order.saleAllocation } : {}),
     ...(order.bookedAt ? { bookedAt: order.bookedAt } : {}),
     bookingReference: order.bookingReference ?? bookingReferenceForOrderId(order.id),
     eventId: order.eventId,
@@ -486,6 +487,9 @@ function toOrder(data: DocumentData): Order {
       ? { fulfillmentCompletedAt: data.fulfillmentCompletedAt as string }
       : {}),
     ...(data.receiptFacts ? { receiptFacts: data.receiptFacts as Order['receiptFacts'] } : {}),
+    ...(data.saleAllocation
+      ? { saleAllocation: data.saleAllocation as Order['saleAllocation'] }
+      : {}),
     ...(typeof data.bookedAt === 'string' ? { bookedAt: data.bookedAt } : {}),
     bookingReference:
       (data.bookingReference as string | undefined) ??

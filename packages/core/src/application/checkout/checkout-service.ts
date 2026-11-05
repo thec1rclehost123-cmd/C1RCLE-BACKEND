@@ -10,6 +10,7 @@ import {
   VersionConflictError,
 } from '../../domain/errors.js';
 import { deterministicDomainEventId, domainEvent } from '../../domain/events.js';
+import { newVersionedEntity } from '../../domain/identity.js';
 import { snapshotBookingFeePolicy } from '../../domain/models/booking-fee-policy.js';
 import {
   currentEntitlementHolderId,
@@ -26,12 +27,27 @@ import {
   isEventCoverPolicyAccepted,
 } from '../../domain/models/event-cover.js';
 import { M4_ACCOUNTING_POLICY } from '../../domain/models/financial-journal.js';
-import { orderReceiptFacts, saleAccountingComplete } from '../../domain/models/fulfilment.js';
-import { promoterCommissionFitsDistributableValue } from '../../domain/models/ledger.js';
+import {
+  orderReceiptFacts,
+  saleAccountingComplete,
+  originalSaleJournalsComplete,
+} from '../../domain/models/fulfilment.js';
+import {
+  computeSettlementSplit,
+  promoterCommissionFitsDistributableValue,
+} from '../../domain/models/ledger.js';
 import { platformFeePercentFor } from '../../domain/models/onboarding.js';
 import { commissionTierFor } from '../../domain/models/partnership.js';
 import { calculatePricing } from '../../domain/models/pricing.js';
 import { snapshotOriginalPurchase } from '../../domain/models/purchase-refund-snapshot.js';
+import {
+  createReconciliationRun,
+  completeReconciliationRun,
+} from '../../domain/models/reconciliation.js';
+import {
+  allocationFromLedger,
+  validateSaleAllocation,
+} from '../../domain/models/sale-allocation.js';
 import { isSystemActor, SYSTEM_ACTOR } from '../context.js';
 import { requestCaptureCompensation } from '../finance/capture-compensation.js';
 import { createFinanceService } from '../finance/finance-service.js';
@@ -54,6 +70,7 @@ import type { CommissionTerms } from '../../domain/models/event-catalog.js';
 import type { EventCoverPolicyProposal } from '../../domain/models/event-cover.js';
 import type { Order, OrderContact } from '../../domain/models/order.js';
 import type { PricingBreakdown } from '../../domain/models/pricing.js';
+import type { SaleAllocationSnapshot } from '../../domain/models/sale-allocation.js';
 import type { PaymentVerificationResponse } from '../../domain/ports/payment-provider.js';
 import type { ActorContext, ServiceDeps } from '../context.js';
 import type { FinanceService } from '../finance/finance-service.js';
@@ -879,6 +896,12 @@ export class CheckoutService {
       userId: buyerId,
       lines: holdLines.map((line) => ({ ...line })),
       pricing,
+      saleAllocation: await this.snapshotSaleAllocation(
+        eventId,
+        organizationId,
+        pricing.discountedAdmissionSubtotalPaise ?? pricing.discountedSubtotalPaise,
+        attribution,
+      ),
       appliedPromoCode,
       attribution: attribution ?? null,
       status: 'active',
@@ -1717,6 +1740,7 @@ export class CheckoutService {
         : {}),
       accountingPolicy: { ...M4_ACCOUNTING_POLICY, capturedAt: hold.createdAt },
       bookedAt: hold.createdAt,
+      ...(hold.saleAllocation ? { saleAllocation: hold.saleAllocation } : {}),
       fulfillmentState: 'pending',
       subtotalPaise: hold.pricing.subtotalPaise,
       discountPaise: hold.pricing.discountPaise,
@@ -2149,6 +2173,12 @@ export class CheckoutService {
     // locked the order. Resume only still-paid orders; otherwise this path
     // could issue fresh tickets or cover balances while money is under review.
     if (order.status !== 'paid') {
+      if (
+        order.paymentId &&
+        order.fulfillmentState === 'pending' &&
+        ['refund_requested', 'refunded'].includes(order.status)
+      )
+        await this.repairSaleAccounting(order.id);
       return { order, entitlements: await repos.entitlements.getByOrderId(order.id) };
     }
 
@@ -2179,6 +2209,7 @@ export class CheckoutService {
         const compensation = await requestCaptureCompensation(this.deps, order.id);
         return { order: compensation.order, entitlements: [] };
       }
+      await this.repairSaleAccounting(order.id);
       // Existing admissions use the established exact-ticket cancellation flow.
       await this.ensureOrderFulfilledEvent(order);
       return {
@@ -2197,6 +2228,9 @@ export class CheckoutService {
     // after their order write. Their discount is already financially effective,
     // so repair records the missing audit row without retroactively rejecting it.
     await this.claimPromoRedemption(order, hold, false);
+
+    // Original sale accounting must be durable before any admission can be created.
+    await this.recordSettlement(order);
 
     // Initial issuance saves atomically repair missing intents while preserving
     // any later custody, scan or refund state already stored for that unit.
@@ -2267,10 +2301,6 @@ export class CheckoutService {
       });
       await repos.eventCoverAccounts.createIssuedAccount(account);
     }
-
-    // Settlement: the only writer into the partner ledger for a ticket sale.
-    // `recordTicketSale` is idempotent per orderId, so repeating it is a no-op.
-    await this.recordSettlement(order);
 
     if (order.fulfillmentState !== undefined) {
       order = await repos.orders.completeFulfilment({
@@ -2373,21 +2403,136 @@ export class CheckoutService {
     return this.recordSettlement(order);
   }
 
-  private async recordSettlement(order: Order): Promise<void> {
-    const hostOrganizationId = order.organizationId;
+  /** Repairs only original money facts. Never converts holds, issues tickets, or changes order status. */
+  async repairSaleAccounting(orderId: EntityId): Promise<void> {
+    const order = await this.deps.repositories.orders.getById(orderId);
+    if (!order?.paymentId)
+      throw new InvalidOperationError('Original sale payment evidence is unavailable');
+    const repo = this.deps.repositories.financialJournals;
+    let journals = await repo.findByOrderId(order.id);
+    if (originalSaleJournalsComplete(order, journals)) {
+      // Replays immutable aggregates to restore missing companion line documents.
+      await repo.postBatch(
+        journals.filter((journal) =>
+          journal.idempotencyKey.startsWith(`m2:ticket-sale:${order.id}:`),
+        ),
+      );
+    } else {
+      const provider = await this.deps.repositories.providerPayments.findByPaymentId(
+        order.paymentId,
+      );
+      if (
+        !provider ||
+        provider.capturedPaise !== order.grandTotalPaise ||
+        provider.currency !== order.currency ||
+        provider.providerOrderId !== order.paymentIntentId ||
+        (provider.orderId && provider.orderId !== order.id) ||
+        !provider.capturedAt
+      ) {
+        throw new InvalidOperationError('Original sale captured payment evidence is invalid');
+      }
+      try {
+        await this.recordSettlement(order);
+      } catch (error) {
+        if (error instanceof InvalidOperationError && error.message.includes('Original sale'))
+          await this.recordSaleAccountingReview(order, error.message);
+        throw error;
+      }
+      journals = await repo.findByOrderId(order.id);
+    }
+    const hasAllLines = repo.hasAllLines?.bind(repo);
+    if (
+      !originalSaleJournalsComplete(order, journals) ||
+      !hasAllLines ||
+      !(
+        await Promise.all(
+          journals
+            .filter((journal) => journal.idempotencyKey.startsWith(`m2:ticket-sale:${order.id}:`))
+            .map((journal) => hasAllLines(journal.id)),
+        )
+      ).every(Boolean)
+    ) {
+      throw new InvalidOperationError('Original sale accounting is incomplete');
+    }
+  }
+
+  private async recordSaleAccountingReview(order: Order, reason: string): Promise<void> {
+    const store = this.deps.repositories.reconciliations;
+    const identity = createHash('sha256')
+      .update(`original-sale:${order.id}`)
+      .digest('hex')
+      .slice(0, 40);
+    const runId = `SALE-RUN-${identity}`;
+    const id = `SALE-REVIEW-${identity}`;
+    const now = this.deps.config.clock.now();
+    let run = await store.getRun(runId);
+    if (!run) {
+      run = createReconciliationRun({ id: runId, requestedBy: 'system_original_sale_repair', now });
+      try {
+        await store.createRun(run);
+      } catch (error) {
+        const winner = await store.getRun(runId);
+        if (!winner) throw error;
+        run = winner;
+      }
+    }
+    if (!(await store.getDiscrepancy(id))) {
+      try {
+        await store.createDiscrepancies([
+          {
+            id,
+            runId,
+            kind: 'missing_journal',
+            state: 'finance_review',
+            organizationId: order.organizationId,
+            orderId: order.id,
+            paymentId: order.paymentId,
+            payoutId: null,
+            amountPaise: order.grandTotalPaise,
+            currency: order.currency,
+            evidence: { reason: 'original_sale_allocation_missing', detail: reason },
+            repair: 'recheck_evidence',
+            resolutionReason: null,
+            resolvedBy: null,
+            resolvedAt: null,
+            ...newVersionedEntity(now),
+          },
+        ]);
+      } catch (error) {
+        if (!(await store.getDiscrepancy(id))) throw error;
+      }
+    }
+    if (run.status === 'running') {
+      try {
+        await store.saveRun(completeReconciliationRun(run, { orders: 1 }, 1, now));
+      } catch (error) {
+        if ((await store.getRun(runId))?.status !== 'completed') throw error;
+      }
+    }
+  }
+
+  private async snapshotSaleAllocation(
+    eventId: EntityId,
+    organizationId: EntityId,
+    grossPaise: number,
+    attribution: CheckoutAttribution | null,
+  ): Promise<SaleAllocationSnapshot> {
+    const hostOrganizationId = organizationId;
+    let partnershipIdentity: { id: string; version: number } | null = null;
 
     // Venue org + share: resolved via the host<->venue Partnership for the
     // event's venue. A host-run event with no venue partnership settles
     // entirely to the host — there is no separate venue party to pay.
     let venueOrganizationId = hostOrganizationId;
     let venueShareRate = 0;
-    const event = await this.deps.repositories.events.getById(order.eventId);
+    const event = await this.deps.repositories.events.getById(eventId);
     if (event?.venueId) {
       const partnership = await this.deps.repositories.partnerships.findByPair(
         hostOrganizationId,
         event.venueId,
       );
       if (partnership) {
+        partnershipIdentity = partnership;
         venueOrganizationId = partnership.venueOrganizationId;
         // The negotiated venue share (whole-number % on the Partnership, v1's
         // venueCommissionRate convention) → settlement ratio. `null` (never
@@ -2409,7 +2554,7 @@ export class CheckoutService {
 
     // Promoter commission rate: the v1-proven performance tier, keyed by the
     // promoter's total attributed conversions across all their links.
-    const promoterOrganizationId = order.attribution?.promoterId ?? null;
+    const promoterOrganizationId = attribution?.promoterId ?? null;
     let promoterCommissionRate: number | null = null;
     if (promoterOrganizationId) {
       const links = await this.deps.repositories.referralLinks.listByPromoter(
@@ -2420,6 +2565,61 @@ export class CheckoutService {
       promoterCommissionRate = commissionTierFor(ticketsSold).rate / 100;
     }
 
+    const split = computeSettlementSplit(
+      grossPaise,
+      platformFeeRate,
+      venueShareRate,
+      promoterCommissionRate,
+    );
+    const promoterPaise = attribution?.promoterCommissionPaise ?? split.promoterCommission;
+    return validateSaleAllocation(
+      {
+        version: 'sale-allocation-v1',
+        grossPaise,
+        platformPaise: split.platformFee,
+        venuePaise: split.venueShare,
+        promoterPaise,
+        hostPaise: grossPaise - split.platformFee - split.venueShare - promoterPaise,
+        hostOrganizationId,
+        venueOrganizationId,
+        promoterOrganizationId,
+        partnershipId: partnershipIdentity?.id ?? null,
+        partnershipVersion: partnershipIdentity?.version ?? null,
+        onboardingId: onboarding?.id ?? null,
+        onboardingVersion: onboarding?.version ?? null,
+        capturedAt: this.deps.config.clock.now().toISOString(),
+      },
+      grossPaise,
+      organizationId,
+    );
+  }
+
+  private async recordSettlement(order: Order): Promise<void> {
+    const hostOrganizationId = order.organizationId;
+    const event = await this.deps.repositories.events.getById(order.eventId);
+    const historical = await this.deps.repositories.ledger.findByOrder(order.id);
+    const allocation = order.saleAllocation
+      ? validateSaleAllocation(
+          order.saleAllocation,
+          order.discountedAdmissionSubtotalPaise ?? order.discountedSubtotalPaise,
+          order.organizationId,
+        )
+      : historical.length > 0
+        ? allocationFromLedger(order, historical)
+        : order.paymentId?.startsWith('door_')
+          ? await this.snapshotSaleAllocation(
+              order.eventId,
+              order.organizationId,
+              order.discountedAdmissionSubtotalPaise ?? order.discountedSubtotalPaise,
+              order.attribution,
+            )
+          : (() => {
+              throw new InvalidOperationError(
+                'Original sale allocation evidence is unavailable; finance review required',
+              );
+            })();
+    const venueOrganizationId = allocation.venueOrganizationId;
+    const promoterOrganizationId = allocation.promoterOrganizationId;
     const entries = await this.financeService.recordTicketSale(
       {
         organizationId: hostOrganizationId,
@@ -2432,9 +2632,10 @@ export class CheckoutService {
         hostOrganizationId,
         venueOrganizationId,
         promoterOrganizationId,
-        platformFeeRate,
-        venueShareRate,
-        promoterCommissionRate,
+        allocation,
+        platformFeeRate: 0,
+        venueShareRate: 0,
+        promoterCommissionRate: null,
         promoterCommissionPaise: order.attribution?.promoterCommissionPaise ?? null,
       },
       SYSTEM_ACTOR,

@@ -1,6 +1,7 @@
 import { InvalidOperationError } from '../errors.js';
 import { bumpVersion, newVersionedEntity } from '../identity.js';
 
+import type { SaleAllocationSnapshot } from './sale-allocation.js';
 import type { EntityId, VersionedEntity } from '../identity.js';
 import type { TicketAdmissionMode } from './event-catalog.js';
 import type { OrderAttribution, OrderContact } from './order.js';
@@ -33,6 +34,8 @@ export interface TicketUpgradeSnapshot {
 }
 
 export interface CartReservation extends VersionedEntity {
+  /** Frozen original distribution; never recomputed from current commercial terms. */
+  saleAllocation?: SaleAllocationSnapshot;
   /** Deterministic id from idempotency key: `HOLD-{idempotencyKey}`. */
   id: EntityId;
   eventId: EntityId;

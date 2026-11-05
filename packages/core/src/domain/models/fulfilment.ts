@@ -136,6 +136,16 @@ export function saleAccountingComplete(
     })
   )
     return false;
+  return originalSaleJournalsComplete(order, journals);
+}
+
+/** Original capture accounting proof, independent of later refunds or admission state. */
+export function originalSaleJournalsComplete(order: Order, journals: FinancialJournal[]): boolean {
+  if (order.grandTotalPaise === 0) return true;
+  const required = ['collection', 'allocation'].map((kind) =>
+    journals.find((journal) => journal.idempotencyKey === `m2:ticket-sale:${order.id}:${kind}`),
+  );
+  if (required.some((journal) => !journal)) return false;
   return required.every((journal) => {
     if (
       !journal ||

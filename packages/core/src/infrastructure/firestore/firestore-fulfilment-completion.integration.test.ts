@@ -3,7 +3,9 @@ import { randomUUID } from 'node:crypto';
 import { Firestore, Transaction } from 'firebase-admin/firestore';
 import { describe, expect, it, vi } from 'vitest';
 
+import { CheckoutService } from '../../application/checkout/checkout-service.js';
 import { buildTicketSaleJournals } from '../../application/finance/financial-posting-service.js';
+import { createCoreConfig } from '../../config/index.js';
 import { deterministicDomainEventId, domainEvent } from '../../domain/events.js';
 import { createCartReservation } from '../../domain/models/cart-reservation.js';
 import { issueEntitlements, changeEntitlementHolder } from '../../domain/models/entitlement.js';
@@ -16,17 +18,21 @@ import { createRefundRequest } from '../../domain/models/refund-request.js';
 
 import { FirestoreCartReservationRepository } from './firestore-cart-reservation-repository.js';
 import { FirestoreEntitlementRepository } from './firestore-entitlement-repository.js';
+import { FirestoreEventRepository } from './firestore-event-repository.js';
 import { FirestoreFinancialJournalRepository } from './firestore-financial-journal-repository.js';
 import { FirestoreLedgerRepository } from './firestore-ledger-repository.js';
 import { FirestoreOrderRepository } from './firestore-order-repository.js';
 import { FirestoreOutboxStore } from './firestore-outbox-store.js';
 import { FirestoreProviderPaymentRepository } from './firestore-provider-payment-repository.js';
 
+import type { ServiceDeps } from '../../application/context.js';
+
 const EMULATOR = process.env.FIRESTORE_EMULATOR_HOST;
 async function fixture() {
   if (!EMULATOR || !/^(127\.0\.0\.1|localhost):\d+$/.test(EMULATOR))
     throw new Error('Completion requires loopback Emulator');
-  const db = new Firestore({ projectId: `demo-m4-complete-${randomUUID().slice(0, 8)}` });
+  const projectId = `demo-m4-complete-${randomUUID().slice(0, 8)}`;
+  const db = new Firestore({ projectId });
   const now = new Date();
   const pricing = {
     currency: 'INR',
@@ -191,6 +197,7 @@ async function fixture() {
   });
   return {
     db,
+    projectId,
     now,
     orders,
     tickets,
@@ -227,6 +234,131 @@ async function fixture() {
 }
 
 describe.runIf(EMULATOR)('M4 durable fulfillment completion', () => {
+  it('round-trips exact original allocation on both authoritative hold and order', async () => {
+    const f = await fixture();
+    try {
+      const saleAllocation = {
+        version: 'sale-allocation-v1' as const,
+        grossPaise: 1000,
+        platformPaise: 150,
+        hostPaise: 650,
+        venuePaise: 200,
+        promoterPaise: 0,
+        hostOrganizationId: f.order.organizationId,
+        venueOrganizationId: 'ORG-original-venue',
+        promoterOrganizationId: null,
+        partnershipId: 'PART-original',
+        partnershipVersion: 3,
+        onboardingId: 'ONB-original',
+        onboardingVersion: 2,
+        capturedAt: f.order.createdAt,
+      };
+      await f.orders.save({ ...f.order, saleAllocation, version: f.order.version + 1 });
+      const hold = await f.carts.create({
+        ...f.hold,
+        id: 'HOLD-original-allocation',
+        idempotencyKey: 'original-allocation',
+        saleAllocation,
+      });
+      expect((await f.orders.getById(f.order.id))?.saleAllocation).toEqual(saleAllocation);
+      expect((await f.carts.getById(hold.id))?.saleAllocation).toEqual(saleAllocation);
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it.each([true, false])(
+    'repairs native original journals and materialized lines without admission writes (frozen partial ledger: %s)',
+    async (frozen) => {
+      const f = await fixture();
+      try {
+        const saleAllocation = {
+          version: 'sale-allocation-v1' as const,
+          grossPaise: 1000,
+          platformPaise: 0,
+          hostPaise: 1000,
+          venuePaise: 0,
+          promoterPaise: 0,
+          hostOrganizationId: f.order.organizationId,
+          venueOrganizationId: f.order.organizationId,
+          promoterOrganizationId: null,
+          partnershipId: null,
+          partnershipVersion: null,
+          onboardingId: null,
+          onboardingVersion: null,
+          capturedAt: f.order.createdAt,
+        };
+        await f.orders.save({
+          ...f.order,
+          status: 'refund_requested',
+          ...(frozen ? { saleAllocation } : {}),
+          version: f.order.version + 1,
+        });
+        if (frozen) {
+          for (const type of ['host_payout', 'platform_fee', 'venue_share'])
+            await f.db.collection('v2_partner_ledger').doc(`LEDGER-${type}`).delete();
+          await f.db
+            .collection('v2_partner_ledger')
+            .doc('LEDGER-ticket_revenue')
+            .update({ version: 4, status: 'paid_out' });
+        }
+        const ledger = new FirestoreLedgerRepository(f.db);
+        const originalRevenue = (await ledger.findByOrder(f.order.id)).find(
+          (row) => row.entryType === 'ticket_revenue',
+        );
+        await f.db.collection('v2_events').doc(f.order.eventId).update({ status: 'cancelled' });
+        for (const collection of [
+          'v2_financial_journals',
+          'v2_financial_journal_lines',
+          'v2_financial_journal_idempotency',
+        ])
+          await f.db.recursiveDelete(f.db.collection(collection));
+        const deps = {
+          config: createCoreConfig({
+            redis: { url: 'redis://localhost:6379' },
+            firestore: { projectId: f.projectId },
+            clock: { now: () => f.now },
+          }),
+          repositories: {
+            orders: f.orders,
+            entitlements: f.tickets,
+            cartReservations: f.carts,
+            financialJournals: f.journals,
+            ledger: new FirestoreLedgerRepository(f.db),
+            events: new FirestoreEventRepository(f.db),
+            providerPayments: new FirestoreProviderPaymentRepository(f.db),
+          },
+        } as unknown as ServiceDeps;
+        const checkout = new CheckoutService(deps);
+        const before = await f.tickets.getByOrderId(f.order.id);
+        await checkout.repairSaleAccounting(f.order.id);
+        expect(
+          (await ledger.findByOrder(f.order.id)).find((row) => row.entryType === 'ticket_revenue'),
+        ).toEqual(originalRevenue);
+        expect(await ledger.findByOrder(f.order.id)).toHaveLength(4);
+        const originals = await f.journals.findByOrderId(f.order.id);
+        expect(originals).toHaveLength(2);
+        expect(
+          await Promise.all(originals.map((journal) => f.journals.hasAllLines(journal.id))),
+        ).toEqual([true, true]);
+        expect(await f.tickets.getByOrderId(f.order.id)).toEqual(before);
+        expect(await f.orders.getById(f.order.id)).toMatchObject({
+          status: 'refund_requested',
+          fulfillmentState: 'pending',
+        });
+        // A crash after aggregate commit but before companion materialization is also recoverable.
+        await f.db.recursiveDelete(f.db.collection('v2_financial_journal_lines'));
+        await checkout.repairSaleAccounting(f.order.id);
+        expect(
+          await Promise.all(originals.map((journal) => f.journals.hasAllLines(journal.id))),
+        ).toEqual([true, true]);
+        expect(await f.tickets.getByOrderId(f.order.id)).toEqual(before);
+      } finally {
+        await f.cleanup();
+      }
+    },
+  );
+
   it('gates native admission until marker and receipt intent commit, then preserves later custody on replay', async () => {
     const f = await fixture();
     try {

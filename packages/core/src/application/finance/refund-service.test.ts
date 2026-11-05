@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createRefundRequest } from '../../domain/models/refund-request.js';
+import { MemoryFinancialJournalRepository } from '../../infrastructure/memory/memory-financial-journal-repository.js';
 
+import { FinancialPostingService } from './financial-posting-service.js';
 import { RefundService } from './refund-service.js';
 
 import type { ServiceDeps } from '../context.js';
@@ -103,7 +105,47 @@ describe('RefundService cover refund policy gate', () => {
       hasRedeemedEntitlement: false,
       now: new Date('2026-10-28T12:00:00.000Z'),
     });
-    const orderToRefund = { ...order, paymentId: 'pay_1' };
+    const orderToRefund = {
+      ...order,
+      paymentId: 'pay_1',
+      paymentIntentId: 'order_1',
+      currency: 'INR',
+      subtotalPaise: 10000,
+      discountedSubtotalPaise: 10000,
+      discountPaise: 0,
+      platformFeePaise: 0,
+      paymentFeePaise: 0,
+      gstPaise: 0,
+    };
+    const financialJournals = new MemoryFinancialJournalRepository();
+    await new FinancialPostingService(financialJournals).postTicketSale({
+      organizationId: order.organizationId,
+      orderId: order.id,
+      eventId: order.eventId,
+      paymentId: 'pay_1',
+      sourceType: 'online_payment_capture',
+      providerConfirmed: true,
+      currency: 'INR',
+      ticketFaceValuePaise: 9500,
+      eventCoverLiabilityPaise: 500,
+      discountPaise: 0,
+      discountFundingOwner: null,
+      netTicketRevenuePaise: 9500,
+      platformFeePaise: 0,
+      paymentFeePaise: 0,
+      gstPaise: 0,
+      providerFeePaise: 0,
+      allocation: {
+        platformPaise: 0,
+        hostOrganizationId: order.organizationId,
+        hostPaise: 9500,
+        venueOrganizationId: null,
+        venuePaise: 0,
+        promoterOrganizationId: null,
+        promoterPaise: 0,
+      },
+      postedAt: new Date('2026-10-28T12:00:00.000Z'),
+    });
     const freezeForRefund = vi.fn().mockResolvedValue([eligibleAccount]);
     const providerRefund = vi
       .fn()
@@ -112,7 +154,7 @@ describe('RefundService cover refund policy gate', () => {
     const deps = {
       config: { clock: { now: () => new Date('2026-10-28T12:00:00.000Z') } },
       repositories: {
-        financialJournals: {},
+        financialJournals,
         orders: { getById: vi.fn().mockResolvedValue(orderToRefund), save: vi.fn() },
         entitlements: {
           getByOrderId: vi.fn().mockResolvedValue([{ id: 'ent_1', tierId: 'tier_1' }]),

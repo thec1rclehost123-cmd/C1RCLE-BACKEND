@@ -17,6 +17,7 @@ import {
   createOrder,
   markPaid,
 } from '../../domain/models/order.js';
+import { createPartnership } from '../../domain/models/partnership.js';
 import { applyProviderPaymentEvent } from '../../domain/models/provider-payment.js';
 import { createTicketAddon } from '../../domain/models/ticket-addon.js';
 import { MemoryPaymentProvider } from '../../domain/ports/payment-provider.js';
@@ -1407,8 +1408,21 @@ describe('M4 provider order uncertainty boundary', () => {
 });
 
 describe('M4 mandatory fulfillment completion', () => {
-  async function purchase() {
+  async function purchase(venueShareRate?: number) {
     const state = await build();
+    if (venueShareRate !== undefined)
+      await state.deps.repositories.partnerships.save({
+        ...createPartnership({
+          id: 'PART-original',
+          hostOrganizationId: 'org_1',
+          venueOrganizationId: 'ORG-original-venue',
+          venueId: 'ven_1',
+          initiatedBy: 'host',
+          venueShareRate,
+          now: NOW,
+        }),
+        status: 'active',
+      });
     await seedTier(state.catalog);
     const provider = new MemoryPaymentProvider('synthetic');
     state.deps.paymentProvider = provider;
@@ -1434,6 +1448,63 @@ describe('M4 mandatory fulfillment completion', () => {
     return { ...state, provider, hold, confirm };
   }
 
+  it('freezes sale allocation before capture and repairs refund-locked accounting without issuing rights or reading changed terms', async () => {
+    const f = await purchase(20);
+    expect(f.hold.saleAllocation).toMatchObject({
+      grossPaise: 100000,
+      hostOrganizationId: 'org_1',
+      venuePaise: 20000,
+      venueOrganizationId: 'ORG-original-venue',
+      partnershipId: 'PART-original',
+      partnershipVersion: 1,
+    });
+    const partnership = await f.deps.repositories.partnerships.getById('PART-original');
+    if (!partnership) throw new Error('Missing partnership');
+    await f.deps.repositories.partnerships.save({
+      ...partnership,
+      venueShareRate: 40,
+      version: partnership.version + 1,
+    });
+    vi.spyOn(f.deps.repositories.financialJournals, 'postBatch').mockRejectedValueOnce(
+      new Error('sale crash'),
+    );
+    await expect(f.confirm()).rejects.toThrow('sale crash');
+    const original = await f.orders.getByPaymentId('pay-completion');
+    if (!original) throw new Error('Missing captured order');
+    // Model the already-stranded pre-fix state: one staged unit precedes accounting.
+    const staged = issueEntitlements({ order: original, now: NOW });
+    await f.deps.repositories.entitlements.saveMany(staged);
+    await f.orders.save(lockOrderForRefund(original, NOW));
+    const event = await f.events.getById(original.eventId);
+    if (!event) throw new Error('Missing event');
+    await f.events.save(transitionEvent(event, 'cancelled', NOW));
+    const terms = vi
+      .spyOn(f.deps.repositories.onboarding, 'findByProvisionedOrganizationId')
+      .mockRejectedValue(new Error('Live terms must not be read'));
+    await f.service.repairSaleAccounting(original.id);
+    expect(terms).not.toHaveBeenCalled();
+    const saved = await f.orders.getById(original.id);
+    expect(saved).toMatchObject({
+      status: 'refund_requested',
+      fulfillmentState: 'pending',
+      saleAllocation: f.hold.saleAllocation,
+    });
+    expect(await f.deps.repositories.entitlements.getByOrderId(original.id)).toEqual(staged);
+    const journals = await f.deps.repositories.financialJournals.findByOrderId(original.id);
+    expect(journals).toHaveLength(2);
+    expect(journals.flatMap((journal) => journal.lines)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          account: 'venue_payable',
+          amountPaise: 20000,
+          organizationId: 'ORG-original-venue',
+        }),
+      ]),
+    );
+    await f.service.repairSaleAccounting(original.id);
+    expect(await f.deps.repositories.financialJournals.findByOrderId(original.id)).toHaveLength(2);
+  });
+
   it('confirms only with durable completion and original structured receipt facts', async () => {
     const f = await purchase();
     const result = await f.confirm();
@@ -1454,12 +1525,14 @@ describe('M4 mandatory fulfillment completion', () => {
     });
   });
 
-  it('keeps partially journaled purchases pending and unusable until repair completes', async () => {
+  it('keeps staged purchases pending and unusable after interrupted issuance until repair completes', async () => {
     const f = await purchase();
-    vi.spyOn(f.deps.repositories.financialJournals, 'postBatch').mockRejectedValueOnce(
-      new Error('Synthetic journal interruption'),
-    );
-    await expect(f.confirm()).rejects.toThrow(/journal interruption/);
+    const save = f.deps.repositories.entitlements.save.bind(f.deps.repositories.entitlements);
+    vi.spyOn(f.deps.repositories.entitlements, 'save').mockImplementationOnce(async (...args) => {
+      await save(...args);
+      throw new Error('Synthetic issuance interruption');
+    });
+    await expect(f.confirm()).rejects.toThrow(/issuance interruption/);
     const order = await f.orders.getByPaymentId('pay-completion');
     if (!order) throw new Error('Paid order must be durable before repair');
     expect(order.fulfillmentState).toBe('pending');

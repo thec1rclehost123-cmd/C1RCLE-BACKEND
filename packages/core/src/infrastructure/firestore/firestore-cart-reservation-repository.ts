@@ -254,6 +254,7 @@ function toDoc(reservation: CartReservation): DocumentData {
     userId: reservation.userId,
     lines: reservation.lines,
     pricing: reservation.pricing,
+    ...(reservation.saleAllocation ? { saleAllocation: reservation.saleAllocation } : {}),
     appliedPromoCode: reservation.appliedPromoCode,
     attribution: reservation.attribution,
     status: reservation.status,
@@ -279,6 +280,9 @@ function toCartReservation(data: DocumentData): CartReservation {
     userId: data.userId as string | null,
     lines: data.lines as CartReservation['lines'],
     pricing: data.pricing as CartReservation['pricing'],
+    ...(data.saleAllocation
+      ? { saleAllocation: data.saleAllocation as CartReservation['saleAllocation'] }
+      : {}),
     appliedPromoCode: data.appliedPromoCode as string | null,
     attribution: data.attribution as CartReservation['attribution'],
     status: data.status as CartReservationStatus,

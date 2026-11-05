@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { InvalidOperationError } from '../../domain/errors.js';
 import { computeSettlementSplit, createLedgerEntry } from '../../domain/models/ledger.js';
+import { validateSaleAllocation } from '../../domain/models/sale-allocation.js';
 import { requireOrgAccess } from '../context.js';
 
 import { stagedSettlement } from './settlement-policy.js';
@@ -10,6 +11,7 @@ import type { EntityId } from '../../domain/identity.js';
 import type { Dispute } from '../../domain/models/dispute.js';
 import type { LedgerEntry, LedgerEntryType } from '../../domain/models/ledger.js';
 import type { ReconciliationDiscrepancy } from '../../domain/models/reconciliation.js';
+import type { SaleAllocationSnapshot } from '../../domain/models/sale-allocation.js';
 import type {
   EventRepository,
   FinancialJournalRepository,
@@ -44,6 +46,7 @@ export interface FinanceServiceDeps {
 }
 
 export interface RecordTicketSaleInput {
+  allocation?: SaleAllocationSnapshot;
   organizationId: EntityId; // the organization the order belongs to (host org)
   orderId: EntityId;
   eventId: EntityId;
@@ -124,18 +127,29 @@ export function createFinanceService(deps: FinanceServiceDeps): FinanceService {
     requireOrgAccess(actor, input.organizationId);
 
     const existing = await ledger.findByOrder(input.orderId);
-    if (existing.length > 0) {
+    if (existing.length > 0 && !input.allocation) {
       // Already recorded — idempotent replay, not a re-computation.
       return existing;
     }
 
-    const calculated = computeSettlementSplit(
-      input.grossAmount,
-      input.platformFeeRate,
-      input.venueShareRate,
-      input.promoterCommissionRate,
-    );
-    const promoterCommission = input.promoterCommissionPaise ?? calculated.promoterCommission;
+    const frozen = input.allocation
+      ? validateSaleAllocation(input.allocation, input.grossAmount, input.hostOrganizationId)
+      : null;
+    const calculated = frozen
+      ? {
+          platformFee: frozen.platformPaise,
+          venueShare: frozen.venuePaise,
+          promoterCommission: frozen.promoterPaise,
+          hostPayout: frozen.hostPaise,
+        }
+      : computeSettlementSplit(
+          input.grossAmount,
+          input.platformFeeRate,
+          input.venueShareRate,
+          input.promoterCommissionRate,
+        );
+    const promoterCommission =
+      frozen?.promoterPaise ?? input.promoterCommissionPaise ?? calculated.promoterCommission;
     if (
       promoterCommission < 0 ||
       promoterCommission > input.grossAmount - calculated.platformFee - calculated.venueShare
@@ -219,6 +233,35 @@ export function createFinanceService(deps: FinanceServiceDeps): FinanceService {
       );
     }
 
+    if (frozen) {
+      const validateExisting = (rows: LedgerEntry[]): void => {
+        const saleRows = rows.filter((row) => row.entryType !== 'refund');
+        for (const row of saleRows) {
+          const expected = entries.find((candidate) => candidate.entryType === row.entryType);
+          if (
+            !expected ||
+            saleRows.filter((candidate) => candidate.entryType === row.entryType).length !== 1 ||
+            row.orderId !== expected.orderId ||
+            row.eventId !== expected.eventId ||
+            row.organizationId !== expected.organizationId ||
+            row.amount !== expected.amount
+          )
+            throw new InvalidOperationError(
+              'Original sale allocation conflicts with immutable ledger',
+            );
+        }
+      };
+      validateExisting(existing);
+      const missing = entries.filter(
+        (entry) => !existing.some((row) => row.entryType === entry.entryType),
+      );
+      if (missing.length > 0) await ledger.createBatch(missing);
+      const persisted = await ledger.findByOrder(input.orderId);
+      validateExisting(persisted);
+      if (entries.some((entry) => !persisted.some((row) => row.entryType === entry.entryType)))
+        throw new InvalidOperationError('Original sale compatibility ledger is incomplete');
+      return persisted;
+    }
     return ledger.createBatch(entries);
   }
 

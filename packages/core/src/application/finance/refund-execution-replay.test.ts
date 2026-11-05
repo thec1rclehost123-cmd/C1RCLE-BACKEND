@@ -4,6 +4,7 @@ import { createCoreConfig } from '../../config/index.js';
 import { createPlatformAdmin } from '../../domain/models/admin-authority.js';
 import { issueEntitlements } from '../../domain/models/entitlement.js';
 import { createEvent } from '../../domain/models/event.js';
+import { createLedgerEntry } from '../../domain/models/ledger.js';
 import { createOrder } from '../../domain/models/order.js';
 import { applyProviderPaymentEvent } from '../../domain/models/provider-payment.js';
 import { MemoryPaymentProvider } from '../../domain/ports/payment-provider.js';
@@ -16,9 +17,10 @@ import { AdminAuthorityService } from '../admin/admin-authority-service.js';
 import { FinancialPostingService } from './financial-posting-service.js';
 import { RefundService } from './refund-service.js';
 
+import type { MemoryFinancialJournalRepository } from '../../infrastructure/memory/memory-financial-journal-repository.js';
 import type { ServiceDeps } from '../context.js';
 
-async function fixture(amountPaise = 1000) {
+async function fixture(amountPaise = 1000, omitOriginalAccounting = false) {
   const now = new Date('2026-11-04T12:00:00.000Z');
   const config = createCoreConfig({
     redis: { url: 'redis://localhost:6379' },
@@ -121,33 +123,34 @@ async function fixture(amountPaise = 1000) {
       now,
     ),
   );
-  await new FinancialPostingService(repositories.financialJournals).postTicketSale({
-    organizationId: order.organizationId,
-    orderId: order.id,
-    eventId: order.eventId,
-    paymentId: order.paymentId,
-    sourceType: 'online_payment_capture',
-    providerConfirmed: true,
-    currency: order.currency,
-    ticketFaceValuePaise: 1000,
-    discountPaise: 0,
-    discountFundingOwner: null,
-    netTicketRevenuePaise: 1000,
-    platformFeePaise: 0,
-    paymentFeePaise: 0,
-    gstPaise: 0,
-    providerFeePaise: 0,
-    allocation: {
-      platformPaise: 0,
-      hostOrganizationId: order.organizationId,
-      hostPaise: 1000,
-      venueOrganizationId: null,
-      venuePaise: 0,
-      promoterOrganizationId: null,
-      promoterPaise: 0,
-    },
-    postedAt: now,
-  });
+  if (!omitOriginalAccounting)
+    await new FinancialPostingService(repositories.financialJournals).postTicketSale({
+      organizationId: order.organizationId,
+      orderId: order.id,
+      eventId: order.eventId,
+      paymentId: order.paymentId,
+      sourceType: 'online_payment_capture',
+      providerConfirmed: true,
+      currency: order.currency,
+      ticketFaceValuePaise: 1000,
+      discountPaise: 0,
+      discountFundingOwner: null,
+      netTicketRevenuePaise: 1000,
+      platformFeePaise: 0,
+      paymentFeePaise: 0,
+      gstPaise: 0,
+      providerFeePaise: 0,
+      allocation: {
+        platformPaise: 0,
+        hostOrganizationId: order.organizationId,
+        hostPaise: 1000,
+        venueOrganizationId: null,
+        venuePaise: 0,
+        promoterOrganizationId: null,
+        promoterPaise: 0,
+      },
+      postedAt: now,
+    });
   const authority = new AdminAuthorityService(deps);
   const service = new RefundService(deps, authority);
   const { request } = await service.requestRefund('ADMIN-original', {
@@ -172,6 +175,124 @@ async function fixture(amountPaise = 1000) {
 }
 
 describe('Refund execution repairs settled notification and audit intents', () => {
+  it('repairs original sale accounting before refunding a cancellation-locked staged purchase without issuing rights or duplicating money', async () => {
+    const f = await fixture(1000, true);
+    const stored = await f.repositories.orders.getById(f.order.id);
+    if (!stored) throw new Error('Missing refund-locked order');
+    const allocation = {
+      version: 'sale-allocation-v1' as const,
+      grossPaise: 1000,
+      platformPaise: 0,
+      hostPaise: 1000,
+      venuePaise: 0,
+      promoterPaise: 0,
+      hostOrganizationId: f.order.organizationId,
+      venueOrganizationId: f.order.organizationId,
+      promoterOrganizationId: null,
+      partnershipId: null,
+      partnershipVersion: null,
+      onboardingId: null,
+      onboardingVersion: null,
+      capturedAt: f.now.toISOString(),
+    };
+    await f.repositories.orders.save({
+      ...stored,
+      fulfillmentState: 'pending',
+      saleAllocation: allocation,
+      version: stored.version + 1,
+    });
+    const event = await f.repositories.events.getById(f.order.eventId);
+    if (!event) throw new Error('Missing event');
+    await f.repositories.events.save({ ...event, status: 'cancelled', version: event.version + 1 });
+    const journals = f.repositories.financialJournals as MemoryFinancialJournalRepository;
+    // Only the first original compatibility leg survived. Its later status/version must be preserved.
+    const originalLeg = {
+      ...createLedgerEntry({
+        id: 'LED-original-revenue',
+        orderId: f.order.id,
+        eventId: f.order.eventId,
+        organizationId: f.order.organizationId,
+        entryType: 'ticket_revenue',
+        amount: 1000,
+        status: 'settled',
+        idempotencyKey: 'original-sale-revenue',
+        now: f.now,
+      }),
+      version: 4,
+    };
+    await f.repositories.ledger.createBatch([originalLeg]);
+    const ticketsBefore = await f.repositories.entitlements.getByOrderId(f.order.id);
+    const issue = vi.spyOn(f.repositories.entitlements, 'save');
+    const provider = vi.spyOn(f.paymentProvider, 'refundPayment');
+    provider.mockImplementationOnce(async (input) => {
+      expect(await journals.findByOrderId(f.order.id)).toHaveLength(2);
+      expect(await f.repositories.entitlements.getByOrderId(f.order.id)).toEqual(ticketsBefore);
+      return {
+        id: 'rfnd-sale-repair',
+        status: 'processed',
+        amountPaise: input.amountPaise ?? 1000,
+      };
+    });
+    const result = await f.service.executeRefund('ADMIN-original', f.request.id);
+    expect(result.request.status).toBe('settled');
+    expect(
+      (await f.repositories.ledger.findByOrder(f.order.id)).find(
+        (row) => row.id === originalLeg.id,
+      ),
+    ).toEqual(originalLeg);
+    expect(
+      (await f.repositories.ledger.findByOrder(f.order.id)).filter(
+        (row) => row.entryType !== 'refund',
+      ),
+    ).toHaveLength(4);
+    expect(
+      (await f.repositories.entitlements.getByOrderId(f.order.id)).map((ticket) => ticket.id),
+    ).toEqual(ticketsBefore.map((ticket) => ticket.id));
+    expect(issue.mock.calls.every(([ticket]) => ticket.status === 'void')).toBe(true);
+    const journalCount = (await journals.findByOrderId(f.order.id)).length;
+    await f.service.executeRefund('ADMIN-recovery', f.request.id);
+    expect(provider).toHaveBeenCalledTimes(1);
+    expect(await journals.findByOrderId(f.order.id)).toHaveLength(journalCount);
+  });
+
+  it.each(['none', 'partial'] as const)(
+    'blocks ambiguous legacy %s allocation evidence before provider refund and records durable finance review',
+    async (evidence) => {
+      const f = await fixture(1000, true);
+      if (evidence === 'partial')
+        await f.repositories.ledger.createBatch([
+          createLedgerEntry({
+            id: 'LED-legacy-only',
+            orderId: f.order.id,
+            eventId: f.order.eventId,
+            organizationId: f.order.organizationId,
+            entryType: 'ticket_revenue',
+            amount: 1000,
+            status: 'settled',
+            idempotencyKey: 'legacy-only',
+            now: f.now,
+          }),
+        ]);
+      const provider = vi.spyOn(f.paymentProvider, 'refundPayment');
+      await expect(f.service.executeRefund('ADMIN-original', f.request.id)).rejects.toThrow(
+        /original sale|allocation|accounting/i,
+      );
+      expect(provider).not.toHaveBeenCalled();
+      expect(await f.repositories.orders.getById(f.order.id)).toMatchObject({
+        status: 'refund_requested',
+      });
+      const findings = await f.repositories.reconciliations.listDiscrepancies({
+        limit: 100,
+        cursor: null,
+      });
+      expect(findings.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ state: 'finance_review', orderId: f.order.id }),
+        ]),
+      );
+    },
+  );
+
   it.each(['outbox', 'audit'] as const)(
     'repairs interrupted %s on settled retry using original execution attribution without repeating money or admission effects',
     async (failure) => {

@@ -37,6 +37,7 @@ import {
   rejectUnexecutedRefundForPolicyChange,
 } from '../../domain/models/refund-request.js';
 import { selectRefundTargets } from '../../domain/models/refund-targets.js';
+import { CheckoutService } from '../checkout/checkout-service.js';
 import { emit } from '../context.js';
 
 import { FinancialPostingService } from './financial-posting-service.js';
@@ -591,6 +592,9 @@ export class RefundService {
       );
     }
 
+    // Financial side effects cannot precede complete original capture accounting.
+    // This recovery never grants admission or changes the refund lock.
+    await new CheckoutService(this.deps).repairSaleAccounting(order.id);
     const now = this.deps.config.clock.now();
     if (request.status === 'executing' && request.providerRefundId === null) {
       throw new ConflictError(

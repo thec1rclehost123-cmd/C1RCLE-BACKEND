@@ -19,6 +19,7 @@ import type { EntityId, VersionedEntity } from '../identity.js';
 import type { BookingFeePolicy } from './booking-fee-policy.js';
 import type { CommissionTerms } from './event-catalog.js';
 import type { PricingBreakdown } from './pricing.js';
+import type { SaleAllocationSnapshot } from './sale-allocation.js';
 import type { TicketAddonSelection } from './ticket-addon.js';
 
 /**
@@ -161,6 +162,8 @@ export interface RefundedTicketClaim {
 }
 
 export interface Order extends VersionedEntity {
+  /** Frozen original distribution; never recomputed from current commercial terms. */
+  saleAllocation?: SaleAllocationSnapshot;
   /** Original hold creation time, independent of later capture/retry timing. */
   bookedAt?: string;
   /** Present only for new paid online purchases; legacy orders retain existing semantics. */
