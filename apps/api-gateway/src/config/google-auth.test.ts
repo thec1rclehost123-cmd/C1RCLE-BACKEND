@@ -25,7 +25,7 @@ describe('Google provider configuration', () => {
   });
   it.each([
     'http://guest.example/api/auth/google/callback',
-    new URL('/callback-without-credentials', 'https://guest.example').toString(),
+    ['https:', '', 'guest.example', 'callback-without-credentials'].join('/'),
     'https://guest.example/other',
   ])('rejects unsafe callback configuration %s', (redirectURI) => {
     expect(() =>
