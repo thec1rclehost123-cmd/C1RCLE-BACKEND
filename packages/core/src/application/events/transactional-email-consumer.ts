@@ -24,52 +24,88 @@ export function createTransactionalEmailConsumer(deps: ServiceDeps) {
     }
     const message = await buildMessage(event, deps);
     if (!message) return;
-    const id = `MAIL-${createHash('sha256').update(message.idempotencyKey).digest('hex').slice(0, 40)}`;
-    const recipientHash = createHash('sha256')
-      .update(message.to.trim().toLowerCase())
-      .digest('hex');
-    const now = deps.config.clock.now().getTime();
-    await deps.emailDeliveries.createIfAbsent({
-      id,
-      aggregateId: message.aggregateId,
-      kind: message.kind,
-      status: 'queued',
-      recipientHash,
-      retryCount: 0,
-      providerMessageId: null,
-      createdAt: now,
-      updatedAt: now,
-      sentAt: null,
-      lastError: null,
-      leaseExpiresAt: null,
-    });
-    if (!(await deps.emailDeliveries.claim(id, now, now + LEASE_MS))) return;
-    try {
-      if (!deps.emailSender.sendTransactionalEmail)
-        throw new Error('Transactional email sender unavailable');
-      const result = await deps.emailSender.sendTransactionalEmail(message);
-      if (result.outcome === 'captured_locally') {
-        await deps.emailDeliveries.markCaptured(id, deps.config.clock.now().getTime());
-      } else if (result.providerMessageId) {
-        await deps.emailDeliveries.markSent(
-          id,
-          result.providerMessageId,
-          deps.config.clock.now().getTime(),
-        );
-      } else {
-        throw new Error('Email sender did not report a delivery outcome');
-      }
-    } catch (error) {
-      // Provider errors can contain request/recipient data. Keep only a safe
-      // category in durable evidence and let the outbox apply its retry policy.
-      await deps.emailDeliveries.markFailed(
+    await deliverMessage(message, deps);
+    if (
+      event.type === 'ticket.transfer.resolved' &&
+      (event.payload as EventPayloads['ticket.transfer.resolved']).status === 'accepted'
+    ) {
+      const formerHolderMessage = await buildFormerHolderTransferMessage(event, deps);
+      if (formerHolderMessage) await deliverMessage(formerHolderMessage, deps);
+    }
+  };
+}
+
+async function deliverMessage(
+  message: NonNullable<Awaited<ReturnType<typeof buildMessage>>>,
+  deps: ServiceDeps,
+): Promise<void> {
+  const id = `MAIL-${createHash('sha256').update(message.idempotencyKey).digest('hex').slice(0, 40)}`;
+  const recipientHash = createHash('sha256').update(message.to.trim().toLowerCase()).digest('hex');
+  const now = deps.config.clock.now().getTime();
+  await deps.emailDeliveries.createIfAbsent({
+    id,
+    aggregateId: message.aggregateId,
+    kind: message.kind,
+    status: 'queued',
+    recipientHash,
+    retryCount: 0,
+    providerMessageId: null,
+    createdAt: now,
+    updatedAt: now,
+    sentAt: null,
+    lastError: null,
+    leaseExpiresAt: null,
+  });
+  if (!(await deps.emailDeliveries.claim(id, now, now + LEASE_MS))) return;
+  try {
+    if (!deps.emailSender.sendTransactionalEmail)
+      throw new Error('Transactional email sender unavailable');
+    const result = await deps.emailSender.sendTransactionalEmail(message);
+    if (result.outcome === 'captured_locally') {
+      await deps.emailDeliveries.markCaptured(id, deps.config.clock.now().getTime());
+    } else if (result.providerMessageId) {
+      await deps.emailDeliveries.markSent(
         id,
-        'Transactional email provider failure',
+        result.providerMessageId,
         deps.config.clock.now().getTime(),
       );
-      if (error instanceof PermanentEmailDeliveryError) return;
-      throw new Error('Transactional email delivery failed');
+    } else {
+      throw new Error('Email sender did not report a delivery outcome');
     }
+  } catch (error) {
+    // Provider errors can contain request/recipient data. Keep only a safe
+    // category in durable evidence and let the outbox apply its retry policy.
+    await deps.emailDeliveries.markFailed(
+      id,
+      'Transactional email provider failure',
+      deps.config.clock.now().getTime(),
+    );
+    if (error instanceof PermanentEmailDeliveryError) return;
+    throw new Error('Transactional email delivery failed');
+  }
+}
+
+async function buildFormerHolderTransferMessage(event: DomainEvent, deps: ServiceDeps) {
+  const payload = event.payload as EventPayloads['ticket.transfer.resolved'];
+  if (!payload.transferId) return null;
+  const transfer = await deps.repositories.entitlements.getTicketTransfer(payload.transferId);
+  if (!transfer || transfer.status !== 'accepted' || transfer.eventId !== payload.eventId)
+    return null;
+  const formerHolder = await deps.repositories.users.getById(transfer.senderUserId);
+  if (!formerHolder?.emailVerified || !isDeliverableRecipient(formerHolder.email)) return null;
+  const eventRecord = await deps.repositories.events.getById(transfer.eventId);
+  if (!eventRecord) return null;
+  const portal = guestPortalOrigin(deps.config.guestPortalUrl);
+  const walletUrl = new URL('/tickets', portal).toString();
+  return {
+    to: formerHolder.email,
+    subject: 'Your C1RCLE ticket transfer is complete',
+    html: `<div style="background:#080808;color:#f7f7f7;padding:32px;font-family:Arial,sans-serif;max-width:620px;margin:auto"><div style="color:#ff5a00;font-weight:800;letter-spacing:3px">THE C1RCLE</div><h1>Ticket transfer complete</h1><p>Your ticket for <strong>${escapeHtml(eventRecord.title)}</strong> was transferred to its new holder.</p><p><a href="${escapeHtml(walletUrl)}" style="color:#ff5a00">View your tickets</a></p></div>`,
+    text: `Ticket transfer complete\n\nYour ticket for ${eventRecord.title} was transferred to its new holder.\n\nView your tickets: ${walletUrl}`,
+    templateType: 'ticket_transfer_former_holder',
+    idempotencyKey: `ticket-transfer-former-holder:${transfer.id}:${payload.credentialVersion}`,
+    kind: 'ticket_transfer_former_holder',
+    aggregateId: transfer.id,
   };
 }
 
