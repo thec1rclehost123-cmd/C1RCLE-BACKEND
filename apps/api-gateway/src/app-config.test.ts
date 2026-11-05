@@ -31,18 +31,22 @@ describe('payment-provider readiness', () => {
     expect(body.checks).not.toHaveProperty('paymentProvider');
   });
 
-  it('flags a partial Razorpay configuration as down', async () => {
+  it('rejects a partial Razorpay configuration before readiness can report up', async () => {
     // Keys without the webhook secret: payments look configured but cannot
     // verify webhooks. This must be visible, not silently skipped.
-    const body = await readiness({ RAZORPAY_KEY_ID: 'rzp_test_x', RAZORPAY_KEY_SECRET: 'secret' });
-    expect(body.checks.paymentProvider).toBe('down');
+    await expect(
+      readiness({
+        RAZORPAY_KEY_ID: 'rzp_test_synthetic123',
+        RAZORPAY_KEY_SECRET: 'synthetic-secret',
+      }),
+    ).rejects.toThrow(/RAZORPAY_WEBHOOK_SECRET/);
   });
 
   it('reports up when all three Razorpay variables are set', async () => {
     const body = await readiness({
-      RAZORPAY_KEY_ID: 'rzp_test_x',
-      RAZORPAY_KEY_SECRET: 'secret',
-      RAZORPAY_WEBHOOK_SECRET: 'whsec',
+      RAZORPAY_KEY_ID: 'rzp_test_syntheticReady123',
+      RAZORPAY_KEY_SECRET: 'synthetic-readiness-key-secret',
+      RAZORPAY_WEBHOOK_SECRET: 'synthetic-readiness-webhook-secret',
     });
     expect(body.checks.paymentProvider).toBe('up');
   });

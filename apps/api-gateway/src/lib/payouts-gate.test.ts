@@ -15,9 +15,10 @@ const devEnv = {
 };
 
 describe('payoutsEnabled', () => {
-  it('is ON by default outside production, so development and tests keep working', () => {
-    expect(payoutsEnabled({ NODE_ENV: 'development', PAYOUTS_ENABLED: undefined })).toBe(true);
-    expect(payoutsEnabled({ NODE_ENV: 'test', PAYOUTS_ENABLED: undefined })).toBe(true);
+  it('is OFF when unset in development and tests', () => {
+    expect(payoutsEnabled({ NODE_ENV: 'test' })).toBe(false);
+    expect(payoutsEnabled({ NODE_ENV: 'development', PAYOUTS_ENABLED: undefined })).toBe(false);
+    expect(payoutsEnabled({ NODE_ENV: 'test', PAYOUTS_ENABLED: undefined })).toBe(false);
   });
 
   it('is OFF by default in production: an unapproved deploy cannot move payout state', () => {
@@ -31,10 +32,10 @@ describe('payoutsEnabled', () => {
 });
 
 describe('PAYOUTS_ENABLED configuration', () => {
-  it('parses true and false, leaves unset as undefined, and rejects anything else', () => {
+  it('parses true and false, defaults unset to false, and rejects anything else', () => {
     expect(getGatewayConfig({ ...devEnv, PAYOUTS_ENABLED: 'true' }).PAYOUTS_ENABLED).toBe(true);
     expect(getGatewayConfig({ ...devEnv, PAYOUTS_ENABLED: 'false' }).PAYOUTS_ENABLED).toBe(false);
-    expect(getGatewayConfig(devEnv).PAYOUTS_ENABLED).toBeUndefined();
+    expect(getGatewayConfig(devEnv).PAYOUTS_ENABLED).toBe(false);
     // Not "yes"/"1": a typo must fail loudly rather than silently pick a side.
     expect(() => getGatewayConfig({ ...devEnv, PAYOUTS_ENABLED: 'yes' })).toThrow(
       /PAYOUTS_ENABLED/,
@@ -43,10 +44,13 @@ describe('PAYOUTS_ENABLED configuration', () => {
 });
 
 describe('requirePayoutsEnabled', () => {
-  async function app(enabled: boolean) {
+  async function app(enabled?: boolean) {
     const server = Fastify();
     let handlerRuns = 0;
-    const config = { ...getGatewayConfig(devEnv), PAYOUTS_ENABLED: enabled };
+    const config = getGatewayConfig({
+      ...devEnv,
+      ...(enabled === undefined ? {} : { PAYOUTS_ENABLED: String(enabled) }),
+    });
     server.post('/x', { preHandler: [requirePayoutsEnabled(() => config)] }, async () => {
       handlerRuns += 1;
       return { ok: true };
@@ -63,6 +67,14 @@ describe('requirePayoutsEnabled', () => {
       status: 503,
       message: 'Payouts are not enabled on this deployment.',
     });
+    expect(runs()).toBe(0);
+    await server.close();
+  });
+
+  it('denies payout HTTP actions when the flag is omitted, without invoking the handler', async () => {
+    const { server, runs } = await app();
+    const response = await server.inject({ method: 'POST', url: '/x' });
+    expect(response.statusCode).toBe(503);
     expect(runs()).toBe(0);
     await server.close();
   });

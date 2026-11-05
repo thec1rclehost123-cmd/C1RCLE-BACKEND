@@ -99,6 +99,7 @@ describe('dependency readiness', () => {
   it('registers Firestore and Storage probes without running them at bootstrap', () => {
     const config = testConfig({
       STORAGE_DRIVER: 'firestore',
+      FIRESTORE_PROJECT_ID: 'c1rcle-v2',
       FIREBASE_CLIENT_EMAIL: 'staging@example.test',
       FIREBASE_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\\nstaging\\n-----END PRIVATE KEY-----',
     });

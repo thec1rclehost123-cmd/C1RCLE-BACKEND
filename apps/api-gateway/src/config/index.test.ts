@@ -12,6 +12,7 @@ function productionEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.Proces
   return {
     NODE_ENV: 'production',
     STORAGE_DRIVER: 'firestore',
+    FIRESTORE_PROJECT_ID: 'c1rcle-v2',
     FIREBASE_CLIENT_EMAIL: 'firebase@example.test',
     FIREBASE_PRIVATE_KEY: 'private-key',
     BETTER_AUTH_SECRET: 'a'.repeat(64),
@@ -28,8 +29,8 @@ function productionEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.Proces
 }
 
 describe('gateway configuration', () => {
-  it('allows an explicit local override to disable process-wide Firestore workers', () => {
-    expect(getGatewayConfig(productionEnvironment()).BACKGROUND_WORKERS_ENABLED).toBe(true);
+  it('keeps process-wide workers off unless explicitly enabled', () => {
+    expect(getGatewayConfig(productionEnvironment()).BACKGROUND_WORKERS_ENABLED).toBe(false);
     expect(
       getGatewayConfig(productionEnvironment({ BACKGROUND_WORKERS_ENABLED: 'false' }))
         .BACKGROUND_WORKERS_ENABLED,
@@ -278,4 +279,90 @@ it('accepts only an HTTP(S) Guest deployment origin for invitation links', () =>
     getGatewayConfig({ GUEST_PORTAL_URL: 'https://guest-staging.example.test/invite' }),
   ).toThrow();
   expect(() => getGatewayConfig({ GUEST_PORTAL_URL: 'javascript:alert(1)' })).toThrow();
+});
+
+describe('M4 non-production configuration safety', () => {
+  const provider = {
+    RAZORPAY_KEY_ID: 'rzp_test_syntheticConfig123',
+    RAZORPAY_KEY_SECRET: 'synthetic-test-key-secret',
+    RAZORPAY_WEBHOOK_SECRET: 'synthetic-test-webhook-secret',
+  };
+  it.each(['development', 'test', 'production'])(
+    'defaults workers and payouts OFF in %s',
+    (NODE_ENV) => {
+      const config = getGatewayConfig(
+        NODE_ENV === 'production' ? productionEnvironment() : { NODE_ENV },
+      );
+      expect(config.BACKGROUND_WORKERS_ENABLED).toBe(false);
+      expect(config.PAYOUTS_ENABLED).toBe(false);
+    },
+  );
+  it('permits intentional explicit worker configuration without changing M5 defaults', () => {
+    expect(
+      getGatewayConfig({ BACKGROUND_WORKERS_ENABLED: 'true' }).BACKGROUND_WORKERS_ENABLED,
+    ).toBe(true);
+  });
+  it.each(['RAZORPAY_KEY_ID', 'RAZORPAY_KEY_SECRET', 'RAZORPAY_WEBHOOK_SECRET'] as const)(
+    'rejects incomplete provider credentials missing %s',
+    (missing) => {
+      expect(() => getGatewayConfig({ ...provider, [missing]: undefined })).toThrow(/RAZORPAY/);
+    },
+  );
+  it.each(['arbitrary-nonempty', 'rzp_live_synthetic123', 'rzp_test_', 'rzp_test_bad/fragment'])(
+    'rejects unsupported or Live Mode key IDs: %s',
+    (RAZORPAY_KEY_ID) => {
+      expect(() => getGatewayConfig({ ...provider, RAZORPAY_KEY_ID })).toThrow(
+        /Razorpay Test Mode/,
+      );
+    },
+  );
+  it('accepts a complete synthetic Test Mode tuple without exposing secrets in errors', () => {
+    expect(getGatewayConfig(provider).RAZORPAY_KEY_ID).toBe(provider.RAZORPAY_KEY_ID);
+    try {
+      getGatewayConfig({ ...provider, RAZORPAY_KEY_ID: 'rzp_live_synthetic123' });
+    } catch (error) {
+      expect(String(error)).not.toContain(provider.RAZORPAY_KEY_SECRET);
+      expect(String(error)).not.toContain(provider.RAZORPAY_WEBHOOK_SECRET);
+    }
+  });
+  it('requires the approved real Firestore project without constraining memory units', () => {
+    expect(() =>
+      getGatewayConfig(productionEnvironment({ FIRESTORE_PROJECT_ID: 'unapproved-project' })),
+    ).toThrow(/c1rcle-v2/);
+    expect(
+      getGatewayConfig({ STORAGE_DRIVER: 'memory', FIRESTORE_PROJECT_ID: 'unit-project' })
+        .FIRESTORE_PROJECT_ID,
+    ).toBe('unit-project');
+  });
+  it.each(['127.0.0.1:8089', 'localhost:8089', '[::1]:8089'])(
+    'allows explicit loopback Emulator synthetic projects: %s',
+    (FIRESTORE_EMULATOR_HOST) => {
+      expect(
+        getGatewayConfig({
+          STORAGE_DRIVER: 'firestore',
+          FIRESTORE_PROJECT_ID: 'demo-m4-synthetic',
+          FIRESTORE_EMULATOR_HOST,
+          FIREBASE_CLIENT_EMAIL: 'synthetic@example.test',
+          FIREBASE_PRIVATE_KEY: 'synthetic-key',
+        }).FIRESTORE_PROJECT_ID,
+      ).toBe('demo-m4-synthetic');
+    },
+  );
+  it.each([
+    'example.test:8089',
+    '127.0.0.1.example.test:8089',
+    '127.0.0.1:0',
+    '127.0.0.1:65536',
+    '127.0.0.1:8089/remote',
+  ])('rejects non-loopback or malformed Emulator endpoints: %s', (FIRESTORE_EMULATOR_HOST) => {
+    expect(() =>
+      getGatewayConfig({
+        STORAGE_DRIVER: 'firestore',
+        FIRESTORE_PROJECT_ID: 'demo-m4-synthetic',
+        FIRESTORE_EMULATOR_HOST,
+        FIREBASE_CLIENT_EMAIL: 'synthetic@example.test',
+        FIREBASE_PRIVATE_KEY: 'synthetic-key',
+      }),
+    ).toThrow(/FIRESTORE_EMULATOR_HOST/);
+  });
 });
