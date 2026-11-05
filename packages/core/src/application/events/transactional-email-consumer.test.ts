@@ -1057,8 +1057,10 @@ describe('transactional email consumer', () => {
     const application = {
       id: 'request_1',
       userId: 'user_1',
+      requestedType: 'promoter',
       status,
       profile: { legalName: '<Blue Room>' },
+      reviewNote: '<Need one more document>',
     };
     const deps = {
       config: createCoreConfig({
@@ -1119,8 +1121,8 @@ describe('transactional email consumer', () => {
       'promoter-onboarding:request_1:approved',
       'promoter-onboarding:request_1:rejected',
     ]);
-    expect(sent[0]?.html).toContain('&lt;Blue Room&gt;');
-    expect(sent[0]?.html).not.toContain('<Blue Room>');
+    expect(sent[2]?.html).toContain('&lt;Need one more document&gt;');
+    expect(sent[2]?.html).not.toContain('<Need one more document>');
     expect([...emailDeliveries.records.values()]).toHaveLength(3);
     expect(
       [...emailDeliveries.records.values()].every((row) => !row.recipientHash.includes('@')),

@@ -624,6 +624,7 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
     heading = `Payout ${names[payload.status]}`;
     details = `<p>Amount: <strong>${money(payload.amountPaise)}</strong></p><p>Reference: ${escapeHtml(payload.payoutId)}</p><p>Current status: ${escapeHtml(payload.status)}.</p>`;
   } else if (
+    event.type === 'partner.onboarding.email_requested' ||
     event.type === 'promoter.onboarding.submitted' ||
     event.type === 'promoter.onboarding.approved' ||
     event.type === 'promoter.onboarding.rejected'
@@ -634,36 +635,50 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
       | EventPayloads['promoter.onboarding.rejected'];
     const application = await deps.repositories.onboarding.getById(payload.requestId);
     if (!application) return null;
+    const requestedType = application.requestedType ?? 'promoter';
     const expectedStatus =
-      event.type === 'promoter.onboarding.submitted'
-        ? 'submitted'
-        : event.type === 'promoter.onboarding.approved'
-          ? 'approved'
-          : 'rejected';
+      event.type === 'partner.onboarding.email_requested'
+        ? (event.payload as EventPayloads['partner.onboarding.email_requested']).status
+        : event.type === 'promoter.onboarding.submitted'
+          ? 'submitted'
+          : event.type === 'promoter.onboarding.approved'
+            ? 'approved'
+            : 'rejected';
     if (application.status !== expectedStatus) return null;
     explicitRecipient = await deps.userDirectory.getEmailById(application.userId);
     if (!explicitRecipient || !isDeliverableRecipient(explicitRecipient)) return null;
-    kind = 'promoter_onboarding_status';
+    kind = `partner_onboarding_${expectedStatus}`;
     idempotencyKey = `promoter-onboarding:${application.id}:${expectedStatus}`;
     deliveryAggregateId = application.id;
     subject =
       expectedStatus === 'submitted'
-        ? 'Your C1RCLE partner application was submitted'
-        : expectedStatus === 'approved'
-          ? 'Your C1RCLE partner application was approved'
-          : 'Update on your C1RCLE partner application';
+        ? 'Your C1RCLE application was submitted'
+        : expectedStatus === 'changes_requested'
+          ? 'Action needed: update your C1RCLE application'
+          : expectedStatus === 'approved'
+            ? 'Your C1RCLE application is approved'
+            : 'Update on your C1RCLE application';
     heading =
       expectedStatus === 'submitted'
         ? 'Application submitted'
-        : expectedStatus === 'approved'
-          ? 'Application approved'
-          : 'Application not approved';
+        : expectedStatus === 'changes_requested'
+          ? 'Your application needs an update'
+          : expectedStatus === 'approved'
+            ? 'Application approved'
+            : 'Application not approved';
+    const dashboard = deps.config.partnerDashboardUrl;
+    const applicationUrl = dashboard ? new URL('/onboard', dashboard).toString() : null;
+    const studioUrl = dashboard
+      ? new URL(`/partner/${requestedType}/overview`, dashboard).toString()
+      : null;
     details =
       expectedStatus === 'submitted'
-        ? `<p>We received the partner application for <strong>${escapeHtml(application.profile.legalName)}</strong>. The team will review it and update you here.</p>`
-        : expectedStatus === 'approved'
-          ? `<p>The partner application for <strong>${escapeHtml(application.profile.legalName)}</strong> was approved. Sign in to continue in the partner workspace.</p>`
-          : `<p>The partner application for <strong>${escapeHtml(application.profile.legalName)}</strong> was not approved. Sign in to review the application status.</p>`;
+        ? `<p>We received your ${escapeHtml(requestedType)} application. The team will review it and update you here.</p>${applicationUrl ? `<p><a href="${escapeHtml(applicationUrl)}">View your application</a></p>` : '<p>Sign in to C1RCLE to view your application.</p>'}`
+        : expectedStatus === 'changes_requested'
+          ? `<p>Your ${escapeHtml(requestedType)} application needs attention before review can continue.</p>${application.reviewNote ? `<p>${escapeHtml(application.reviewNote)}</p>` : ''}${applicationUrl ? `<p><a href="${escapeHtml(applicationUrl)}">Continue your application</a></p>` : '<p>Sign in to C1RCLE to continue your application.</p>'}`
+          : expectedStatus === 'approved'
+            ? `<p>Your ${escapeHtml(requestedType)} application is approved.</p>${studioUrl ? `<p><a href="${escapeHtml(studioUrl)}">Open ${escapeHtml(requestedType)} Studio</a></p>` : '<p>Sign in to C1RCLE to open your partner workspace.</p>'}`
+            : `<p>Your ${escapeHtml(requestedType)} application was not approved.</p>${application.reviewNote ? `<p>${escapeHtml(application.reviewNote)}</p>` : ''}${applicationUrl ? `<p><a href="${escapeHtml(applicationUrl)}">Review application status</a></p>` : '<p>Sign in to C1RCLE to review your application status.</p>'}`;
   } else if (event.type === 'promoter.assignments.status_changed') {
     const payload = event.payload as EventPayloads['promoter.assignments.status_changed'];
     if (payload.status !== 'suspended') return null;
@@ -703,7 +718,8 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
         ? `<p><a href="${supportUrl}" style="color:#ff5a00">Contact support</a> for help with this payment.</p>`
         : event.type === 'ticket.issued' || event.type === 'ticket.transfer.resolved'
           ? `<p><a href="${actionUrl}" style="color:#ff5a00">View your ticket</a></p><p>We sent this notice to the verified email on the current ticket holder's account.</p>`
-          : event.type.startsWith('promoter.onboarding.')
+          : event.type.startsWith('promoter.onboarding.') ||
+              event.type === 'partner.onboarding.email_requested'
             ? '<p>Review your application in the C1RCLE partner workspace.</p>'
             : event.type === 'promoter.assignments.status_changed' ||
                 event.type === 'promoter.assignment.expired'

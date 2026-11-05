@@ -599,8 +599,8 @@ describe('OnboardingService — KYC document desk', () => {
     expect(grant.readUrl).toEqual(expect.any(String));
   });
 
-  it('requestChanges still succeeds and is audited even when the email sender throws', async () => {
-    const { service, repositories, emailSender, userDirectory } = ctx;
+  it('requestChanges persists a durable email intent independently of provider availability', async () => {
+    const { service, repositories, emailSender, userDirectory, outbox } = ctx;
     await seedAdmin(repositories, 'admin_a');
     const request = await submittedRequest(service);
     userDirectory.emails.set('user_a', 'applicant@example.com');
@@ -612,10 +612,19 @@ describe('OnboardingService — KYC document desk', () => {
     });
     expect(updated.status).toBe('changes_requested');
     expect(emailSender.sent).toHaveLength(0);
+    expect(
+      outbox
+        .all()
+        .some(
+          (event) =>
+            event.type === 'partner.onboarding.email_requested' &&
+            event.payload.payload.status === 'changes_requested',
+        ),
+    ).toBe(true);
   });
 
-  it('requestChanges sends the notification when an email is on file', async () => {
-    const { service, repositories, emailSender, userDirectory } = ctx;
+  it('requestChanges queues the applicant-facing review reason without sending inline', async () => {
+    const { service, repositories, emailSender, userDirectory, outbox } = ctx;
     await seedAdmin(repositories, 'admin_a');
     const request = await submittedRequest(service);
     userDirectory.emails.set('user_a', 'applicant@example.com');
@@ -624,11 +633,15 @@ describe('OnboardingService — KYC document desk', () => {
       requestId: request.id,
       note: 'Selfie is unreadable',
     });
-    expect(emailSender.sent).toHaveLength(1);
-    expect(emailSender.sent[0]).toMatchObject({
-      recipient: 'applicant@example.com',
-      params: { legalName: 'Blue Room Hospitality', note: 'Selfie is unreadable' },
-    });
+    expect(emailSender.sent).toHaveLength(0);
+    expect(outbox.all()).toContainEqual(
+      expect.objectContaining({
+        type: 'partner.onboarding.email_requested',
+        payload: expect.objectContaining({
+          payload: expect.objectContaining({ requestId: request.id, status: 'changes_requested' }),
+        }),
+      }),
+    );
   });
 
   it('emits authoritative outbox events when a Promoter application is submitted and rejected', async () => {
