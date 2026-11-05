@@ -10,7 +10,9 @@ import { createCoreConfig } from '../../config/index.js';
 import { createTicketTier } from '../../domain/models/event-catalog.js';
 import { createEvent, transitionEvent } from '../../domain/models/event.js';
 import { createTicketAddon } from '../../domain/models/ticket-addon.js';
+import { MemoryOnboardingRepository } from '../memory/memory-onboarding-repository.js';
 import { MemoryOutboxStore } from '../memory/memory-outbox-store.js';
+import { MemoryPartnershipRepository } from '../memory/memory-partnership-repository.js';
 import {
   MemoryEntitlementRepository,
   MemoryEventRepository,
@@ -94,6 +96,8 @@ describe.runIf(EMULATOR)('Firestore ticket add-on inventory', () => {
         repositories: {
           users: { getById: async (id: string) => ({ id, emailVerified: true }) },
           events,
+          partnerships: new MemoryPartnershipRepository(),
+          onboarding: new MemoryOnboardingRepository(),
           catalog,
           cartReservations: carts,
           orders,
