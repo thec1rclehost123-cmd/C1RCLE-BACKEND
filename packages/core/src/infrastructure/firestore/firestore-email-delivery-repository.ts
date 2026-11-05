@@ -31,6 +31,7 @@ export class FirestoreEmailDeliveryRepository implements EmailDeliveryRepository
       if (
         data.status === 'sent' ||
         data.status === 'captured' ||
+        data.status === 'permanent_failure' ||
         (data.status === 'sending' && (data.leaseExpiresAt ?? 0) > now)
       ) {
         return false;
@@ -73,6 +74,18 @@ export class FirestoreEmailDeliveryRepository implements EmailDeliveryRepository
       .doc(id)
       .update({
         status: 'failed',
+        lastError: safeError.slice(0, 160),
+        updatedAt: now,
+        leaseExpiresAt: null,
+      });
+  }
+
+  async markPermanentFailure(id: EntityId, safeError: string, now: number): Promise<void> {
+    await this.db
+      .collection(COLLECTION)
+      .doc(id)
+      .update({
+        status: 'permanent_failure',
         lastError: safeError.slice(0, 160),
         updatedAt: now,
         leaseExpiresAt: null,
