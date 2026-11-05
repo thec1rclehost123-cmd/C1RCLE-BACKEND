@@ -1,0 +1,6 @@
+Application approved
+
+Your venue application is approved.
+Open venue Studio (https://partners-staging.example.test/partner/venue/overview)
+
+Review your application in the C1RCLE partner workspace.

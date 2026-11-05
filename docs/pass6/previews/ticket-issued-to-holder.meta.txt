@@ -1,0 +1,3 @@
+Subject: A C1RCLE ticket is ready in your account
+Preheader: Your ticket is ready
+Template: ticket_issued_to_holder

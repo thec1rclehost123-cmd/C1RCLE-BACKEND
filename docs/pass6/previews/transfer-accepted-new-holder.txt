@@ -1,0 +1,6 @@
+Ticket transfer complete
+
+Your ticket for Night Market 2026 is now in your C1RCLE account.
+
+View your ticket (https://guest-staging.example.test/tickets)
+We sent this notice to the verified email on the current ticket holder's account.

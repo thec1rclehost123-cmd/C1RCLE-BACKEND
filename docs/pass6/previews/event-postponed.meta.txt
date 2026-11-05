@@ -1,0 +1,3 @@
+Subject: Important update: Night Market 2026
+Preheader: Important information about a change to your event.
+Template: event_material_change

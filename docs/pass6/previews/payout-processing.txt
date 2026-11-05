@@ -1,0 +1,7 @@
+Payout being processed
+
+Amount: ₹2,450.00
+Reference: PAYO-VISUAL
+Current status: processing.
+
+Review the Finance section in your partner workspace for details.

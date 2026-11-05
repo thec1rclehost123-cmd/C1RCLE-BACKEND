@@ -1,0 +1,3 @@
+Subject: Your C1RCLE Promoter assignments were suspended
+Preheader: Promoter assignments suspended
+Template: promoter_suspended

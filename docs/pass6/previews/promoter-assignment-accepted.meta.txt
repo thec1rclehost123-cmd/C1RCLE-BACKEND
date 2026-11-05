@@ -1,0 +1,3 @@
+Subject: A C1RCLE Promoter assignment was accepted
+Preheader: Promoter assignment accepted
+Template: promoter_assignment_status

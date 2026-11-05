@@ -1,0 +1,3 @@
+Subject: C1RCLE payout not completed
+Preheader: Payout not completed
+Template: payout_status

@@ -1,0 +1,3 @@
+Subject: Your C1RCLE RSVP is confirmed
+Preheader: RSVP confirmed
+Template: rsvp_confirmation

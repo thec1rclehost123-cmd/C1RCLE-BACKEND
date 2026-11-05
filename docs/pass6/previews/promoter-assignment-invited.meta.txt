@@ -1,0 +1,3 @@
+Subject: You have a new C1RCLE Promoter assignment
+Preheader: Promoter assignment invitation
+Template: promoter_assignment_status

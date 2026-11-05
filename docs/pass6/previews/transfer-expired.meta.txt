@@ -1,0 +1,3 @@
+Subject: Your C1RCLE ticket invitation expired
+Preheader: An update about a ticket transfer.
+Template: ticket_transfer_expired
