@@ -5,7 +5,7 @@ import { LoggingEmailSender } from './email-sender.js';
 import type { Logger } from '../../telemetry/logger.js';
 
 describe('LoggingEmailSender', () => {
-  it('never logs secrets or recipient details from suppressed development email', async () => {
+  it('never logs secrets or recipient details from development email capture', async () => {
     const info = vi.fn((_message: string, _fields?: Record<string, unknown>) => {});
     const logger: Logger = { info, warn: () => {}, error: () => {} };
     const sender = new LoggingEmailSender(logger);
@@ -47,7 +47,7 @@ describe('LoggingEmailSender', () => {
       ['dev_email_staff_invitation', { delivery: 'suppressed' }],
       ['dev_email_password_reset', { delivery: 'suppressed' }],
       ['dev_email_onboarding_changes_requested', { delivery: 'suppressed' }],
-      ['dev_email_transactional', { delivery: 'suppressed' }],
+      ['dev_email_transactional', { delivery: 'captured_locally', template: 'transactional' }],
     ]);
     const logged = JSON.stringify(calls);
     for (const secret of Object.values(secretValues)) expect(logged).not.toContain(secret);
