@@ -882,21 +882,47 @@ describe('scenario: M4 Promoter campaign attribution over the full API', () => {
       payload: { eventSlug: publicEvent.json().slug, code: referralCode, clickId },
     });
     expect(click.statusCode).toBe(200);
-    expect(click.json()).toEqual({ accepted: true });
+    expect(click.json()).toEqual({
+      accepted: true,
+      contextToken: expect.stringMatching(/^[A-Za-z0-9_-]+\.[a-f0-9]{64}$/u),
+    });
+    expect(
+      JSON.parse(
+        Buffer.from(click.json().contextToken.split('.')[0], 'base64url').toString('utf8'),
+      ),
+    ).toMatchObject({ eventId });
     const duplicateClick = await server.inject({
       method: 'POST',
       url: '/api/v2/public/promoter-links/click',
       payload: { eventSlug: publicEvent.json().slug, code: referralCode, clickId },
     });
     expect(duplicateClick.statusCode).toBe(200);
-    expect(duplicateClick.json()).toEqual({ accepted: true });
+    expect(duplicateClick.json()).toEqual({
+      accepted: true,
+      contextToken: expect.stringMatching(/^[A-Za-z0-9_-]+\.[a-f0-9]{64}$/u),
+    });
+    expect(
+      JSON.parse(
+        Buffer.from(duplicateClick.json().contextToken.split('.')[0], 'base64url').toString('utf8'),
+      ),
+    ).toMatchObject({ eventId });
     const invalidCodeClick = await server.inject({
       method: 'POST',
       url: '/api/v2/public/promoter-links/click',
       payload: { eventSlug: publicEvent.json().slug, code: 'UNKNOWN', clickId: randomUUID() },
     });
     expect(invalidCodeClick.statusCode).toBe(200);
-    expect(invalidCodeClick.json()).toEqual({ accepted: true });
+    expect(invalidCodeClick.json()).toEqual({
+      accepted: true,
+      contextToken: expect.stringMatching(/^[A-Za-z0-9_-]+\.[a-f0-9]{64}$/u),
+    });
+    expect(
+      JSON.parse(
+        Buffer.from(invalidCodeClick.json().contextToken.split('.')[0], 'base64url').toString(
+          'utf8',
+        ),
+      ),
+    ).toMatchObject({ eventId });
 
     const guestUserId = 'guest_m4_scenario';
     seedVerifiedCheckoutUsers([guestUserId]);
