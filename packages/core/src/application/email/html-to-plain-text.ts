@@ -1,6 +1,11 @@
 import { decode } from 'html-entities';
 
-/** Convert rendered email markup to readable text and decode entities once. */
+/**
+ * Convert rendered email markup to readable text and decode entities once.
+ * The result is plain text only: callers put it in `TransactionalEmail.text`,
+ * compare it as a label, or re-escape it through `renderC1rclePrimaryCta`.
+ * Never interpolate this decoded value directly into HTML.
+ */
 export function htmlToPlainText(html: string): string {
   const text = html
     .replace(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, '$2 ($1)')

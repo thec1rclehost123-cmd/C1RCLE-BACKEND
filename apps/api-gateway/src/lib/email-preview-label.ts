@@ -1,5 +1,10 @@
 import { decode, encode } from 'html-entities';
 
+/**
+ * Extract a label as plain text. It may contain decoded angle brackets; callers
+ * must escape it for the output format before writing it. The preview index
+ * uses `escapeMarkdownLabel` so raw labels are never parsed as Markdown HTML.
+ */
 export function extractPrimaryLabel(html: string): string {
   const match =
     /<td\b[^>]*bgcolor=["']#ff5a00["'][^>]*>\s*<a\b[^>]*>([\s\S]*?)<\/a>/i.exec(html) ??

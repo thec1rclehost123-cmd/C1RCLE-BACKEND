@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { renderC1rclePrimaryCta } from './c1rcle-email-chrome.js';
 import { htmlToPlainText } from './html-to-plain-text.js';
 
 describe('htmlToPlainText', () => {
@@ -16,8 +17,11 @@ describe('htmlToPlainText', () => {
   });
 
   it('decodes encoded markup only into the plain-text result', () => {
-    expect(htmlToPlainText('<p>&lt;script&gt;literal text&lt;/script&gt;</p>')).toBe(
-      '<script>literal text</script>',
-    );
+    const plainText = htmlToPlainText('<p>&lt;script&gt;literal text&lt;/script&gt;</p>');
+    expect(plainText).toBe('<script>literal text</script>');
+
+    const html = renderC1rclePrimaryCta('/tickets', plainText);
+    expect(html).not.toContain('<script>');
+    expect(html).toContain('&lt;SCRIPT&gt;LITERAL TEXT&lt;/SCRIPT&gt;');
   });
 });
