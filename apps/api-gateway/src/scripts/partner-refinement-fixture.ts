@@ -3,11 +3,18 @@ import { generateKeyPairSync, randomUUID } from 'node:crypto';
 
 import { Firestore } from 'firebase-admin/firestore';
 
-export async function createPartnerRefinementFixture() {
+export async function createPartnerRefinementFixture(
+  options: {
+    readonly browserOrigins?: readonly string[];
+  } = {},
+) {
   const host = process.env.FIRESTORE_EMULATOR_HOST;
   if (!host || !/^(127\.0\.0\.1|localhost):\d+$/.test(host))
     throw new Error('Loopback Firestore Emulator required');
   const projectId = `demo-c1rcle-partner-ui-${randomUUID().slice(0, 8)}`;
+  const browserOrigins = [
+    ...new Set(['http://localhost:3100', ...(options.browserOrigins ?? [])]),
+  ].join(',');
   const keys = generateKeyPairSync('rsa', { modulusLength: 2048 });
   const overrides = {
     NODE_ENV: 'test',
@@ -20,8 +27,8 @@ export async function createPartnerRefinementFixture() {
     BETTER_AUTH_SECRET: 'synthetic-profile-privacy-secret-at-least-32',
     BETTER_AUTH_URL: 'http://localhost:4301',
     PUBLIC_API_URL: 'http://localhost:4301',
-    CORS_ALLOWED_ORIGINS: 'http://localhost:3100',
-    BETTER_AUTH_TRUSTED_ORIGINS: 'http://localhost:3100',
+    CORS_ALLOWED_ORIGINS: browserOrigins,
+    BETTER_AUTH_TRUSTED_ORIGINS: browserOrigins,
     LOG_LEVEL: 'silent',
   };
   for (const [key, value] of Object.entries(overrides)) process.env[key] = value;

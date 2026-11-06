@@ -717,6 +717,7 @@ export async function runParityCases({
     complete: true,
     refundValueComplete: true,
     historicalConversionCount: 2,
+    historicalRsvpConversionCount: 0,
     activeRsvpCount: 0,
     capturedTicketCount: 10,
     attributedTicketCount: 4,
@@ -734,6 +735,7 @@ export async function runParityCases({
       {
         promoterOrganizationId: 'org_promoter_1',
         attributedOrderCount: 2,
+        historicalRsvpConversionCount: 0,
         activeRsvpCount: 0,
         attributedTicketCount: 4,
         attributedTicketValuePaise: 90000,

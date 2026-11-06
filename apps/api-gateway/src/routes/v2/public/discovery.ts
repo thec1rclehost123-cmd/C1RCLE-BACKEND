@@ -95,8 +95,13 @@ const promoterClickBodySchema = z
     eventSlug: z.string().min(1).max(80),
     code: z.string().min(4).max(16),
     clickId: z.uuid(),
+    contextToken: z.string().min(16).max(2048).optional(),
   })
   .strict();
+const promoterClickResponseSchema = z.object({
+  accepted: z.literal(true),
+  contextToken: z.string().min(16).max(2048),
+});
 const vanityParamsSchema = z.object({
   handle: z.string().min(1).max(60),
   slug: z.string().min(1).max(60),
@@ -172,15 +177,30 @@ export default async function publicDiscoveryRoutes(fastify: FastifyInstance) {
       ],
     },
     async (request, reply) => {
-      const { eventSlug, code, clickId } = request.body as z.infer<typeof promoterClickBodySchema>;
+      const { eventSlug, code, clickId, contextToken } = request.body as z.infer<
+        typeof promoterClickBodySchema
+      >;
       const detail = await services.public
         .getEvent(eventSlug)
         .catch((error: unknown) => mapDomainError(reply, request, eventSlug, error));
       if (!detail) return reply;
       // Keep code validity private. The service records a click only when the
-      // code is valid, while the anonymous response stays identical either way.
+      // code is valid. The signed context is issued either way, preserving the
+      // same anonymous response shape and allowing checkout to fall back to an
+      // earlier valid click if this candidate is invalid.
       await services.referralLinks.trackClick(detail.event.id, code, clickId);
-      return reply.send({ accepted: true });
+      const payload = {
+        accepted: true as const,
+        contextToken: await services.referralLinks.updateClickContext(
+          detail.event.id,
+          code,
+          clickId,
+          contextToken,
+        ),
+      };
+      const validated = validateV2Response(reply, request, promoterClickResponseSchema, payload);
+      if (validated === undefined) return reply;
+      return reply.send(validated);
     },
   );
 

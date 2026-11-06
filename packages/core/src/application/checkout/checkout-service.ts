@@ -281,13 +281,21 @@ export class CheckoutService {
     }[];
     promoCode?: string | null;
     referralCode?: string | null;
+    referralContextTokens?: readonly string[];
     upgradeFromEntitlementId?: EntityId;
   }): Promise<{
     pricing: PricingBreakdown;
     attribution: CheckoutAttribution | null;
     upgrade: TicketUpgradeSnapshot | null;
   }> {
-    const { eventId, lines, promoCode, referralCode, upgradeFromEntitlementId } = input;
+    const {
+      eventId,
+      lines,
+      promoCode,
+      referralCode,
+      referralContextTokens,
+      upgradeFromEntitlementId,
+    } = input;
     if (
       lines.some((line) => line.ticketAddons?.length) &&
       this.deps.config.features.m5TicketAddonsEnabled !== true
@@ -503,13 +511,27 @@ export class CheckoutService {
     }
 
     let attribution: CheckoutAttribution | null = null;
-    if (referralCode) {
-      const signed = await new ReferralLinkService(this.deps).resolveAttribution(
-        eventId,
-        referralCode,
-        input.actor.userId,
-      );
-      if (signed) {
+    if (referralCode || referralContextTokens?.length) {
+      const referralLinks = new ReferralLinkService(this.deps);
+      const signed = referralContextTokens?.length
+        ? await referralLinks.resolveClickContexts(
+            eventId,
+            referralContextTokens,
+            input.actor.userId,
+          )
+        : referralCode
+          ? await referralLinks.resolveAttribution(
+              eventId,
+              referralCode,
+              input.actor.userId,
+              this.deps.config.clock.now(),
+            )
+          : null;
+      if (
+        signed &&
+        (!signed.eligibleTierIds?.length ||
+          lines.every((line) => signed.eligibleTierIds?.includes(line.tierId) === true))
+      ) {
         const promoterCommissionPaise = commissionForLines(
           pricing.lines,
           signed.terms,
@@ -975,8 +997,17 @@ export class CheckoutService {
     accessGrantId?: EntityId;
     eligibilityAttested?: boolean;
     referralCode?: string | null;
+    referralContextTokens?: readonly string[];
   }): Promise<{ order: Order; entitlements: Entitlement[] }> {
-    const { actor, eventId, tierId, referralCode, accessGrantId, eligibilityAttested } = input;
+    const {
+      actor,
+      eventId,
+      tierId,
+      referralCode,
+      referralContextTokens,
+      accessGrantId,
+      eligibilityAttested,
+    } = input;
 
     if (!actor.userId || isSystemActor(actor)) {
       throw new UnauthorizedError('Authentication is required to book tickets');
@@ -1050,13 +1081,24 @@ export class CheckoutService {
     const guestProfile = await this.deps.repositories.guestProfiles.getByUserId(actor.userId);
 
     let attribution: CheckoutAttribution | null = null;
-    if (referralCode) {
-      const signed = await new ReferralLinkService(this.deps).resolveAttribution(
-        event.id,
-        referralCode,
-        actor.userId,
-      );
-      if (signed) {
+    if (referralCode || referralContextTokens?.length) {
+      const referralLinks = new ReferralLinkService(this.deps);
+      const signed = referralContextTokens?.length
+        ? await referralLinks.resolveClickContexts(event.id, referralContextTokens, actor.userId)
+        : referralCode
+          ? await referralLinks.resolveAttribution(
+              event.id,
+              referralCode,
+              actor.userId,
+              this.deps.config.clock.now(),
+            )
+          : null;
+      if (
+        signed &&
+        (tier.accessType === 'RSVP' ||
+          !signed.eligibleTierIds?.length ||
+          signed.eligibleTierIds.includes(tier.id))
+      ) {
         attribution = {
           referralLinkId: signed.referralLinkId,
           promoterId: signed.promoterId,
