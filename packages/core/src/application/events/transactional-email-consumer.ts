@@ -11,6 +11,7 @@ import {
   renderC1rcleEmailShell,
   renderC1rclePrimaryCta,
 } from '../email/c1rcle-email-chrome.js';
+import { htmlToPlainText } from '../email/html-to-plain-text.js';
 
 import type { DomainEvent, EventPayloads } from '../../domain/events.js';
 import type { EntityId } from '../../domain/identity.js';
@@ -1242,22 +1243,6 @@ async function refundRecipient(order: Order, deps: ServiceDeps): Promise<string 
   return isDeliverableRecipient(order.contact.email)
     ? order.contact.email.trim().toLowerCase()
     : null;
-}
-
-function htmlToPlainText(html: string): string {
-  return html
-    .replace(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, '$2 ($1)')
-    .replace(/<\/(p|li|h[1-6]|div|tr)>/gi, '\n')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
 }
 
 async function enqueueMaterialChangeRecipients(

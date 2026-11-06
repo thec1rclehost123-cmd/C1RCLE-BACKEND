@@ -7,6 +7,7 @@ import type { ServiceDeps } from '@c1rcle/core/application';
 import type { TransactionalEmail } from '@c1rcle/core/domain';
 
 import { getGatewayConfig } from '../config/index.js';
+import { escapeMarkdownLabel, extractPrimaryLabel } from '../lib/email-preview-label.js';
 import { ResendEmailSender } from '../lib/notifications/resend-email-sender.js';
 
 const ROOT = new URL('../../../../docs/pass6/previews/', import.meta.url);
@@ -753,7 +754,7 @@ async function writePreviews(entries: { fixture: Fixture; message: Transactional
         `Template: ${entry.message.templateType}`,
         `Subject: ${entry.message.subject}`,
         `Preheader: ${entry.message.preheader ?? ''}`,
-        `Primary action: ${extractPrimaryLabel(entry.message.html)}`,
+        `Primary action: ${escapeMarkdownLabel(extractPrimaryLabel(entry.message.html))}`,
         `Layout family: ${layoutFamily(entry.message.templateType ?? 'unknown')}`,
         `Recipient fixture: ${PREVIEW_RECIPIENT} (synthetic; local capture only)`,
         'Event, account, booking and financial data: synthetic fixtures only',
@@ -772,29 +773,6 @@ async function writePreviews(entries: { fixture: Fixture; message: Transactional
     );
     await writeFile(new URL(`${safeFileName(entry.fixture)}.meta.txt`, ROOT), metadata, 'utf8');
   }
-}
-
-function extractPrimaryLabel(html: string): string {
-  const match =
-    /<td\b[^>]*bgcolor=["']#ff5a00["'][^>]*>\s*<a\b[^>]*>([\s\S]*?)<\/a>/i.exec(html) ??
-    /<a\b[^>]*style=["'][^"']*background:#ff5a00[^"']*["'][^>]*>([\s\S]*?)<\/a>/i.exec(html);
-  if (!match?.[1]) {
-    return 'None (no canonical deep-link action available)';
-  }
-  const label = match[1]
-    .replace(/<[^>]*>/g, '')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;|&apos;/gi, "'")
-    .replace(/&#(\d+);/g, (_, value: string) => String.fromCodePoint(Number(value)))
-    .replace(/&#x([\da-f]+);/gi, (_, value: string) =>
-      String.fromCodePoint(Number.parseInt(value, 16)),
-    )
-    .replace(/&amp;/gi, '&')
-    .trim();
-  return label || 'None (no canonical deep-link action available)';
 }
 
 async function runNetworkIsolatedDryRun(

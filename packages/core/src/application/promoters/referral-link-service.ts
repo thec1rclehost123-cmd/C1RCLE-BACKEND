@@ -456,7 +456,9 @@ export class ReferralLinkService {
     previousToken?: string,
   ): Promise<string> {
     const now = this.deps.config.clock.now();
-    const previous = previousToken ? this.verifyClickContext(previousToken) : null;
+    // Always pass the untrusted value through signature verification. Missing
+    // context is represented by an empty invalid token, never a skipped check.
+    const previous = this.verifyClickContext(previousToken ?? '');
     let selected =
       previous?.eventId === eventId &&
       previous.selected &&
