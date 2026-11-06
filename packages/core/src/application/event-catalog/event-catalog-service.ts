@@ -544,7 +544,15 @@ export class EventCatalogService {
     const onboarding = await this.deps.repositories.onboarding.findByProvisionedOrganizationId(
       actor.organizationId,
     );
-    if (onboarding?.status !== 'approved' || onboarding.requestedType !== 'promoter') {
+    const promoterOrganization = await this.deps.repositories.organizations.getById(
+      actor.organizationId,
+    );
+    if (
+      promoterOrganization?.status !== 'active' ||
+      !promoterOrganization.members.some((member) => member.capabilities.includes('promoter')) ||
+      onboarding?.status !== 'approved' ||
+      onboarding.requestedType !== 'promoter'
+    ) {
       throw new PromoterAssignmentNotFoundError(assignmentId);
     }
     const next =

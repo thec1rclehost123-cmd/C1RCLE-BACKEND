@@ -2,6 +2,7 @@ import {
   createOnboardingRequest,
   createOrganization,
   createOrder,
+  createPlatformAdmin,
   calculatePricing,
   createPromoterAssignment,
   PROMOTER_AGREEMENT_TEST_FIXTURE,
@@ -13,6 +14,8 @@ import { describe, expect, it } from 'vitest';
 import { createV2Services } from '../../../lib/v2-services.js';
 import { seedApprovedPartnerOrganization } from '../../../test-utils/approved-partner-organization.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
+import { publishEventForTest } from '../../../test-utils/publish-event.js';
+import { seedVerifiedCheckoutUsers } from '../../../test-utils/verified-test-users.js';
 
 import partnerEventCatalogRoutes from './event-catalog.js';
 import partnerEventRoutes from './events.js';
@@ -331,6 +334,116 @@ describe('creating referral links', () => {
       hasMoreLinks: false,
     });
     expect(other.statusCode).toBe(404);
+    await server.close();
+  });
+
+  it('suspension blocks existing-link checkout and RSVP attribution without rewriting history', async () => {
+    seedVerifiedCheckoutUsers();
+    const server = await buildServer();
+    const { org, eventId } = await seed(server);
+    const event = await services.repos().events.getById(eventId);
+    if (!event) throw new Error('Expected seeded event');
+    await services.repos().events.save({
+      ...event,
+      startAt: '2026-12-01T18:00:00.000Z',
+      endAt: '2026-12-01T22:00:00.000Z',
+      version: event.version + 1,
+      updatedAt: '2026-11-05T12:00:00.000Z',
+    });
+    const promoterId = `promoter_suspend_${++keySeq}`;
+    const assignment = await seedAcceptedAssignment(eventId, promoterId);
+    const paidTier = await server.inject({
+      method: 'POST',
+      url: `/events/${eventId}/ticket-tiers`,
+      headers: write(org),
+      payload: { name: 'General', priceInPaise: 2500, quantity: 20 },
+    });
+    const rsvpTier = await server.inject({
+      method: 'POST',
+      url: `/events/${eventId}/ticket-tiers`,
+      headers: write(org),
+      payload: { name: 'RSVP', accessType: 'RSVP', quantity: 20 },
+    });
+    expect(paidTier.statusCode).toBe(201);
+    expect(rsvpTier.statusCode).toBe(201);
+    await publishEventForTest(eventId);
+
+    const created = await server.inject({
+      method: 'POST',
+      url: `/promoter-assignments/${assignment.id}/referral-links`,
+      headers: write(promoterId),
+      payload: { label: 'Suspension regression', code: `SUSP${keySeq}` },
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const link = created.json();
+    expect(await services.referralLinks.resolveAttribution(eventId, link.code)).not.toBeNull();
+    await services.referralLinks.trackClick(eventId, link.code, `suspension-click-${keySeq}`);
+    const guestActor = (userId: string) => ({
+      userId,
+      organizationId: '',
+      role: 'guest' as const,
+      capabilities: [],
+    });
+
+    const priorRsvp = await services.checkout.createRsvp({
+      actor: guestActor('user_1'),
+      eventId,
+      tierId: rsvpTier.json().id,
+      referralCode: link.code,
+    });
+    expect(priorRsvp.order.attribution?.promoterId).toBe(promoterId);
+
+    const quoteBefore = await services.checkout.quote({
+      actor: guestActor('user_1'),
+      eventId,
+      lines: [{ tierId: paidTier.json().id, quantity: 1 }],
+      referralCode: link.code,
+    });
+    expect(quoteBefore.attribution?.promoterId).toBe(promoterId);
+
+    await services.repos().platformAdmins.save(
+      createPlatformAdmin({
+        id: 'admin_suspension_test',
+        email: 'admin-suspension@example.test',
+        role: 'ops',
+      }),
+    );
+    const suspension = await services.adminOps.suspendPromoter(
+      'admin_suspension_test',
+      promoterId,
+      'Suspension regression test',
+    );
+    expect(suspension.affected).toBe(1);
+    expect(await services.referralLinks.resolveAttribution(eventId, link.code)).toBeNull();
+    expect(await services.repos().referralLinks.getById(link.id)).toMatchObject({
+      isActive: true,
+      code: link.code,
+    });
+
+    const quoteAfter = await services.checkout.quote({
+      actor: guestActor('user_2'),
+      eventId,
+      lines: [{ tierId: paidTier.json().id, quantity: 1 }],
+      referralCode: link.code,
+    });
+    expect(quoteAfter.attribution).toBeNull();
+
+    const nextRsvp = await services.checkout.createRsvp({
+      actor: guestActor('user_2'),
+      eventId,
+      tierId: rsvpTier.json().id,
+      referralCode: link.code,
+    });
+    expect(nextRsvp.order.attribution).toBeNull();
+
+    const historical = await services.repos().orders.getById(priorRsvp.order.id);
+    expect(historical?.attribution?.promoterId).toBe(promoterId);
+    expect((await services.repos().referralLinks.getById(link.id))?.conversions).toBe(1);
+    expect(
+      (await services.adminAudits().listForTarget(promoterId, 10)).some(
+        (entry) => entry.action === 'PROMOTER_SUSPEND',
+      ),
+    ).toBe(true);
     await server.close();
   });
 

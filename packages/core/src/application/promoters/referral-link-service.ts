@@ -147,6 +147,17 @@ export class ReferralLinkService {
     requestedCode?: string;
     requestedVanitySlug?: string;
   }): Promise<ReferralLink> {
+    const promoterOrganization = await this.deps.repositories.organizations.getById(
+      input.promoterId,
+    );
+    if (
+      promoterOrganization?.status !== 'active' ||
+      !promoterOrganization.members.some((member) => member.capabilities.includes('promoter'))
+    ) {
+      throw new InvalidOperationError(
+        'An active Promoter organization is required for campaign links',
+      );
+    }
     const onboarding = await this.deps.repositories.onboarding.findByProvisionedOrganizationId(
       input.promoterId,
     );
@@ -216,7 +227,7 @@ export class ReferralLinkService {
       termsVersion: input.assignment.terms.version,
       terms: input.assignment.terms,
       code,
-      eligibleTierIds: input.assignment.eligibleTierIds,
+      eligibleTierIds: input.assignment.eligibleTierIds ?? [],
       commissionPolicyVersion: PROMOTER_COMMISSION_POLICY_VERSION,
       commercialPolicyVersion: COMMERCIAL_ALLOCATION_POLICY_VERSION,
     } satisfies PromoterAttributionSnapshot;
@@ -380,6 +391,15 @@ export class ReferralLinkService {
       assignment.promoterId !== link.promoterId ||
       assignment.terms.version !== link.termsSnapshot.version ||
       !isPromoterAssignmentAttributable(assignment, now)
+    ) {
+      return null;
+    }
+    const promoterOrganization = await this.deps.repositories.organizations.getById(
+      link.promoterId,
+    );
+    if (
+      promoterOrganization?.status !== 'active' ||
+      !promoterOrganization.members.some((member) => member.capabilities.includes('promoter'))
     ) {
       return null;
     }

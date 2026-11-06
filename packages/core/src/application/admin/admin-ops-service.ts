@@ -645,6 +645,14 @@ export class AdminOperationsService {
   ): Promise<{ affected: number; at: Date }> {
     const admin = await this.authority.authorize(adminUserId, 'PROMOTER_SUSPEND');
     const now = this.deps.config.clock.now();
+    const organization = await this.organizations.getById(promoterId);
+    const suspendedOrganization = organization ? suspendOrganization(organization, now) : null;
+    const organizationChanged = organization !== null && suspendedOrganization !== organization;
+    // Close the tenant first. Referral resolution checks this status on every
+    // request, so a partial assignment update cannot leave an active code.
+    if (organizationChanged && suspendedOrganization) {
+      await this.organizations.save(suspendedOrganization);
+    }
     const all = await this.catalog.listAssignmentsByPromoter(promoterId);
     const before = all.map((a) => ({
       id: a.id,
@@ -657,12 +665,16 @@ export class AdminOperationsService {
     }));
     let affected = 0;
     for (const assignment of all) {
-      if (assignment.status === 'active') {
+      if (
+        assignment.status === 'invited' ||
+        assignment.status === 'accepted' ||
+        assignment.status === 'active'
+      ) {
         await this.catalog.saveAssignment(suspendPromoterAssignment(assignment, now));
         affected += 1;
       }
     }
-    if (affected > 0) {
+    if (affected > 0 || organizationChanged) {
       const after = (await this.catalog.listAssignmentsByPromoter(promoterId)).map((a) => ({
         id: a.id,
         status: a.status,
@@ -676,8 +688,11 @@ export class AdminOperationsService {
         action: 'PROMOTER_SUSPEND',
         targetType: 'promoter',
         targetId: promoterId,
-        before: { assignments: before },
-        after: { assignments: after },
+        before: { organizationStatus: organization?.status ?? null, assignments: before },
+        after: {
+          organizationStatus: suspendedOrganization?.status ?? organization?.status ?? null,
+          assignments: after,
+        },
         reason,
         ipAddress: meta?.ipAddress,
         userAgent: meta?.userAgent,
@@ -710,6 +725,12 @@ export class AdminOperationsService {
   ): Promise<{ affected: number; at: Date }> {
     const admin = await this.authority.authorize(adminUserId, 'PROMOTER_REINSTATE');
     const now = this.deps.config.clock.now();
+    const organization = await this.organizations.getById(promoterId);
+    const reinstatedOrganization = organization ? reinstateOrganization(organization, now) : null;
+    const organizationChanged = organization !== null && reinstatedOrganization !== organization;
+    if (organizationChanged && reinstatedOrganization) {
+      await this.organizations.save(reinstatedOrganization);
+    }
     const all = await this.catalog.listAssignmentsByPromoter(promoterId);
     const before = all.map((a) => ({
       id: a.id,
@@ -727,7 +748,7 @@ export class AdminOperationsService {
         affected += 1;
       }
     }
-    if (affected > 0) {
+    if (affected > 0 || organizationChanged) {
       const after = (await this.catalog.listAssignmentsByPromoter(promoterId)).map((a) => ({
         id: a.id,
         status: a.status,
@@ -741,8 +762,11 @@ export class AdminOperationsService {
         action: 'PROMOTER_REINSTATE',
         targetType: 'promoter',
         targetId: promoterId,
-        before: { assignments: before },
-        after: { assignments: after },
+        before: { organizationStatus: organization?.status ?? null, assignments: before },
+        after: {
+          organizationStatus: reinstatedOrganization?.status ?? organization?.status ?? null,
+          assignments: after,
+        },
         reason,
         ipAddress: meta?.ipAddress,
         userAgent: meta?.userAgent,
