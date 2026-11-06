@@ -10,6 +10,8 @@ import {
   createTicketTier,
 } from '@c1rcle/core/domain';
 
+import { ResendEmailSender } from '../lib/notifications/resend-email-sender.js';
+
 import { createPartnerRefinementFixture } from './partner-refinement-fixture.js';
 
 const emulatorHost = process.env.FIRESTORE_EMULATOR_HOST;
@@ -417,6 +419,7 @@ const hold = await request<{ holdId: string; pricing: { grandTotalPaise: number 
     eventId: eventA.eventId,
     lines: [{ tierId: eventA.paidTierId, quantity: 1 }],
     referralContextTokens: [clickB.contextToken],
+    attendee: { name: 'Synthetic Guest A', email: guest.email },
   },
 });
 const attempt = await request<{
@@ -453,6 +456,35 @@ await request({
   identity: guest,
   body: { holdId: hold.holdId, paymentIntentId: attempt.paymentIntentId, signature },
 });
+
+if (!(services.emailSender instanceof ResendEmailSender)) {
+  throw new Error('Synthetic email capture adapter is unavailable');
+}
+const syntheticEmailSender = services.emailSender;
+const paidReceiptCaptures = syntheticEmailSender.localCaptures.filter(
+  (capture) =>
+    capture.templateType === 'booking_receipt' &&
+    capture.recipient === guest.email &&
+    Boolean(capture.deliveryIntentId),
+);
+const paidReceiptIntents = await db
+  .collection('v2_email_deliveries')
+  .where('aggregateId', '==', paid.order.id)
+  .get();
+if (paidReceiptCaptures.length !== 1 || paidReceiptIntents.size !== 1) {
+  throw new Error(
+    `Synthetic receipt idempotency mismatch (localCaptures=${paidReceiptCaptures.length}, durableIntents=${paidReceiptIntents.size})`,
+  );
+}
+const paidReceiptIntent = paidReceiptIntents.docs[0]?.data();
+if (
+  paidReceiptIntent?.status !== 'captured' ||
+  paidReceiptIntent?.providerMessageId !== null ||
+  typeof paidReceiptIntent?.recipientHash !== 'string' ||
+  'recipient' in paidReceiptIntent
+) {
+  throw new Error('Synthetic receipt intent did not remain locally captured and privacy-safe');
+}
 
 const isolatedHoldResponse = await request<{ holdId: string }>({
   method: 'POST',
@@ -767,6 +799,36 @@ if (
   );
 }
 
+const emailDeliverySnapshot = await db.collection('v2_email_deliveries').get();
+const emailDeliveryById = new Map(emailDeliverySnapshot.docs.map((doc) => [doc.id, doc.data()]));
+const emailCaptures = syntheticEmailSender.localCaptures;
+const emailCaptureEvidence = {
+  localCaptureCount: emailCaptures.length,
+  templates: [...new Set(emailCaptures.map((capture) => capture.templateType))],
+  allRecipientsSynthetic: emailCaptures.every((capture) => capture.recipient.endsWith('.invalid')),
+  allCapturesHaveDurableIntents: emailCaptures.every((capture) => {
+    const id = capture.deliveryIntentId;
+    const delivery = id ? emailDeliveryById.get(id) : null;
+    return (
+      delivery?.status === 'captured' &&
+      delivery.providerMessageId === null &&
+      typeof delivery.recipientHash === 'string' &&
+      !('recipient' in delivery)
+    );
+  }),
+  paymentReceiptCapturedExactlyOnce: paidReceiptCaptures.length === 1,
+  durablePaymentReceiptIntentCount: paidReceiptIntents.size,
+  providerRequests: 0,
+  provider: 'not invoked; Resend API key removed and EmailSender captured locally',
+};
+if (
+  emailCaptures.length === 0 ||
+  !emailCaptureEvidence.allRecipientsSynthetic ||
+  !emailCaptureEvidence.allCapturesHaveDurableIntents
+) {
+  throw new Error('Synthetic transactional email capture or durable intent verification failed');
+}
+
 await writeFile(
   dataPath,
   JSON.stringify({
@@ -787,6 +849,7 @@ await writeFile(
       promoterUiAssignmentId: assignmentUi.id,
       promoterUiDeclineAssignmentId: assignmentUiDecline.id,
     },
+    emailAcceptance: emailCaptureEvidence,
     links: { codeA: linkA.code, codeB: linkB.code },
     acceptance: {
       paymentAttributedToLatestPromoter: true,
@@ -801,6 +864,11 @@ await writeFile(
       revocationBlocksFutureAttributionAndPreservesHistory: true,
       crossTenantReadsAndWritesDenied: true,
       suspensionBlocksFutureAttributionAndPreservesHistory: true,
+      emailReceiptDurableIntent: true,
+      emailReceiptRecipientMatchesSyntheticPurchaser: true,
+      emailReceiptDuplicateFulfillmentIsIdempotent: true,
+      emailReceiptCapturedLocallyWithoutProviderAcceptance: true,
+      emailDeliveryRecordStoresRecipientHashOnly: true,
       provider: 'MemoryPaymentProvider using signature-verified API fulfillment',
       emailProvider: 'disabled',
     },

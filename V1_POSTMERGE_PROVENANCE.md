@@ -1,0 +1,80 @@
+# V1 Post-Merge Provenance Ledger
+
+Inventory created from the post-merge candidate before carrying source changes forward. This file tracks source provenance and integration method; resulting candidate commits are filled in as each source is reconciled. No deployment or merge of this candidate is authorized.
+
+## Authoritative staging base
+
+| Repository | Staging SHA | Merge ancestry evidence |
+| --- | --- | --- |
+| Backend | `62fde5cf42775a756828b746f093405a6` | PR #160 merge commit; verified as ancestor of fetched `origin/staging` |
+| Frontend | `d1ef97171904622683605285b07f16f622b71d44` | PR #94 merge commit; verified as ancestor of fetched `origin/staging` |
+
+## Included sources
+
+| Source | Commit/SHA | Feature | Files | Classification and integration method | Resulting staging-relative commit |
+| --- | --- | --- | --- | --- | --- |
+| Frozen Promoter backend | `581165efa80d558587026bf15384545c231b2283` | Block attribution after suspension | Checkout, Admin operations, and promoter referral services; related tests | INCLUDE. Cherry-picked onto Backend staging; no textual conflict. | `36eb2773fe977b657856e559c758f249b7bb6a93` |
+| Frozen Promoter backend | `a4472b687374bf757c86c40bc752c23262762c3e` | Separate refund values and historical/current RSVP state | Analytics service; analytics and RSVP tests | INCLUDE. Cherry-picked in source order; no textual conflict. | `9f5e8fd2ab5041a4729976465a2a702bd0c34974` |
+| Frozen Promoter backend | `e9e102902acdd6aecdfa97b5ba330b6183b48c9e` | Complete attribution and analytics acceptance | Checkout, discovery, RSVP, referral-link services; contracts; fixture and focused tests | INCLUDE. Cherry-picked in source order; no textual conflict. | `528fb0a9ff32a81eaa74f253fd2cdd8b376ebd14` |
+| Frozen Promoter backend | `267833735f3c803d634cb342f72367f08a90fbfa` | Host analytics and revocation regression coverage | Analytics/referral tests and contract parity cases | INCLUDE. Cherry-picked in source order; no textual conflict. | `0e0a37c159f762ac8fb28f9330fe06649c748a50` |
+| Frozen Promoter backend | `b934af9dff5ccfb3b8187aecc326cfd595da3741` | Idempotent notification read-all behavior | Notification route and focused test | INCLUDE. Cherry-picked in source order; no textual conflict. | `6033b1a41a215904cefbe9e5b01c07a51e695a8c` |
+| Frozen Promoter frontend | `990102a73031f3bcf24789c1c15cf4da4f6927d9` | Connected Promoter dashboard and lifecycle flows | Partner dashboard, Admin surfaces, Guest referral entry, shared contracts and tests (28 paths in commit) | INCLUDE. Cherry-picked onto Frontend staging; no textual conflict. | `873cb0d7baab9b8e5b7f982de7346bc97427604c` |
+| Frozen Promoter frontend | `6ff8d976263c23691f30aaf0e7e71222d64763f4` | Admin suspension UI for accepted assignments | Admin Promoters page and focused test | INCLUDE. Cherry-picked after dashboard commit; no textual conflict. | `b664722017267ee5341471ac00fd0d47b90b6b5e` |
+| Completed Partner privacy correction | `95927f6a31d4be027f0ee8f24fdbe6e15a7503d5` | Move the social Guestlist link from the shared Partner frame into Settings while preserving its route | `apps/partner-dashboard/src/components/partner-v3/PartnerStudioFrame.tsx`, `apps/partner-dashboard/src/components/partner-v3/settings/PartnerSettingsUnavailable.tsx` | INCLUDE. Cherry-picked onto Frontend staging; no textual conflict. | `cc33ce6ba1ef53a693e84d359591e49272cb731c` |
+| Backend Email PR #161 | Source base `ae767808ba0d10c0f29fd0fb0935c3326a76c0a6`; current PR head `c808c18b027ce4afe32525ad7cd18c5aa0513c5d` | Transactional Email V1, shared sender/templates, durable intents, triggers, auth/account emails, tests and evidence | 187 paths in `ae767...c808` source diff: API Gateway config/sender/wiring, Core email consumer/events/repositories, tests, `docs/pass6/`, and generated synthetic preview HTML/text | INCLUDE for the consolidated candidate. Reconcile only the Email delta against current staging; do not merge the old PR branch wholesale. Waitlist remains excluded. Visual approval is explicitly still pending in the source evidence; keep that status visible and do not claim Pass 6/founder acceptance. No provider sends. | Pending |
+
+### Email source commit sequence
+
+These are the ordered commits after the Email branch's original #160 candidate base. Preserve the sequence during integration and map each to the resulting candidate commit after cherry-pick:
+
+| Source commit | Feature/change | Classification | Result |
+| --- | --- | --- | --- |
+| `cc4e708451281e67d1d77e5f8218470bf901b823` | Notify current ticket holders of event changes | INCLUDE | `fd830ccafe23e130a46134981ed1e02a7b59aadf` |
+| `cd407c29717a636a5be4d4114ec92e7af82f06e3` | Distinguish local capture from provider acceptance | INCLUDE | `7439bcd72d05346fb2ab0419b81fbc7d7a96777c` |
+| `5f12013db853e88dbb484fbbe85a4bb2fe16fb15` | Queue onboarding status messages | INCLUDE | `11549d7f545681dc25fe89358545f3ea5ee02d4f` |
+| `ec02a3452a9e6b3e177a55e8333679917f780dfc` | Target cancellation notices to ticket holders | INCLUDE | `e874b889a310710f7fd313189c8eb34ac1638030` |
+| `673c18a3fba798df275b5e4a516c681bd6d1a8b5` | Notify both holders after accepted transfer | INCLUDE | `0fc3465ee57a8d32c9fc991d8c180459cb5169ad` |
+| `aff3f05e8b7e610601a1b6a948f8c71f86438ba8` | Notify purchaser of final refund outcomes | INCLUDE | `4a6d28a561c5743fe6a1a480ccbc7ad9ec854dda` |
+| `220f48889bf88080b7868e1e65a5ce54d1453564` | Distinguish terminal provider failures | INCLUDE | `3c08ebe93f76dd2b37cf50f27e95d26c7b8c2130` |
+| `0fc77bcf0855274fba6da13ab4c2a45e4d141571` | Harden sender config and template evidence | INCLUDE | `b83c7abc58d239167255f2388a0284ef4dd13f71` |
+| `82a1522fbbd51531efb2cfb8de5bd8770ca7aadf` | Apply final refund-email policy | INCLUDE | `cbe33a6e9b2c85e35350ae16ab33a80c41ce0fa5` |
+| `9228644b398456aa83bee98e6583097070056ce7` | Index Pass 6 acceptance evidence | INCLUDE | `28ce57c5861d6163cdbda1a41628fb15f3589250` |
+| `0de5aa14670e6624aa0d7a439b21a5654b1fec2f` | Record visual-acceptance checkpoint | INCLUDE | `be4856c14acbc245c5541e0c5af880761dca8a50` |
+| `64c99e6087c73b3100c345f24eafaf17e7dbe7fa` | Complete V1 transactional delivery | INCLUDE | `49909f30b3389b1c2ed622f7831a3618ca61c308` |
+| `2eafa2db32c2e473ac5e25056ba5d891e3631e90` | Update current acceptance evidence | INCLUDE | `73980aba601a1f9f0605954dfb2259e0a6c21f4f` |
+| `d56571369cd3d390a71f64d36b9430306efdd345` | Align local-capture test expectation | INCLUDE | `c487f522bc31de7c70296d062d6d5080301aede6` |
+| `c808c18b027ce4afe32525ad7cd18c5aa0513c5d` | Address CodeQL incomplete multi-character sanitization finding | INCLUDE; re-run focused security evidence | `4dbb38f011c0f36d62a190a05b603bb73d4b5235` |
+
+## Other discovered local work
+
+| Source | SHA/state | Feature or contents | Classification | Reason / treatment |
+| --- | --- | --- | --- | --- |
+| Backend product-completeness branch | `0718ad53284591a4f876bf4e4e50d536d7dae300` and eight earlier feature commits | Guest identity/onboarding, saved events, social guestlists, private insights | SUPERSEDED / ALREADY IN STAGING | Compared the nine source commits against their corresponding #160 commits: all nine stable patch IDs match and all nine #160 commits are ancestors of Backend staging. Do not merge this stale branch. |
+| Frontend product-completeness branch | `95927f6a31d4be027f0ee8f24fdbe6e15a7503d5` | Two-file Guestlist privacy navigation correction | INCLUDED above | Exact commit is not an ancestor of current Frontend staging. |
+| M4/M5 lineage worktree | Dirty local branch `codex/m2-provider-config-readiness`, HEAD `1b4fe343d4e29dd1ada0865b038534fdbdc45b45`, with modified and untracked files | Provider/readiness and payment/refund remediation work | UNRELATED / UNAPPROVED / DEFERRED | Dirty, separate workstream, and outside the authorized Email + Promoter consolidation. Preserve without copying. |
+| M4 backend worktree | HEAD `93121203670b01b9c599b6efd8250bcd20c976a3` | Previously completed M4 candidate | ALREADY IN STAGING | Verified as an ancestor of Backend staging. |
+| Email worktree local-only file | `apps/.DS_Store` in the older Pass 6 worktree | Local filesystem metadata | LOCAL CONFIG ONLY | Never copy or commit. |
+
+## Integration decisions and gates
+
+- Current staging is the only integration base. Source branch histories are evidence, not merge targets.
+- Preserve Email and Promoter changes as separate reviewable commits. Do not include waitlist, provider-backed Promoter payouts, production disbursement, marketing/audience features, or M5.
+- Keep synthetic HTML/text previews as generated review evidence, not proof of founder visual acceptance. The source's Pass 6 evidence says that approval is pending. No Resend send is part of this task.
+- The approved #160 merge triggered its normal staging deployment. That baseline deployment succeeded; this ledger does not authorize deployment of the consolidated candidate.
+
+## Baseline staging outcome and candidate verification
+
+- Backend #160 merge `62fde5cf42775a756828b746f093405a6f5dd241` is live on the configured Render staging service. Backend workflow run `42187721064` is marked cancelled because cancellation raced with the workflow, but its scenario suite, Firestore emulator tests, `CI OK`, and the complete Deploy & verify job all completed successfully, including Render commit-serving and smoke checks. No rollback or further deployment action was taken.
+- Frontend #94 merge `d1ef97171904622683605285b07f16f622b71d44` is the fetched `origin/staging` head and is merged. Its merge-triggered CI failed in the Guest Portal E2E because the anonymous sign-in test expected a `Sign in` heading before the actual email-first step (24 other Guest Portal E2E tests passed; Admin Console and Partner Dashboard E2E jobs passed). Source review confirmed anonymous `/login` intentionally asks for an email first, then offers Sign in/Create account. The stale test was corrected only in the isolated Frontend consolidation candidate to cover this two-step flow; that candidate test passed in Chromium and mobile Safari. Treat this as a test correction, not evidence of a broken login product. The live-URL post-deploy smoke job was skipped in the #94 workflow; the connected Vercel deployment itself is recorded successful below. #94 remains untouched.
+- Read-only GitHub deployment records bind Partner Dashboard deployment `7595320195` to exact commit `d1ef97171904622683605285b07f16f622b71d44`, project slug `c1rcle-v2-partner-dashboard`, and state `success`; its Vercel-generated deployment URL contains the same project slug. Owner-confirmed Vercel mapping establishes that this project is associated with `staging.thec1rcle.com`. Therefore: **#94 Partner Dashboard deployment target: intended staging project; staging domain: `staging.thec1rcle.com`; previous Production-label ambiguity: RESOLVED.** The separate older `thec1rcle-partner-dashboard` project maps to `staging-partner.thec1rcle.com`. The Vercel team scope remains unavailable from the local CLI, but is not needed to resolve this deployment's project/commit identity given the matching GitHub record and owner-confirmed project mapping. No rollback, cancellation, or deployment interference was attempted.
+- Frontend merge CI run `42184496444` failed only in the Guest Portal E2E job; its live-URL post-deploy smoke job was skipped.
+- The backend and frontend isolated candidate worktrees remain based on those exact merged staging heads. Current integrated commit tips are Backend `6033b1a41a215904cefbe9e5b01c07a51e695a8c` and Frontend `b664722017267ee5341471ac00fd0d47b90b6b5e`, before the uncommitted acceptance harness and generated preview updates. No candidate PR/merge/deploy has been created.
+- The connected local Promoter journey completed against the Firestore/Auth Emulators with synthetic identities and the signature-verified `MemoryPaymentProvider`; the safe fixture summary records the required negative cases, cross-tenant denial, and refund/transfer/revoke/suspension invariants as true. Transactional messages were locally captured only: 17 captures, all `.invalid` synthetic recipients, every capture backed by a privacy-safe durable intent, and zero provider requests. The fixture-only paid checkout now supplies the synthetic purchaser contact email so the real receipt consumer produces exactly one receipt intent/capture. This corrected the harness input; no application behavior or domain contract was changed for that finding.
+- Browser review used the actual local Partner Dashboard at 390px and 1440px. Normal Promoter sign-in reached the connected Overview. Visible navigation was Overview, Events, Activity, Analytics, Finance, and Partners; Leaderboard was absent. Each screen rendered API-backed data or an intentional empty state. The Activity empty state exposed no email/phone; Finance's payout request remained disabled with no settled balance; Events invitation actions were exercised against synthetic assignments and hit the expected response endpoint. The separate synthetic Promoter B was suspended by the fixture before browser review, so its failed workspace access is expected negative behavior. No production or staging business data was involved.
+- Final affected gate passed: Core 87 tests; API Gateway 99 tests; Partner Dashboard Promoter-related 47 tests across 20 files; Admin Console Promoter 5 tests; Guest Portal auth-entry/referral tests 10 tests; Firestore email-delivery integration 1 test; and the updated anonymous email-entry E2E passed in both Chromium and mobile Safari. Core/API and all three frontend application typechecks plus Guest E2E typecheck passed; contract parity passed (263 checks); `git diff --check` passed. The connected local emulator journey completed after its attendee-contact correction. A subsequent final path-scope audit found 207 committed backend paths confined to API Gateway, Core, contracts, and `docs/pass6/`; 32 committed frontend paths confined to Admin Console, Guest Portal, Partner Dashboard, and contracts; no unexpected paths. Backend working-tree additions remain limited to the two local acceptance/preview scripts, regenerated synthetic Pass 6 HTML/metadata, and this provenance ledger; frontend working-tree addition remains the isolated anonymous-login E2E correction. Both worktrees pass `git diff --check`; earlier secret-safe scan found no key-like strings or PEM markers in the backend candidate diff. No PR or candidate deployment has been created.
+
+## Open gates
+
+1. Founder visual approval for Pass 6 remains pending; the generated email HTML is review evidence only. Do not claim Pass 6 accepted or include a send/deployment claim.
+2. The #94 Partner Dashboard deployment's mapping to the intended staging project/domain is owner-confirmed and matches GitHub's exact SHA/project deployment record. The failed anonymous sign-in check was a stale test corrected in the consolidated candidate and passed in Chromium and mobile Safari; the missing post-deploy smoke step is recorded, but is not evidence of a product failure.
+3. Final affected integration/security gate and exact candidate path/privacy review are complete locally. Pass 6 founder visual approval remains pending and must not be called accepted. Owner has authorized temporary isolated Vercel Preview deployments for the consolidated PRs only; do not merge or promote/deploy the candidate to authoritative staging or production without approval. The temporary candidate-branch suppression rules were removed, leaving all three Vercel configs aligned with their staging base. No remote branch or PR has yet been created.
