@@ -12,6 +12,7 @@ import { z } from 'zod';
 const LOCAL_ORIGINS = 'http://localhost:3000,http://localhost:3001,http://localhost:3002';
 const LOCAL_TRUSTED_PROXY_CIDRS = '127.0.0.1,::1';
 const DEVELOPMENT_BETTER_AUTH_URL = 'http://localhost:8080';
+const APPROVED_EMAIL_TEST_RECIPIENT = 'aayushdivase2020333@gmail.com';
 
 /** Parse a comma-separated environment setting without silently accepting blanks. */
 export function parseList(value: string): string[] {
@@ -229,6 +230,11 @@ const envSchema = z.object({
   RESEND_FROM_EMAIL: z.string().trim().min(1).optional(),
   /** Exact allowlisted recipient for intentional non-production provider acceptance. */
   RESEND_NON_PROD_TEST_RECIPIENT: z.email().trim().toLowerCase().optional(),
+  /** Enforce that allowlist even when NODE_ENV is production-like (for staging). */
+  RESEND_ENFORCE_TEST_RECIPIENT_ALLOWLIST: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
   EMAIL_OTP_SECRET: z.string().min(1).optional(),
   /**
    * Public origin of the partner dashboard (e.g. https://partners.thec1rcle.com).
@@ -331,6 +337,24 @@ export function allowedBrowserOrigins(config: GatewayConfig): readonly string[] 
 
 /** Fail closed: STORAGE_DRIVER=firestore requires real credentials, never a silent memory fallback. */
 const validatedEnvSchema = envSchema.superRefine((value, ctx) => {
+  if (value.RESEND_ENFORCE_TEST_RECIPIENT_ALLOWLIST && !value.RESEND_NON_PROD_TEST_RECIPIENT) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['RESEND_NON_PROD_TEST_RECIPIENT'],
+      message: 'The strict Resend test-recipient guard requires an exact allowlist recipient',
+    });
+  }
+  if (
+    value.RESEND_ENFORCE_TEST_RECIPIENT_ALLOWLIST &&
+    value.RESEND_NON_PROD_TEST_RECIPIENT !== APPROVED_EMAIL_TEST_RECIPIENT
+  ) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['RESEND_NON_PROD_TEST_RECIPIENT'],
+      message: 'The strict Resend test-recipient guard allows only the approved founder address',
+    });
+  }
+
   const providerFields = [
     'RAZORPAY_KEY_ID',
     'RAZORPAY_KEY_SECRET',

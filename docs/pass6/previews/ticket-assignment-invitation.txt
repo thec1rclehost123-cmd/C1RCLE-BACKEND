@@ -1,8 +1,8 @@
-You have a ticket invitation
+A ticket is waiting for you.
 
-A ticket for Night Market 2026 is waiting for you. Create a C1RCLE account if needed and verify this email address before accepting.
-Review this invitation (https://guest-staging.example.test/ticket-transfer/TRF-VISUAL)
+A ticket for Neon Nights: Afrobeats Edition is waiting for you. Create a C1RCLE account if needed and verify this email address before accepting.
+Review this invitation (https://guest.example.test/ticket-transfer/TRANSFER-SYNTHETIC-INVITE)
 Sign in with the verified email address this invitation was sent to. Your ticket holder will change only after you accept.
 
 This invitation is bound to the verified account it was sent to. The ticket will not move until that account accepts it.
-Contact support (https://guest-staging.example.test/help) if you were not expecting this invitation.
+Contact support (https://guest.example.test/help) if you were not expecting this invitation.

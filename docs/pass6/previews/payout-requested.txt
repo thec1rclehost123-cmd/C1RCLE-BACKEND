@@ -1,7 +1,6 @@
 Payout requested
 
-Amount: ₹2,450.00
-Reference: PAYO-VISUAL
+Amount: ₹2,500.00
 Current status: requested.
 
-Review the Finance section in your partner workspace for details.
+Open partner workspace (https://partner.example.test/partner/select-organization)

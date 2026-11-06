@@ -1,0 +1,6 @@
+Application received.
+
+We received your venue application. The team will review it and update you here.
+View your application (https://partner.example.test/onboard)
+
+Review your application in the C1RCLE partner workspace.

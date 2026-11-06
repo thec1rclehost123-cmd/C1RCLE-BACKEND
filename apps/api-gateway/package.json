@@ -14,7 +14,13 @@
     "repair:fulfilment": "tsx --env-file-if-exists=.env.local src/scripts/repair-fulfilment.ts",
     "seed:admin": "tsx --env-file-if-exists=.env.local src/scripts/seed-platform-admin.ts",
     "backfill:analytics": "tsx --env-file-if-exists=.env.local src/scripts/backfill-analytics.ts",
-    "configure:storage-cors": "tsx --env-file-if-exists=.env.local src/scripts/configure-storage-cors.ts"
+    "configure:storage-cors": "tsx --env-file-if-exists=.env.local src/scripts/configure-storage-cors.ts",
+    "pass6:email-previews": "tsx src/scripts/pass6-email-previews.ts",
+    "pass6:auth-email-previews": "tsx src/scripts/pass6-auth-email-previews.ts",
+    "pass6:email-dry-run": "tsx --env-file-if-exists=.env.local src/scripts/pass6-email-previews.ts --dry-run",
+    "pass6:email-send-acceptance": "tsx --env-file-if-exists=.env.local src/scripts/pass6-email-previews.ts --send-acceptance",
+    "pass6:email-dry-run-v2": "tsx --env-file-if-exists=.env.local src/scripts/pass6-email-previews.ts --dry-run-v2",
+    "pass6:email-send-v2-acceptance": "tsx --env-file-if-exists=.env.local src/scripts/pass6-email-previews.ts --send-v2-acceptance"
   },
   "dependencies": {
     "@c1rcle/contracts": "workspace:^",

@@ -72,6 +72,28 @@ describe('ResendEmailSender transactional delivery', () => {
     ).rejects.toBeInstanceOf(PermanentEmailDeliveryError);
   });
 
+  it('keeps provider throttling retryable without exposing the provider response', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('private provider detail', { status: 429 })),
+    );
+    const sender = new ResendEmailSender(
+      'test-key',
+      'test',
+      noopLogger,
+      'THE C1RCLE <test@example.test>',
+      'guest@example.test',
+    );
+    await expect(
+      sender.sendTransactionalEmail({
+        to: 'guest@example.test',
+        subject: 'Receipt',
+        html: '<p>Safe</p>',
+        idempotencyKey: 'booking-receipt:ord_429:fulfilled',
+      }),
+    ).rejects.toThrow('Email provider temporary rejection');
+  });
+
   it('fails closed when provider credentials exist without a configured sender identity', async () => {
     const sender = new ResendEmailSender(
       'test-key',
@@ -154,6 +176,82 @@ describe('ResendEmailSender transactional delivery', () => {
       idempotencyKey: 'booking-receipt:ord_1:fulfilled',
       sender: null,
     });
+  });
+
+  it('enforces the exact founder recipient in production before the provider request', async () => {
+    const fetchMock = vi.fn(
+      async () => new Response(JSON.stringify({ id: 'email_founder' }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const sender = new ResendEmailSender(
+      'test-key',
+      'production',
+      noopLogger,
+      'THE C1RCLE <hello@thec1rcle.com>',
+      'aayushdivase2020333@gmail.com',
+      true,
+    );
+    await expect(
+      sender.sendTransactionalEmail({
+        to: 'other@example.test',
+        subject: 'Receipt',
+        html: '<p>Safe</p>',
+        idempotencyKey: 'receipt:other',
+      }),
+    ).rejects.toBeInstanceOf(PermanentEmailDeliveryError);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await expect(
+      sender.sendTransactionalEmail({
+        to: 'AayushDivase2020333@gmail.com',
+        subject: 'Receipt',
+        html: '<p>Safe</p>',
+        idempotencyKey: 'receipt:founder',
+      }),
+    ).resolves.toEqual({ outcome: 'accepted_by_provider', providerMessageId: 'email_founder' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the shared branded shell and the same strict guard for auth mail', async () => {
+    const fetchMock = vi.fn(
+      async (_input: string | URL | Request, _init?: RequestInit) =>
+        new Response(JSON.stringify({ id: 'email_auth' }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const sender = new ResendEmailSender(
+      'test-key',
+      'production',
+      noopLogger,
+      'THE C1RCLE <hello@thec1rcle.com>',
+      'aayushdivase2020333@gmail.com',
+      true,
+    );
+    await expect(
+      sender.sendPasswordResetEmail(
+        'guest@example.test',
+        'https://example.test/reset?token=secret',
+      ),
+    ).rejects.toBeInstanceOf(PermanentEmailDeliveryError);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await sender.sendPasswordResetEmail(
+      'aayushdivase2020333@gmail.com',
+      'https://example.test/reset?token=synthetic-token',
+    );
+    const call = fetchMock.mock.calls[0];
+    const init = call?.[1];
+    const payload = typeof init?.body === 'string' ? JSON.parse(init.body) : null;
+    expect(payload).toMatchObject({
+      from: 'THE C1RCLE <hello@thec1rcle.com>',
+      to: 'aayushdivase2020333@gmail.com',
+      subject: 'Reset your password',
+    });
+    expect(payload?.html).toContain('bgcolor="#080808"');
+    expect(payload?.html).toContain('RESET PASSWORD');
+    expect(payload?.html).toContain('token=synthetic-token');
+    expect(payload?.text).toContain(
+      'RESET PASSWORD: https://example.test/reset?token=synthetic-token',
+    );
   });
 
   it('does not log credentials or recipient data when development email delivery is suppressed', async () => {

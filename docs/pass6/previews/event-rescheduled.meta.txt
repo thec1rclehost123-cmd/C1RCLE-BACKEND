@@ -1,3 +1,10 @@
-Subject: Important update: Night Market 2026
-Preheader: Important information about a change to your event.
+Variant: Event rescheduled
 Template: event_material_change
+Subject: Important update: Neon Nights: Afrobeats Edition
+Preheader: Event details and your next step for Neon Nights: Afrobeats Edition.
+Primary action: VIEW YOUR TICKETS&#8594;
+Layout family: Event / ticket
+Recipient fixture: preview.guest@synthetic.test (synthetic; local capture only)
+Event, account, booking and financial data: synthetic fixtures only
+Capture path: actual createTransactionalEmailConsumer; local in-memory capture sender
+Resend: not invoked in preview generation

@@ -1,7 +1,7 @@
 Ticket invitation expired
 
-The ticket invitation for Night Market 2026 expired before it was accepted.
+The ticket invitation for Neon Nights: Afrobeats Edition expired before it was accepted.
 The ticket remains in your account. You can send a new invitation if you still want to transfer it.
 
-View your ticket (https://guest-staging.example.test/tickets)
+View your ticket (https://guest.example.test/tickets)
 We sent this notice to the verified email on the current ticket holder's account.
