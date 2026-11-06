@@ -60,7 +60,7 @@ export default async function onboardingRoutes(fastify: FastifyInstance) {
       const agreement = services.onboarding.getCurrentPromoterAgreement();
       const validated = validateV2Response(reply, request, promoterAgreementStatusDtoSchema, {
         agreement,
-        activationAvailable: agreement?.status === 'approved',
+        activationAvailable: agreement !== null && agreement.status !== 'test_fixture',
       });
       if (validated === undefined) return reply;
       return reply.send(validated);

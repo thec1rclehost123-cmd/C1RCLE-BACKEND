@@ -1,4 +1,9 @@
-import { randomUUID } from 'crypto';
+import { randomUUID, createHash } from 'crypto';
+
+import {
+  PROMOTER_AGREEMENT_TEST_FIXTURE,
+  type PromoterAgreementArtifact,
+} from '../domain/models/promoter-agreement.js';
 
 /**
  * ─── Core configuration ───────────────────────────────────────────────────────
@@ -46,6 +51,8 @@ export interface CoreConfig {
   firestore: FirestoreConfig;
   storage: StorageConfig;
   features: FeatureFlagConfig;
+  deploymentEnvironment: 'production' | 'staging' | 'local';
+  promoterAgreement: PromoterAgreementArtifact | null;
   magicTicketSecret: string;
   /** Phase 6: AES key-derivation secret/salt for bank-account-number at-rest encryption. */
   bankEncryptionSecret: string;
@@ -74,6 +81,8 @@ export interface CoreConfigInput {
   firestore: Partial<FirestoreConfig> & { projectId: string };
   storage?: Partial<StorageConfig>;
   features?: FeatureFlagConfig;
+  deploymentEnvironment?: 'production' | 'staging' | 'local';
+  promoterAgreement?: PromoterAgreementArtifact | null;
   magicTicketSecret?: string;
   bankEncryptionSecret?: string;
   bankEncryptionSalt?: string;
@@ -153,6 +162,11 @@ export function createCoreConfig(input: CoreConfigInput): CoreConfig {
       kycBucket: input.storage?.kycBucket ?? `${input.firestore.projectId}.firebasestorage.app`,
     },
     features: input.features ?? {},
+    deploymentEnvironment: input.deploymentEnvironment ?? 'production',
+    promoterAgreement: validatePromoterAgreement(
+      input.promoterAgreement ?? null,
+      input.deploymentEnvironment ?? 'production',
+    ),
     magicTicketSecret:
       input.magicTicketSecret ?? 'default-magic-ticket-secret-change-in-production',
     bankEncryptionSecret: input.bankEncryptionSecret ?? LEGACY_BANK_ENCRYPTION_SECRET,
@@ -164,4 +178,54 @@ export function createCoreConfig(input: CoreConfigInput): CoreConfig {
 
 export function isFeatureEnabled(config: CoreConfig, flag: string): boolean {
   return config.features[flag] === true;
+}
+
+/** Trusted deployment configuration, never accepted from a client request. */
+export function validatePromoterAgreement(
+  artifact: PromoterAgreementArtifact | null,
+  environment: 'production' | 'staging' | 'local',
+): PromoterAgreementArtifact | null {
+  if (!artifact) return null;
+  if (
+    !artifact.version.trim() ||
+    artifact.version.length > 120 ||
+    !artifact.text.trim() ||
+    artifact.text.length > 10_000 ||
+    createHash('sha256').update(artifact.text).digest('hex') !== artifact.textSha256
+  ) {
+    throw new CoreConfigError('Promoter agreement requires a version, text and matching SHA-256');
+  }
+  if (!artifact.version.endsWith(`-${artifact.textSha256}`)) {
+    throw new CoreConfigError('Promoter agreement version must end in its full content SHA-256');
+  }
+  if (artifact.status !== 'approved' && artifact.status !== 'staging_only') {
+    throw new CoreConfigError('Configured Promoter agreement cannot be a test fixture');
+  }
+  if (
+    artifact.status === 'staging_only' &&
+    (environment !== 'staging' ||
+      !artifact.version.startsWith('staging-') ||
+      !artifact.text.startsWith('C1RCLE STAGING PROMOTER AGREEMENT — FOR TESTING ONLY'))
+  ) {
+    throw new CoreConfigError(
+      'Staging-only Promoter agreement requires the staging environment and explicit staging labels',
+    );
+  }
+  if (
+    artifact.status === 'approved' &&
+    (artifact.version.startsWith('staging-') ||
+      artifact.text.startsWith('C1RCLE STAGING PROMOTER AGREEMENT'))
+  ) {
+    throw new CoreConfigError('Production agreement cannot use a staging version');
+  }
+  return Object.freeze({ ...artifact });
+}
+
+export function currentPromoterAgreement(config: CoreConfig): PromoterAgreementArtifact | null {
+  return (
+    config.promoterAgreement ??
+    (config.deploymentEnvironment === 'local' && config.features.m4PromoterAgreementFixture === true
+      ? PROMOTER_AGREEMENT_TEST_FIXTURE
+      : null)
+  );
 }

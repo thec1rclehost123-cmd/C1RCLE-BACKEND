@@ -40,6 +40,43 @@ export async function runParityCases({
     mustChangePassword: false,
   };
 
+  for (const status of ['approved', 'staging_only', 'test_fixture']) {
+    agree(
+      'promoterAgreementDtoSchema',
+      `accepts versioned agreement ${status}`,
+      {
+        version: 'synthetic-v1',
+        status,
+        text: 'Synthetic contract parity text',
+        textSha256: 'a'.repeat(64),
+      },
+      true,
+    );
+  }
+  agree(
+    'promoterAgreementDtoSchema',
+    'rejects unknown agreement status',
+    {
+      version: 'synthetic-v1',
+      status: 'unreviewed',
+      text: 'Synthetic',
+      textSha256: 'a'.repeat(64),
+    },
+    false,
+  );
+  agree(
+    'promoterAgreementAcceptanceSchema',
+    'preserves staging-only acceptance',
+    {
+      version: 'staging-v1',
+      artifactStatus: 'staging_only',
+      textSha256: 'a'.repeat(64),
+      acceptedBy: 'synthetic-user',
+      acceptedAt: '2026-11-06T19:00:00.000Z',
+    },
+    true,
+  );
+
   /* ── role ─────────────────────────────────────────────────────────────────── */
   for (const role of ['guest', 'partner', 'admin']) {
     agree('roleSchema', `accepts ${role}`, role, true);

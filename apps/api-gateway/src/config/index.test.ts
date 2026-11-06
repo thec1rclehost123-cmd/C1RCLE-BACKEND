@@ -396,3 +396,47 @@ describe('M4 non-production configuration safety', () => {
     ).toThrow(/FIRESTORE_EMULATOR_HOST/);
   });
 });
+
+describe('hosted agreement environment parsing', () => {
+  const artifact = {
+    version: 'staging-v1',
+    status: 'staging_only',
+    text: 'C1RCLE STAGING PROMOTER AGREEMENT — FOR TESTING ONLY',
+    textSha256: 'a'.repeat(64),
+  };
+  it('keeps hosted environment and configured artifact explicit even with production Node mode', () => {
+    const config = getGatewayConfig(
+      productionEnvironment({
+        DEPLOYMENT_ENVIRONMENT: 'staging',
+        RENDER_SERVICE_ID: 'srv-daar7op42hec73ecesdg',
+        PUBLIC_API_URL: 'https://circle-v2-backend.onrender.com',
+        BETTER_AUTH_URL: 'https://circle-v2-backend.onrender.com',
+        PROMOTER_AGREEMENT_ARTIFACT: JSON.stringify(artifact),
+      }),
+    );
+    expect(config.NODE_ENV).toBe('production');
+    expect(config.DEPLOYMENT_ENVIRONMENT).toBe('staging');
+    expect(config.PROMOTER_AGREEMENT_ARTIFACT).toEqual(artifact);
+    expect(getGatewayConfig(productionEnvironment()).PROMOTER_AGREEMENT_ARTIFACT).toBeUndefined();
+  });
+  it('rejects a staging flag without the independently identified staging service', () => {
+    expect(() =>
+      getGatewayConfig(
+        productionEnvironment({
+          DEPLOYMENT_ENVIRONMENT: 'staging',
+          PROMOTER_AGREEMENT_ARTIFACT: JSON.stringify(artifact),
+        }),
+      ),
+    ).toThrow();
+  });
+  it('rejects fixture status, malformed documents, and undeclared artifact properties', () => {
+    for (const value of [
+      '{',
+      JSON.stringify({ ...artifact, status: 'test_fixture' }),
+      JSON.stringify({ ...artifact, extra: 'forged' }),
+    ])
+      expect(() =>
+        getGatewayConfig(productionEnvironment({ PROMOTER_AGREEMENT_ARTIFACT: value })),
+      ).toThrow();
+  });
+});

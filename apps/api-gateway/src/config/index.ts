@@ -225,6 +225,27 @@ const envSchema = z.object({
   /** Optional scrypt salt for ENCRYPTION_KEY; changing it re-keys new writes. */
   ENCRYPTION_SALT: z.string().min(1).optional(),
   /** Email OTP delivery and at-rest OTP HMAC key. */
+  DEPLOYMENT_ENVIRONMENT: z.enum(['production', 'staging', 'local']).optional(),
+  RENDER_SERVICE_ID: z.string().optional(),
+  PROMOTER_AGREEMENT_ARTIFACT: z
+    .string()
+    .transform((value, ctx) => {
+      try {
+        return z
+          .object({
+            version: z.string().trim().min(1).max(120),
+            status: z.enum(['approved', 'staging_only']),
+            text: z.string().min(1).max(10_000),
+            textSha256: z.string().regex(/^[a-f0-9]{64}$/u),
+          })
+          .strict()
+          .parse(JSON.parse(value));
+      } catch {
+        ctx.addIssue({ code: 'custom', message: 'Invalid Promoter agreement artifact JSON' });
+        return z.NEVER;
+      }
+    })
+    .optional(),
   RESEND_API_KEY: z.string().min(1).optional(),
   /** Verified Resend sender identity, e.g. `THE C1RCLE <hello@example.com>`. */
   RESEND_FROM_EMAIL: z.string().trim().min(1).optional(),
@@ -337,6 +358,25 @@ export function allowedBrowserOrigins(config: GatewayConfig): readonly string[] 
 
 /** Fail closed: STORAGE_DRIVER=firestore requires real credentials, never a silent memory fallback. */
 const validatedEnvSchema = envSchema.superRefine((value, ctx) => {
+  if (value.PROMOTER_AGREEMENT_ARTIFACT?.status === 'staging_only') {
+    const independentlyIdentifiedStaging =
+      value.DEPLOYMENT_ENVIRONMENT === 'staging' &&
+      value.NODE_ENV === 'production' &&
+      value.STORAGE_DRIVER === 'firestore' &&
+      value.FIRESTORE_PROJECT_ID === 'c1rcle-v2' &&
+      !value.FIRESTORE_EMULATOR_HOST &&
+      value.RENDER_SERVICE_ID === 'srv-daar7op42hec73ecesdg' &&
+      value.PUBLIC_API_URL === 'https://circle-v2-backend.onrender.com' &&
+      value.BETTER_AUTH_URL === 'https://circle-v2-backend.onrender.com';
+    if (!independentlyIdentifiedStaging)
+      ctx.addIssue({
+        code: 'custom',
+        path: ['PROMOTER_AGREEMENT_ARTIFACT'],
+        message:
+          'Staging agreement requires the explicitly identified staging Render service and origins',
+      });
+  }
+
   if (value.RESEND_ENFORCE_TEST_RECIPIENT_ALLOWLIST && !value.RESEND_NON_PROD_TEST_RECIPIENT) {
     ctx.addIssue({
       code: 'custom',

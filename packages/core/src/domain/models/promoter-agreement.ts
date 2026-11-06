@@ -6,7 +6,7 @@ import { bumpVersion } from '../identity.js';
 import type { EntityId } from '../identity.js';
 import type { OnboardingRequest } from './onboarding.js';
 
-export type PromoterAgreementStatus = 'test_fixture' | 'approved';
+export type PromoterAgreementStatus = 'test_fixture' | 'approved' | 'staging_only';
 
 export interface PromoterAgreementArtifact {
   version: string;
@@ -93,6 +93,7 @@ export function hasCurrentPromoterAgreementAcceptance(
   if (artifact.status === 'test_fixture' && !allowTestFixture) return false;
   return (request.promoterAgreementAcceptances ?? []).some(
     (acceptance) =>
+      acceptance.acceptedBy === request.userId &&
       acceptance.version === artifact.version &&
       acceptance.textSha256 === artifact.textSha256 &&
       acceptance.artifactStatus === artifact.status,
