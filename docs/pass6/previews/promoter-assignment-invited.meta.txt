@@ -2,7 +2,7 @@ Variant: Promoter assignment invited
 Template: promoter_assignment_status
 Subject: You have a new C1RCLE Promoter assignment
 Preheader: Review the latest update to your assignment.
-Primary action: VIEW ASSIGNMENTS&#8594;
+Primary action: VIEW ASSIGNMENTS→
 Layout family: Partner / KYC
 Recipient fixture: preview.guest@synthetic.test (synthetic; local capture only)
 Event, account, booking and financial data: synthetic fixtures only

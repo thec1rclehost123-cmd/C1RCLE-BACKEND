@@ -2,7 +2,7 @@ Variant: Payment support required
 Template: payment_support_required
 Subject: Action needed to complete your C1RCLE payment
 Preheader: Review the next step for your payment.
-Primary action: CONTACT SUPPORT&#8594;
+Primary action: CONTACT SUPPORT→
 Layout family: Financial / operational
 Recipient fixture: preview.guest@synthetic.test (synthetic; local capture only)
 Event, account, booking and financial data: synthetic fixtures only

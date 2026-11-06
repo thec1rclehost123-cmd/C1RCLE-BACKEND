@@ -2,7 +2,7 @@ Variant: Purchase confirmation / receipt
 Template: booking_receipt
 Subject: You're in
 Preheader: Your tickets for Neon Nights: Afrobeats Edition are ready.
-Primary action: VIEW TICKETS&#8594;
+Primary action: VIEW TICKETS→
 Layout family: Event / ticket
 Recipient fixture: preview.guest@synthetic.test (synthetic; local capture only)
 Event, account, booking and financial data: synthetic fixtures only

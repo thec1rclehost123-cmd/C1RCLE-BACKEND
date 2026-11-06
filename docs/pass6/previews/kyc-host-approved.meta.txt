@@ -2,7 +2,7 @@ Variant: Host application approved
 Template: partner_onboarding_approved
 Subject: Your Host application is approved
 Preheader: Review the latest status of your application.
-Primary action: OPEN HOST STUDIO&#8594;
+Primary action: OPEN HOST STUDIO→
 Layout family: Partner / KYC
 Recipient fixture: preview.guest@synthetic.test (synthetic; local capture only)
 Event, account, booking and financial data: synthetic fixtures only

@@ -2,7 +2,7 @@ Variant: Event rescheduled
 Template: event_material_change
 Subject: Important update: Neon Nights: Afrobeats Edition
 Preheader: Event details and your next step for Neon Nights: Afrobeats Edition.
-Primary action: VIEW YOUR TICKETS&#8594;
+Primary action: VIEW YOUR TICKETS→
 Layout family: Event / ticket
 Recipient fixture: preview.guest@synthetic.test (synthetic; local capture only)
 Event, account, booking and financial data: synthetic fixtures only

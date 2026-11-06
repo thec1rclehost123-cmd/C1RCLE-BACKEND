@@ -2,7 +2,7 @@ Variant: Venue application submitted
 Template: partner_onboarding_submitted
 Subject: Application received
 Preheader: Review the latest status of your application.
-Primary action: VIEW YOUR APPLICATION&#8594;
+Primary action: VIEW YOUR APPLICATION→
 Layout family: Partner / KYC
 Recipient fixture: preview.guest@synthetic.test (synthetic; local capture only)
 Event, account, booking and financial data: synthetic fixtures only
