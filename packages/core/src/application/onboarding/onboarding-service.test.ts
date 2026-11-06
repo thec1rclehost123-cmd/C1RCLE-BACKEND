@@ -1,7 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createCoreConfig } from '../../config/index.js';
-import { InvalidOperationError, NotFoundError } from '../../domain/errors.js';
+import {
+  InvalidOperationError,
+  NotFoundError,
+  OnboardingRequestNotFoundError,
+} from '../../domain/errors.js';
 import { createPlatformAdmin } from '../../domain/models/admin-authority.js';
 import { EchoObjectStorage } from '../../domain/ports/object-storage.js';
 import {
@@ -148,6 +152,7 @@ const PROFILE = {
   contactPerson: 'A. Applicant',
   phone: '9876543210',
   city: 'Mumbai',
+  kyc: { identity: { idType: 'passport' as const, idNumber: 'P1234567' } },
 };
 
 async function submittedRequest(service: OnboardingService) {
@@ -177,6 +182,228 @@ describe('OnboardingService — KYC document desk', () => {
 
   beforeEach(() => {
     ctx = buildDeps();
+  });
+
+  it.each(['host', 'venue', 'promoter'] as const)(
+    'keeps the terminal %s application visible to its applicant',
+    async (requestedType) => {
+      const { service, repositories } = ctx;
+      await seedAdmin(repositories, 'admin_a');
+      const created = await service.start('user_a', {
+        requestedType,
+        plan: 'basic',
+        profile: PROFILE,
+      });
+      for (const label of ['id_front', 'id_back', 'selfie'])
+        await service.addDocument('user_a', {
+          requestId: created.id,
+          label,
+          storagePath: `kyc/user_a/${created.id}/${label}`,
+        });
+      await service.submit('user_a', created.id);
+      await service.reject('admin_a', {
+        requestId: created.id,
+        note: 'Use the correct legal entity.',
+      });
+      expect(await service.getMine('user_a')).toMatchObject({
+        id: created.id,
+        status: 'rejected',
+        reviewNote: 'Use the correct legal entity.',
+      });
+      expect(await service.getMine('user_b')).toBeNull();
+    },
+  );
+
+  it('refuses a fresh upload grant or replacement while submitted for review', async () => {
+    const { service, deps } = ctx;
+    const request = await submittedRequest(service);
+    const sign = vi.spyOn(deps.objectStorage, 'issueUploadUrl');
+    await expect(
+      service.issueDocumentUploadUrl('user_a', {
+        requestId: request.id,
+        label: 'id_front',
+        contentType: 'image/png',
+      }),
+    ).rejects.toThrow(InvalidOperationError);
+    expect(sign).not.toHaveBeenCalled();
+    await expect(
+      service.addDocument('user_a', {
+        requestId: request.id,
+        label: 'id_front',
+        storagePath: `kyc/user_a/${request.id}/id_front`,
+      }),
+    ).rejects.toThrow(InvalidOperationError);
+  });
+
+  it('does not grant membership if persisting the approval decision fails', async () => {
+    const { service, repositories } = ctx;
+    await seedAdmin(repositories, 'admin_a');
+    const request = await submittedRequest(service);
+    for (const label of ['id_front', 'id_back', 'selfie'])
+      await service.verifyKycDocument('admin_a', request.id, label);
+    const save = vi
+      .spyOn(repositories.onboarding, 'save')
+      .mockRejectedValueOnce(new Error('decision unavailable'));
+    await expect(service.approve('admin_a', { requestId: request.id })).rejects.toThrow(
+      'decision unavailable',
+    );
+    expect(
+      (await repositories.organizations.listForMember('user_a', { limit: 10, cursor: null })).items,
+    ).toHaveLength(0);
+    save.mockRestore();
+  });
+  it('repairs provisioning after a persisted approval without creating another workspace', async () => {
+    const { service, repositories } = ctx;
+    await seedAdmin(repositories, 'admin_a');
+    const request = await submittedRequest(service);
+    for (const label of ['id_front', 'id_back', 'selfie'])
+      await service.verifyKycDocument('admin_a', request.id, label);
+    const save = vi
+      .spyOn(repositories.organizations, 'save')
+      .mockRejectedValueOnce(new Error('workspace unavailable'));
+    await expect(service.approve('admin_a', { requestId: request.id })).rejects.toThrow(
+      'workspace unavailable',
+    );
+    expect(await service.getMine('user_a')).toMatchObject({ status: 'approved' });
+    save.mockRestore();
+    const approved = await service.approve('admin_a', { requestId: request.id });
+    const repeated = await service.approve('admin_a', { requestId: request.id });
+    expect(repeated.organization.id).toBe(approved.organization.id);
+    expect(
+      (await repositories.organizations.listForMember('user_a', { limit: 10, cursor: null })).items,
+    ).toHaveLength(1);
+  });
+
+  it.each(
+    (['host', 'venue', 'promoter'] as const).flatMap((requestedType) =>
+      (['individual', 'business'] as const).map((entityType) => ({ requestedType, entityType })),
+    ),
+  )(
+    'accepts $requestedType/$entityType through changes, resubmission and scoped approval',
+    async ({ requestedType, entityType }) => {
+      const { service, repositories } = ctx;
+      await seedAdmin(repositories, 'admin_a');
+      const created = await service.start('user_a', {
+        requestedType,
+        plan: 'basic',
+        profile: {
+          ...PROFILE,
+          entityType,
+          ...(entityType === 'business'
+            ? {
+                kyc: {
+                  business: { pan: 'ABCDE1234F', address: 'Synthetic acceptance address' },
+                  signatory: {
+                    fullName: 'Synthetic Applicant',
+                    designation: 'director',
+                    email: 'synthetic@example.invalid',
+                    idType: 'passport',
+                    idNumber: 'P1234567',
+                    declared: true,
+                  },
+                },
+              }
+            : {}),
+        },
+      });
+      await service.saveProgress('user_a', created.id, { city: 'Pune' });
+      await expect(
+        service.saveProgress('unrelated', created.id, { city: 'Delhi' }),
+      ).rejects.toThrow(OnboardingRequestNotFoundError);
+      await expect(
+        service.issueDocumentUploadUrl('unrelated', {
+          requestId: created.id,
+          label: 'id_front',
+          contentType: 'image/png',
+        }),
+      ).rejects.toThrow(OnboardingRequestNotFoundError);
+      const labels =
+        entityType === 'business'
+          ? ['registration_certificate', 'sig_id_front', 'sig_id_back', 'sig_selfie']
+          : ['id_front', 'id_back', 'selfie'];
+      for (const label of labels) {
+        const grant = await service.issueDocumentUploadUrl('user_a', {
+          requestId: created.id,
+          label,
+          contentType: 'image/png',
+        });
+        await service.addDocument('user_a', {
+          requestId: created.id,
+          label,
+          storagePath: grant.storagePath,
+        });
+      }
+      await service.submit('user_a', created.id);
+      expect(
+        (await repositories.organizations.listForMember('user_a', { limit: 10, cursor: null }))
+          .items,
+      ).toHaveLength(0);
+      await service.requestChanges('admin_a', {
+        requestId: created.id,
+        note: 'Correct city and replace the selfie.',
+      });
+      expect(await service.getMine('user_a')).toMatchObject({
+        status: 'changes_requested',
+        profile: { city: 'Pune' },
+      });
+      await service.saveProgress('user_a', created.id, { city: 'Mumbai' });
+      const selfie = entityType === 'business' ? 'sig_selfie' : 'selfie';
+      await service.addDocument('user_a', {
+        requestId: created.id,
+        label: selfie,
+        storagePath: `kyc/user_a/${created.id}/${selfie}`,
+      });
+      await service.submit('user_a', created.id);
+      await expect(service.approve('admin_a', { requestId: created.id })).rejects.toThrow(
+        InvalidOperationError,
+      );
+      for (const label of labels) await service.verifyKycDocument('admin_a', created.id, label);
+      const result = await service.approve('admin_a', { requestId: created.id });
+      expect(result.organization.members).toMatchObject([
+        { userId: 'user_a', role: 'owner', capabilities: [requestedType] },
+      ]);
+      expect(await service.getMine('user_a')).toMatchObject({
+        status: 'approved',
+        provisionedOrganizationId: result.organization.id,
+      });
+      expect(
+        (await repositories.organizations.listForMember('unrelated', { limit: 10, cursor: null }))
+          .items,
+      ).toHaveLength(0);
+      if (requestedType === 'venue')
+        expect(await repositories.venues.getById(`onboarding_venue_${created.id}`)).toMatchObject({
+          organizationId: result.organization.id,
+        });
+    },
+  );
+
+  it('persists only private KYC details and merges separate steps on the same applicant', async () => {
+    const { service } = ctx;
+    const created = await service.start('user_a', {
+      requestedType: 'host',
+      plan: 'basic',
+      profile: { ...PROFILE, entityType: 'business' },
+    });
+    await service.saveProgress('user_a', created.id, {
+      kyc: { business: { pan: 'ABCDE1234F', address: 'Synthetic address for acceptance' } },
+    });
+    await service.saveProgress('user_a', created.id, {
+      kyc: {
+        signatory: {
+          fullName: 'Synthetic Applicant',
+          designation: 'director',
+          email: 'synthetic@example.invalid',
+          phone: '+919000000001',
+          idType: 'passport',
+          idNumber: 'P1234567',
+          declared: true,
+        },
+      },
+    });
+    expect(await service.getMine('user_a')).toMatchObject({
+      profile: { kyc: { business: { pan: 'ABCDE1234F' }, signatory: { idNumber: 'P1234567' } } },
+    });
+    expect(await service.getMine('unrelated')).toBeNull();
   });
 
   const invalidPaths = [

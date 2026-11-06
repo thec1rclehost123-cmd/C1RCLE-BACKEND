@@ -15,6 +15,7 @@ import type { AdminRole } from '@c1rcle/core/domain';
 
 import { RazorpayPaymentProvider } from '../../../lib/payments/razorpay-adapter.js';
 import { createV2Services } from '../../../lib/v2-services.js';
+import { seedApprovedPartnerOrganization } from '../../../test-utils/approved-partner-organization.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 import { publishEventForTest } from '../../../test-utils/publish-event.js';
 import checkoutRoutes from '../checkout/checkout-routes.js';
@@ -87,13 +88,12 @@ async function seedPaidOrder(
     'idempotency-key': `catalog-${++keySeq}`,
   });
 
-  const created = await server.inject({
-    method: 'POST',
-    url: '/organizations',
-    headers: { 'x-organization-id': 'org_seed', 'idempotency-key': `seed-${++keySeq}` },
-    payload: { name: 'Skyline', slug: `skyline-${keySeq}` },
+  ++keySeq;
+  const created = await seedApprovedPartnerOrganization({
+    name: 'Skyline',
+    slug: `skyline-${keySeq}`,
   });
-  const org: string = created.json().id;
+  const org: string = created.id;
   const venue = await server.inject({
     method: 'POST',
     url: `/organizations/${org}/venues`,

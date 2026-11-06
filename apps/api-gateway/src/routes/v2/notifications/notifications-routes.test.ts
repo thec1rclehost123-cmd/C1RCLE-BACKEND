@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { seedApprovedPartnerOrganization } from '../../../test-utils/approved-partner-organization.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 import partnerOrganizationRoutes from '../partner/organizations.js';
 import partnerPartnershipRoutes from '../partner/partnerships.js';
@@ -32,14 +33,9 @@ type Server = Awaited<ReturnType<typeof buildServer>>;
 const read = (org: string) => ({ 'x-organization-id': org });
 const write = (org: string) => ({ ...read(org), 'idempotency-key': `n-key-${++keySeq}` });
 
-async function createOrganization(server: Server): Promise<string> {
-  const created = await server.inject({
-    method: 'POST',
-    url: '/organizations',
-    headers: write('org_seed'),
-    payload: { name: 'Org', slug: `n-org-${++keySeq}` },
-  });
-  const id: string = created.json().id;
+async function createOrganization(_server: Server): Promise<string> {
+  const created = await seedApprovedPartnerOrganization({ name: 'Org', slug: `n-org-${++keySeq}` });
+  const id: string = created.id;
   return id;
 }
 

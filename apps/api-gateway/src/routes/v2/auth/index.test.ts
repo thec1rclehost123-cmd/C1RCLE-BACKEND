@@ -39,7 +39,9 @@ function fakeAuth(overrides: {
     session: { token: string };
   } | null>;
   changePassword?: () => Promise<unknown>;
-  requestPasswordReset?: () => Promise<{ status: true; message: string }>;
+  requestPasswordReset?: (input: {
+    body: { email: string; redirectTo?: string };
+  }) => Promise<{ status: true; message: string }>;
   resetPassword?: () => Promise<{ status: true }>;
 }): BetterAuthInstance {
   return {
@@ -477,6 +479,38 @@ describe('auth routes — my invitations', () => {
 });
 
 describe('auth routes — password reset', () => {
+  it('rejects an untrusted recovery origin before creating or emailing a token', async () => {
+    const requestReset = vi.fn(async () => ({ status: true as const, message: 'Accepted' }));
+    const app = await buildTestApp(fakeAuth({ requestPasswordReset: requestReset }));
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v2/auth/forgot-password',
+      headers: { origin: 'https://attacker.example' },
+      payload: { email: 'partner@example.com' },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(requestReset).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('binds the reset callback to the trusted requesting frontend', async () => {
+    const requestReset = vi.fn(async () => ({ status: true as const, message: 'Accepted' }));
+    const app = await buildTestApp(fakeAuth({ requestPasswordReset: requestReset }));
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v2/auth/forgot-password',
+      headers: { origin: 'http://localhost:3001' },
+      payload: { email: 'partner@example.com' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(requestReset).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: { email: 'partner@example.com', redirectTo: 'http://localhost:3001/reset-password' },
+      }),
+    );
+    await app.close();
+  });
+
   it('POST /forgot-password returns the constant ack (no account-existence oracle)', async () => {
     let receivedEmail: string | undefined;
     const app = await buildTestApp(

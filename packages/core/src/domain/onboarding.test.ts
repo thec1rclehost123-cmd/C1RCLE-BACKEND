@@ -37,6 +37,7 @@ const request = () =>
       contactPerson: 'A Person',
       phone: '+910000000000',
       city: 'Mumbai',
+      kyc: { identity: { idType: 'passport', idNumber: 'P1234567' } },
     },
     now: NOW,
   });
@@ -50,6 +51,13 @@ const withDocuments = () => {
 };
 
 describe('the applicant’s side', () => {
+  it('refuses submission when private required identity fields were never saved', () => {
+    const subject = withDocuments();
+    delete subject.profile.kyc;
+    expect(() => submitOnboardingRequest(subject)).toThrow(
+      'Complete the required identity details',
+    );
+  });
   it('starts as a draft with no documents', () => {
     expect(request()).toMatchObject({ status: 'draft', documents: [], submittedAt: null });
   });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { seedApprovedPartnerOrganization } from '../../../test-utils/approved-partner-organization.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 
 import partnerEventRoutes from './events.js';
@@ -39,27 +40,19 @@ const read = (org: string) => ({ 'x-organization-id': org });
 async function seedHostAndVenue(
   server: Server,
 ): Promise<{ host: string; venue: string; venueOrg: string }> {
-  const hostCreated = await server.inject({
-    method: 'POST',
-    url: '/organizations',
-    headers: {
-      'x-organization-id': 'org_host_seed',
-      'idempotency-key': `seed-${++keySeq}`,
-    },
-    payload: { name: 'Host Co', slug: `host-co-${keySeq}` },
+  ++keySeq;
+  const hostCreated = await seedApprovedPartnerOrganization({
+    name: 'Host Co',
+    slug: `host-co-${keySeq}`,
   });
-  const host: string = hostCreated.json().id;
+  const host: string = hostCreated.id;
 
-  const venueOrgCreated = await server.inject({
-    method: 'POST',
-    url: '/organizations',
-    headers: {
-      'x-organization-id': 'org_venue_seed',
-      'idempotency-key': `seed-${++keySeq}`,
-    },
-    payload: { name: 'Venue Co', slug: `venue-co-${keySeq}` },
+  ++keySeq;
+  const venueOrgCreated = await seedApprovedPartnerOrganization({
+    name: 'Venue Co',
+    slug: `venue-co-${keySeq}`,
   });
-  const venueOrg: string = venueOrgCreated.json().id;
+  const venueOrg: string = venueOrgCreated.id;
 
   const venueCreated = await server.inject({
     method: 'POST',
@@ -422,13 +415,12 @@ describe('answering a request', () => {
   it('hides a partnership between two other organizations', async () => {
     const server = await buildServer();
     const { partnershipId } = await pendingRequest(server);
-    const strangerCreated = await server.inject({
-      method: 'POST',
-      url: '/organizations',
-      headers: { 'x-organization-id': 'org_stranger_seed', 'idempotency-key': `seed-${++keySeq}` },
-      payload: { name: 'Stranger Org', slug: `stranger-${keySeq}` },
+    ++keySeq;
+    const strangerCreated = await seedApprovedPartnerOrganization({
+      name: 'Stranger Org',
+      slug: `stranger-${keySeq}`,
     });
-    const stranger: string = strangerCreated.json().id;
+    const stranger: string = strangerCreated.id;
 
     const response = await server.inject({
       method: 'POST',

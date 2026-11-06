@@ -1,3 +1,4 @@
+import { createOrganization } from '@c1rcle/core/domain';
 import { type MemoryUserAccountRepository } from '@c1rcle/core/infrastructure';
 import { describe, expect, it } from 'vitest';
 
@@ -22,21 +23,16 @@ const write = (organizationId: string) => ({
 
 const buildServer = () => buildPartnerTestServer({ routes: [partnerOrganizationRoutes] });
 
-/**
- * Creates an organization and returns its id. On the memory driver the dev
- * actor's organization comes from `X-Organization-Id`, so scoping every later
- * call to this id is what makes the tenant checks pass.
- */
-async function seedOrganization(server: Awaited<ReturnType<typeof buildServer>>): Promise<string> {
-  const created = await server.inject({
-    method: 'POST',
-    url: '/organizations',
-    // `organizations.create` still requires the header even though it ignores
-    // it (there is no tenant yet); the created id is what matters afterwards.
-    headers: { 'x-organization-id': 'org_seed', 'idempotency-key': `seed-${++keySeq}` },
-    payload: { name: 'Skyline', slug: `skyline-${keySeq}` },
+/** Seed an already approved workspace; direct applicant provisioning is forbidden. */
+async function seedOrganization(_server: Awaited<ReturnType<typeof buildServer>>): Promise<string> {
+  const org = createOrganization({
+    id: `inv-org-${++keySeq}`,
+    name: 'Skyline',
+    slug: `skyline-${keySeq}`,
+    ownerId: 'user_1',
   });
-  return created.json().id;
+  await createV2Services().repos().organizations.save(org);
+  return org.id;
 }
 
 describe('organization invitations', () => {

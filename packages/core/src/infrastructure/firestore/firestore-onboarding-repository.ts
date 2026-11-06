@@ -280,7 +280,7 @@ export class FirestoreAdminAuditRepository implements AdminAuditRepository {
     // overwrite the original record of what an operator did.
     await this.collection
       .doc(record.id)
-      .create({ ...record })
+      .create(Object.fromEntries(Object.entries(record).filter(([, value]) => value !== undefined)))
       .catch((error: unknown) => {
         if (isAlreadyExists(error)) return;
         throw error;

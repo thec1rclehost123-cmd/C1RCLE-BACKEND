@@ -1,5 +1,5 @@
 import { createPlatformAdmin } from '@c1rcle/core/domain';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AdminRole } from '@c1rcle/core/domain';
 
@@ -40,6 +40,18 @@ const FULL_PROFILE = {
   contactPerson: 'A. Applicant',
   phone: '9876543210',
   city: 'Mumbai',
+  kyc: {
+    identity: { idType: 'passport', idNumber: 'P1234567' },
+    business: { pan: 'ABCDE1234F', address: 'Synthetic acceptance address' },
+    signatory: {
+      fullName: 'Synthetic Applicant',
+      designation: 'director',
+      email: 'synthetic@example.invalid',
+      idType: 'passport',
+      idNumber: 'P1234567',
+      declared: true,
+    },
+  },
 };
 
 interface ApplicationView {
@@ -88,6 +100,10 @@ beforeEach(async () => {
 });
 
 describe('applicant onboarding', () => {
+  it('marks private application progress as non-cacheable', async () => {
+    const response = await server.inject({ url: '/onboarding/me', headers: asUser('user_a') });
+    expect(response.headers['cache-control']).toBe('private, no-store');
+  });
   it('starts an application in draft with every required document missing', async () => {
     const created = await startApplication('user_a');
     expect(created.status).toBe('draft');
@@ -535,6 +551,27 @@ describe('admin review', () => {
     expect(approval?.after).toMatchObject({ status: 'approved' });
   });
 
+  it('passes request metadata to changes-requested review', async () => {
+    const requestId = await submittedApplication();
+    await seedAdmin('admin_ops', 'ops');
+    const review = vi.spyOn(services.onboarding, 'requestChanges');
+    const response = await server.inject({
+      method: 'POST',
+      url: `/admin/onboarding/applications/${requestId}/request-changes`,
+      headers: { ...asUser('admin_ops'), 'user-agent': 'Synthetic acceptance browser' },
+      payload: { note: 'Replace selfie' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(review).toHaveBeenCalledWith(
+      'admin_ops',
+      { requestId, note: 'Replace selfie' },
+      expect.objectContaining({
+        ipAddress: expect.any(String),
+        userAgent: 'Synthetic acceptance browser',
+      }),
+    );
+    review.mockRestore();
+  });
   it('requires a note when asking for changes', async () => {
     const requestId = await submittedApplication();
     await seedAdmin('admin_ops', 'ops');

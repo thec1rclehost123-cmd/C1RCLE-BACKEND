@@ -35,6 +35,18 @@
     "./infrastructure/firestore": {
       "types": "./src/infrastructure/firestore/index.ts",
       "import": "./src/infrastructure/firestore/index.ts"
+    },
+    "./guest-social": {
+      "types": "./src/guest-social.ts",
+      "import": "./src/guest-social.ts"
+    },
+    "./saved-events": {
+      "types": "./src/saved-events.ts",
+      "import": "./src/saved-events.ts"
+    },
+    "./partner-marketing": {
+      "types": "./src/partner-marketing.ts",
+      "import": "./src/partner-marketing.ts"
     }
   },
   "scripts": {

@@ -146,8 +146,8 @@ export default async function partnerOrganizationRoutes(fastify: FastifyInstance
   fastify.post(
     '/organizations',
     {
-      // No `requirePermission` here on purpose: creating your first
-      // organization happens before any membership exists to grant a role.
+      // Self-service provisioning is closed: only reviewed onboarding approval
+      // may create a Partner workspace. Keep input validation for legacy callers.
       preHandler: [
         fastify.rateLimit('STANDARD_COMMAND'),
         fastify.validateV2({
@@ -156,43 +156,13 @@ export default async function partnerOrganizationRoutes(fastify: FastifyInstance
         }),
       ],
     },
-    async (request, reply) => {
-      const body = request.body as z.infer<typeof createOrganizationBody>;
-      const actor = services.actor(request);
-      const v2Headers = request.v2Headers ?? {};
-      const result = await runIdempotent({
-        idempotency: services.idempotency,
-        request,
-        actorId: actor.userId,
-        commandName: 'organizations.create',
-        idempotencyKey: v2Headers['idempotency-key'],
-        context: { path: {}, body },
-        run: async () => {
-          const org = await services.organizations.create(actor, {
-            name: body.name,
-            slug: body.slug,
-            settings: body.settings,
-          });
-          const validated = validateV2Response(
-            reply,
-            request,
-            organizationDtoSchema,
-            organizationToDto(org, actor.userId),
-          );
-          if (validated === undefined) throw new Error('v2 response validation failed');
-          return { statusCode: 201, body: validated };
-        },
-      }).catch((error: unknown) => {
-        if (isIdempotencyConflict(error)) {
-          return mapDomainError(reply, request, 'new_org', error, {
-            conflictId: v2Headers['idempotency-key'],
-          });
-        }
-        return mapDomainError(reply, request, 'new_org', error);
-      });
-      if (result === undefined) return reply;
-      return reply.status(result.statusCode).send(result.body);
-    },
+    async (_request, reply) =>
+      reply.status(403).send({
+        code: 'forbidden',
+        status: 403,
+        message:
+          'Partner workspaces are created after application approval. Complete your onboarding application to continue.',
+      }),
   );
 
   // ── UPDATE (PATCH, optimistic-locked + idempotent) ─────────────────────────
