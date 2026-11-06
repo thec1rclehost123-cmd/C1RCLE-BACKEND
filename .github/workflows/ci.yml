@@ -503,10 +503,20 @@ jobs:
         with:
           path: backend
           persist-credentials: false
+      - name: Resolve paired frontend contract ref
+        id: frontend-ref
+        working-directory: backend
+        env:
+          FRONTEND_REPO: ${{ vars.FRONTEND_REPO || 'thec1rclehost123-cmd/C1RCLE-FRONTEND' }}
+          FRONTEND_REF_INPUT: ${{ inputs.frontend_ref || vars.FRONTEND_REF || '' }}
+          FRONTEND_REPO_TOKEN: ${{ secrets.FRONTEND_REPO_TOKEN || github.token }}
+        run: |
+          node scripts/resolve-frontend-ref.test.mjs
+          node scripts/resolve-frontend-ref.mjs
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           repository: ${{ vars.FRONTEND_REPO || 'thec1rclehost123-cmd/C1RCLE-FRONTEND' }}
-          ref: ${{ inputs.frontend_ref || vars.FRONTEND_REF || github.base_ref || 'main' }}
+          ref: ${{ steps.frontend-ref.outputs.frontend_ref }}
           token: ${{ secrets.FRONTEND_REPO_TOKEN || github.token }}
           path: frontend
           persist-credentials: false
