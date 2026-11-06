@@ -256,7 +256,7 @@ describe('marking read', () => {
     const response = await server.inject({
       method: 'PATCH',
       url: `/organizations/${venueOrg}/notifications/read-all`,
-      headers: write(venueOrg),
+      headers: read(venueOrg),
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ selected: 2 });

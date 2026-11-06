@@ -94,7 +94,7 @@ export default async function notificationRoutes(fastify: FastifyInstance) {
     {
       preHandler: [
         fastify.rateLimit('STANDARD_COMMAND'),
-        fastify.validateV2({ params: organizationIdParam, headers: commandHeaders }),
+        fastify.validateV2({ params: organizationIdParam, headers: readHeaders }),
         fastify.requirePermission('organization.read'),
       ],
     },
