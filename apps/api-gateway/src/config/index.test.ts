@@ -409,6 +409,8 @@ describe('hosted agreement environment parsing', () => {
       productionEnvironment({
         DEPLOYMENT_ENVIRONMENT: 'staging',
         RENDER_SERVICE_ID: 'srv-daar7op42hec73ecesdg',
+        RENDER_GIT_BRANCH: 'staging',
+        RENDER_EXTERNAL_URL: 'https://circle-v2-backend.onrender.com',
         PUBLIC_API_URL: 'https://circle-v2-backend.onrender.com',
         BETTER_AUTH_URL: 'https://circle-v2-backend.onrender.com',
         PROMOTER_AGREEMENT_ARTIFACT: JSON.stringify(artifact),
@@ -424,6 +426,21 @@ describe('hosted agreement environment parsing', () => {
       getGatewayConfig(
         productionEnvironment({
           DEPLOYMENT_ENVIRONMENT: 'staging',
+          PROMOTER_AGREEMENT_ARTIFACT: JSON.stringify(artifact),
+        }),
+      ),
+    ).toThrow();
+  });
+  it('rejects a production branch even with other staging settings', () => {
+    expect(() =>
+      getGatewayConfig(
+        productionEnvironment({
+          DEPLOYMENT_ENVIRONMENT: 'staging',
+          RENDER_SERVICE_ID: 'srv-daar7op42hec73ecesdg',
+          RENDER_GIT_BRANCH: 'main',
+          RENDER_EXTERNAL_URL: 'https://circle-v2-backend.onrender.com',
+          PUBLIC_API_URL: 'https://circle-v2-backend.onrender.com',
+          BETTER_AUTH_URL: 'https://circle-v2-backend.onrender.com',
           PROMOTER_AGREEMENT_ARTIFACT: JSON.stringify(artifact),
         }),
       ),

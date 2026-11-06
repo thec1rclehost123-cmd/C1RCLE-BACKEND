@@ -227,6 +227,8 @@ const envSchema = z.object({
   /** Email OTP delivery and at-rest OTP HMAC key. */
   DEPLOYMENT_ENVIRONMENT: z.enum(['production', 'staging', 'local']).optional(),
   RENDER_SERVICE_ID: z.string().optional(),
+  RENDER_GIT_BRANCH: z.string().optional(),
+  RENDER_EXTERNAL_URL: z.string().optional(),
   PROMOTER_AGREEMENT_ARTIFACT: z
     .string()
     .transform((value, ctx) => {
@@ -366,6 +368,8 @@ const validatedEnvSchema = envSchema.superRefine((value, ctx) => {
       value.FIRESTORE_PROJECT_ID === 'c1rcle-v2' &&
       !value.FIRESTORE_EMULATOR_HOST &&
       value.RENDER_SERVICE_ID === 'srv-daar7op42hec73ecesdg' &&
+      value.RENDER_GIT_BRANCH === 'staging' &&
+      value.RENDER_EXTERNAL_URL === 'https://circle-v2-backend.onrender.com' &&
       value.PUBLIC_API_URL === 'https://circle-v2-backend.onrender.com' &&
       value.BETTER_AUTH_URL === 'https://circle-v2-backend.onrender.com';
     if (!independentlyIdentifiedStaging)
