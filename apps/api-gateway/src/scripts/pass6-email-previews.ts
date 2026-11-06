@@ -778,9 +778,11 @@ function extractPrimaryLabel(html: string): string {
   const match =
     /<td\b[^>]*bgcolor=["']#ff5a00["'][^>]*>\s*<a\b[^>]*>([\s\S]*?)<\/a>/i.exec(html) ??
     /<a\b[^>]*style=["'][^"']*background:#ff5a00[^"']*["'][^>]*>([\s\S]*?)<\/a>/i.exec(html);
-  return (
-    match?.[1]?.replace(/<[^>]+>/g, '').trim() ?? 'None (no canonical deep-link action available)'
-  );
+  if (!match?.[1]) {
+    return 'None (no canonical deep-link action available)';
+  }
+  const doc = new DOMParser().parseFromString(match[1], 'text/html');
+  return doc.body.textContent?.trim() || 'None (no canonical deep-link action available)';
 }
 
 async function runNetworkIsolatedDryRun(
