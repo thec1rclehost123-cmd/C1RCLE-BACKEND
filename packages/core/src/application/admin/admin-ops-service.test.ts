@@ -65,10 +65,11 @@ describe('AdminOperationsService — promoter & settings authority', () => {
       firestore: { projectId: 'test-project' },
     });
     const adminAudit = new MemoryAdminAuditRepository();
+    const outbox = new MemoryOutboxStore();
     const deps: ServiceDeps = {
       config,
       logger: noopLogger,
-      outbox: new MemoryOutboxStore(),
+      outbox,
       emailDeliveries: new MemoryEmailDeliveryRepository(),
       adminAudit,
       verification: new FormatCheckVerificationProvider(),
@@ -87,7 +88,7 @@ describe('AdminOperationsService — promoter & settings authority', () => {
       }),
       repositories,
     };
-    return { deps, config, repositories, adminAudit };
+    return { deps, config, repositories, adminAudit, outbox };
   }
 
   async function seedPromoter(catalog: EventCatalogRepository, promoterId: string, count = 1) {
@@ -204,7 +205,7 @@ describe('AdminOperationsService — promoter & settings authority', () => {
   });
 
   it('suspends accepted, active, and invited assignments, blocks the organization, and is idempotent', async () => {
-    const { deps, repositories, adminAudit } = makeDeps();
+    const { deps, repositories, adminAudit, outbox } = makeDeps();
     await seedAdmin(repositories.platformAdmins, 'admin_ops', 'ops');
     await seedPromoterOrganization(repositories, 'promoter_current');
     for (const [id, status] of [
@@ -250,10 +251,11 @@ describe('AdminOperationsService — promoter & settings authority', () => {
         }),
       ]),
     );
-    const outbox = await deps.outbox.listPending();
-    expect(outbox).toHaveLength(1);
-    expect(outbox[0]?.type).toBe('promoter.assignments.status_changed');
-    expect(outbox[0]?.payload.payload).toMatchObject({
+    const pending = await outbox.listPending();
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.type).toBe('promoter.assignments.status_changed');
+    const emitted = pending[0]?.payload as { payload: unknown } | undefined;
+    expect(emitted?.payload).toMatchObject({
       promoterId: 'promoter_current',
       status: 'suspended',
       affectedAssignments: 3,
@@ -262,7 +264,7 @@ describe('AdminOperationsService — promoter & settings authority', () => {
 
     const repeated = await ops.suspendPromoter('admin_ops', 'promoter_current', 'Retry');
     expect(repeated.affected).toBe(0);
-    expect(await deps.outbox.listPending()).toHaveLength(1);
+    expect(await outbox.listPending()).toHaveLength(1);
     expect(adminAudit.all().filter((entry) => entry.action === 'PROMOTER_SUSPEND')).toHaveLength(1);
   });
 
