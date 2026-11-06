@@ -1,3 +1,10 @@
-Subject: Your C1RCLE ticket invitation expired
-Preheader: An update about a ticket transfer.
+Variant: Transfer invitation expired
 Template: ticket_transfer_expired
+Subject: Your C1RCLE ticket invitation expired
+Preheader: Event details and your next step for Neon Nights: Afrobeats Edition.
+Primary action: VIEW YOUR TICKET&#8594;
+Layout family: Event / ticket
+Recipient fixture: preview.guest@synthetic.test (synthetic; local capture only)
+Event, account, booking and financial data: synthetic fixtures only
+Capture path: actual createTransactionalEmailConsumer; local in-memory capture sender
+Resend: not invoked in preview generation

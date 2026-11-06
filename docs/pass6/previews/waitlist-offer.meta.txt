@@ -1,3 +1,0 @@
-Subject: A ticket offer is available for Night Market 2026
-Preheader: Your waitlist offer is ready
-Template: waitlist_offer

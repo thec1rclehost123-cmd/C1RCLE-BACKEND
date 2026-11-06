@@ -1,0 +1,15 @@
+THE C1RCLE
+
+You're invited.
+
+You've been invited to join Neon Nights Synthetic Venue as Manager.
+Access: event:read.
+Access: ticket:scan.
+Email: auth-preview@synthetic.test
+Temporary password: SYNTHETIC-ONLY-CHANGE-ME
+You'll set your own password the first time you sign in.
+This invite expires on July 18, 2026 at 10:00 PM IST.
+
+ACCEPT INVITE: https://partners.example.test/invitations/SYNTHETIC-ONLY
+
+THE C1RCLE

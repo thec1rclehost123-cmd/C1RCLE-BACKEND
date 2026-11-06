@@ -1,3 +1,10 @@
-Subject: A C1RCLE ticket is ready in your account
-Preheader: Your ticket is ready
+Variant: Ticket issued to current holder
 Template: ticket_issued_to_holder
+Subject: A C1RCLE ticket is ready in your account
+Preheader: Event details and your next step for Neon Nights: Afrobeats Edition.
+Primary action: VIEW YOUR TICKET&#8594;
+Layout family: Event / ticket
+Recipient fixture: preview.guest@synthetic.test (synthetic; local capture only)
+Event, account, booking and financial data: synthetic fixtures only
+Capture path: actual createTransactionalEmailConsumer; local in-memory capture sender
+Resend: not invoked in preview generation

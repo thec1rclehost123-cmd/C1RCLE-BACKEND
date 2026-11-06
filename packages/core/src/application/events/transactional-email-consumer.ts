@@ -5,10 +5,18 @@ import { ConflictError } from '../../domain/errors.js';
 import { deterministicDomainEventId, domainEvent } from '../../domain/events.js';
 import { currentEntitlementHolderId } from '../../domain/models/entitlement.js';
 import { PermanentEmailDeliveryError } from '../../domain/ports/email-sender.js';
+import {
+  renderC1rcleBrandHeader,
+  renderC1rcleEditorialEyebrow,
+  renderC1rcleEmailShell,
+  renderC1rclePrimaryCta,
+} from '../email/c1rcle-email-chrome.js';
 
 import type { DomainEvent, EventPayloads } from '../../domain/events.js';
 import type { EntityId } from '../../domain/identity.js';
+import type { Event } from '../../domain/models/event.js';
 import type { Order } from '../../domain/models/order.js';
+import type { Venue } from '../../domain/models/venue.js';
 import type { ServiceDeps } from '../context.js';
 
 const LEASE_MS = 60_000;
@@ -137,6 +145,17 @@ async function buildFormerHolderTransferMessage(event: DomainEvent, deps: Servic
     'Ticket transfer complete',
     `<p>Your ticket for <strong>${escapeHtml(eventRecord.title)}</strong> was transferred to its new holder.</p><p><a href="${escapeHtml(walletUrl)}" style="color:#ff5a00">View your tickets</a></p>`,
     'The ticket is now held by its new owner.',
+    {
+      event: eventRecord,
+      venue: eventRecord.venueId
+        ? await deps.repositories.venues.getById(eventRecord.venueId)
+        : null,
+      kind: 'ticket_transfer_former_holder',
+      guestOrigin: portal,
+      actionUrl: walletUrl,
+      supportUrl: new URL('/help', portal).toString(),
+      termsUrl: new URL('/terms', portal).toString(),
+    },
   );
   return {
     to: formerHolder.email,
@@ -160,6 +179,7 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
   let details = '';
   let explicitRecipient: string | null = null;
   let deliveryAggregateId: EntityId = event.aggregateId;
+  let presentationEvent: Event | null = null;
 
   if (event.type === 'order.fulfilled') {
     const { orderId } = event.payload as { orderId: EntityId };
@@ -169,8 +189,8 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
     const isRsvp = order.grandTotalPaise === 0;
     kind = isRsvp ? 'rsvp_confirmation' : 'booking_receipt';
     idempotencyKey = `${isRsvp ? 'rsvp-confirmation' : 'booking-receipt'}:${order.id}:fulfilled`;
-    subject = isRsvp ? 'Your C1RCLE RSVP is confirmed' : 'Your C1RCLE booking is confirmed';
-    heading = isRsvp ? 'RSVP confirmed' : 'Booking confirmed';
+    subject = isRsvp ? "You're on the list" : "You're in";
+    heading = isRsvp ? "You're on the list." : "You're in.";
     details = await receiptDetails(order, deps);
   } else if (
     event.type === 'ticket.transfer.created' ||
@@ -203,6 +223,7 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
     const eventRecord = entitlement
       ? await deps.repositories.events.getById(entitlement.eventId)
       : null;
+    presentationEvent = eventRecord;
     if (
       !entitlement ||
       !eventRecord ||
@@ -221,8 +242,8 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
     idempotencyKey = payload.deliveryRequestId
       ? `ticket-transfer-invitation:${transfer.id}:${payload.deliveryRequestId}`
       : `ticket-transfer-invitation:${transfer.id}`;
-    subject = 'A C1RCLE ticket is waiting for you';
-    heading = 'You have a ticket invitation';
+    subject = 'A ticket is waiting for you';
+    heading = 'A ticket is waiting for you.';
     const transferUrl = new URL(
       `/ticket-transfer/${encodeURIComponent(transfer.id)}`,
       guestPortalOrigin(deps.config.guestPortalUrl),
@@ -262,6 +283,7 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
         return null;
       }
       const eventRecord = await deps.repositories.events.getById(transfer.eventId);
+      presentationEvent = eventRecord;
       if (!eventRecord) return null;
       explicitRecipient = sender.email;
       deliveryAggregateId = transfer.id;
@@ -312,6 +334,7 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
       if (deps.emailSender.name === 'logging' || !deps.emailSender.sendTransactionalEmail)
         return null;
       const eventRecord = await deps.repositories.events.getById(entitlement.eventId);
+      presentationEvent = eventRecord;
       if (!eventRecord) return null;
       explicitRecipient = holder.email;
       deliveryAggregateId = entitlement.id;
@@ -335,59 +358,6 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
         details = `<p>Your ticket for <strong>${escapeHtml(eventRecord.title)}</strong> is now in your C1RCLE account.</p>`;
       }
     }
-  } else if (event.type === 'waitlist.offered') {
-    const payload = event.payload as {
-      entryId: EntityId;
-      eventId: EntityId;
-      tierId: EntityId;
-      reservationId: EntityId;
-      expiresAt: string;
-    };
-    const entry = await deps.repositories.waitlist.getById(payload.entryId);
-    if (
-      !entry ||
-      entry.status !== 'offered' ||
-      entry.eventId !== payload.eventId ||
-      entry.tierId !== payload.tierId ||
-      entry.offerReservationId !== payload.reservationId ||
-      entry.offerExpiresAt !== payload.expiresAt ||
-      Date.parse(payload.expiresAt) <= deps.config.clock.now().getTime()
-    ) {
-      return null;
-    }
-    const guest = await deps.repositories.users.getById(entry.userId);
-    if (
-      !guest?.emailVerified ||
-      !isDeliverableRecipient(guest.email) ||
-      deps.emailSender.name === 'logging' ||
-      !deps.emailSender.sendTransactionalEmail
-    ) {
-      return null;
-    }
-    const eventRecord = await deps.repositories.events.getById(entry.eventId);
-    if (!eventRecord) return null;
-    explicitRecipient = guest.email;
-    deliveryAggregateId = entry.id;
-    kind = 'waitlist_offer';
-    idempotencyKey = `waitlist-offer:${entry.id}:${payload.reservationId}`;
-    subject = `A ticket offer is available for ${eventRecord.title}`;
-    heading = 'Your waitlist offer is ready';
-    details = `<p>A ticket offer for <strong>${escapeHtml(eventRecord.title)}</strong> is reserved for you.</p><p>Sign in to your C1RCLE Tickets area to review and accept it before <strong>${escapeHtml(new Date(payload.expiresAt).toISOString())}</strong>.</p><p>This offer will not charge you automatically.</p>`;
-  } else if (event.type === 'waitlist.expired') {
-    const payload = event.payload as EventPayloads['waitlist.expired'];
-    const entry = await deps.repositories.waitlist.getById(payload.entryId);
-    if (!entry || entry.eventId !== payload.eventId || entry.tierId !== payload.tierId) return null;
-    const guest = await deps.repositories.users.getById(entry.userId);
-    if (!guest?.emailVerified || !isDeliverableRecipient(guest.email)) return null;
-    const eventRecord = await deps.repositories.events.getById(entry.eventId);
-    if (!eventRecord) return null;
-    explicitRecipient = guest.email;
-    deliveryAggregateId = entry.id;
-    kind = 'waitlist_offer_expired';
-    idempotencyKey = `waitlist-offer-expired:${entry.id}:${payload.reservationId ?? 'none'}`;
-    subject = `Your waitlist offer for ${eventRecord.title} expired`;
-    heading = 'Waitlist offer expired';
-    details = `<p>Your reserved waitlist offer for <strong>${escapeHtml(eventRecord.title)}</strong> expired before it was accepted.</p><p>No automatic payment was taken. You can rejoin the waitlist if tickets remain available.</p>`;
   } else if (
     event.type === 'promoter.assignment.invited' ||
     event.type === 'promoter.assignment.accepted' ||
@@ -473,6 +443,7 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
     const guest = await deps.repositories.users.getById(account.guestUserId);
     if (!guest?.emailVerified || !isDeliverableRecipient(guest.email)) return null;
     const eventRecord = await deps.repositories.events.getById(payload.eventId);
+    presentationEvent = eventRecord;
     if (!eventRecord) return null;
     explicitRecipient = guest.email;
     deliveryAggregateId = account.id;
@@ -510,6 +481,7 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
     const holder = await deps.repositories.users.getById(holderId);
     if (!holder?.emailVerified || !isDeliverableRecipient(holder.email)) return null;
     const eventRecord = await deps.repositories.events.getById(payload.eventId);
+    presentationEvent = eventRecord;
     const addon = await deps.repositories.catalog.getTicketAddonById(payload.addonId);
     if (!eventRecord || !addon) return null;
     explicitRecipient = holder.email;
@@ -533,14 +505,14 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
     if (!explicitRecipient) return null;
     kind = 'refund_completed';
     idempotencyKey = `refund-completed:${refund.id}`;
-    subject = 'Your C1RCLE refund is complete';
-    heading = 'Refund processed';
+    subject = `Your ${money(refund.amountPaise)} refund is complete`;
+    heading = 'Refund complete.';
     const entitlements = await deps.repositories.entitlements.getByOrderId(order.id);
     const refundedCount = refund.targetEntitlementIds.length;
     const remaining = entitlements.filter(
       (ticket) => ticket.status === 'valid' && !ticket.refundLock,
     ).length;
-    details = `<p>Refunded amount: <strong>${money(refund.amountPaise)}</strong></p><p>Affected tickets: ${refundedCount}</p><p>Remaining valid tickets: ${remaining}</p><p>Your bank or payment provider may take additional time to reflect the credit.</p><p>Support reference: ${escapeHtml(order.bookingReference ?? order.id)}</p>`;
+    details = `<p>Refunded amount: <strong>${money(refund.amountPaise)}</strong></p><p>Affected tickets: ${refundedCount}</p><p>Remaining valid tickets: ${remaining}</p><p>Your bank or payment provider may take additional time to reflect the credit.</p>${bookingReferenceParagraph(order, 'Support reference')}`;
   } else if (event.type === 'finance.refund.finalized') {
     const payload = event.payload as EventPayloads['finance.refund.finalized'];
     order = await deps.repositories.orders.getById(payload.orderId);
@@ -554,11 +526,12 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
     idempotencyKey = `refund-not-completed:${refund.id}:${refund.status}`;
     subject = 'Update on your C1RCLE refund';
     heading = 'Refund request declined';
-    details = `<p>Your refund request was declined after review. No refund was issued.</p><p>Reference: ${escapeHtml(order.bookingReference ?? order.id)}</p><p>Contact support if you have questions.</p>`;
+    details = `<p>Your refund request was declined after review. No refund was issued.</p>${bookingReferenceParagraph(order, 'Booking reference')}<p>Contact support if you have questions.</p>`;
   } else if (event.type === 'event.cancellation.email_requested') {
     const payload = event.payload as EventPayloads['event.cancellation.email_requested'];
     order = await deps.repositories.orders.getById(payload.orderId);
     const eventRecord = await deps.repositories.events.getById(payload.eventId);
+    presentationEvent = eventRecord;
     if (!order || !eventRecord || !['refund_requested', 'paid', 'cancelled'].includes(order.status))
       return null;
     deliveryAggregateId = order.id;
@@ -580,9 +553,9 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
     if (!explicitRecipient) return null;
     kind = 'event_cancelled';
     idempotencyKey = `event-cancelled:${eventRecord.id}:${payload.eventVersion}:${order.id}:${createHash('sha256').update(explicitRecipient.trim().toLowerCase()).digest('hex')}`;
-    subject = `Update: ${eventRecord.title} has been cancelled`;
+    subject = `${eventRecord.title} has been cancelled`;
     heading = 'Event cancelled';
-    details = `<p><strong>${escapeHtml(eventRecord.title)}</strong> has been cancelled.</p><p>${escapeHtml(payload.reason)}</p><p>If a refund applies, it remains subject to the existing review process. We will notify you when it is completed.</p><p>Booking reference: ${escapeHtml(order.bookingReference ?? order.id)}</p>`;
+    details = `<p><strong>${escapeHtml(eventRecord.title)}</strong> has been cancelled.</p><p>${escapeHtml(payload.reason)}</p><p>If a refund applies, it remains subject to the existing review process. We will notify you when it is completed.</p>${bookingReferenceParagraph(order)}`;
   } else if (event.type === 'event.material_change.order_affected') {
     const payload = event.payload as {
       eventId: EntityId;
@@ -627,6 +600,7 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
       return null;
     }
     const eventRecord = await deps.repositories.events.getById(payload.eventId);
+    presentationEvent = eventRecord;
     if (!eventRecord) return null;
     const [previousVenue, currentVenue] = await Promise.all([
       payload.previousVenueId
@@ -665,7 +639,7 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
       payload.previousVenueId !== undefined && payload.previousVenueId !== eventRecord.venueId
         ? `<p>Venue: ${escapeHtml(previousVenue?.public.name ?? 'Previous venue unavailable')} → ${escapeHtml(currentVenue?.public.name ?? 'Venue details unavailable')}</p>`
         : '';
-    details = `<p>Event: <strong>${escapeHtml(payload.previousTitle)}</strong> is now <strong>${escapeHtml(payload.title)}</strong>.</p><p>Previous date and time: ${escapeHtml(oldDate)} (Asia/Kolkata)</p><p>New date and time: ${escapeHtml(newDate)} (Asia/Kolkata)</p>${venueChange}<p>Booking reference: ${escapeHtml(order.bookingReference ?? order.id)}</p>`;
+    details = `<p>Event: <strong>${escapeHtml(payload.previousTitle)}</strong> is now <strong>${escapeHtml(payload.title)}</strong>.</p><p>Previous date and time: ${escapeHtml(oldDate)} (Asia/Kolkata)</p><p>New date and time: ${escapeHtml(newDate)} (Asia/Kolkata)</p>${venueChange}${bookingReferenceParagraph(order)}`;
   } else if (event.type === 'event.material_change.refund_requested') {
     const payload = event.payload as EventPayloads['event.material_change.refund_requested'];
     order = await deps.repositories.orders.getById(payload.orderId);
@@ -685,6 +659,7 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
     const purchaser = await deps.repositories.users.getById(order.userId);
     if (!purchaser?.emailVerified || !isDeliverableRecipient(purchaser.email)) return null;
     const eventRecord = await deps.repositories.events.getById(payload.eventId);
+    presentationEvent = eventRecord;
     if (!eventRecord) return null;
     explicitRecipient = purchaser.email;
     deliveryAggregateId = entitlement.id;
@@ -692,7 +667,7 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
     idempotencyKey = `refund-review-requested:${entitlement.id}:${payload.eventVersion}`;
     subject = `Your refund review request for ${eventRecord.title} was recorded`;
     heading = 'Refund review requested';
-    details = `<p>We recorded your request to review a refund for <strong>${escapeHtml(eventRecord.title)}</strong>.</p><p>No refund has been approved or issued automatically. The request is now available for operator review.</p><p>Booking reference: ${escapeHtml(order.bookingReference ?? order.id)}</p>`;
+    details = `<p>We recorded your request to review a refund for <strong>${escapeHtml(eventRecord.title)}</strong>.</p><p>No refund has been approved or issued automatically. The request is now available for operator review.</p>${bookingReferenceParagraph(order)}`;
   } else if (event.type === 'payment.support_required') {
     const payload = event.payload as { paymentId: string; holdId: EntityId; stateVersion: number };
     const hold = await deps.repositories.cartReservations.getById(payload.holdId);
@@ -706,7 +681,8 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
     idempotencyKey = `payment-support:${payload.paymentId}:${payload.stateVersion}`;
     subject = 'Action needed to complete your C1RCLE payment';
     heading = 'We need your help with this payment';
-    details = `<p>We could not safely confirm the payment automatically. Please contact support and quote payment reference <strong>${escapeHtml(payload.paymentId)}</strong>.</p><p>Do not retry payment until support confirms its status.</p>`;
+    details =
+      '<p>We could not safely confirm the payment automatically. Please contact support before retrying.</p><p>Do not retry payment until support confirms its status.</p>';
   } else if (event.type === 'finance.payout.status_changed') {
     const payload = event.payload as {
       payoutId: EntityId;
@@ -730,28 +706,13 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
     idempotencyKey = `payout:${payload.payoutId}:${payload.version}`;
     subject = `C1RCLE payout ${names[payload.status]}`;
     heading = `Payout ${names[payload.status]}`;
-    details = `<p>Amount: <strong>${money(payload.amountPaise)}</strong></p><p>Reference: ${escapeHtml(payload.payoutId)}</p><p>Current status: ${escapeHtml(payload.status)}.</p>`;
-  } else if (
-    event.type === 'partner.onboarding.email_requested' ||
-    event.type === 'promoter.onboarding.submitted' ||
-    event.type === 'promoter.onboarding.approved' ||
-    event.type === 'promoter.onboarding.rejected'
-  ) {
-    const payload = event.payload as
-      | EventPayloads['promoter.onboarding.submitted']
-      | EventPayloads['promoter.onboarding.approved']
-      | EventPayloads['promoter.onboarding.rejected'];
+    details = `<p>Amount: <strong>${money(payload.amountPaise)}</strong></p><p>Current status: ${escapeHtml(payload.status)}.</p>`;
+  } else if (event.type === 'partner.onboarding.email_requested') {
+    const payload = event.payload as EventPayloads['partner.onboarding.email_requested'];
     const application = await deps.repositories.onboarding.getById(payload.requestId);
     if (!application) return null;
     const requestedType = application.requestedType ?? 'promoter';
-    const expectedStatus =
-      event.type === 'partner.onboarding.email_requested'
-        ? (event.payload as EventPayloads['partner.onboarding.email_requested']).status
-        : event.type === 'promoter.onboarding.submitted'
-          ? 'submitted'
-          : event.type === 'promoter.onboarding.approved'
-            ? 'approved'
-            : 'rejected';
+    const expectedStatus = payload.status;
     if (application.status !== expectedStatus) return null;
     explicitRecipient = await deps.userDirectory.getEmailById(application.userId);
     if (!explicitRecipient || !isDeliverableRecipient(explicitRecipient)) return null;
@@ -760,12 +721,12 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
     deliveryAggregateId = application.id;
     subject =
       expectedStatus === 'submitted'
-        ? 'Your C1RCLE application was submitted'
+        ? 'Application received'
         : expectedStatus === 'changes_requested'
-          ? 'Action needed: update your C1RCLE application'
+          ? `Your ${requestedType.charAt(0).toUpperCase()}${requestedType.slice(1)} application needs an update`
           : expectedStatus === 'approved'
-            ? 'Your C1RCLE application is approved'
-            : 'Update on your C1RCLE application';
+            ? `Your ${requestedType.charAt(0).toUpperCase()}${requestedType.slice(1)} application is approved`
+            : 'Update on your application';
     heading =
       expectedStatus === 'submitted'
         ? 'Application submitted'
@@ -810,42 +771,96 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
   if (!order && !explicitRecipient) return null;
   const to = explicitRecipient?.trim() ?? order?.contact.email.trim() ?? '';
   if (!isDeliverableRecipient(to)) return null;
-  const eventRecord = order ? await deps.repositories.events.getById(order.eventId) : null;
-  const venue =
-    order && eventRecord?.venueId
-      ? await deps.repositories.venues.getById(eventRecord.venueId)
-      : null;
+  const eventRecord = order
+    ? await deps.repositories.events.getById(order.eventId)
+    : presentationEvent;
+  const venue = eventRecord?.venueId
+    ? await deps.repositories.venues.getById(eventRecord.venueId)
+    : null;
   const guestOrigin = guestPortalOrigin(deps.config.guestPortalUrl);
   const actionUrl = new URL('/tickets', guestOrigin).toString();
   const supportUrl = new URL('/help', guestOrigin).toString();
   const termsUrl = new URL('/terms', guestOrigin).toString();
+  const partnerDashboardUrl = deps.config.partnerDashboardUrl;
+  const promoterOverviewUrl = partnerDashboardUrl
+    ? new URL('/partner/promoter/overview', partnerDashboardUrl).toString()
+    : null;
+  const partnerWorkspaceUrl = partnerDashboardUrl
+    ? new URL('/partner/select-organization', partnerDashboardUrl).toString()
+    : null;
   const footer = order
-    ? `<p>Event: <strong>${escapeHtml(eventRecord?.title ?? order.eventCancellation?.eventTitle ?? 'Event details unavailable')}</strong></p>${eventRecord ? `<p>Venue: ${escapeHtml(venue?.public.name ?? 'Venue details unavailable')}</p>${Number.isFinite(Date.parse(eventRecord.startAt)) ? `<p>Date and time: ${escapeHtml(new Intl.DateTimeFormat('en-IN', { dateStyle: 'long', timeStyle: 'short', timeZone: 'Asia/Kolkata' }).format(new Date(eventRecord.startAt)))} (Asia/Kolkata)</p>` : ''}` : ''}<p>Order reference: ${escapeHtml(order.id)}</p>${event.type === 'order.fulfilled' ? receiptAmounts(order) : ''}<p><a href="${actionUrl}" style="color:#ff5a00">View your tickets</a></p><p>Need help? <a href="${supportUrl}" style="color:#ff5a00">Contact support</a> and quote ${escapeHtml(order.bookingReference ?? order.id)}.</p><p><a href="${termsUrl}" style="color:#999">Terms</a></p>`
+    ? `<p>Event: <strong>${escapeHtml(eventRecord?.title ?? order.eventCancellation?.eventTitle ?? 'Event details unavailable')}</strong></p>${eventRecord ? `<p>Venue: ${escapeHtml(venue?.public.name ?? 'Venue details unavailable')}</p>${Number.isFinite(Date.parse(eventRecord.startAt)) ? `<p>Date and time: ${escapeHtml(new Intl.DateTimeFormat('en-IN', { dateStyle: 'long', timeStyle: 'short', timeZone: 'Asia/Kolkata' }).format(new Date(eventRecord.startAt)))} (Asia/Kolkata)</p>` : ''}` : ''}<p><a href="${actionUrl}" style="color:#ff5a00">View your tickets</a></p><p>Need help? <a href="${supportUrl}" style="color:#ff5a00">Contact support</a>${order.bookingReference ? ` and quote ${escapeHtml(order.bookingReference)}` : ''}.</p><p><a href="${termsUrl}" style="color:#999">Terms</a></p>`
     : event.type === 'ticket.transfer.created' || event.type === 'ticket.transfer.invitation_resent'
       ? `<p>This invitation is bound to the verified account it was sent to. The ticket will not move until that account accepts it.</p><p><a href="${supportUrl}" style="color:#ff5a00">Contact support</a> if you were not expecting this invitation.</p>`
       : event.type === 'payment.support_required'
         ? `<p><a href="${supportUrl}" style="color:#ff5a00">Contact support</a> for help with this payment.</p>`
         : event.type === 'ticket.issued' || event.type === 'ticket.transfer.resolved'
           ? `<p><a href="${actionUrl}" style="color:#ff5a00">View your ticket</a></p><p>We sent this notice to the verified email on the current ticket holder's account.</p>`
-          : event.type.startsWith('promoter.onboarding.') ||
-              event.type === 'partner.onboarding.email_requested'
-            ? '<p>Review your application in the C1RCLE partner workspace.</p>'
-            : event.type === 'promoter.assignments.status_changed' ||
-                event.type === 'promoter.assignment.expired'
-              ? '<p>Review your assignments in the C1RCLE partner workspace.</p>'
-              : '<p>Review the Finance section in your partner workspace for details.</p>';
-  const preheader = createPreheader(kind, heading, eventRecord?.title);
-  const html = renderEmailLayout(
-    heading,
-    `${details}<hr style="border:0;border-top:1px solid #333;margin:24px 0">${footer}`,
-    preheader,
-  );
+          : event.type === 'event-cover.redeemed' ||
+              event.type === 'event-cover.reversed' ||
+              event.type === 'event-cover.refunded' ||
+              event.type === 'ticket.addon.redeemed'
+            ? `<p><a href="${actionUrl}" style="color:#ff5a00">View your tickets</a></p><p><a href="${supportUrl}" style="color:#ff5a00">Contact support</a></p>`
+            : event.type.startsWith('promoter.assignment.') ||
+                event.type === 'promoter.assignments.status_changed'
+              ? promoterOverviewUrl
+                ? `<p><a href="${promoterOverviewUrl}" style="color:#ff5a00">View assignments</a></p>`
+                : '<p>Sign in to the partner workspace to review your assignments.</p>'
+              : event.type === 'finance.payout.status_changed'
+                ? partnerWorkspaceUrl
+                  ? `<p><a href="${partnerWorkspaceUrl}" style="color:#ff5a00">Open partner workspace</a></p>`
+                  : '<p>Sign in to the partner workspace to review Finance.</p>'
+                : event.type === 'partner.onboarding.email_requested'
+                  ? '<p>Review your application in the C1RCLE partner workspace.</p>'
+                  : event.type === 'promoter.assignment.expired'
+                    ? '<p>Review your assignments in the C1RCLE partner workspace.</p>'
+                    : '<p>Review the Finance section in your partner workspace for details.</p>';
+  const experienceHeading = getExperienceHeading(kind, heading);
+  const preheader = createPreheader(kind, experienceHeading, eventRecord?.title);
+  const html =
+    kind === 'booking_receipt' && order
+      ? renderPurchaseReceiptEmail({
+          order,
+          event: eventRecord,
+          venue,
+          guestOrigin,
+          actionUrl,
+          supportUrl,
+          termsUrl,
+          preheader,
+        })
+      : renderEmailLayout(
+          heading,
+          `${details}<hr style="border:0;border-top:1px solid #333;margin:24px 0">${footer}`,
+          preheader,
+          {
+            event: eventRecord,
+            venue,
+            kind,
+            guestOrigin,
+            actionUrl,
+            supportUrl,
+            termsUrl,
+          },
+        );
+  const text =
+    kind === 'booking_receipt' && order
+      ? purchaseReceiptText({
+          order,
+          event: eventRecord,
+          venue,
+          guestOrigin,
+          actionUrl,
+          supportUrl,
+          termsUrl,
+        })
+      : `${experienceHeading}\n\n${htmlToPlainText(details)}\n\n${htmlToPlainText(footer)}`;
   return {
     to,
     subject,
     preheader,
     html,
-    text: `${heading}\n\n${htmlToPlainText(details)}\n\n${htmlToPlainText(footer)}`,
+    text,
     templateType: kind,
     idempotencyKey,
     kind,
@@ -855,19 +870,366 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
 
 function createPreheader(kind: string, heading: string, eventTitle?: string): string {
   if (eventTitle && kind === 'booking_receipt') return `Your tickets for ${eventTitle} are ready.`;
-  if (kind.includes('refund')) return 'A final update about your refund request.';
-  if (kind.includes('cancellation') || kind === 'event_cancelled')
-    return 'Important information about your event and tickets.';
-  if (kind.includes('material_change') || kind.includes('postpon'))
-    return 'Important information about a change to your event.';
-  if (kind.includes('onboarding')) return 'Review the latest update to your application.';
+  if (eventTitle && getEmailLayoutFamily(kind) === 'event')
+    return `Event details and your next step for ${eventTitle}.`;
+  if (kind.includes('refund')) return 'A final update on your refund request.';
+  if (kind.includes('onboarding')) return 'Review the latest status of your application.';
   if (kind.includes('transfer')) return 'An update about a ticket transfer.';
-  return heading;
+  if (kind.includes('payout')) return 'The latest status of your C1RCLE payout.';
+  if (kind.includes('payment')) return 'Review the next step for your payment.';
+  if (kind.includes('promoter')) return 'Review the latest update to your assignment.';
+  if (kind === 'event_cancelled') return 'What this change means for your ticket.';
+  if (kind.includes('material_change')) return 'See the updated event date or venue.';
+  return `A status update from C1RCLE: ${heading}.`;
 }
 
-/** Email-safe shared C1RCLE shell; table layout and inline styles target narrow clients. */
-function renderEmailLayout(heading: string, content: string, preheader: string): string {
-  return `<div style="display:none!important;visibility:hidden;opacity:0;color:transparent;height:0;width:0;max-height:0;max-width:0;overflow:hidden;mso-hide:all">${escapeHtml(preheader)}&#847;&zwnj;&nbsp;</div><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#080808;width:100%;"><tr><td align="center" style="padding:20px 12px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:620px;background:#080808;color:#f7f7f7;font-family:Arial,Helvetica,sans-serif;"><tr><td style="padding:24px 20px;"><div style="color:#ff5a00;font-weight:800;letter-spacing:3px;font-size:14px;">THE C1RCLE</div><h1 style="margin:24px 0 16px;color:#f7f7f7;font-size:24px;line-height:1.25;font-weight:700;">${escapeHtml(heading)}</h1><div style="font-size:16px;line-height:1.55;overflow-wrap:anywhere;">${content}</div></td></tr></table></td></tr></table>`;
+function getExperienceHeading(kind: string, fallback: string): string {
+  const headings: Record<string, string> = {
+    rsvp_confirmation: "You're on the list.",
+    ticket_transfer_invitation: 'A ticket is waiting for you.',
+    ticket_transfer_accepted: "It's yours.",
+    ticket_transfer_former_holder: 'Ticket transferred.',
+    ticket_issued_to_holder: "Your ticket's ready.",
+    ticket_upgrade_confirmed: 'Upgrade confirmed.',
+    event_cancelled: "This one's cancelled.",
+    event_material_change: 'Plans changed.',
+    refund_completed: 'Refund complete.',
+    refund_not_completed: 'Refund update.',
+    partner_onboarding_submitted: 'Application received.',
+    partner_onboarding_changes_requested: 'One more thing.',
+    partner_onboarding_approved: "You're approved.",
+    partner_onboarding_rejected: 'Application update.',
+  };
+  return headings[kind] ?? fallback;
+}
+
+interface EmailLayoutView {
+  event: Event | null;
+  venue: Venue | null;
+  kind: string;
+  guestOrigin: string;
+  actionUrl: string;
+  supportUrl: string;
+  termsUrl: string;
+}
+
+/** Shared email-safe shell for event, partner and financial messages. */
+function renderEmailLayout(
+  heading: string,
+  content: string,
+  preheader: string,
+  view?: EmailLayoutView,
+): string {
+  const experienceHeading = getExperienceHeading(view?.kind ?? '', heading);
+  const [details = content, footer = ''] = content.split(/<hr\b[^>]*>/i, 2);
+  const compactFooter = footer.replace(/<p\b[^>]*>[\s\S]*?<\/p>/gi, (paragraph) => {
+    const label = htmlToPlainText(paragraph).trim().toLowerCase();
+    return /^(event|venue|date and time|order reference|subtotal|discount|fees|taxes|total paid|payment reference):/.test(
+      label,
+    )
+      ? ''
+      : paragraph;
+  });
+  const detailAction = extractEmailAction(details);
+  const footerAction = detailAction.action ? null : extractEmailAction(compactFooter);
+  const primaryAction = detailAction.action ?? footerAction?.action ?? null;
+  const body = styleEmailBody(
+    styleSecondaryEmailLinks(
+      [detailAction.html, footerAction?.html ?? compactFooter].filter(Boolean).join(''),
+    ),
+  );
+  const eventTitle = view?.event?.title ?? null;
+  const family = getEmailLayoutFamily(view?.kind ?? '');
+  const eventHeader =
+    view?.event && family === 'event'
+      ? renderEventHeader(view.event, view.venue)
+      : eventTitle
+        ? `<tr><td style="padding:0 24px 18px;color:#c8c8c8;font-size:16px;line-height:1.45;font-weight:700;overflow-wrap:anywhere;">${escapeHtml(eventTitle)}</td></tr>`
+        : '';
+  const primaryCta = primaryAction ? renderPrimaryCta(primaryAction.url, primaryAction.label) : '';
+
+  const eyebrow =
+    getEmailLayoutFamily(view?.kind ?? '') === 'event'
+      ? 'YOUR C1RCLE UPDATE'
+      : getEmailLayoutFamily(view?.kind ?? '') === 'partner'
+        ? 'PARTNER ACCOUNT'
+        : getEmailLayoutFamily(view?.kind ?? '') === 'financial'
+          ? 'PAYMENT UPDATE'
+          : 'ACCOUNT UPDATE';
+  return renderEmailShell(
+    preheader,
+    `${renderBrandHeader()}${renderEditorialEyebrow(eyebrow)}<tr><td style="padding:10px 24px 22px;"><h1 style="margin:0;color:#ffffff;font-size:40px;line-height:1.02;font-weight:800;letter-spacing:-1.25px;overflow-wrap:anywhere;">${escapeHtml(experienceHeading)}</h1></td></tr>${eventHeader}<tr><td style="padding:0 24px 28px;color:#dedede;font-size:16px;line-height:1.65;overflow-wrap:anywhere;word-break:break-word;">${body}</td></tr>${primaryCta}<tr><td style="padding:20px 24px 32px;color:#929292;font-size:13px;line-height:1.7;overflow-wrap:anywhere;border-top:1px solid #292929;">${renderQuietFooter(view)}</td></tr>`,
+  );
+}
+
+function renderEmailShell(preheader: string, rows: string): string {
+  return renderC1rcleEmailShell(preheader, rows);
+}
+
+function renderBrandHeader(): string {
+  return renderC1rcleBrandHeader();
+}
+
+function renderEditorialEyebrow(label: string): string {
+  return renderC1rcleEditorialEyebrow(label);
+}
+
+function renderPrimaryCta(url: string, label: string): string {
+  return renderC1rclePrimaryCta(url, label);
+}
+
+function styleEmailBody(html: string): string {
+  return html
+    .replace(/<p\b[^>]*>\s*<\/p>/gi, '')
+    .replace(
+      /<p\b[^>]*>/gi,
+      '<p style="margin:0 0 14px;color:#dedede;font-size:16px;line-height:1.65;overflow-wrap:anywhere;word-break:break-word;">',
+    )
+    .replace(/<strong\b([^>]*)>/gi, (_tag, attributes: string) => {
+      const cleanAttributes = attributes.replace(/\sstyle=["'][^"']*["']/i, '');
+      return `<strong${cleanAttributes} style="color:#ffffff;font-weight:700;">`;
+    });
+}
+
+function renderQuietFooter(view?: EmailLayoutView): string {
+  if (!view)
+    return '<strong style="color:#d5d5d5;letter-spacing:1.8px;font-size:11px;">THE C1RCLE</strong>';
+  const help = `<a href="${escapeHtml(view.supportUrl)}" style="color:#aaaaaa;text-decoration:underline;">Contact support</a>`;
+  const terms = `<a href="${escapeHtml(view.termsUrl)}" style="color:#777777;text-decoration:underline;">Terms</a>`;
+  return `<strong style="display:block;margin-bottom:10px;color:#d5d5d5;letter-spacing:1.8px;font-size:11px;">THE C1RCLE</strong>Need help? ${help}<br /><span style="display:inline-block;padding-top:8px;">${terms}</span>`;
+}
+
+function getEmailLayoutFamily(kind: string): 'event' | 'partner' | 'financial' | 'operational' {
+  if (
+    [
+      'booking_receipt',
+      'rsvp_confirmation',
+      'ticket_transfer_invitation',
+      'ticket_transfer_former_holder',
+      'ticket_transfer_expired',
+      'ticket_transfer_accepted',
+      'ticket_issued_to_holder',
+      'ticket_upgrade_confirmed',
+      'event_cancelled',
+      'event_material_change',
+    ].includes(kind)
+  ) {
+    return 'event';
+  }
+  if (kind.includes('onboarding') || kind.includes('promoter')) return 'partner';
+  if (
+    kind.includes('refund') ||
+    kind.includes('payout') ||
+    kind.includes('cover') ||
+    kind.includes('payment')
+  ) {
+    return 'financial';
+  }
+  return 'operational';
+}
+
+function renderEventHeader(event: Event, venue: Venue | null): string {
+  const poster = renderEventPoster(event, 472, 22);
+  const date = formatPurchaseEventDate(event.startAt);
+  const venueLine = formatPurchaseVenue(venue);
+  const facts = [
+    date ? `<span style="color:#f2f2f2;font-weight:700;">${escapeHtml(date)}</span>` : '',
+    venueLine ? `<span style="color:#a9a9a9;">${escapeHtml(venueLine)}</span>` : '',
+  ].filter(Boolean);
+  return `<tr><td style="padding:0 24px 16px;color:#ffffff;font-size:28px;line-height:1.08;font-weight:800;letter-spacing:-0.65px;overflow-wrap:anywhere;word-break:break-word;">${escapeHtml(event.title)}</td></tr>${poster}${facts.length ? `<tr><td style="padding:0 24px 26px;font-size:14px;line-height:1.7;">${facts.join('<br />')}</td></tr>` : ''}`;
+}
+
+function renderEventPoster(event: Event, maxWidth: number, bottomPadding = 0): string {
+  const posterUrl = getPurchasePosterUrl(event.imageUrl);
+  if (!posterUrl) return '';
+  return `<tr><td style="padding:0 24px ${bottomPadding}px;"><img src="${escapeHtml(posterUrl)}" alt="${escapeHtml(event.title)} event poster" width="${maxWidth}" style="display:block;width:100%;max-width:${maxWidth}px;height:auto;border:0;color:#f7f7f7;font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:1.4;" /></td></tr>`;
+}
+
+function extractEmailAction(html: string): {
+  html: string;
+  action: { url: string; label: string } | null;
+} {
+  const match = /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/i.exec(html);
+  if (!match || !match[1] || !match[2]) return { html, action: null };
+  const label = htmlToPlainText(match[2]).trim();
+  if (!label) return { html, action: null };
+  return {
+    html: html.replace(match[0], ''),
+    action: { url: match[1], label },
+  };
+}
+
+function styleSecondaryEmailLinks(html: string): string {
+  return html.replace(/<a\b([^>]*)>/gi, (_anchor, attributes: string) => {
+    const cleanAttributes = attributes.replace(/\sstyle=["'][^"']*["']/i, '');
+    return `<a${cleanAttributes} style="color:#bdbdbd;text-decoration:underline;">`;
+  });
+}
+
+interface PurchaseReceiptViewModel {
+  order: Order;
+  event: Event | null;
+  venue: Venue | null;
+  guestOrigin: string;
+  actionUrl: string;
+  supportUrl: string;
+  termsUrl: string;
+  preheader?: string;
+}
+
+function renderPurchaseReceiptEmail(view: PurchaseReceiptViewModel): string {
+  const { order, event, venue, guestOrigin, actionUrl, supportUrl, termsUrl, preheader } = view;
+  const title = event?.title ?? 'Event details unavailable';
+  const dateLine = event ? formatPurchaseEventDate(event.startAt) : null;
+  const venueLine = formatPurchaseVenue(venue);
+  const eventUrl = event ? getPurchaseEventUrl(event, guestOrigin) : null;
+  const directionsUrl = getPurchaseDirectionsUrl(venue);
+  const poster = event ? renderEventPoster(event, 472, 24) : '';
+  const total = compactMoney(order.grandTotalPaise);
+  const bookingReference = order.bookingReference?.trim() ?? '';
+  const ticketRows = order.lines
+    .map(
+      (line) =>
+        `<tr><td style="padding:15px 0;border-bottom:1px solid #292929;color:#ffffff;font-size:16px;line-height:1.4;font-weight:700;overflow-wrap:anywhere;">${escapeHtml(line.tierName)}</td><td align="right" style="padding:15px 0;border-bottom:1px solid #292929;color:#ff7540;font-size:13px;line-height:1.4;font-weight:800;white-space:nowrap;">${line.quantity} ${line.quantity === 1 ? 'TICKET' : 'TICKETS'}</td></tr>`,
+    )
+    .join('');
+  const summary = purchaseReceiptSummaryRows(order)
+    .map(
+      ([label, value]) =>
+        `<tr><td style="padding:9px 0;color:#a4a4a4;font-size:14px;line-height:1.45;">${escapeHtml(label)}</td><td align="right" style="padding:9px 0;color:#f0f0f0;font-size:14px;line-height:1.45;white-space:nowrap;">${escapeHtml(value)}</td></tr>`,
+    )
+    .join('');
+  const eventActions = [
+    eventUrl
+      ? `<a href="${escapeHtml(eventUrl)}" style="color:#bdbdbd;text-decoration:underline;">View event</a>`
+      : '',
+    directionsUrl
+      ? `<a href="${escapeHtml(directionsUrl)}" style="color:#bdbdbd;text-decoration:underline;">Directions</a>`
+      : '',
+  ].filter(Boolean);
+
+  const rows = `${renderBrandHeader()}${renderEditorialEyebrow('PURCHASE CONFIRMED')}<tr><td style="padding:10px 24px 10px;"><h1 style="margin:0;color:#ffffff;font-size:48px;line-height:0.98;font-weight:800;letter-spacing:-1.7px;">You're in.</h1></td></tr><tr><td style="padding:0 24px 20px;color:#f7f7f7;font-size:30px;line-height:1.06;font-weight:800;letter-spacing:-0.8px;overflow-wrap:anywhere;word-break:break-word;">${escapeHtml(title)}</td></tr>${poster}<tr><td style="padding:0 24px 27px;">${dateLine ? `<p style="margin:0 0 8px;color:#ffffff;font-size:15px;line-height:1.4;font-weight:800;letter-spacing:0.65px;">${escapeHtml(dateLine)}</p>` : ''}${venueLine ? `<p style="margin:0;color:#a6a6a6;font-size:15px;line-height:1.5;overflow-wrap:anywhere;">${escapeHtml(venueLine)}</p>` : ''}</td></tr><tr><td style="padding:0 24px 5px;color:#8d8d8d;font-size:10px;line-height:1.3;font-weight:800;letter-spacing:1.8px;">YOUR TICKETS</td></tr><tr><td style="padding:0 24px 16px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;"><tbody>${ticketRows || `<tr><td style="padding:15px 0;border-bottom:1px solid #292929;color:#dedede;font-size:15px;line-height:1.45;">Your tickets are in your C1RCLE Wallet.</td></tr>`}</tbody></table></td></tr><tr><td style="padding:0 24px 26px;"><p style="margin:0 0 5px;color:#929292;font-size:10px;line-height:1.3;font-weight:800;letter-spacing:1.8px;">TOTAL PAID</p><p style="margin:0;color:#ffffff;font-size:40px;line-height:1.02;font-weight:800;letter-spacing:-1.1px;">${escapeHtml(total)}</p></td></tr>${renderPrimaryCta(actionUrl, 'View tickets')}${eventActions.length ? `<tr><td style="padding:0 24px 32px;color:#a7a7a7;font-size:14px;line-height:1.6;">${eventActions.join('<span style="padding:0 12px;color:#ff5a00;">/</span>')}</td></tr>` : ''}<tr><td style="padding:21px 24px 8px;border-top:1px solid #292929;color:#ffffff;font-size:15px;line-height:1.3;font-weight:800;letter-spacing:0.35px;">ORDER SUMMARY</td></tr><tr><td style="padding:0 24px 25px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;"><tbody>${summary}<tr><td style="padding:13px 0 0;border-top:1px solid #333333;color:#f7f7f7;font-size:14px;line-height:1.4;font-weight:700;">Total</td><td align="right" style="padding:13px 0 0;border-top:1px solid #333333;color:#f7f7f7;font-size:14px;line-height:1.4;font-weight:700;white-space:nowrap;">${escapeHtml(total)}</td></tr></tbody></table></td></tr><tr><td style="padding:0 24px 20px;color:#8f8f8f;font-size:13px;line-height:1.65;">${bookingReference ? `Booking reference: <strong style="color:#c6c6c6;">${escapeHtml(bookingReference)}</strong><br />` : ''}Need help? <a href="${escapeHtml(supportUrl)}" style="color:#c6c6c6;text-decoration:underline;">Contact support</a>${bookingReference ? ' and quote your booking reference' : ''}.</td></tr><tr><td style="padding:20px 24px 32px;border-top:1px solid #292929;color:#777777;font-size:12px;line-height:1.6;"><strong style="display:block;margin-bottom:9px;color:#b6b6b6;letter-spacing:2px;font-size:10px;">THE C1RCLE</strong><a href="${escapeHtml(termsUrl)}" style="color:#929292;text-decoration:underline;">Terms</a></td></tr>`;
+  return renderEmailShell(preheader ?? '', rows);
+}
+
+function purchaseReceiptText(view: PurchaseReceiptViewModel): string {
+  const { order, event, venue, guestOrigin, actionUrl, supportUrl, termsUrl } = view;
+  const lines = [
+    "You're in.",
+    event?.title ?? 'Event details unavailable',
+    event ? (formatPurchaseEventDate(event.startAt) ?? '') : '',
+    formatPurchaseVenue(venue) ?? '',
+    ...order.lines.map((line) => `${line.quantity} × ${line.tierName}`),
+    `Total paid: ${compactMoney(order.grandTotalPaise)}`,
+    '',
+    `View your tickets (${actionUrl})`,
+  ];
+  const eventUrl = event ? getPurchaseEventUrl(event, guestOrigin) : null;
+  if (eventUrl) {
+    lines.push(`View event (${eventUrl})`);
+  }
+  const directionsUrl = getPurchaseDirectionsUrl(venue);
+  if (directionsUrl) lines.push(`Directions: ${directionsUrl}`);
+  lines.push(
+    '',
+    'Order summary',
+    ...purchaseReceiptSummaryRows(order).map(([label, value]) => `${label}: ${value}`),
+    `Total: ${compactMoney(order.grandTotalPaise)}`,
+  );
+  if (order.bookingReference) lines.push('', `Booking reference: ${order.bookingReference}`);
+  lines.push(`Need help? Contact support: ${supportUrl}`);
+  if (order.bookingReference) lines.push('Quote your booking reference when contacting support.');
+  lines.push(`Terms: ${termsUrl}`, 'THE C1RCLE');
+  return lines.join('\n');
+}
+
+function purchaseReceiptSummaryRows(order: Order): [string, string][] {
+  const rows: [string, string][] = [];
+  const hasComponents = order.admissionSubtotalPaise !== undefined;
+  if (hasComponents) {
+    if ((order.admissionSubtotalPaise ?? 0) > 0)
+      rows.push(['Tickets', compactMoney(order.admissionSubtotalPaise ?? 0)]);
+    if ((order.addOnSubtotalPaise ?? 0) > 0)
+      rows.push(['Add-ons', compactMoney(order.addOnSubtotalPaise ?? 0)]);
+    if ((order.coverSubtotalPaise ?? 0) > 0)
+      rows.push(['Event cover', compactMoney(order.coverSubtotalPaise ?? 0)]);
+  } else {
+    if (Number.isFinite(order.subtotalPaise))
+      rows.push(['Subtotal', compactMoney(order.subtotalPaise)]);
+  }
+  if (order.discountPaise > 0) rows.push(['Discount', `−${compactMoney(order.discountPaise)}`]);
+  if (order.platformFeePaise > 0) rows.push(['Platform fee', compactMoney(order.platformFeePaise)]);
+  if (order.paymentFeePaise > 0)
+    rows.push(['Payment processing fee', compactMoney(order.paymentFeePaise)]);
+  if (order.gstPaise > 0) rows.push(['Taxes', compactMoney(order.gstPaise)]);
+  return rows;
+}
+
+function formatPurchaseEventDate(value: string): string | null {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return null;
+  const parts = new Intl.DateTimeFormat('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+    timeZone: 'Asia/Kolkata',
+  }).formatToParts(date);
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((candidate) => candidate.type === type)?.value ?? '';
+  return `${part('weekday')} · ${part('month')} ${part('day')} · ${part('hour')}:${part('minute')} ${part('dayPeriod')} IST`.toUpperCase();
+}
+
+function formatPurchaseVenue(venue: Venue | null): string | null {
+  if (!venue) return null;
+  const address = venue.public.address;
+  const locality = [address?.street, address?.city].filter(Boolean).join(', ');
+  return [venue.public.name, locality].filter(Boolean).join(' · ');
+}
+
+function getPurchaseEventUrl(event: Event, guestOrigin: string): string | null {
+  const idOrSlug = event.slug || event.id;
+  if (!idOrSlug) return null;
+  return new URL(`/event/${encodeURIComponent(idOrSlug)}`, guestOrigin).toString();
+}
+
+function getPurchaseDirectionsUrl(venue: Venue | null): string | null {
+  if (!venue) return null;
+  const { address } = venue.public;
+  const hasCoordinates = Number.isFinite(address.lat) && Number.isFinite(address.lng);
+  const destination = hasCoordinates
+    ? `${address.lat},${address.lng}`
+    : [venue.public.name, address.street, address.city, address.state, address.country]
+        .filter(Boolean)
+        .join(', ');
+  if (!destination) return null;
+  const url = new URL('https://www.google.com/maps/dir/');
+  url.searchParams.set('api', '1');
+  url.searchParams.set('destination', destination);
+  return url.toString();
+}
+
+function getPurchasePosterUrl(imageUrl: string | null): string | null {
+  if (!imageUrl) return null;
+  try {
+    const parsed = new URL(imageUrl);
+    return parsed.protocol === 'https:' ? imageUrl : null;
+  } catch {
+    // Relative assets are allowed only to keep local synthetic preview fixtures
+    // self-contained; persisted event artwork should use an absolute HTTPS URL.
+    return /^\.\/[A-Za-z0-9._/-]+$/.test(imageUrl) && !imageUrl.includes('..') ? imageUrl : null;
+  }
+}
+
+function compactMoney(paise: number): string {
+  return new Intl.NumberFormat('en-IN', {
+    style: 'currency',
+    currency: 'INR',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  }).format(paise / 100);
 }
 
 async function refundRecipient(order: Order, deps: ServiceDeps): Promise<string | null> {
@@ -998,11 +1360,15 @@ async function enqueueMaterialChangeRecipients(
 
 async function receiptDetails(order: Order, deps: ServiceDeps): Promise<string> {
   const event = await deps.repositories.events.getById(order.eventId);
-  return `<p>Booking reference: <strong>${escapeHtml(order.bookingReference ?? order.id)}</strong></p><p>Event: ${escapeHtml(event?.title ?? 'Event details unavailable')}</p><ul>${order.lines.map((line) => `<li>${escapeHtml(line.tierName)} × ${line.quantity}</li>`).join('')}</ul>`;
+  const bookingReference = order.bookingReference
+    ? `<p>Booking reference: <strong>${escapeHtml(order.bookingReference)}</strong></p>`
+    : '';
+  return `${bookingReference}<p>Event: ${escapeHtml(event?.title ?? 'Event details unavailable')}</p><ul>${order.lines.map((line) => `<li>${escapeHtml(line.tierName)} × ${line.quantity}</li>`).join('')}</ul>`;
 }
 
-function receiptAmounts(order: Order): string {
-  return `<p>Subtotal: ${money(order.subtotalPaise)}</p><p>Discount: −${money(order.discountPaise)}</p><p>Fees: ${money(order.platformFeePaise + order.paymentFeePaise)}</p><p>Taxes: ${money(order.gstPaise)}</p><p>Total paid: <strong>${money(order.grandTotalPaise)}</strong></p>${order.refundedPaise > 0 ? `<p>Refunds recorded: ${money(order.refundedPaise)}</p>` : ''}<p>Payment reference: ${escapeHtml(order.paymentId ?? '')}</p>`;
+function bookingReferenceParagraph(order: Order, label = 'Booking reference'): string {
+  const bookingReference = order.bookingReference?.trim();
+  return bookingReference ? `<p>${escapeHtml(label)}: ${escapeHtml(bookingReference)}</p>` : '';
 }
 
 function money(paise: number): string {

@@ -1,0 +1,10 @@
+Variant: Host application rejected
+Template: partner_onboarding_rejected
+Subject: Update on your application
+Preheader: Review the latest status of your application.
+Primary action: REVIEW APPLICATION STATUS&#8594;
+Layout family: Partner / KYC
+Recipient fixture: preview.guest@synthetic.test (synthetic; local capture only)
+Event, account, booking and financial data: synthetic fixtures only
+Capture path: actual createTransactionalEmailConsumer; local in-memory capture sender
+Resend: not invoked in preview generation

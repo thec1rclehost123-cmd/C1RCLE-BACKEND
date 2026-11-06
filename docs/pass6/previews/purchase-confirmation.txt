@@ -1,19 +1,20 @@
-Booking confirmed
+You're in.
+Neon Nights: Afrobeats Edition
+SAT · JUL 18 · 9:00 PM IST
+Skyline Rooftop · Bandra West, Mumbai
+2 × General Admission
+Total paid: ₹3,600
 
-Booking reference: C1-VIS-2048
-Event: Night Market 2026
-Front Row × 2
+View your tickets (https://guest.example.test/tickets)
+View event (https://guest.example.test/event/neon-nights-afrobeats-edition)
+Directions: https://www.google.com/maps/dir/?api=1&destination=19.0607%2C72.8362
 
-Event: Night Market 2026
-Venue: Warehouse 9, Phoenix
-Date and time: 8 November 2026 at 11:30 pm (Asia/Kolkata)
-Order reference: ORD-VISUAL
-Subtotal: ₹1,250.00
-Discount: −₹0.00
-Fees: ₹50.00
-Taxes: ₹90.00
-Total paid: ₹1,390.00
-Payment reference: PAY-VISUAL-4028
-View your tickets (https://guest-staging.example.test/tickets)
-Need help? Contact support (https://guest-staging.example.test/help) and quote C1-VIS-2048.
-Terms (https://guest-staging.example.test/terms)
+Order summary
+Tickets: ₹3,600
+Total: ₹3,600
+
+Booking reference: C1-TEST-2048
+Need help? Contact support: https://guest.example.test/help
+Quote your booking reference when contacting support.
+Terms: https://guest.example.test/terms
+THE C1RCLE

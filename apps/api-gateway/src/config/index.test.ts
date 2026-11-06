@@ -171,6 +171,36 @@ describe('gateway configuration', () => {
   });
 });
 
+describe('strict Resend test-recipient configuration', () => {
+  it('enables a single allowlisted recipient even under production-shaped configuration', () => {
+    const config = getGatewayConfig(
+      productionEnvironment({
+        RESEND_ENFORCE_TEST_RECIPIENT_ALLOWLIST: 'true',
+        RESEND_NON_PROD_TEST_RECIPIENT: 'AayushDivase2020333@gmail.com',
+      }),
+    );
+    expect(config.RESEND_ENFORCE_TEST_RECIPIENT_ALLOWLIST).toBe(true);
+    expect(config.RESEND_NON_PROD_TEST_RECIPIENT).toBe('aayushdivase2020333@gmail.com');
+  });
+
+  it('requires the exact allowlist recipient when strict enforcement is enabled', () => {
+    expect(() =>
+      getGatewayConfig(productionEnvironment({ RESEND_ENFORCE_TEST_RECIPIENT_ALLOWLIST: 'true' })),
+    ).toThrow(/strict Resend test-recipient guard requires an exact allowlist recipient/i);
+  });
+
+  it('rejects a broader or alternate address for the strict founder guard', () => {
+    expect(() =>
+      getGatewayConfig(
+        productionEnvironment({
+          RESEND_ENFORCE_TEST_RECIPIENT_ALLOWLIST: 'true',
+          RESEND_NON_PROD_TEST_RECIPIENT: 'other@example.test',
+        }),
+      ),
+    ).toThrow(/allows only the approved founder address/i);
+  });
+});
+
 describe('allowedBrowserOrigins (CORS_ALLOWED_ORIGINS)', () => {
   const ADMIN = 'https://c1rcle-v2-admin-console.vercel.app';
 

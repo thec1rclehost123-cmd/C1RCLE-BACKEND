@@ -1,0 +1,6 @@
+You're approved.
+
+Your host application is approved.
+Open host Studio (https://partner.example.test/partner/host/overview)
+
+Review your application in the C1RCLE partner workspace.

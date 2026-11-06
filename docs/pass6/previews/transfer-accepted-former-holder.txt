@@ -1,5 +1,5 @@
 Ticket transfer complete
 
-Your ticket for Night Market 2026 was transferred to its new holder.
+Your ticket for Neon Nights: Afrobeats Edition was transferred to its new holder.
 
-View your tickets: https://guest-staging.example.test/tickets
+View your tickets: https://guest.example.test/tickets

@@ -219,7 +219,7 @@ describe('transactional email consumer', () => {
 
     expect(sent).toHaveLength(2);
     expect(sent[0]?.to).toBe(recipientEmail);
-    expect(sent[0]?.subject).toBe('A C1RCLE ticket is waiting for you');
+    expect(sent[0]?.subject).toBe('A ticket is waiting for you');
     expect(sent[0]?.html).toContain('https://thec1rcle.com/ticket-transfer/TRF-invite-notice');
     expect(sent[0]?.html).not.toContain(recipientEmail);
     expect(sent[0]?.idempotencyKey).toBe('ticket-transfer-invitation:TRF-invite-notice');
@@ -282,70 +282,33 @@ describe('transactional email consumer', () => {
     expect(sent).toEqual([]);
   });
 
-  it('notifies only the verified waitlist account for its current bounded offer', async () => {
-    const sent: { to: string; subject: string; html: string; idempotencyKey: string }[] = [];
+  it('does not create V1 email intents for waitlist events', async () => {
     const emailDeliveries = new MemoryEmailDeliveryRepository();
-    const now = new Date();
-    const event = domainEvent({
-      id: 'waitlist-offer-event',
-      type: 'waitlist.offered',
-      aggregateId: 'wait_entry_1',
-      organizationId: 'org_1',
-      actorId: 'admin_1',
-      occurredAt: now.getTime(),
-      payload: {
-        entryId: 'wait_entry_1',
-        eventId: 'event_1',
-        tierId: 'tier_1',
-        reservationId: 'hold_1',
-        expiresAt: new Date(now.getTime() + 10 * 60_000).toISOString(),
-      },
-    });
+    const sendTransactionalEmail = vi.fn(async () => ({ providerMessageId: 'unused' }));
     const deps = {
-      config: { clock: { now: () => now } },
       emailDeliveries,
-      emailSender: {
-        name: 'resend',
-        sendTransactionalEmail: async (message: (typeof sent)[number]) => {
-          sent.push(message);
-          return { providerMessageId: 'waitlist-offer-message' };
-        },
-      },
-      repositories: {
-        waitlist: {
-          getById: async () => ({
-            id: 'wait_entry_1',
-            userId: 'guest_1',
-            eventId: 'event_1',
-            tierId: 'tier_1',
-            status: 'offered',
-            offerReservationId: 'hold_1',
-            offerExpiresAt: event.payload.expiresAt,
-          }),
-        },
-        users: {
-          getById: async () => ({
-            id: 'guest_1',
-            email: 'guest@real.test',
-            emailVerified: true,
-          }),
-        },
-        events: { getById: async () => ({ id: 'event_1', title: '<Sky Night>' }) },
-      },
+      emailSender: { name: 'resend', sendTransactionalEmail },
+      repositories: {},
     } as unknown as ServiceDeps;
-    const consumer = createTransactionalEmailConsumer(deps);
-
-    await consumer(event);
-    await consumer(event);
-
-    expect(sent).toHaveLength(1);
-    expect(sent[0]?.to).toBe('guest@real.test');
-    expect(sent[0]?.html).toContain('&lt;Sky Night&gt;');
-    expect(sent[0]?.html).toContain('will not charge you automatically');
-    expect(sent[0]?.idempotencyKey).toBe('waitlist-offer:wait_entry_1:hold_1');
-    expect([...emailDeliveries.records.values()]).toMatchObject([
-      { kind: 'waitlist_offer', status: 'sent' },
-    ]);
+    await createTransactionalEmailConsumer(deps)(
+      domainEvent({
+        id: 'waitlist-offer-excluded',
+        type: 'waitlist.offered',
+        aggregateId: 'wait_entry_1',
+        organizationId: 'org_1',
+        actorId: 'admin_1',
+        occurredAt: Date.now(),
+        payload: {
+          entryId: 'wait_entry_1',
+          eventId: 'event_1',
+          tierId: 'tier_1',
+          reservationId: 'hold_1',
+          expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+        },
+      }),
+    );
+    expect(sendTransactionalEmail).not.toHaveBeenCalled();
+    expect(emailDeliveries.records.size).toBe(0);
   });
 
   it('includes a safe old-to-new venue detail in a material event-change email', async () => {
@@ -1132,7 +1095,7 @@ describe('transactional email consumer', () => {
       'promoter-onboarding:request_1:rejected',
     ]);
     expect(sent[0]?.html).toContain('https://partners-staging.example.test/onboard');
-    expect(sent[1]?.subject).toBe('Action needed: update your C1RCLE application');
+    expect(sent[1]?.subject).toBe('Your Promoter application needs an update');
     expect(sent[1]?.html).toContain('https://partners-staging.example.test/onboard');
     expect(sent[2]?.html).toContain(
       'https://partners-staging.example.test/partner/promoter/overview',

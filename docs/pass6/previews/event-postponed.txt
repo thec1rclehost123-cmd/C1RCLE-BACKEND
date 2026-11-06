@@ -1,14 +1,14 @@
-Event postponed — new date to be announced
+Plans changed.
 
-Event: Night Market 2026 is now Night Market 2026.
-Previous date and time: 8 November 2026 at 11:30 pm (Asia/Kolkata)
+Event: Neon Nights: Afrobeats Edition is now Neon Nights: Afrobeats Edition.
+Previous date and time: 18 July 2026 at 9:00 pm (Asia/Kolkata)
 New date and time: To be announced (Asia/Kolkata)
-Booking reference: C1-VIS-2048
+Venue: The Old Warehouse → Skyline Rooftop
+Booking reference: C1-TEST-2048
 
-Event: Night Market 2026
-Venue: Venue details unavailable
-Date and time: 8 November 2026 at 11:30 pm (Asia/Kolkata)
-Order reference: ORD-VISUAL
-View your tickets (https://guest-staging.example.test/tickets)
-Need help? Contact support (https://guest-staging.example.test/help) and quote C1-VIS-2048.
-Terms (https://guest-staging.example.test/terms)
+Event: Neon Nights: Afrobeats Edition
+Venue: Skyline Rooftop
+Date and time: 18 July 2026 at 9:00 pm (Asia/Kolkata)
+View your tickets (https://guest.example.test/tickets)
+Need help? Contact support (https://guest.example.test/help) and quote C1-TEST-2048.
+Terms (https://guest.example.test/terms)

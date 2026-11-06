@@ -82,6 +82,13 @@ export {
   eventCancellationRefundRequestId,
 } from './events/event-cancellation-service.js';
 export { createTransactionalEmailConsumer } from './events/transactional-email-consumer.js';
+export {
+  escapeEmailHtml,
+  renderC1rcleBrandHeader,
+  renderC1rcleEditorialEyebrow,
+  renderC1rcleEmailShell,
+  renderC1rclePrimaryCta,
+} from './email/c1rcle-email-chrome.js';
 
 // Phase 4: Checkout, Inventory, Payments
 export { CheckoutService, rsvpOrderId } from './checkout/checkout-service.js';
