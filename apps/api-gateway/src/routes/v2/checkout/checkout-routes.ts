@@ -74,6 +74,7 @@ export default async function checkoutRoutes(fastify: FastifyInstance) {
           lines: body.lines,
           promoCode: body.promoCode ?? null,
           referralCode: body.referralCode ?? null,
+          referralContextTokens: body.referralContextTokens,
           upgradeFromEntitlementId: body.upgradeFromEntitlementId,
         })
         .catch((error: unknown) => mapDomainError(reply, request, body.eventId, error));
@@ -131,6 +132,7 @@ export default async function checkoutRoutes(fastify: FastifyInstance) {
             lines: body.lines,
             promoCode: body.promoCode ?? null,
             referralCode: body.referralCode ?? null,
+            referralContextTokens: body.referralContextTokens,
             upgradeFromEntitlementId: body.upgradeFromEntitlementId,
           });
 

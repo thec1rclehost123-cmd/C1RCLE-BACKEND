@@ -1,0 +1,14 @@
+Refund complete.
+
+Refunded amount: ₹1,250.00
+Affected tickets: 1
+Remaining valid tickets: 1
+Your bank or payment provider may take additional time to reflect the credit.
+Support reference: C1-TEST-2048
+
+Event: Neon Nights: Afrobeats Edition
+Venue: Skyline Rooftop
+Date and time: 18 July 2026 at 9:00 pm (Asia/Kolkata)
+View your tickets (https://guest.example.test/tickets)
+Need help? Contact support (https://guest.example.test/help) and quote C1-TEST-2048.
+Terms (https://guest.example.test/terms)

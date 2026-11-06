@@ -187,7 +187,10 @@ export class AnalyticsService {
       ),
     ]);
 
-    const captured = orders.filter((order) => isCaptured(order.status));
+    const captured = orders.filter(
+      (order) =>
+        isCaptured(order.status) || (order.id.startsWith('RSVP-') && order.status === 'cancelled'),
+    );
     const rsvpOrderIds = new Set(
       captured.filter((order) => order.id.startsWith('RSVP-')).map((order) => order.id),
     );
@@ -266,16 +269,60 @@ export class AnalyticsService {
     const captured = orders.filter((order) => isCaptured(order.status));
     const transition = await this.deps.repositories.journalTransition.get();
     let liabilityComplete = true;
+    let refundValueComplete = true;
     const byPromoter = new Map<string, EventPromoterAnalyticsItem>();
     for (const order of captured) {
       const attribution = order.attribution;
       if (!attribution) continue;
+      const orderJournals =
+        order.refundedPaise > 0
+          ? await this.deps.repositories.financialJournals.findByOrderId(order.id)
+          : [];
+      const refundRecognitions = orderJournals.filter(
+        (journal) =>
+          journal.source.type === 'refund' && journal.idempotencyKey.endsWith(':recognition'),
+      );
+      if (order.refundedPaise > 0 && refundRecognitions.length === 0) refundValueComplete = false;
+      const refundedTicketValuePaise = refundRecognitions.reduce(
+        (sum, journal) =>
+          sum +
+          (journal.components?.refundedAdmissionPaise ??
+            journal.lines
+              .filter(
+                (line) => line.side === 'debit' && line.account === 'ticket_collection_control',
+              )
+              .reduce((total, line) => total + line.amountPaise, 0)),
+        0,
+      );
+      const reversedCommissionPaise =
+        transition.readModel === 'financial_journal_v2'
+          ? orderJournals
+              .filter(
+                (journal) =>
+                  journal.source.type === 'refund' &&
+                  journal.idempotencyKey.endsWith(':payable-reversal'),
+              )
+              .flatMap((journal) => journal.lines)
+              .filter(
+                (line) =>
+                  line.side === 'debit' &&
+                  line.account === 'promoter_payable' &&
+                  line.organizationId === attribution.promoterId,
+              )
+              .reduce((sum, line) => sum + line.amountPaise, 0)
+          : null;
       const current = byPromoter.get(attribution.promoterId) ?? {
         promoterOrganizationId: attribution.promoterId,
         attributedOrderCount: 0,
+        historicalRsvpConversionCount: 0,
+        activeRsvpCount: 0,
         attributedTicketCount: 0,
         attributedTicketValuePaise: 0,
+        grossAttributedTicketValuePaise: 0,
+        refundedAttributedTicketValuePaise: 0,
+        netAttributedTicketValuePaise: 0,
         recordedCommissionPaise: 0,
+        reversedCommissionPaise: transition.readModel === 'financial_journal_v2' ? 0 : null,
         netAttributedValuePaise: 0,
         commissionPayableBalancePaise: 0,
         liabilityComplete: true,
@@ -285,11 +332,27 @@ export class AnalyticsService {
       byPromoter.set(attribution.promoterId, {
         ...current,
         attributedOrderCount: current.attributedOrderCount + 1,
+        historicalRsvpConversionCount:
+          current.historicalRsvpConversionCount + (order.id.startsWith('RSVP-') ? 1 : 0),
+        activeRsvpCount:
+          current.activeRsvpCount +
+          (order.id.startsWith('RSVP-') && order.status === 'paid' ? 1 : 0),
         attributedTicketCount: current.attributedTicketCount + ticketCount,
         attributedTicketValuePaise:
           current.attributedTicketValuePaise + order.discountedSubtotalPaise,
+        grossAttributedTicketValuePaise:
+          current.grossAttributedTicketValuePaise + order.discountedSubtotalPaise,
+        refundedAttributedTicketValuePaise:
+          current.refundedAttributedTicketValuePaise + refundedTicketValuePaise,
+        netAttributedTicketValuePaise:
+          current.netAttributedTicketValuePaise +
+          Math.max(0, order.discountedSubtotalPaise - refundedTicketValuePaise),
         recordedCommissionPaise:
           current.recordedCommissionPaise + attribution.promoterCommissionPaise,
+        reversedCommissionPaise:
+          current.reversedCommissionPaise === null || reversedCommissionPaise === null
+            ? null
+            : current.reversedCommissionPaise + reversedCommissionPaise,
         netAttributedValuePaise:
           current.netAttributedValuePaise +
           order.discountedSubtotalPaise -
@@ -356,14 +419,42 @@ export class AnalyticsService {
     );
     return {
       eventId,
-      complete: complete && liabilityComplete,
+      complete: complete && liabilityComplete && refundValueComplete,
+      refundValueComplete,
       capturedTicketCount: captured.reduce((sum, order) => sum + ticketsIn(order), 0),
+      historicalConversionCount: [...byPromoter.values()].reduce(
+        (sum, item) => sum + item.attributedOrderCount,
+        0,
+      ),
+      historicalRsvpConversionCount: [...byPromoter.values()].reduce(
+        (sum, item) => sum + item.historicalRsvpConversionCount,
+        0,
+      ),
+      activeRsvpCount: [...byPromoter.values()].reduce(
+        (sum, item) => sum + item.activeRsvpCount,
+        0,
+      ),
       attributedTicketCount: items.reduce((sum, item) => sum + item.attributedTicketCount, 0),
       attributedTicketValuePaise: items.reduce(
         (sum, item) => sum + item.attributedTicketValuePaise,
         0,
       ),
+      grossAttributedTicketValuePaise: items.reduce(
+        (sum, item) => sum + item.grossAttributedTicketValuePaise,
+        0,
+      ),
+      refundedAttributedTicketValuePaise: items.reduce(
+        (sum, item) => sum + item.refundedAttributedTicketValuePaise,
+        0,
+      ),
+      netAttributedTicketValuePaise: items.reduce(
+        (sum, item) => sum + item.netAttributedTicketValuePaise,
+        0,
+      ),
       recordedCommissionPaise: items.reduce((sum, item) => sum + item.recordedCommissionPaise, 0),
+      reversedCommissionPaise: items.every((item) => item.reversedCommissionPaise !== null)
+        ? items.reduce((sum, item) => sum + (item.reversedCommissionPaise ?? 0), 0)
+        : null,
       netAttributedValuePaise: items.reduce((sum, item) => sum + item.netAttributedValuePaise, 0),
       commissionPayableBalancePaise: items.reduce(
         (sum, item) => sum + item.commissionPayableBalancePaise,
@@ -802,10 +893,22 @@ export class AnalyticsService {
 
 export interface EventPromoterAnalyticsItem {
   readonly promoterOrganizationId: EntityId;
+  /** Historical acquisitions; settled refunds do not erase a conversion. */
   readonly attributedOrderCount: number;
+  readonly historicalRsvpConversionCount: number;
+  /** RSVP acquisitions whose RSVP order is still active. */
+  readonly activeRsvpCount: number;
   readonly attributedTicketCount: number;
+  /** Backward-compatible alias for gross attributed ticket sales. */
   readonly attributedTicketValuePaise: number;
+  readonly grossAttributedTicketValuePaise: number;
+  readonly refundedAttributedTicketValuePaise: number;
+  readonly netAttributedTicketValuePaise: number;
+  /** Frozen commission from the original attributed orders. */
   readonly recordedCommissionPaise: number;
+  /** Canonical journal reversal total; null on the legacy ledger read model. */
+  readonly reversedCommissionPaise: number | null;
+  /** Legacy compatibility field: ticket value less recorded commission. */
   readonly netAttributedValuePaise: number;
   /** Signed net payable balance from the selected finance read model. */
   readonly commissionPayableBalancePaise: number;
@@ -817,13 +920,25 @@ export interface EventPromoterAnalytics {
   readonly eventId: EntityId;
   /** False when more than the bounded source scan cap remains. */
   readonly complete: boolean;
+  /** False when a refunded order lacks an authoritative refund recognition. */
+  readonly refundValueComplete: boolean;
+  /** Historical attributed orders, including settled refunds. */
+  readonly historicalConversionCount: number;
+  readonly historicalRsvpConversionCount: number;
+  /** Attributed RSVP orders whose current status remains active. */
+  readonly activeRsvpCount: number;
   readonly capturedTicketCount: number;
   readonly attributedTicketCount: number;
   /** Captured discounted ticket value before refund adjustments. */
   readonly attributedTicketValuePaise: number;
+  readonly grossAttributedTicketValuePaise: number;
+  readonly refundedAttributedTicketValuePaise: number;
+  readonly netAttributedTicketValuePaise: number;
   /** Frozen commission from captured orders before refund adjustments. */
   readonly recordedCommissionPaise: number;
-  /** Ticket value less recorded commission; not a payable liability or causal lift. */
+  /** Canonical journal reversals; null on the legacy ledger read model. */
+  readonly reversedCommissionPaise: number | null;
+  /** Legacy compatibility field: ticket value less recorded commission. */
   readonly netAttributedValuePaise: number;
   readonly commissionPayableBalancePaise: number;
   readonly liabilityComplete: boolean;

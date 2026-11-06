@@ -1,0 +1,6 @@
+Payout not completed
+
+Amount: ₹2,500.00
+Current status: failed.
+
+Open partner workspace (https://partner.example.test/partner/select-organization)

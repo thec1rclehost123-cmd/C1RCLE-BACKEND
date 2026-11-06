@@ -62,6 +62,19 @@ export interface PromoterAttributionSnapshot {
   commercialPolicyVersion?: string;
 }
 
+interface ReferralClickSelection {
+  readonly code: string;
+  readonly clickedAt: string;
+  readonly clickId: string;
+  readonly validAtClick: true;
+}
+
+interface ReferralClickContext {
+  readonly eventId: EntityId;
+  readonly selected: ReferralClickSelection | null;
+  readonly updatedAt: string;
+}
+
 export class ReferralLinkService {
   constructor(private deps: ServiceDeps) {}
 
@@ -147,6 +160,17 @@ export class ReferralLinkService {
     requestedCode?: string;
     requestedVanitySlug?: string;
   }): Promise<ReferralLink> {
+    const promoterOrganization = await this.deps.repositories.organizations.getById(
+      input.promoterId,
+    );
+    if (
+      promoterOrganization?.status !== 'active' ||
+      !promoterOrganization.members.some((member) => member.capabilities.includes('promoter'))
+    ) {
+      throw new InvalidOperationError(
+        'An active Promoter organization is required for campaign links',
+      );
+    }
     const onboarding = await this.deps.repositories.onboarding.findByProvisionedOrganizationId(
       input.promoterId,
     );
@@ -216,7 +240,7 @@ export class ReferralLinkService {
       termsVersion: input.assignment.terms.version,
       terms: input.assignment.terms,
       code,
-      eligibleTierIds: input.assignment.eligibleTierIds,
+      eligibleTierIds: input.assignment.eligibleTierIds ?? [],
       commissionPolicyVersion: PROMOTER_COMMISSION_POLICY_VERSION,
       commercialPolicyVersion: COMMERCIAL_ALLOCATION_POLICY_VERSION,
     } satisfies PromoterAttributionSnapshot;
@@ -301,17 +325,94 @@ export class ReferralLinkService {
 
   async getCampaignSummary(actor: ActorContext, promoterId: EntityId) {
     requireOrgAccess(actor, promoterId);
-    const page = await this.repo.listByPromoter(promoterId, { limit: 1000, cursor: null });
-    return {
-      linkCount: page.items.length,
-      clicks: page.items.reduce((sum, link) => sum + link.clicks, 0),
-      conversions: page.items.reduce((sum, link) => sum + link.conversions, 0),
-      grossAttributedTicketRevenuePaise: page.items.reduce(
-        (sum, link) => sum + link.revenuePaise,
+    const [links, orders, transition] = await Promise.all([
+      this.repo.listByPromoter(promoterId, { limit: 1000, cursor: null }),
+      this.deps.repositories.orders.listByPromoter(promoterId, { limit: 1000, cursor: null }),
+      this.deps.repositories.journalTransition.get(),
+    ]);
+    const historicallyAttributedOrders = orders.items.filter(
+      (order) =>
+        order.attribution?.promoterId === promoterId &&
+        (order.status === 'paid' ||
+          order.status === 'refund_requested' ||
+          order.status === 'refunded' ||
+          order.id.startsWith('RSVP-')),
+    );
+    const attributedSales = historicallyAttributedOrders.filter(
+      (order) => !order.id.startsWith('RSVP-'),
+    );
+    let refundValueComplete = true;
+    let refundedAttributedTicketRevenuePaise = 0;
+    let reversedCommissionPaise = 0;
+    for (const order of attributedSales) {
+      if (order.refundedPaise <= 0) continue;
+      const refundJournals = (
+        await this.deps.repositories.financialJournals.findByOrderId(order.id)
+      ).filter((journal) => journal.source.type === 'refund');
+      const recognitions = refundJournals.filter((journal) =>
+        journal.idempotencyKey.endsWith(':recognition'),
+      );
+      if (recognitions.length === 0) {
+        refundValueComplete = false;
+        continue;
+      }
+      refundedAttributedTicketRevenuePaise += recognitions.reduce(
+        (sum, journal) =>
+          sum +
+          (journal.components?.refundedAdmissionPaise ??
+            journal.lines
+              .filter(
+                (line) => line.side === 'debit' && line.account === 'ticket_collection_control',
+              )
+              .reduce((total, line) => total + line.amountPaise, 0)),
+        0,
+      );
+      if (transition.readModel === 'financial_journal_v2') {
+        reversedCommissionPaise += refundJournals
+          .filter((journal) => journal.idempotencyKey.endsWith(':payable-reversal'))
+          .flatMap((journal) => journal.lines)
+          .filter(
+            (line) =>
+              line.side === 'debit' &&
+              line.account === 'promoter_payable' &&
+              line.organizationId === promoterId,
+          )
+          .reduce((sum, line) => sum + line.amountPaise, 0);
+      }
+    }
+    const grossAttributedTicketRevenuePaise = attributedSales.reduce(
+      (sum, order) => sum + order.discountedSubtotalPaise,
+      0,
+    );
+    const summary = {
+      linkCount: links.items.length,
+      clicks: links.items.reduce((sum, link) => sum + link.clicks, 0),
+      conversions: historicallyAttributedOrders.length,
+      historicalRsvpConversions: historicallyAttributedOrders.filter((order) =>
+        order.id.startsWith('RSVP-'),
+      ).length,
+      activeRsvpCount: historicallyAttributedOrders.filter(
+        (order) => order.id.startsWith('RSVP-') && order.status === 'paid',
+      ).length,
+      grossAttributedTicketRevenuePaise,
+      grossAttributedTicketSalesPaise: grossAttributedTicketRevenuePaise,
+      refundedAttributedTicketSalesPaise: refundedAttributedTicketRevenuePaise,
+      netAttributedTicketSalesPaise: Math.max(
+        0,
+        grossAttributedTicketRevenuePaise - refundedAttributedTicketRevenuePaise,
+      ),
+      refundValueComplete,
+      recordedCommissionPaise: attributedSales.reduce(
+        (sum, order) => sum + (order.attribution?.promoterCommissionPaise ?? 0),
         0,
       ),
-      hasMoreLinks: page.nextCursor !== null,
+      reversedCommissionPaise:
+        transition.readModel === 'financial_journal_v2' ? reversedCommissionPaise : null,
+      complete: links.nextCursor === null && orders.nextCursor === null && refundValueComplete,
+      hasMoreLinks: links.nextCursor !== null,
+      hasMoreOrders: orders.nextCursor !== null,
     };
+    return summary;
   }
 
   async deactivate(actor: ActorContext, linkId: EntityId): Promise<ReferralLink> {
@@ -337,9 +438,78 @@ export class ReferralLinkService {
   async trackClick(eventId: EntityId, code: string, clickId: string): Promise<ReferralLink | null> {
     const link = await this.repo.findByCode(eventId, normalizeReferralCode(code));
     if (!link || !link.isActive) return null;
-    if (!(await this.resolveAttribution(eventId, code))) return null;
-    if (!(await this.repo.recordClick(link.id, clickId, this.deps.config.clock.now()))) return null;
+    const now = this.deps.config.clock.now();
+    if (!(await this.resolveAttribution(eventId, code, undefined, now))) return null;
+    if (!(await this.repo.recordClick(link.id, clickId, now))) return null;
     return this.repo.getById(link.id);
+  }
+
+  /**
+   * Issues a signed, event-bound click context for every request. The token
+   * shape does not reveal whether the referral code was valid; all current
+   * eligibility is rechecked when checkout or RSVP consumes it.
+   */
+  async updateClickContext(
+    eventId: EntityId,
+    code: string,
+    clickId: string,
+    previousToken?: string,
+  ): Promise<string> {
+    const now = this.deps.config.clock.now();
+    // Always pass the untrusted value through signature verification. Missing
+    // context is represented by an empty invalid token, never a skipped check.
+    const previous = this.verifyClickContext(previousToken ?? '');
+    let selected =
+      previous?.eventId === eventId &&
+      previous.selected &&
+      now.getTime() - Date.parse(previous.selected.clickedAt) <= 7 * 24 * 60 * 60 * 1000 &&
+      now.getTime() >= Date.parse(previous.selected.clickedAt)
+        ? previous.selected
+        : null;
+    if (await this.resolveAttribution(eventId, code, undefined, now)) {
+      selected = {
+        code: normalizeReferralCode(code),
+        clickedAt: now.toISOString(),
+        clickId,
+        validAtClick: true,
+      };
+    }
+    const payload: ReferralClickContext = { eventId, selected, updatedAt: now.toISOString() };
+    const encoded = Buffer.from(canonicalJson(payload)).toString('base64url');
+    const signature = createHmac('sha256', this.deps.config.magicTicketSecret)
+      .update(encoded)
+      .digest('hex');
+    return `${encoded}.${signature}`;
+  }
+
+  /** Latest valid event-specific click wins; invalid/revoked candidates fall through. */
+  async resolveClickContexts(
+    eventId: EntityId,
+    tokens: readonly string[],
+    guestUserId?: EntityId,
+  ): Promise<PromoterAttributionSnapshot | null> {
+    const contexts = tokens
+      .slice(0, 20)
+      .map((token) => this.verifyClickContext(token))
+      .filter((context): context is ReferralClickContext => context !== null)
+      .filter((context) => context.eventId === eventId)
+      .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
+    for (const context of contexts) {
+      if (!context.selected) continue;
+      const clickedAt = new Date(context.selected.clickedAt);
+      if (!Number.isFinite(clickedAt.getTime())) continue;
+      const now = this.deps.config.clock.now();
+      const age = now.getTime() - clickedAt.getTime();
+      if (age < 0 || age > 7 * 24 * 60 * 60 * 1000) continue;
+      const attribution = await this.resolveAttribution(
+        eventId,
+        context.selected.code,
+        guestUserId,
+        clickedAt,
+      );
+      if (attribution) return attribution;
+    }
+    return null;
   }
 
   /**
@@ -360,6 +530,7 @@ export class ReferralLinkService {
     eventId: EntityId,
     code: string,
     guestUserId?: EntityId,
+    interactionAt?: Date,
   ): Promise<PromoterAttributionSnapshot | null> {
     const link = await this.repo.findByCode(eventId, normalizeReferralCode(code));
     if (
@@ -372,14 +543,27 @@ export class ReferralLinkService {
     )
       return null;
     const now = this.deps.config.clock.now();
-    if (!isWithinReferralAttributionWindow(link, now)) return null;
+    if (interactionAt) {
+      const age = now.getTime() - interactionAt.getTime();
+      if (age < 0 || age > 7 * 24 * 60 * 60 * 1000) return null;
+    } else if (!isWithinReferralAttributionWindow(link, now)) return null;
     const assignment = await this.deps.repositories.catalog.getAssignmentById(link.assignmentId);
     if (
       !assignment ||
       assignment.eventId !== eventId ||
       assignment.promoterId !== link.promoterId ||
+      assignment.version !== link.assignmentVersion ||
       assignment.terms.version !== link.termsSnapshot.version ||
       !isPromoterAssignmentAttributable(assignment, now)
+    ) {
+      return null;
+    }
+    const promoterOrganization = await this.deps.repositories.organizations.getById(
+      link.promoterId,
+    );
+    if (
+      promoterOrganization?.status !== 'active' ||
+      !promoterOrganization.members.some((member) => member.capabilities.includes('promoter'))
     ) {
       return null;
     }
@@ -446,7 +630,16 @@ export class ReferralLinkService {
     slug: string,
   ): Promise<{ eventSlug: string; code: string } | null> {
     const link = await this.repo.findByVanity(prefix, slug);
-    if (!link || !link.isActive || !(await this.resolveAttribution(link.eventId, link.code)))
+    if (
+      !link ||
+      !link.isActive ||
+      !(await this.resolveAttribution(
+        link.eventId,
+        link.code,
+        undefined,
+        this.deps.config.clock.now(),
+      ))
+    )
       return null;
     const event = await this.deps.repositories.events.getById(link.eventId);
     if (!event || !isPublicStatus(event.status)) return null;
@@ -467,6 +660,74 @@ export class ReferralLinkService {
   private testAgreementFixtureAllowed(): boolean {
     return this.deps.config.features.m4PromoterAgreementFixture === true;
   }
+
+  private verifyClickContext(token: string): ReferralClickContext | null {
+    const [encoded, suppliedSignature, extra] = token.split('.');
+    if (
+      !encoded ||
+      !suppliedSignature ||
+      extra !== undefined ||
+      !/^[a-f0-9]{64}$/iu.test(suppliedSignature)
+    )
+      return null;
+    const expected = createHmac('sha256', this.deps.config.magicTicketSecret)
+      .update(encoded)
+      .digest();
+    let supplied: Buffer;
+    try {
+      supplied = Buffer.from(suppliedSignature, 'hex');
+    } catch {
+      return null;
+    }
+    if (expected.length !== supplied.length || !timingSafeEqual(expected, supplied)) return null;
+    try {
+      const parsed: unknown = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
+      if (
+        typeof parsed !== 'object' ||
+        parsed === null ||
+        !('eventId' in parsed) ||
+        typeof parsed.eventId !== 'string' ||
+        !('updatedAt' in parsed) ||
+        typeof parsed.updatedAt !== 'string' ||
+        !Number.isFinite(Date.parse(parsed.updatedAt)) ||
+        !('selected' in parsed) ||
+        !(parsed.selected === null || isReferralClickSelection(parsed.selected))
+      ) {
+        return null;
+      }
+      return {
+        eventId: parsed.eventId,
+        selected:
+          parsed.selected === null
+            ? null
+            : {
+                code: parsed.selected.code,
+                clickedAt: parsed.selected.clickedAt,
+                clickId: parsed.selected.clickId,
+                validAtClick: true,
+              },
+        updatedAt: parsed.updatedAt,
+      };
+    } catch {
+      return null;
+    }
+  }
+}
+
+function isReferralClickSelection(value: unknown): value is ReferralClickSelection {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'code' in value &&
+    typeof value.code === 'string' &&
+    'clickedAt' in value &&
+    typeof value.clickedAt === 'string' &&
+    Number.isFinite(Date.parse(value.clickedAt)) &&
+    'clickId' in value &&
+    typeof value.clickId === 'string' &&
+    'validAtClick' in value &&
+    value.validAtClick === true
+  );
 }
 
 export function signPromoterAttribution(

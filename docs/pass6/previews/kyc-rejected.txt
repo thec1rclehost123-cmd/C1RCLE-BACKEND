@@ -1,0 +1,7 @@
+Application not approved
+
+Your venue application was not approved.
+Please add the missing venue registration document.
+Review application status (https://partners-staging.example.test/onboard)
+
+Review your application in the C1RCLE partner workspace.

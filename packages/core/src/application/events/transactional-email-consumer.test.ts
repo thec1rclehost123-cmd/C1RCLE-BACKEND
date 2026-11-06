@@ -14,6 +14,63 @@ import { createTransactionalEmailConsumer } from './transactional-email-consumer
 import type { ServiceDeps } from '../context.js';
 
 describe('transactional email consumer', () => {
+  it('records local capture separately from provider acceptance', async () => {
+    const emailDeliveries = new MemoryEmailDeliveryRepository();
+    let captured:
+      { html: string; text?: string; preheader?: string; deliveryIntentId?: string } | undefined;
+    const consumer = createTransactionalEmailConsumer({
+      config: {
+        guestPortalUrl: 'https://guest-staging.example.test',
+        clock: { now: () => new Date('2026-11-05T12:00:00.000Z') },
+      },
+      emailDeliveries,
+      emailSender: {
+        name: 'capture',
+        sendTransactionalEmail: async (message: typeof captured & {}) => {
+          captured = message;
+          return { outcome: 'captured_locally', providerMessageId: null };
+        },
+      },
+      repositories: {
+        orders: {
+          getById: async () => ({
+            id: 'ORD-captured',
+            status: 'paid',
+            fulfillmentState: 'complete',
+            grandTotalPaise: 1000,
+            contact: { email: 'guest@real.test' },
+            lines: [],
+          }),
+        },
+        events: { getById: async () => ({ title: 'Captured Event' }) },
+      },
+    } as unknown as ServiceDeps);
+    await consumer(
+      domainEvent({
+        id: 'order-fulfilled-captured',
+        type: 'order.fulfilled',
+        aggregateId: 'ORD-captured',
+        organizationId: 'ORG-captured',
+        actorId: 'system:internal',
+        occurredAt: 1,
+        payload: { orderId: 'ORD-captured', eventId: 'EVT-captured' },
+      }),
+    );
+    expect([...emailDeliveries.records.values()]).toMatchObject([
+      { status: 'captured', providerMessageId: null, sentAt: null, kind: 'booking_receipt' },
+    ]);
+    const delivery = [...emailDeliveries.records.values()][0];
+    expect(captured).toMatchObject({
+      deliveryIntentId: delivery?.id,
+      preheader: 'Your tickets for Captured Event are ready.',
+    });
+    expect(captured?.html).toContain('https://guest-staging.example.test/tickets');
+    expect(captured?.html).toContain('display:none!important');
+    expect(captured?.text).toContain(
+      'View your tickets (https://guest-staging.example.test/tickets)',
+    );
+  });
+
   it('retries staged ticket delivery until canonical completion, then sends the existing notice once', async () => {
     const sent = vi.fn(async () => ({ providerMessageId: 'synthetic-completion-notice' }));
     const emailDeliveries = new MemoryEmailDeliveryRepository();
@@ -162,7 +219,7 @@ describe('transactional email consumer', () => {
 
     expect(sent).toHaveLength(2);
     expect(sent[0]?.to).toBe(recipientEmail);
-    expect(sent[0]?.subject).toBe('A C1RCLE ticket is waiting for you');
+    expect(sent[0]?.subject).toBe('A ticket is waiting for you');
     expect(sent[0]?.html).toContain('https://thec1rcle.com/ticket-transfer/TRF-invite-notice');
     expect(sent[0]?.html).not.toContain(recipientEmail);
     expect(sent[0]?.idempotencyKey).toBe('ticket-transfer-invitation:TRF-invite-notice');
@@ -225,70 +282,33 @@ describe('transactional email consumer', () => {
     expect(sent).toEqual([]);
   });
 
-  it('notifies only the verified waitlist account for its current bounded offer', async () => {
-    const sent: { to: string; subject: string; html: string; idempotencyKey: string }[] = [];
+  it('does not create V1 email intents for waitlist events', async () => {
     const emailDeliveries = new MemoryEmailDeliveryRepository();
-    const now = new Date();
-    const event = domainEvent({
-      id: 'waitlist-offer-event',
-      type: 'waitlist.offered',
-      aggregateId: 'wait_entry_1',
-      organizationId: 'org_1',
-      actorId: 'admin_1',
-      occurredAt: now.getTime(),
-      payload: {
-        entryId: 'wait_entry_1',
-        eventId: 'event_1',
-        tierId: 'tier_1',
-        reservationId: 'hold_1',
-        expiresAt: new Date(now.getTime() + 10 * 60_000).toISOString(),
-      },
-    });
+    const sendTransactionalEmail = vi.fn(async () => ({ providerMessageId: 'unused' }));
     const deps = {
-      config: { clock: { now: () => now } },
       emailDeliveries,
-      emailSender: {
-        name: 'resend',
-        sendTransactionalEmail: async (message: (typeof sent)[number]) => {
-          sent.push(message);
-          return { providerMessageId: 'waitlist-offer-message' };
-        },
-      },
-      repositories: {
-        waitlist: {
-          getById: async () => ({
-            id: 'wait_entry_1',
-            userId: 'guest_1',
-            eventId: 'event_1',
-            tierId: 'tier_1',
-            status: 'offered',
-            offerReservationId: 'hold_1',
-            offerExpiresAt: event.payload.expiresAt,
-          }),
-        },
-        users: {
-          getById: async () => ({
-            id: 'guest_1',
-            email: 'guest@real.test',
-            emailVerified: true,
-          }),
-        },
-        events: { getById: async () => ({ id: 'event_1', title: '<Sky Night>' }) },
-      },
+      emailSender: { name: 'resend', sendTransactionalEmail },
+      repositories: {},
     } as unknown as ServiceDeps;
-    const consumer = createTransactionalEmailConsumer(deps);
-
-    await consumer(event);
-    await consumer(event);
-
-    expect(sent).toHaveLength(1);
-    expect(sent[0]?.to).toBe('guest@real.test');
-    expect(sent[0]?.html).toContain('&lt;Sky Night&gt;');
-    expect(sent[0]?.html).toContain('will not charge you automatically');
-    expect(sent[0]?.idempotencyKey).toBe('waitlist-offer:wait_entry_1:hold_1');
-    expect([...emailDeliveries.records.values()]).toMatchObject([
-      { kind: 'waitlist_offer', status: 'sent' },
-    ]);
+    await createTransactionalEmailConsumer(deps)(
+      domainEvent({
+        id: 'waitlist-offer-excluded',
+        type: 'waitlist.offered',
+        aggregateId: 'wait_entry_1',
+        organizationId: 'org_1',
+        actorId: 'admin_1',
+        occurredAt: Date.now(),
+        payload: {
+          entryId: 'wait_entry_1',
+          eventId: 'event_1',
+          tierId: 'tier_1',
+          reservationId: 'hold_1',
+          expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+        },
+      }),
+    );
+    expect(sendTransactionalEmail).not.toHaveBeenCalled();
+    expect(emailDeliveries.records.size).toBe(0);
   });
 
   it('includes a safe old-to-new venue detail in a material event-change email', async () => {
@@ -452,7 +472,7 @@ describe('transactional email consumer', () => {
     ]);
   });
 
-  it('notifies only the verified current holder after an accepted transfer and deduplicates retries', async () => {
+  it('notifies both verified holders after an accepted transfer and deduplicates retries', async () => {
     const sent: { to: string; subject: string; html: string; idempotencyKey: string }[] = [];
     const emailDeliveries = new MemoryEmailDeliveryRepository();
     const deps = {
@@ -469,6 +489,12 @@ describe('transactional email consumer', () => {
       },
       repositories: {
         entitlements: {
+          getTicketTransfer: async () => ({
+            id: 'TRF-notice',
+            senderUserId: 'former_holder',
+            eventId: 'EVT-transfer-notice',
+            status: 'accepted',
+          }),
           getById: async () => ({
             id: 'ENT-transfer-notice',
             eventId: 'EVT-transfer-notice',
@@ -482,7 +508,9 @@ describe('transactional email consumer', () => {
           getById: async (id: string) =>
             id === 'verified_holder'
               ? { id, email: 'holder@real.test', emailVerified: true }
-              : null,
+              : id === 'former_holder'
+                ? { id, email: 'former-holder@real.test', emailVerified: true }
+                : null,
         },
         events: { getById: async () => ({ title: '<Private Event>' }) },
       },
@@ -507,13 +535,15 @@ describe('transactional email consumer', () => {
     await handler(event);
     await handler(event);
 
-    expect(sent).toHaveLength(1);
+    expect(sent).toHaveLength(2);
     expect(sent[0]?.to).toBe('holder@real.test');
+    expect(sent[1]?.to).toBe('former-holder@real.test');
     expect(sent[0]?.idempotencyKey).toBe('ticket-transfer-accepted:TRF-notice:4');
     expect(sent[0]?.html).toContain('&lt;Private Event&gt;');
     expect(sent[0]?.html).not.toContain('TRF-notice');
     expect([...emailDeliveries.records.values()]).toMatchObject([
       { kind: 'ticket_transfer_accepted', status: 'sent' },
+      { kind: 'ticket_transfer_former_holder', status: 'sent' },
     ]);
   });
 
@@ -1011,17 +1041,20 @@ describe('transactional email consumer', () => {
   it('sends idempotent, escaped onboarding status email to the applicant on file', async () => {
     const emailDeliveries = new MemoryEmailDeliveryRepository();
     const sent: { to: string; subject: string; html: string; idempotencyKey: string }[] = [];
-    let status: 'submitted' | 'approved' | 'rejected' = 'submitted';
+    let status: 'submitted' | 'changes_requested' | 'approved' | 'rejected' = 'submitted';
     const application = {
       id: 'request_1',
       userId: 'user_1',
+      requestedType: 'promoter',
       status,
       profile: { legalName: '<Blue Room>' },
+      reviewNote: '<Need one more document>',
     };
     const deps = {
       config: createCoreConfig({
         redis: { url: 'redis://localhost:6379' },
         firestore: { projectId: 'tests' },
+        partnerDashboardUrl: 'https://partners-staging.example.test',
       }),
       emailDeliveries,
       emailSender: {
@@ -1036,50 +1069,40 @@ describe('transactional email consumer', () => {
       },
     } as unknown as ServiceDeps;
     const handler = createTransactionalEmailConsumer(deps);
-    const events = [
-      {
-        type: 'promoter.onboarding.submitted' as const,
-        payload: { requestId: application.id },
-      },
-      {
-        type: 'promoter.onboarding.approved' as const,
-        payload: { requestId: application.id, promoterId: 'promoter_1' },
-      },
-      {
-        type: 'promoter.onboarding.rejected' as const,
-        payload: { requestId: application.id },
-      },
-    ];
+    const statuses = ['submitted', 'changes_requested', 'approved', 'rejected'] as const;
 
-    for (const [index, item] of events.entries()) {
-      status = item.type.endsWith('submitted')
-        ? 'submitted'
-        : item.type.endsWith('approved')
-          ? 'approved'
-          : 'rejected';
+    for (const [index, emailStatus] of statuses.entries()) {
+      status = emailStatus;
       const event = domainEvent({
         id: `onboarding-event-${index}`,
-        type: item.type,
+        type: 'partner.onboarding.email_requested',
         aggregateId: application.id,
         organizationId: 'user_1',
         actorId: 'actor_1',
-        payload: item.payload,
+        payload: { requestId: application.id, status: emailStatus },
         occurredAt: Date.now(),
       });
       await handler(event);
       await handler(event);
     }
 
-    expect(sent).toHaveLength(3);
+    expect(sent).toHaveLength(4);
     expect(sent[0]?.to).toBe('applicant@partner.test');
     expect(sent.map((message) => message.idempotencyKey)).toEqual([
       'promoter-onboarding:request_1:submitted',
+      'promoter-onboarding:request_1:changes_requested',
       'promoter-onboarding:request_1:approved',
       'promoter-onboarding:request_1:rejected',
     ]);
-    expect(sent[0]?.html).toContain('&lt;Blue Room&gt;');
-    expect(sent[0]?.html).not.toContain('<Blue Room>');
-    expect([...emailDeliveries.records.values()]).toHaveLength(3);
+    expect(sent[0]?.html).toContain('https://partners-staging.example.test/onboard');
+    expect(sent[1]?.subject).toBe('Your Promoter application needs an update');
+    expect(sent[1]?.html).toContain('https://partners-staging.example.test/onboard');
+    expect(sent[2]?.html).toContain(
+      'https://partners-staging.example.test/partner/promoter/overview',
+    );
+    expect(sent[3]?.html).toContain('&lt;Need one more document&gt;');
+    expect(sent[3]?.html).not.toContain('<Need one more document>');
+    expect([...emailDeliveries.records.values()]).toHaveLength(4);
     expect(
       [...emailDeliveries.records.values()].every((row) => !row.recipientHash.includes('@')),
     ).toBe(true);
@@ -1241,6 +1264,110 @@ describe('transactional email consumer', () => {
     expect(html).not.toContain('provider-refund');
   });
 
+  it('notifies only the verified purchaser when a refund is canonically rejected', async () => {
+    const sent: { to: string; html: string; idempotencyKey: string }[] = [];
+    const deps = {
+      config: createCoreConfig({
+        redis: { url: 'redis://localhost:6379' },
+        firestore: { projectId: 'tests' },
+      }),
+      emailDeliveries: new MemoryEmailDeliveryRepository(),
+      emailSender: {
+        sendTransactionalEmail: async (message: (typeof sent)[number]) => {
+          sent.push(message);
+          return { providerMessageId: 'refund-declined' };
+        },
+      },
+      repositories: {
+        orders: {
+          getById: async () => ({
+            id: 'order-refund-rejected',
+            status: 'paid',
+            userId: 'purchaser',
+            contact: { email: 'untrusted-contact@real.test' },
+            bookingReference: 'C1-R',
+          }),
+        },
+        refundRequests: { getById: async () => ({ id: 'refund-rejected', status: 'rejected' }) },
+        users: {
+          getById: async () => ({
+            id: 'purchaser',
+            email: 'purchaser@real.test',
+            emailVerified: true,
+          }),
+        },
+        events: {
+          getById: async () => ({
+            title: 'Refund Event',
+            startAt: '2026-11-06T18:00:00Z',
+            venueId: null,
+          }),
+        },
+      },
+    } as unknown as ServiceDeps;
+    await createTransactionalEmailConsumer(deps)(
+      domainEvent({
+        id: 'refund-finalized-rejected',
+        type: 'finance.refund.finalized',
+        aggregateId: 'refund-rejected',
+        organizationId: 'org',
+        actorId: 'admin',
+        occurredAt: 1,
+        payload: {
+          refundRequestId: 'refund-rejected',
+          orderId: 'order-refund-rejected',
+          status: 'rejected',
+        },
+      }),
+    );
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.to).toBe('purchaser@real.test');
+    expect(sent[0]?.html).toContain('No refund was issued');
+    expect(sent[0]?.idempotencyKey).toBe('refund-not-completed:refund-rejected:rejected');
+  });
+
+  it('does not email a provider-failed refund outcome under the completed-or-declined policy', async () => {
+    const send = vi.fn(async () => ({ providerMessageId: 'must-not-send' }));
+    const emailDeliveries = new MemoryEmailDeliveryRepository();
+    const deps = {
+      config: createCoreConfig({
+        redis: { url: 'redis://localhost:6379' },
+        firestore: { projectId: 'tests' },
+      }),
+      emailDeliveries,
+      emailSender: { sendTransactionalEmail: send },
+      repositories: {
+        orders: {
+          getById: async () => ({
+            id: 'order-refund-failed',
+            status: 'paid',
+            contact: { email: 'purchaser@real.test' },
+          }),
+        },
+        refundRequests: { getById: async () => ({ id: 'refund-failed', status: 'failed' }) },
+      },
+    } as unknown as ServiceDeps;
+
+    await createTransactionalEmailConsumer(deps)(
+      domainEvent({
+        id: 'refund-finalized-failed',
+        type: 'finance.refund.finalized',
+        aggregateId: 'refund-failed',
+        organizationId: 'org',
+        actorId: 'system:internal',
+        occurredAt: 1,
+        payload: {
+          refundRequestId: 'refund-failed',
+          orderId: 'order-refund-failed',
+          status: 'failed',
+        },
+      }),
+    );
+
+    expect(send).not.toHaveBeenCalled();
+    expect(emailDeliveries.records.size).toBe(0);
+  });
+
   it('renders cancellation updates with stable per-event-version delivery identity', async () => {
     let key = '';
     let html = '';
@@ -1283,20 +1410,23 @@ describe('transactional email consumer', () => {
     await createTransactionalEmailConsumer(deps)(
       domainEvent({
         id: 'order-affected',
-        type: 'event.cancellation.order_affected',
+        type: 'event.cancellation.email_requested',
         aggregateId: order.id,
         organizationId: 'org',
         actorId: 'partner',
         payload: {
           eventId: 'event_c',
           orderId: order.id,
-          refundRequestId: 'refund_c',
+          entitlementId: null,
+          eventVersion: 7,
           reason: '<Weather>',
         },
         occurredAt: Date.now(),
       }),
     );
-    expect(key).toBe('event-change:event_c:7:order_c');
+    expect(key).toBe(
+      `event-cancelled:event_c:7:order_c:${createHash('sha256').update('guest@real.test').digest('hex')}`,
+    );
     expect(html).toContain('&lt;Cancelled&gt;');
     expect(html).toContain('&lt;Weather&gt;');
     expect(html).toContain('existing review process');
@@ -1381,11 +1511,10 @@ describe('transactional email consumer', () => {
     const affected = outbox
       .all()
       .filter((row) => row.type === 'event.material_change.order_affected');
-    expect(affected).toHaveLength(2);
+    expect(affected).toHaveLength(1);
     expect(affected[0]?.aggregateId).toBe('paid_1');
     expect(affected).toMatchObject([
       { payload: { payload: { entitlementId: 'entitlement_paid_1' } } },
-      { payload: { payload: { entitlementId: null } } },
     ]);
   });
 
@@ -1430,7 +1559,7 @@ describe('transactional email consumer', () => {
     );
     expect(attempts).toBe(1);
     expect([...emailDeliveries.records.values()][0]).toMatchObject({
-      status: 'failed',
+      status: 'permanent_failure',
       retryCount: 1,
       providerMessageId: null,
     });

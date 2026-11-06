@@ -1,0 +1,10 @@
+Variant: Venue application changes requested
+Template: partner_onboarding_changes_requested
+Subject: Your Venue application needs an update
+Preheader: Review the latest status of your application.
+Primary action: CONTINUE YOUR APPLICATION→
+Layout family: Partner / KYC
+Recipient fixture: preview.guest@synthetic.test (synthetic; local capture only)
+Event, account, booking and financial data: synthetic fixtures only
+Capture path: actual createTransactionalEmailConsumer; local in-memory capture sender
+Resend: not invoked in preview generation

@@ -1,0 +1,5 @@
+Promoter assignments suspended
+
+3 event assignments were paused by an administrator. Sign in to the partner workspace for current details.
+
+View assignments (https://partner.example.test/partner/promoter/overview)

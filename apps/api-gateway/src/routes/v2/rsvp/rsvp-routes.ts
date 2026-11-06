@@ -85,6 +85,7 @@ export default async function rsvpRoutes(fastify: FastifyInstance) {
             accessGrantId: body.accessGrantId,
             eligibilityAttested: body.eligibilityAttested,
             referralCode: body.referralCode ?? null,
+            referralContextTokens: body.referralContextTokens,
           });
           const payload = {
             order: orderToDto(order),

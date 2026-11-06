@@ -1,0 +1,10 @@
+Variant: Refund completed
+Template: refund_completed
+Subject: Your ₹1,250.00 refund is complete
+Preheader: A final update on your refund request.
+Primary action: VIEW YOUR TICKETS→
+Layout family: Financial / operational
+Recipient fixture: preview.guest@synthetic.test (synthetic; local capture only)
+Event, account, booking and financial data: synthetic fixtures only
+Capture path: actual createTransactionalEmailConsumer; local in-memory capture sender
+Resend: not invoked in preview generation

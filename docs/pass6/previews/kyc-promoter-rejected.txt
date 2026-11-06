@@ -1,0 +1,7 @@
+Application update.
+
+Your promoter application was not approved.
+Synthetic review note: please add the missing public venue detail.
+Review application status (https://partner.example.test/onboard)
+
+Review your application in the C1RCLE partner workspace.

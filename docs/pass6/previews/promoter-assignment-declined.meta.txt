@@ -1,0 +1,10 @@
+Variant: Promoter assignment declined
+Template: promoter_assignment_status
+Subject: A C1RCLE Promoter assignment was declined
+Preheader: Review the latest update to your assignment.
+Primary action: VIEW ASSIGNMENTS→
+Layout family: Partner / KYC
+Recipient fixture: preview.guest@synthetic.test (synthetic; local capture only)
+Event, account, booking and financial data: synthetic fixtures only
+Capture path: actual createTransactionalEmailConsumer; local in-memory capture sender
+Resend: not invoked in preview generation

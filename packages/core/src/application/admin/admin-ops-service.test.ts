@@ -6,6 +6,7 @@ import { createPlatformAdmin, type AdminRole } from '../../domain/models/admin-a
 import { createPromoterAssignment } from '../../domain/models/event-catalog.js';
 import { createEventCoverAccount } from '../../domain/models/event-cover.js';
 import { createOrder } from '../../domain/models/order.js';
+import { createOrganization } from '../../domain/models/organization.js';
 import { calculatePricing } from '../../domain/models/pricing.js';
 import { LoggingEmailSender } from '../../domain/ports/email-sender.js';
 import { EchoObjectStorage } from '../../domain/ports/object-storage.js';
@@ -64,10 +65,11 @@ describe('AdminOperationsService — promoter & settings authority', () => {
       firestore: { projectId: 'test-project' },
     });
     const adminAudit = new MemoryAdminAuditRepository();
+    const outbox = new MemoryOutboxStore();
     const deps: ServiceDeps = {
       config,
       logger: noopLogger,
-      outbox: new MemoryOutboxStore(),
+      outbox,
       emailDeliveries: new MemoryEmailDeliveryRepository(),
       adminAudit,
       verification: new FormatCheckVerificationProvider(),
@@ -86,7 +88,7 @@ describe('AdminOperationsService — promoter & settings authority', () => {
       }),
       repositories,
     };
-    return { deps, config, repositories, adminAudit };
+    return { deps, config, repositories, adminAudit, outbox };
   }
 
   async function seedPromoter(catalog: EventCatalogRepository, promoterId: string, count = 1) {
@@ -105,6 +107,21 @@ describe('AdminOperationsService — promoter & settings authority', () => {
 
   async function seedAdmin(admins: PlatformAdminRepository, userId: string, role: AdminRole) {
     await admins.save(createPlatformAdmin({ id: userId, email: `${userId}@c1rcle.test`, role }));
+  }
+
+  async function seedPromoterOrganization(
+    repositories: ReturnType<typeof buildRepositories>,
+    promoterId: string,
+  ) {
+    await repositories.organizations.save(
+      createOrganization({
+        id: promoterId,
+        name: 'Promoter',
+        slug: promoterId,
+        ownerId: `user_${promoterId}`,
+        capabilities: ['promoter'],
+      }),
+    );
   }
 
   it('F1+F2: a support-tier admin cannot suspend or reinstate a promoter', async () => {
@@ -185,6 +202,96 @@ describe('AdminOperationsService — promoter & settings authority', () => {
       .all()
       .filter((r) => r.action === 'PROMOTER_SUSPEND' && r.targetId === 'promoter_3');
     expect(records).toHaveLength(1);
+  });
+
+  it('suspends accepted, active, and invited assignments, blocks the organization, and is idempotent', async () => {
+    const { deps, repositories, adminAudit, outbox } = makeDeps();
+    await seedAdmin(repositories.platformAdmins, 'admin_ops', 'ops');
+    await seedPromoterOrganization(repositories, 'promoter_current');
+    for (const [id, status] of [
+      ['accepted_assignment', 'accepted'],
+      ['active_assignment', 'active'],
+      ['invited_assignment', 'invited'],
+    ] as const) {
+      await repositories.catalog.saveAssignment(
+        createPromoterAssignment({
+          id,
+          eventId: `event_${id}`,
+          promoterId: 'promoter_current',
+          status,
+          terms: { ratePercent: 10, flatPaise: 0, version: 1 },
+        }),
+      );
+    }
+
+    const authority = new AdminAuthorityService(deps);
+    const ops = new AdminOperationsService(deps, authority);
+    const suspended = await ops.suspendPromoter('admin_ops', 'promoter_current', 'Policy review');
+
+    expect(suspended.affected).toBe(3);
+    expect((await repositories.organizations.getById('promoter_current'))?.status).toBe(
+      'suspended',
+    );
+    expect(await repositories.catalog.listAssignmentsByPromoter('promoter_current')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'accepted_assignment',
+          status: 'suspended',
+          suspendedFromStatus: 'accepted',
+        }),
+        expect.objectContaining({
+          id: 'active_assignment',
+          status: 'suspended',
+          suspendedFromStatus: 'active',
+        }),
+        expect.objectContaining({
+          id: 'invited_assignment',
+          status: 'suspended',
+          suspendedFromStatus: 'invited',
+        }),
+      ]),
+    );
+    const pending = await outbox.listPending();
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.type).toBe('promoter.assignments.status_changed');
+    const emitted = pending[0]?.payload as { payload: unknown } | undefined;
+    expect(emitted?.payload).toMatchObject({
+      promoterId: 'promoter_current',
+      status: 'suspended',
+      affectedAssignments: 3,
+    });
+    expect(adminAudit.all().filter((entry) => entry.action === 'PROMOTER_SUSPEND')).toHaveLength(1);
+
+    const repeated = await ops.suspendPromoter('admin_ops', 'promoter_current', 'Retry');
+    expect(repeated.affected).toBe(0);
+    expect(await outbox.listPending()).toHaveLength(1);
+    expect(adminAudit.all().filter((entry) => entry.action === 'PROMOTER_SUSPEND')).toHaveLength(1);
+  });
+
+  it('reinstates invited assignments as invitations rather than activating them', async () => {
+    const { deps, repositories } = makeDeps();
+    await seedAdmin(repositories.platformAdmins, 'admin_ops', 'ops');
+    await seedPromoterOrganization(repositories, 'promoter_invited');
+    await repositories.catalog.saveAssignment(
+      createPromoterAssignment({
+        id: 'invited_assignment',
+        eventId: 'event_invited',
+        promoterId: 'promoter_invited',
+        status: 'invited',
+        terms: { ratePercent: 10, flatPaise: 0, version: 1 },
+      }),
+    );
+    const ops = new AdminOperationsService(deps, new AdminAuthorityService(deps));
+
+    await ops.suspendPromoter('admin_ops', 'promoter_invited', 'Policy review');
+    await ops.reinstatePromoter('admin_ops', 'promoter_invited', 'Review complete');
+
+    expect((await repositories.organizations.getById('promoter_invited'))?.status).toBe('active');
+    expect(await repositories.catalog.getAssignmentById('invited_assignment')).toMatchObject({
+      status: 'invited',
+      suspendedAt: null,
+      suspendedFromStatus: null,
+    });
   });
 
   it('F4: every platform-settings update writes an audit record', async () => {
@@ -434,5 +541,35 @@ describe('AdminOperationsService — promoter & settings authority', () => {
       settlementEligible: false,
       balanced: true,
     });
+  });
+
+  it('restricts email delivery evidence to Admin and never exposes rendered content', async () => {
+    const { deps, repositories } = makeDeps();
+    await seedAdmin(repositories.platformAdmins, 'admin_support', 'support');
+    const delivery = {
+      id: 'MAIL-safe',
+      aggregateId: 'ORD-private',
+      kind: 'booking_receipt',
+      status: 'sent' as const,
+      recipientHash: 'hashed-recipient',
+      retryCount: 1,
+      providerMessageId: 'provider-request-id',
+      createdAt: 1,
+      updatedAt: 2,
+      sentAt: 2,
+      lastError: null,
+      leaseExpiresAt: null,
+    };
+    await deps.emailDeliveries.createIfAbsent(delivery);
+    const ops = new AdminOperationsService(deps, new AdminAuthorityService(deps));
+
+    await expect(ops.listEmailDeliveries('guest_1', 'ORD-private')).rejects.toThrow(
+      'Platform admin authority required',
+    );
+    await expect(ops.listEmailDeliveries('admin_support', 'ORD-private')).resolves.toEqual([
+      delivery,
+    ]);
+    expect(JSON.stringify(delivery)).not.toContain('html');
+    expect(JSON.stringify(delivery)).not.toContain('recipient@example.test');
   });
 });

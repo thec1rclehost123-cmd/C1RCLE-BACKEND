@@ -114,6 +114,8 @@ export const checkoutQuoteRequestSchema = z
     lines: z.array(checkoutLineRequestSchema).min(1),
     promoCode: z.string().optional().nullable(),
     referralCode: z.string().optional().nullable(),
+    /** Server-issued event-bound click contexts, newest first. */
+    referralContextTokens: z.array(z.string().min(16).max(2048)).max(20).optional(),
     /** Source entitlement when quoting a bounded one-ticket upgrade. */
     upgradeFromEntitlementId: opaqueIdSchema.optional(),
   })
@@ -149,6 +151,8 @@ export const checkoutHoldRequestSchema = z
     lines: z.array(checkoutLineRequestSchema).min(1),
     promoCode: z.string().optional().nullable(),
     referralCode: z.string().optional().nullable(),
+    /** Server-issued event-bound click contexts, newest first. */
+    referralContextTokens: z.array(z.string().min(16).max(2048)).max(20).optional(),
     /** Source entitlement when reserving a bounded one-ticket upgrade. */
     upgradeFromEntitlementId: opaqueIdSchema.optional(),
     /**
@@ -485,6 +489,8 @@ export const rsvpRequestSchema = z
     accessGrantId: opaqueIdSchema.optional(),
     eligibilityAttested: z.boolean().optional(),
     referralCode: z.string().trim().min(1).max(64).optional(),
+    /** Server-issued event-bound click contexts, newest first. */
+    referralContextTokens: z.array(z.string().min(16).max(2048)).max(20).optional(),
   })
   .strict();
 export type RsvpRequest = z.infer<typeof rsvpRequestSchema>;

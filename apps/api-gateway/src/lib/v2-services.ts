@@ -132,6 +132,7 @@ import { BetterAuthStaffCredentialProvisioner } from './auth/staff-credential-pr
 import { ResendEmailSender } from './notifications/resend-email-sender.js';
 import { RazorpayPaymentProvider } from './payments/razorpay-adapter.js';
 import { UnconfiguredPaymentProvider } from './payments/unconfigured-provider.js';
+import { subscribeTransactionalEmailConsumer } from './transactional-email-wiring.js';
 import { FirebasePhoneVerificationProvider } from './verification/firebase-phone-verifier.js';
 
 import type { GatewayConfig } from '../config/index.js';
@@ -507,6 +508,9 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     gwConfig.RESEND_API_KEY,
     gwConfig.NODE_ENV,
     resolvedLogger,
+    gwConfig.RESEND_FROM_EMAIL,
+    gwConfig.RESEND_NON_PROD_TEST_RECIPIENT,
+    gwConfig.RESEND_ENFORCE_TEST_RECIPIENT_ALLOWLIST,
   );
 
   // B10: auth is only real on the firestore driver — see plugins/auth.ts and
@@ -568,19 +572,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   eventBus.subscribe('finance.refund.finalized', eventCancellation.handle);
   eventBus.subscribe('finance.refund.settled', eventCancellation.handle);
   const transactionalEmailConsumer = createTransactionalEmailConsumer(deps);
-  eventBus.subscribe('order.fulfilled', transactionalEmailConsumer);
-  eventBus.subscribe('ticket.issued', transactionalEmailConsumer);
-  eventBus.subscribe('ticket.transfer.created', transactionalEmailConsumer);
-  eventBus.subscribe('ticket.transfer.invitation_resent', transactionalEmailConsumer);
-  eventBus.subscribe('ticket.transfer.resolved', transactionalEmailConsumer);
-  eventBus.subscribe('waitlist.offered', transactionalEmailConsumer);
-  eventBus.subscribe('payment.support_required', transactionalEmailConsumer);
-  eventBus.subscribe('finance.refund.settled', transactionalEmailConsumer);
-  eventBus.subscribe('finance.payout.status_changed', transactionalEmailConsumer);
-  eventBus.subscribe('event.cancellation.order_affected', transactionalEmailConsumer);
-  eventBus.subscribe('event.updated', transactionalEmailConsumer);
-  eventBus.subscribe('event.material_change.batch_requested', transactionalEmailConsumer);
-  eventBus.subscribe('event.material_change.order_affected', transactionalEmailConsumer);
+  subscribeTransactionalEmailConsumer(eventBus, transactionalEmailConsumer);
   const eventCoverFinancialConsumer = createEventCoverFinancialConsumer({
     eventCoverAccounts: repositories.eventCoverAccounts,
     financialJournals: repositories.financialJournals,

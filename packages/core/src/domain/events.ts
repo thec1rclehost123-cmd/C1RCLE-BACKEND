@@ -125,6 +125,13 @@ export interface EventPayloads {
     refundRequestId: EntityId | null;
     reason: string;
   };
+  'event.cancellation.email_requested': {
+    eventId: EntityId;
+    orderId: EntityId;
+    entitlementId: EntityId | null;
+    eventVersion: number;
+    reason: string;
+  };
   'order.fulfilled': { orderId: EntityId; eventId: EntityId; receiptFacts?: OrderReceiptFacts };
   /** Durable per-entitlement issuance fact with explicit purchaser/holder roles. */
   'ticket.issued': {
@@ -326,6 +333,10 @@ export interface EventPayloads {
   'promoter.onboarding.approved': { requestId: EntityId; promoterId: EntityId };
   'promoter.onboarding.submitted': { requestId: EntityId };
   'promoter.onboarding.rejected': { requestId: EntityId };
+  'partner.onboarding.email_requested': {
+    requestId: EntityId;
+    status: 'submitted' | 'changes_requested' | 'approved' | 'rejected';
+  };
   'promoter.assignments.status_changed': {
     promoterId: EntityId;
     status: 'suspended' | 'active';

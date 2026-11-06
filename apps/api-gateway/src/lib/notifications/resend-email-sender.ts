@@ -1,3 +1,10 @@
+import {
+  escapeEmailHtml,
+  renderC1rcleBrandHeader,
+  renderC1rcleEditorialEyebrow,
+  renderC1rcleEmailShell,
+  renderC1rclePrimaryCta,
+} from '@c1rcle/core/application';
 import { PermanentEmailDeliveryError } from '@c1rcle/core/domain';
 
 import type { Logger } from '@c1rcle/core';
@@ -9,7 +16,7 @@ import type {
 } from '@c1rcle/core/domain';
 
 /**
- * ─── Resend email sender (OTP + staff-invitation delivery) ───────────────────
+ * ─── Resend email sender (auth + transactional delivery) ─────────────────────
  * Ported from v1's `guest-otp.ts` `sendEmail` — same provider, same template
  * intent, same fail-closed rule: without `RESEND_API_KEY` this throws in
  * production rather than silently no-op'ing (checked at send time, not at
@@ -24,142 +31,119 @@ import type {
  */
 export class ResendEmailSender implements EmailSender {
   readonly name = 'resend';
+  readonly localCaptures: {
+    deliveryIntentId: string | null;
+    sender: string | null;
+    recipient: string;
+    templateType: string;
+    subject: string;
+    preheader: string | null;
+    html: string;
+    text: string | null;
+    idempotencyKey: string;
+    capturedAt: string;
+  }[] = [];
 
   constructor(
     private readonly apiKey: string | undefined,
     private readonly nodeEnv: 'development' | 'test' | 'production',
     private readonly logger: Logger,
+    private readonly fromEmail?: string,
+    private readonly nonProductionTestRecipient?: string,
+    private readonly enforceTestRecipientAllowlist = false,
   ) {}
 
   async sendOtpEmail(recipient: string, code: string): Promise<void> {
-    if (!this.apiKey) {
-      if (this.nodeEnv === 'production') {
-        throw new Error('Email provider not configured');
-      }
+    if (!this.canSendToProvider(recipient)) {
+      if (this.nodeEnv === 'production') throw new Error('Email provider not configured');
       this.logger.info('dev_email_otp', { delivery: 'suppressed' });
       return;
     }
+    const rendered = renderBrandedEmail({
+      preheader: 'Your C1RCLE access code.',
+      eyebrow: 'EMAIL VERIFICATION',
+      heading: 'Your access code.',
+      bodyHtml: `<p>Use this code for your secure access. It expires in 10 minutes.</p><p style="margin:24px 0;color:#ffffff;font-size:36px;line-height:1.1;font-weight:800;letter-spacing:8px;">${escapeEmailHtml(code)}</p>`,
+      bodyText: `This code is for your secure access. It expires in 10 minutes.
 
-    const response = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        from: 'noreply@thec1rcle.com',
-        to: recipient,
-        subject: 'Your Access Key',
-        html: `
-                <div style="background-color:#000;color:#fff;padding:40px;font-family:sans-serif;text-align:center;">
-                    <h1 style="color:#FF5A00;text-transform:uppercase;letter-spacing:5px;">THE C1RCLE</h1>
-                    <p style="text-transform:uppercase;letter-spacing:2px;color:#666;font-size:12px;">Identity Authorization</p>
-                    <div style="margin:40px 0;font-size:48px;font-weight:900;letter-spacing:10px;color:#fff;">${code}</div>
-                    <p style="color:#666;font-size:10px;text-transform:uppercase;">This code is for your secure access.<br/>It will expire in 10 minutes.</p>
-                </div>
-            `,
-      }),
+${code}`,
     });
-
-    if (!response.ok) {
-      const errorData = (await response.json().catch(() => ({}))) as { message?: string };
-      throw new Error(errorData.message ?? 'Unable to send authorization code.');
-    }
+    await this.sendAuthEmail(
+      recipient,
+      'Your Access Key',
+      rendered.html,
+      rendered.text,
+      'Unable to send authorization code.',
+    );
   }
 
   async sendStaffInvitationEmail(invitation: StaffInvitationEmail): Promise<void> {
-    if (!this.apiKey) {
-      if (this.nodeEnv === 'production') {
-        throw new Error('Email provider not configured');
-      }
+    if (!this.canSendToProvider(invitation.to)) {
+      if (this.nodeEnv === 'production') throw new Error('Email provider not configured');
       this.logger.info('dev_email_staff_invitation', { delivery: 'suppressed' });
       return;
     }
 
     const roleLabel = invitation.role.charAt(0).toUpperCase() + invitation.role.slice(1);
-    const capabilityLine =
-      invitation.capabilities.length > 0 ? `Access: ${invitation.capabilities.join(', ')}.` : null;
-    const expiresLine = `This invite expires on ${invitation.expiresAt}.`;
-    const credentialsBlock = invitation.temporaryPassword
-      ? `<div style="margin:24px 0;padding:20px;border:1px solid #333;text-align:left;">
-           <p style="color:#999;font-size:10px;text-transform:uppercase;letter-spacing:2px;margin:0 0 12px;">Your sign-in credentials</p>
-           <p style="font-size:14px;margin:6px 0;">Email: <strong>${invitation.to}</strong></p>
-           <p style="font-size:14px;margin:6px 0;">Temporary password: <strong style="letter-spacing:2px;">${invitation.temporaryPassword}</strong></p>
-           <p style="color:#999;font-size:11px;">You'll set your own password the first time you sign in.</p>
-         </div>`
+    const details = [
+      `You've been invited to join ${invitation.orgName} as ${roleLabel}.`,
+      ...invitation.capabilities.map((capability) => `Access: ${capability}.`),
+      ...(invitation.temporaryPassword
+        ? [
+            `Email: ${invitation.to}`,
+            `Temporary password: ${invitation.temporaryPassword}`,
+            `You'll set your own password the first time you sign in.`,
+          ]
+        : []),
+      `This invite expires on ${invitation.expiresAt}.`,
+      ...(invitation.acceptUrl ? [] : ['Ask your manager for the invite link to accept.']),
+    ];
+    const capabilityHtml = invitation.capabilities.length
+      ? `<p style="color:#a0a0a0;">Access: ${invitation.capabilities.map(escapeEmailHtml).join(', ')}.</p>`
       : '';
-    // One hero CTA by design: the accept page signs the invitee in (email
-    // prefilled), walks the first-login rotation, then finishes the accept
-    // itself — no second button to wonder about.
-    const actionBlock = invitation.acceptUrl
-      ? `<a href="${invitation.acceptUrl}" style="display:inline-block;margin:32px 0;padding:14px 32px;background-color:#FF5A00;color:#fff;text-decoration:none;text-transform:uppercase;letter-spacing:2px;font-size:12px;font-weight:700;">Accept invite</a>
-         <p style="color:#666;font-size:10px;">If the button doesn't work, open this link:<br/>${invitation.acceptUrl}</p>`
-      : `<p style="color:#666;font-size:10px;text-transform:uppercase;">Ask your manager for the invite link to accept.</p>`;
-
-    const response = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        from: 'noreply@thec1rcle.com',
-        to: invitation.to,
-        subject: `Join ${invitation.orgName} on THE C1RCLE`,
-        html: `
-                <div style="background-color:#000;color:#fff;padding:40px;font-family:sans-serif;text-align:center;">
-                    <h1 style="color:#FF5A00;text-transform:uppercase;letter-spacing:5px;">THE C1RCLE</h1>
-                    <p style="text-transform:uppercase;letter-spacing:2px;color:#666;font-size:12px;">Team invitation</p>
-                    <p style="font-size:16px;">You've been invited to join <strong>${invitation.orgName}</strong> as <strong>${roleLabel}</strong>.</p>
-                    ${capabilityLine ? `<p style="color:#999;font-size:12px;">${capabilityLine}</p>` : ''}
-                    ${credentialsBlock}
-                    ${actionBlock}
-                    <p style="color:#666;font-size:10px;text-transform:uppercase;">${expiresLine}</p>
-                </div>
-            `,
-      }),
+    const credentialHtml = invitation.temporaryPassword
+      ? `<p>Email: <strong>${escapeEmailHtml(invitation.to)}</strong><br />Temporary password: <strong>${escapeEmailHtml(invitation.temporaryPassword)}</strong></p><p>You'll set your own password the first time you sign in.</p>`
+      : '';
+    const rendered = renderBrandedEmail({
+      preheader: `An invitation to join ${invitation.orgName} on THE C1RCLE.`,
+      eyebrow: 'STAFF INVITATION',
+      heading: "You're invited.",
+      bodyHtml: `<p>You've been invited to join <strong>${escapeEmailHtml(invitation.orgName)}</strong> as <strong>${escapeEmailHtml(roleLabel)}</strong>.</p>${capabilityHtml}${credentialHtml}<p>This invite expires on ${escapeEmailHtml(invitation.expiresAt)}.</p>${invitation.acceptUrl ? '' : '<p>Ask your manager for the invite link to accept.</p>'}`,
+      bodyText: details.join('\n'),
+      ...(invitation.acceptUrl
+        ? { action: { url: invitation.acceptUrl, label: 'Accept invite' } }
+        : {}),
     });
-
-    if (!response.ok) {
-      const errorData = (await response.json().catch(() => ({}))) as { message?: string };
-      throw new Error(errorData.message ?? 'Unable to send staff invitation.');
-    }
+    await this.sendAuthEmail(
+      invitation.to,
+      `Join ${invitation.orgName} on THE C1RCLE`,
+      rendered.html,
+      rendered.text,
+      'Unable to send staff invitation.',
+    );
   }
 
   async sendPasswordResetEmail(recipient: string, resetUrl: string): Promise<void> {
-    if (!this.apiKey) {
-      if (this.nodeEnv === 'production') {
-        throw new Error('Email provider not configured');
-      }
+    if (!this.canSendToProvider(recipient)) {
+      if (this.nodeEnv === 'production') throw new Error('Email provider not configured');
       this.logger.info('dev_email_password_reset', { delivery: 'suppressed' });
       return;
     }
-
-    const response = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        from: 'noreply@thec1rcle.com',
-        to: recipient,
-        subject: 'Reset your password',
-        html: `
-                <div style="background-color:#000;color:#fff;padding:40px;font-family:sans-serif;text-align:center;">
-                    <h1 style="color:#FF5A00;text-transform:uppercase;letter-spacing:5px;">THE C1RCLE</h1>
-                    <p style="text-transform:uppercase;letter-spacing:2px;color:#666;font-size:12px;">Password Reset</p>
-                    <p style="color:#fff;font-size:16px;margin:24px 0;">Click below to choose a new password. The link expires in 1 hour.</p>
-                    <a href="${resetUrl}" style="display:inline-block;background:#FF5A00;color:#fff;text-transform:uppercase;letter-spacing:2px;font-size:14px;font-weight:700;padding:16px 32px;text-decoration:none;border-radius:6px;">Reset password</a>
-                </div>
-            `,
-      }),
+    const rendered = renderBrandedEmail({
+      preheader: 'Choose a new password for your C1RCLE account.',
+      eyebrow: 'ACCOUNT SECURITY',
+      heading: 'Reset your password.',
+      bodyHtml: '<p>Click below to choose a new password. The link expires in 1 hour.</p>',
+      bodyText: 'Click below to choose a new password. The link expires in 1 hour.',
+      action: { url: resetUrl, label: 'Reset password' },
     });
-
-    if (!response.ok) {
-      const errorData = (await response.json().catch(() => ({}))) as { message?: string };
-      throw new Error(errorData.message ?? 'Unable to send password reset email.');
-    }
+    await this.sendAuthEmail(
+      recipient,
+      'Reset your password',
+      rendered.html,
+      rendered.text,
+      'Unable to send password reset email.',
+    );
   }
 
   /**
@@ -171,57 +155,59 @@ export class ResendEmailSender implements EmailSender {
     recipient: string,
     params: OnboardingChangesRequestedEmailParams,
   ): Promise<void> {
-    if (!this.apiKey) {
-      if (this.nodeEnv === 'production') {
-        throw new Error('Email provider not configured');
-      }
+    if (!this.canSendToProvider(recipient)) {
+      if (this.nodeEnv === 'production') throw new Error('Email provider not configured');
       this.logger.info('dev_email_onboarding_changes_requested', {
-        recipient,
-        legalName: params.legalName,
+        delivery: 'suppressed',
         noteLength: params.note.length,
       });
       return;
     }
+    const rendered = renderBrandedEmail({
+      preheader: 'A reviewer requested changes to your application.',
+      eyebrow: 'PARTNER APPLICATION',
+      heading: 'One more thing.',
+      bodyHtml: `<p>Hi ${escapeEmailHtml(params.legalName)},</p><p>A reviewer asked for changes before your application can proceed:</p><p style="white-space:pre-wrap;">${escapeEmailHtml(params.note)}</p><p>Sign back in to update your application and resubmit.</p>`,
+      bodyText: `Hi ${params.legalName},
 
-    const response = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        from: 'noreply@thec1rcle.com',
-        to: recipient,
-        subject: 'Action needed on your C1RCLE partner application',
-        html: `
-                <div style="background-color:#000;color:#fff;padding:40px;font-family:sans-serif;text-align:center;">
-                    <h1 style="color:#FF5A00;text-transform:uppercase;letter-spacing:5px;">THE C1RCLE</h1>
-                    <p style="text-transform:uppercase;letter-spacing:2px;color:#666;font-size:12px;">Partner Application</p>
-                    <p style="color:#fff;font-size:16px;margin:24px 0 8px;">Hi ${escapeHtml(params.legalName)},</p>
-                    <p style="color:#ccc;font-size:14px;">A reviewer asked for changes before your application can proceed:</p>
-                    <div style="margin:24px 0;padding:16px;background:#111;color:#fff;font-size:14px;text-align:left;white-space:pre-wrap;">${escapeHtml(params.note)}</div>
-                    <p style="color:#666;font-size:10px;text-transform:uppercase;">Sign back in to update your application and resubmit.</p>
-                </div>
-            `,
-      }),
+A reviewer asked for changes before your application can proceed:
+
+${params.note}
+
+Sign back in to update your application and resubmit.`,
     });
-
-    if (!response.ok) {
-      const errorData = (await response.json().catch(() => ({}))) as { message?: string };
-      throw new Error(errorData.message ?? 'Unable to send notification email.');
-    }
+    await this.sendAuthEmail(
+      recipient,
+      'Action needed on your C1RCLE partner application',
+      rendered.html,
+      rendered.text,
+      'Unable to send notification email.',
+    );
   }
 
-  async sendTransactionalEmail(
-    message: TransactionalEmail,
-  ): Promise<{ providerMessageId: string }> {
-    if (!this.apiKey) {
+  async sendTransactionalEmail(message: TransactionalEmail): Promise<{
+    outcome: 'accepted_by_provider' | 'captured_locally';
+    providerMessageId: string | null;
+  }> {
+    if (!this.canSendToProvider(message.to)) {
       if (this.nodeEnv === 'production') throw new Error('Email provider not configured');
-      this.logger.info('dev_email_transactional', {
-        idempotencyKey: message.idempotencyKey,
+      this.localCaptures.push({
+        deliveryIntentId: message.deliveryIntentId ?? null,
+        sender: this.fromEmail ?? null,
+        recipient: message.to,
+        templateType: message.templateType ?? 'transactional',
         subject: message.subject,
+        preheader: message.preheader ?? null,
+        html: message.html,
+        text: message.text ?? null,
+        idempotencyKey: message.idempotencyKey,
+        capturedAt: new Date().toISOString(),
       });
-      return { providerMessageId: `dev-${message.idempotencyKey}` };
+      this.logger.info('dev_email_transactional', {
+        delivery: 'captured_locally',
+        template: message.templateType ?? 'transactional',
+      });
+      return { outcome: 'captured_locally', providerMessageId: null };
     }
     const response = await fetch('https://api.resend.com/emails', {
       method: 'POST',
@@ -231,10 +217,11 @@ export class ResendEmailSender implements EmailSender {
         'Idempotency-Key': message.idempotencyKey,
       },
       body: JSON.stringify({
-        from: 'noreply@thec1rcle.com',
+        from: this.requireFromEmail(),
         to: message.to,
         subject: message.subject,
         html: message.html,
+        ...(message.text ? { text: message.text } : {}),
       }),
       signal: AbortSignal.timeout(10_000),
     });
@@ -251,16 +238,69 @@ export class ResendEmailSender implements EmailSender {
     const result = (await response.json()) as { id?: unknown };
     if (typeof result.id !== 'string' || !result.id)
       throw new Error('Email provider response missing message id');
-    return { providerMessageId: result.id };
+    return { outcome: 'accepted_by_provider', providerMessageId: result.id };
+  }
+
+  private requireFromEmail(): string {
+    if (this.fromEmail) return this.fromEmail;
+    throw new Error('Resend sender identity not configured');
+  }
+
+  private async sendAuthEmail(
+    recipient: string,
+    subject: string,
+    html: string,
+    text: string,
+    failureMessage: string,
+  ): Promise<void> {
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ from: this.requireFromEmail(), to: recipient, subject, html, text }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) throw new Error(failureMessage);
+  }
+
+  private canSendToProvider(recipient: string): boolean {
+    if (this.enforceTestRecipientAllowlist) {
+      const allowed = this.nonProductionTestRecipient?.trim().toLowerCase();
+      if (!allowed || recipient.trim().toLowerCase() !== allowed) {
+        throw new PermanentEmailDeliveryError();
+      }
+      return Boolean(this.apiKey);
+    }
+    if (!this.apiKey) return false;
+    if (this.nodeEnv === 'production') return true;
+    return (
+      this.nonProductionTestRecipient !== undefined &&
+      recipient.trim().toLowerCase() === this.nonProductionTestRecipient.trim().toLowerCase()
+    );
   }
 }
 
-/** Minimal HTML-escaping for admin-authored text interpolated into the email body. */
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+interface BrandedEmailInput {
+  preheader: string;
+  eyebrow: string;
+  heading: string;
+  bodyHtml: string;
+  bodyText: string;
+  action?: { url: string; label: string };
+}
+
+function renderBrandedEmail(input: BrandedEmailInput): { html: string; text: string } {
+  const actionHtml = input.action
+    ? renderC1rclePrimaryCta(input.action.url, input.action.label)
+    : '';
+  const actionText = input.action
+    ? `\n\n${input.action.label.toUpperCase()}: ${input.action.url}`
+    : '';
+  const rows = `${renderC1rcleBrandHeader()}${renderC1rcleEditorialEyebrow(input.eyebrow)}<tr><td style="padding:10px 24px 12px;"><h1 style="margin:0;color:#ffffff;font-size:36px;line-height:1.04;font-weight:800;letter-spacing:-1.1px;">${escapeEmailHtml(input.heading)}</h1></td></tr><tr><td style="padding:0 24px 26px;color:#c7c7c7;font-size:15px;line-height:1.65;">${input.bodyHtml}</td></tr>${actionHtml}<tr><td style="padding:20px 24px 30px;border-top:1px solid #292929;color:#777777;font-size:12px;line-height:1.6;"><strong style="color:#b6b6b6;letter-spacing:2px;font-size:10px;">THE C1RCLE</strong></td></tr>`;
+  return {
+    html: renderC1rcleEmailShell(input.preheader, rows),
+    text: `THE C1RCLE\n\n${input.heading}\n\n${input.bodyText}${actionText}\n\nTHE C1RCLE`,
+  };
 }

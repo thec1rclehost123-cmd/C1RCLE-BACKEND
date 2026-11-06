@@ -1,0 +1,3 @@
+Subject: Your C1RCLE application is approved
+Preheader: Review the latest update to your application.
+Template: partner_onboarding_approved

@@ -1,0 +1,6 @@
+We need your help with this payment
+
+We could not safely confirm the payment automatically. Please contact support before retrying.
+Do not retry payment until support confirms its status.
+
+Contact support (https://guest.example.test/help) for help with this payment.

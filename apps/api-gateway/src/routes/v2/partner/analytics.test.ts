@@ -469,10 +469,18 @@ describe('event analytics', () => {
     expect(response.json()).toMatchObject({
       eventId,
       complete: true,
+      refundValueComplete: true,
+      historicalConversionCount: 1,
+      historicalRsvpConversionCount: 0,
+      activeRsvpCount: 0,
       capturedTicketCount: 2,
       attributedTicketCount: 2,
       attributedTicketValuePaise: 40_000,
+      grossAttributedTicketValuePaise: 40_000,
+      refundedAttributedTicketValuePaise: 0,
+      netAttributedTicketValuePaise: 40_000,
       recordedCommissionPaise: 4_000,
+      reversedCommissionPaise: null,
       netAttributedValuePaise: 36_000,
       commissionPayableBalancePaise: 3_000,
       liabilityComplete: true,
@@ -481,9 +489,15 @@ describe('event analytics', () => {
         {
           promoterOrganizationId: 'org_promoter_metrics',
           attributedOrderCount: 1,
+          historicalRsvpConversionCount: 0,
+          activeRsvpCount: 0,
           attributedTicketCount: 2,
           attributedTicketValuePaise: 40_000,
+          grossAttributedTicketValuePaise: 40_000,
+          refundedAttributedTicketValuePaise: 0,
+          netAttributedTicketValuePaise: 40_000,
           recordedCommissionPaise: 4_000,
+          reversedCommissionPaise: null,
           netAttributedValuePaise: 36_000,
           commissionPayableBalancePaise: 3_000,
           liabilityComplete: true,
@@ -492,6 +506,92 @@ describe('event analytics', () => {
       ],
     });
     expect(response.json()).not.toHaveProperty('contact');
+    await server.close();
+  });
+
+  it('keeps cancelled RSVP acquisitions historical while reporting only active RSVPs', async () => {
+    const server = await buildServer();
+    const org = await seedOrganization(server);
+    const venue = await server.inject({
+      method: 'POST',
+      url: `/organizations/${org}/venues`,
+      headers: { ...read(org), 'idempotency-key': `venue-${++keySeq}` },
+      payload: { name: 'Sky Bar', slug: `sky-bar-${keySeq}` },
+    });
+    const event = await server.inject({
+      method: 'POST',
+      url: `/organizations/${org}/events`,
+      headers: { ...read(org), 'idempotency-key': `event-${++keySeq}` },
+      payload: {
+        title: 'RSVP Night',
+        venueId: venue.json().id,
+        startAt: '2026-12-01T18:00:00Z',
+      },
+    });
+    const eventId: string = event.json().id;
+    const now = new Date();
+    const tier = createTicketTier({
+      id: `tier_promoter_rsvp_${keySeq}`,
+      eventId,
+      organizationId: org,
+      name: 'RSVP',
+      accessType: 'RSVP',
+      quantity: 10,
+      now,
+    });
+    const repositories = createV2Services().repos();
+    for (const [id, status] of [
+      [`RSVP-cancelled-${keySeq}`, 'refunded'],
+      [`RSVP-active-${keySeq}`, 'paid'],
+    ] as const) {
+      const order = {
+        ...createOrder({
+          id,
+          eventId,
+          organizationId: org,
+          contact: { name: 'RSVP Guest', email: '', phone: '' },
+          pricing: calculatePricing({ lines: [{ tier, quantity: 1 }] }),
+          now,
+        }),
+        status,
+        attribution: {
+          referralLinkId: `link_${id}`,
+          promoterId: 'org_promoter_rsvp_metrics',
+          code: 'RSVP',
+          assignmentId: `assignment_${id}`,
+          assignmentVersion: 1,
+          termsSnapshot: { version: 1, ratePercent: 10, flatPaise: 0 },
+          eligibleTierIds: null,
+          commissionPolicyVersion: 'commission-v1',
+          commercialPolicyVersion: 'commercial-v1',
+          attributedAt: now.toISOString(),
+          attributionSignature: 'test-signature',
+          promoterCommissionPaise: 0,
+        },
+      };
+      await repositories.orders.save(order);
+    }
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/events/${eventId}/promoter-analytics`,
+      headers: read(org),
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      historicalConversionCount: 2,
+      historicalRsvpConversionCount: 2,
+      activeRsvpCount: 1,
+      items: [
+        {
+          attributedOrderCount: 2,
+          historicalRsvpConversionCount: 2,
+          activeRsvpCount: 1,
+          attributedTicketCount: 2,
+        },
+      ],
+    });
     await server.close();
   });
 
@@ -534,7 +634,8 @@ describe('event analytics', () => {
         pricing: calculatePricing({ lines: [{ tier, quantity: 2 }] }),
         now,
       }),
-      status: 'paid' as const,
+      status: 'refunded' as const,
+      refundedPaise: 5_000,
       attribution: {
         referralLinkId: `link_${keySeq}`,
         promoterId: 'org_promoter_journal_metrics',
@@ -578,6 +679,36 @@ describe('event analytics', () => {
           {
             account: 'ticket_collection_control',
             side: 'debit',
+            amountPaise: 5_000,
+            organizationId: null,
+            component: 'netTicketRevenuePaise',
+            memo: 'test refunded ticket value',
+          },
+          {
+            account: 'customer_refund_liability',
+            side: 'credit',
+            amountPaise: 5_000,
+            organizationId: org,
+            component: 'refundPaise',
+            memo: 'test customer refund',
+          },
+        ],
+        source: {
+          ...journalSource,
+          type: 'refund',
+          id: `refund_${keySeq}`,
+        },
+        idempotencyKey: `m2:refund:${keySeq}:recognition`,
+        accountingPolicy: policy,
+        postedAt: now,
+      }),
+      createPostedJournal({
+        organizationId: promoterOrganizationId,
+        currency: 'INR',
+        lines: [
+          {
+            account: 'ticket_collection_control',
+            side: 'debit',
             amountPaise: 3_000,
             organizationId: null,
             component: null,
@@ -610,12 +741,12 @@ describe('event analytics', () => {
             memo: 'test commission reversal',
           },
           {
-            account: 'refund_clearing',
+            account: 'ticket_collection_control',
             side: 'credit',
             amountPaise: 1_000,
-            organizationId: null,
+            organizationId: org,
             component: 'refundPaise',
-            memo: 'test refund counterpart',
+            memo: 'test refund commission counterpart',
           },
         ],
         source: {
@@ -623,7 +754,7 @@ describe('event analytics', () => {
           type: 'refund',
           id: `refund_${keySeq}`,
         },
-        idempotencyKey: `analytics-journal-reversal:${keySeq}`,
+        idempotencyKey: `m2:refund:${keySeq}:payable-reversal`,
         accountingPolicy: policy,
         postedAt: now,
       }),
@@ -657,10 +788,18 @@ describe('event analytics', () => {
     expect(response?.json()).toMatchObject({
       eventId,
       complete: true,
+      refundValueComplete: true,
+      historicalConversionCount: 1,
+      historicalRsvpConversionCount: 0,
+      activeRsvpCount: 0,
       capturedTicketCount: 2,
       attributedTicketCount: 2,
       attributedTicketValuePaise: 40_000,
+      grossAttributedTicketValuePaise: 40_000,
+      refundedAttributedTicketValuePaise: 5_000,
+      netAttributedTicketValuePaise: 35_000,
       recordedCommissionPaise: 4_000,
+      reversedCommissionPaise: 1_000,
       netAttributedValuePaise: 36_000,
       commissionPayableBalancePaise: 2_000,
       liabilityComplete: true,
@@ -668,6 +807,10 @@ describe('event analytics', () => {
       items: [
         {
           promoterOrganizationId,
+          reversedCommissionPaise: 1_000,
+          grossAttributedTicketValuePaise: 40_000,
+          refundedAttributedTicketValuePaise: 5_000,
+          netAttributedTicketValuePaise: 35_000,
           recordedCommissionPaise: 4_000,
           commissionPayableBalancePaise: 2_000,
           liabilityReadModel: 'financial_journal_v2',

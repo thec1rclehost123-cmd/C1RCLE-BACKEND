@@ -38,11 +38,21 @@ export interface OnboardingChangesRequestedEmailParams {
 }
 
 export interface TransactionalEmail {
+  /** Durable delivery-intent ID used to correlate local capture evidence. */
+  deliveryIntentId?: string;
   to: string;
   subject: string;
+  preheader?: string;
   html: string;
+  text?: string;
+  templateType?: string;
   /** Stable per logical message; passed through to the provider on retries. */
   idempotencyKey: string;
+}
+
+export interface EmailSendResult {
+  outcome?: 'accepted_by_provider' | 'captured_locally';
+  providerMessageId: string | null;
 }
 
 /** Provider rejected a message permanently; retries will not fix its request. */
@@ -64,7 +74,7 @@ export interface EmailSender {
     recipient: string,
     params: OnboardingChangesRequestedEmailParams,
   ): Promise<void>;
-  sendTransactionalEmail?(message: TransactionalEmail): Promise<{ providerMessageId: string }>;
+  sendTransactionalEmail?(message: TransactionalEmail): Promise<EmailSendResult>;
 }
 
 /**
@@ -97,10 +107,11 @@ export class LoggingEmailSender implements EmailSender {
     this.logger.info('dev_email_onboarding_changes_requested', { delivery: 'suppressed' });
   }
 
-  async sendTransactionalEmail(
-    message: TransactionalEmail,
-  ): Promise<{ providerMessageId: string }> {
-    this.logger.info('dev_email_transactional', { delivery: 'suppressed' });
-    return { providerMessageId: `dev-${message.idempotencyKey}` };
+  async sendTransactionalEmail(message: TransactionalEmail): Promise<EmailSendResult> {
+    this.logger.info('dev_email_transactional', {
+      delivery: 'captured_locally',
+      template: message.templateType ?? 'transactional',
+    });
+    return { outcome: 'captured_locally', providerMessageId: null };
   }
 }

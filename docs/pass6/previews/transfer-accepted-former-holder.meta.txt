@@ -1,0 +1,10 @@
+Variant: Transfer accepted — former holder
+Template: ticket_transfer_former_holder
+Subject: Your C1RCLE ticket transfer is complete
+Preheader: The ticket is now held by its new owner.
+Primary action: VIEW YOUR TICKETS→
+Layout family: Event / ticket
+Recipient fixture: preview.guest@synthetic.test (synthetic; local capture only)
+Event, account, booking and financial data: synthetic fixtures only
+Capture path: actual createTransactionalEmailConsumer; local in-memory capture sender
+Resend: not invoked in preview generation

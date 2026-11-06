@@ -1,0 +1,6 @@
+Payout being processed
+
+Amount: ₹2,500.00
+Current status: processing.
+
+Open partner workspace (https://partner.example.test/partner/select-organization)

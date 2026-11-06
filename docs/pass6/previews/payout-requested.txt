@@ -1,0 +1,6 @@
+Payout requested
+
+Amount: ₹2,500.00
+Current status: requested.
+
+Open partner workspace (https://partner.example.test/partner/select-organization)

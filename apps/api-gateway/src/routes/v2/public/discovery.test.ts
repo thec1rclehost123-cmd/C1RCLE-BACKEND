@@ -289,7 +289,9 @@ describe('V2 public/discovery routes', () => {
       },
     });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ accepted: true });
+    expect(response.json()).toMatchObject({ accepted: true });
+    expect(typeof response.json().contextToken).toBe('string');
+    expect(response.json().contextToken.length).toBeGreaterThan(16);
     await server.close();
   });
 

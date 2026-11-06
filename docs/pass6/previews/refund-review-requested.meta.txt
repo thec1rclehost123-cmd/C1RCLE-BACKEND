@@ -1,0 +1,10 @@
+Variant: Refund review requested
+Template: refund_review_requested
+Subject: Your refund review request for Neon Nights: Afrobeats Edition was recorded
+Preheader: A final update on your refund request.
+Primary action: VIEW YOUR TICKETS→
+Layout family: Financial / operational
+Recipient fixture: preview.guest@synthetic.test (synthetic; local capture only)
+Event, account, booking and financial data: synthetic fixtures only
+Capture path: actual createTransactionalEmailConsumer; local in-memory capture sender
+Resend: not invoked in preview generation

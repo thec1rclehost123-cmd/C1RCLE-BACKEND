@@ -1,6 +1,7 @@
 import type { EntityId } from '../identity.js';
 
-export type EmailDeliveryStatus = 'queued' | 'sending' | 'sent' | 'failed';
+export type EmailDeliveryStatus =
+  'queued' | 'sending' | 'sent' | 'captured' | 'failed' | 'permanent_failure';
 
 export interface EmailDelivery {
   id: EntityId;
@@ -24,6 +25,8 @@ export interface EmailDeliveryRepository {
   /** Claims queued/failed or expired sending work; false means already sent/claimed. */
   claim(id: EntityId, now: number, leaseExpiresAt: number): Promise<boolean>;
   markSent(id: EntityId, providerMessageId: string, now: number): Promise<void>;
+  markCaptured(id: EntityId, now: number): Promise<void>;
   markFailed(id: EntityId, safeError: string, now: number): Promise<void>;
+  markPermanentFailure(id: EntityId, safeError: string, now: number): Promise<void>;
   listForAggregate(aggregateId: EntityId, limit?: number): Promise<EmailDelivery[]>;
 }
