@@ -1,3 +1,4 @@
+import { currentPromoterAgreement } from '../../config/index.js';
 import {
   ForbiddenError,
   InvalidOperationError,
@@ -23,10 +24,7 @@ import {
   verifyOnboardingDocument,
 } from '../../domain/models/onboarding.js';
 import { createOrganization } from '../../domain/models/organization.js';
-import {
-  PROMOTER_AGREEMENT_TEST_FIXTURE,
-  recordPromoterAgreementAcceptance,
-} from '../../domain/models/promoter-agreement.js';
+import { recordPromoterAgreementAcceptance } from '../../domain/models/promoter-agreement.js';
 import { createVenue } from '../../domain/models/venue.js';
 
 import type { EntityId } from '../../domain/identity.js';
@@ -164,7 +162,7 @@ export class OnboardingService {
   }
 
   getCurrentPromoterAgreement() {
-    return this.testAgreementFixtureAllowed() ? PROMOTER_AGREEMENT_TEST_FIXTURE : null;
+    return currentPromoterAgreement(this.deps.config);
   }
 
   async acceptPromoterAgreement(

@@ -1,3 +1,4 @@
+import { currentPromoterAgreement } from '../../config/index.js';
 import {
   ConflictError,
   EventNotFoundError,
@@ -28,10 +29,7 @@ import {
   type CommissionTerms,
 } from '../../domain/models/event-catalog.js';
 import { promoterCommissionFitsDistributableValue } from '../../domain/models/ledger.js';
-import {
-  hasCurrentPromoterAgreementAcceptance,
-  PROMOTER_AGREEMENT_TEST_FIXTURE,
-} from '../../domain/models/promoter-agreement.js';
+import { hasCurrentPromoterAgreementAcceptance } from '../../domain/models/promoter-agreement.js';
 import { createTicketAddon } from '../../domain/models/ticket-addon.js';
 import { requireOrgAccess } from '../context.js';
 
@@ -353,7 +351,7 @@ export class EventCatalogService {
       onboarding.requestedType !== 'promoter' ||
       !hasCurrentPromoterAgreementAcceptance(
         onboarding,
-        PROMOTER_AGREEMENT_TEST_FIXTURE,
+        currentPromoterAgreement(this.deps.config),
         this.testAgreementFixtureAllowed(),
       ) ||
       connection?.status !== 'active'
@@ -495,7 +493,7 @@ export class EventCatalogService {
           onboarding.requestedType !== 'promoter' ||
           !hasCurrentPromoterAgreementAcceptance(
             onboarding,
-            PROMOTER_AGREEMENT_TEST_FIXTURE,
+            currentPromoterAgreement(this.deps.config),
             this.testAgreementFixtureAllowed(),
           )
         )

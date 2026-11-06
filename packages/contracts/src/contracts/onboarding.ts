@@ -106,7 +106,7 @@ export const onboardingDocumentSchema = z.object({
 
 export const promoterAgreementAcceptanceSchema = z.object({
   version: z.string().min(1).max(120),
-  artifactStatus: z.enum(['test_fixture', 'approved']),
+  artifactStatus: z.enum(['test_fixture', 'approved', 'staging_only']),
   textSha256: z.string().regex(/^[a-f0-9]{64}$/),
   acceptedBy: opaqueIdSchema,
   acceptedAt: z.iso.datetime(),
@@ -114,7 +114,7 @@ export const promoterAgreementAcceptanceSchema = z.object({
 
 export const promoterAgreementDtoSchema = z.object({
   version: z.string().min(1).max(120),
-  status: z.enum(['test_fixture', 'approved']),
+  status: z.enum(['test_fixture', 'approved', 'staging_only']),
   text: z.string().min(1).max(10000),
   textSha256: z.string().regex(/^[a-f0-9]{64}$/),
 });

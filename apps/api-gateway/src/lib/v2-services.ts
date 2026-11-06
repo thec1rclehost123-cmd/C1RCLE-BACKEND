@@ -329,11 +329,13 @@ export function actorFromRequest(gw: GatewayConfig, request: FastifyRequest): Ac
 function buildV2Services(logger?: Logger): PartnerV2Services {
   const gw = getGatewayConfig();
   const promoterAgreementFixtureAllowed =
-    gw.STORAGE_DRIVER === 'memory' ||
-    (gw.NODE_ENV !== 'production' &&
-      Boolean(gw.FIRESTORE_EMULATOR_HOST) &&
-      Boolean(gw.FIREBASE_AUTH_EMULATOR_HOST));
+    gw.NODE_ENV !== 'production' &&
+    (gw.STORAGE_DRIVER === 'memory' ||
+      (Boolean(gw.FIRESTORE_EMULATOR_HOST) && Boolean(gw.FIREBASE_AUTH_EMULATOR_HOST)));
   const coreConfig = createCoreConfig({
+    deploymentEnvironment:
+      gw.DEPLOYMENT_ENVIRONMENT ?? (gw.NODE_ENV === 'production' ? 'production' : 'local'),
+    promoterAgreement: gw.PROMOTER_AGREEMENT_ARTIFACT ?? null,
     redis: { url: gw.REDIS_URL },
     firestore: { projectId: gw.FIRESTORE_PROJECT_ID },
     features: {

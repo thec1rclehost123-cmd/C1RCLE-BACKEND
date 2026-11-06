@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { MemoryUserAccountRepository } from '@c1rcle/core/infrastructure';
 
 import { buildApp } from '../src/app.js';
+import { getGatewayConfig } from '../src/config/index.js';
 import { createV2Services } from '../src/lib/v2-services.js';
 import { seedVerifiedCheckoutUsers } from '../src/test-utils/verified-test-users.js';
 
@@ -640,8 +641,9 @@ describe('scenario: M4 Promoter campaign attribution over the full API', () => {
     const { orgId: hostOrgId } = await onboardAndApproveHost(server);
     const { eventId, tierId, venueId } = await seedPublishedEvent(server, hostOrgId);
 
-    // The memory driver deliberately exposes only a TEST FIXTURE agreement.
-    // This exercises acceptance plumbing; it is not approved legal wording.
+    // Run the same flow with either the emulator fixture or an explicitly configured
+    // hosted artifact. No production legal terms are supplied by this scenario.
+    const configuredAgreement = getGatewayConfig().PROMOTER_AGREEMENT_ARTIFACT;
     const promoterUserId = 'promoter_m4_scenario';
     const agreement = await server.inject({
       method: 'GET',
@@ -650,10 +652,10 @@ describe('scenario: M4 Promoter campaign attribution over the full API', () => {
     });
     expect(agreement.statusCode).toBe(200);
     expect(agreement.json()).toMatchObject({
-      activationAvailable: false,
+      activationAvailable: configuredAgreement !== undefined,
       agreement: {
-        status: 'test_fixture',
-        text: expect.stringContaining('NOT A LEGAL AGREEMENT'),
+        status: configuredAgreement?.status ?? 'test_fixture',
+        text: configuredAgreement?.text ?? expect.stringContaining('NOT A LEGAL AGREEMENT'),
       },
     });
 
@@ -678,7 +680,7 @@ describe('scenario: M4 Promoter campaign attribution over the full API', () => {
     });
     expect(acceptedAgreement.statusCode, JSON.stringify(acceptedAgreement.json())).toBe(200);
     expect(acceptedAgreement.json().promoterAgreementAcceptances[0]).toMatchObject({
-      artifactStatus: 'test_fixture',
+      artifactStatus: configuredAgreement?.status ?? 'test_fixture',
       acceptedBy: promoterUserId,
     });
 

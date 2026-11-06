@@ -1,5 +1,6 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
+import { currentPromoterAgreement } from '../../config/index.js';
 import {
   EventNotFoundError,
   InvalidOperationError,
@@ -13,10 +14,7 @@ import {
   type PromoterAssignment,
 } from '../../domain/models/event-catalog.js';
 import { isPublicStatus } from '../../domain/models/event.js';
-import {
-  hasCurrentPromoterAgreementAcceptance,
-  PROMOTER_AGREEMENT_TEST_FIXTURE,
-} from '../../domain/models/promoter-agreement.js';
+import { hasCurrentPromoterAgreementAcceptance } from '../../domain/models/promoter-agreement.js';
 import {
   createReferralLink,
   deactivateReferralLink,
@@ -177,7 +175,7 @@ export class ReferralLinkService {
     if (
       !hasCurrentPromoterAgreementAcceptance(
         onboarding,
-        PROMOTER_AGREEMENT_TEST_FIXTURE,
+        currentPromoterAgreement(this.deps.config),
         this.testAgreementFixtureAllowed(),
       )
     ) {
@@ -573,7 +571,7 @@ export class ReferralLinkService {
     if (
       !hasCurrentPromoterAgreementAcceptance(
         onboarding,
-        PROMOTER_AGREEMENT_TEST_FIXTURE,
+        currentPromoterAgreement(this.deps.config),
         this.testAgreementFixtureAllowed(),
       )
     )
