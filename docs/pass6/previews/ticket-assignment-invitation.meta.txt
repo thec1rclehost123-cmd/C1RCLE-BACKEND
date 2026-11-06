@@ -2,7 +2,7 @@ Variant: Ticket invitation
 Template: ticket_transfer_invitation
 Subject: A ticket is waiting for you
 Preheader: Event details and your next step for Neon Nights: Afrobeats Edition.
-Primary action: REVIEW THIS INVITATION&#8594;
+Primary action: REVIEW THIS INVITATION→
 Layout family: Event / ticket
 Recipient fixture: preview.guest@synthetic.test (synthetic; local capture only)
 Event, account, booking and financial data: synthetic fixtures only

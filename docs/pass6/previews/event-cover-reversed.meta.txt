@@ -2,7 +2,7 @@ Variant: Event cover reversed
 Template: event_cover_status
 Subject: Your C1RCLE cover redemption was reversed
 Preheader: A status update from C1RCLE: Cover redemption reversed.
-Primary action: VIEW YOUR TICKETS&#8594;
+Primary action: VIEW YOUR TICKETS→
 Layout family: Financial / operational
 Recipient fixture: preview.guest@synthetic.test (synthetic; local capture only)
 Event, account, booking and financial data: synthetic fixtures only

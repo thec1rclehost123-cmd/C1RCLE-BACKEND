@@ -781,8 +781,20 @@ function extractPrimaryLabel(html: string): string {
   if (!match?.[1]) {
     return 'None (no canonical deep-link action available)';
   }
-  const doc = new DOMParser().parseFromString(match[1], 'text/html');
-  return doc.body.textContent?.trim() || 'None (no canonical deep-link action available)';
+  const label = match[1]
+    .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&#(\d+);/g, (_, value: string) => String.fromCodePoint(Number(value)))
+    .replace(/&#x([\da-f]+);/gi, (_, value: string) =>
+      String.fromCodePoint(Number.parseInt(value, 16)),
+    )
+    .replace(/&amp;/gi, '&')
+    .trim();
+  return label || 'None (no canonical deep-link action available)';
 }
 
 async function runNetworkIsolatedDryRun(

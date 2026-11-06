@@ -2,7 +2,7 @@ Variant: Payout requested
 Template: payout_status
 Subject: C1RCLE payout requested
 Preheader: The latest status of your C1RCLE payout.
-Primary action: OPEN PARTNER WORKSPACE&#8594;
+Primary action: OPEN PARTNER WORKSPACE→
 Layout family: Financial / operational
 Recipient fixture: preview.guest@synthetic.test (synthetic; local capture only)
 Event, account, booking and financial data: synthetic fixtures only

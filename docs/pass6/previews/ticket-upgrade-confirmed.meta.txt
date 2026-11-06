@@ -2,7 +2,7 @@ Variant: Ticket upgrade confirmed
 Template: ticket_upgrade_confirmed
 Subject: Your C1RCLE ticket upgrade is confirmed
 Preheader: Event details and your next step for Neon Nights: Afrobeats Edition.
-Primary action: VIEW YOUR TICKET&#8594;
+Primary action: VIEW YOUR TICKET→
 Layout family: Event / ticket
 Recipient fixture: preview.guest@synthetic.test (synthetic; local capture only)
 Event, account, booking and financial data: synthetic fixtures only
