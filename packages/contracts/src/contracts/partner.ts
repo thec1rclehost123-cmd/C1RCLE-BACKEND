@@ -332,16 +332,24 @@ export const eventAnalyticsDtoSchema = z.object({
 export type EventAnalyticsDto = z.infer<typeof eventAnalyticsDtoSchema>;
 
 /**
- * Event-level Promoter attribution analytics. Values are backend-derived from
- * captured order snapshots and are before refund adjustments.
+ * Event-level Promoter attribution analytics. Historical acquisition and
+ * current refund/RSVP outcomes remain separate.
  */
 export const eventPromoterAnalyticsDtoSchema = z.object({
   eventId: opaqueIdSchema,
   complete: z.boolean(),
+  refundValueComplete: z.boolean(),
+  historicalConversionCount: z.number().int().nonnegative(),
+  activeRsvpCount: z.number().int().nonnegative(),
   capturedTicketCount: z.number().int().nonnegative(),
   attributedTicketCount: z.number().int().nonnegative(),
   attributedTicketValuePaise: z.number().int().nonnegative(),
+  grossAttributedTicketValuePaise: z.number().int().nonnegative(),
+  refundedAttributedTicketValuePaise: z.number().int().nonnegative(),
+  netAttributedTicketValuePaise: z.number().int().nonnegative(),
   recordedCommissionPaise: z.number().int().nonnegative(),
+  reversedCommissionPaise: z.number().int().nonnegative().nullable(),
+  /** @deprecated Historical meaning is ticket value less recorded commission. */
   netAttributedValuePaise: z.number().int(),
   commissionPayableBalancePaise: z.number().int(),
   liabilityComplete: z.boolean(),
@@ -350,9 +358,15 @@ export const eventPromoterAnalyticsDtoSchema = z.object({
     z.object({
       promoterOrganizationId: opaqueIdSchema,
       attributedOrderCount: z.number().int().nonnegative(),
+      activeRsvpCount: z.number().int().nonnegative(),
       attributedTicketCount: z.number().int().nonnegative(),
       attributedTicketValuePaise: z.number().int().nonnegative(),
+      grossAttributedTicketValuePaise: z.number().int().nonnegative(),
+      refundedAttributedTicketValuePaise: z.number().int().nonnegative(),
+      netAttributedTicketValuePaise: z.number().int().nonnegative(),
       recordedCommissionPaise: z.number().int().nonnegative(),
+      reversedCommissionPaise: z.number().int().nonnegative().nullable(),
+      /** @deprecated Historical meaning is ticket value less recorded commission. */
       netAttributedValuePaise: z.number().int(),
       commissionPayableBalancePaise: z.number().int(),
       liabilityComplete: z.boolean(),
