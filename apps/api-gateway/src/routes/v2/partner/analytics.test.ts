@@ -471,6 +471,7 @@ describe('event analytics', () => {
       complete: true,
       refundValueComplete: true,
       historicalConversionCount: 1,
+      historicalRsvpConversionCount: 0,
       activeRsvpCount: 0,
       capturedTicketCount: 2,
       attributedTicketCount: 2,
@@ -488,6 +489,7 @@ describe('event analytics', () => {
         {
           promoterOrganizationId: 'org_promoter_metrics',
           attributedOrderCount: 1,
+          historicalRsvpConversionCount: 0,
           activeRsvpCount: 0,
           attributedTicketCount: 2,
           attributedTicketValuePaise: 40_000,
@@ -579,10 +581,12 @@ describe('event analytics', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
       historicalConversionCount: 2,
+      historicalRsvpConversionCount: 2,
       activeRsvpCount: 1,
       items: [
         {
           attributedOrderCount: 2,
+          historicalRsvpConversionCount: 2,
           activeRsvpCount: 1,
           attributedTicketCount: 2,
         },
@@ -786,6 +790,7 @@ describe('event analytics', () => {
       complete: true,
       refundValueComplete: true,
       historicalConversionCount: 1,
+      historicalRsvpConversionCount: 0,
       activeRsvpCount: 0,
       capturedTicketCount: 2,
       attributedTicketCount: 2,

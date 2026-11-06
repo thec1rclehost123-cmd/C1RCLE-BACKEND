@@ -5,6 +5,7 @@ import {
   createEvent,
   createOrder,
   createTicketTier,
+  createOnboardingRequest,
   M4_ACCOUNTING_POLICY,
   MemoryPaymentProvider,
 } from '@c1rcle/core/domain';
@@ -935,6 +936,45 @@ describe('GET /organizations/:organizationId/finance/orders', () => {
       items: [],
       pageInfo: { page: 0, pageSize: 20, total: 0, hasNextPage: false },
     });
+    await server.close();
+  });
+
+  it('denies Promoters purchaser order details even when their org has finance access', async () => {
+    const server = await buildServer();
+    const org = await seedApprovedPartnerOrganization({
+      name: 'Promoter Finance Org',
+      slug: `promoter-finance-${++keySeq}`,
+      capabilities: ['promoter'],
+    });
+    const now = new Date();
+    const request = createOnboardingRequest({
+      id: `onboarding-promoter-finance-${keySeq}`,
+      userId: org.ownerId,
+      requestedType: 'promoter',
+      plan: 'basic',
+      profile: {
+        legalName: 'Promoter Finance Org',
+        contactPerson: 'Promoter Owner',
+        phone: '9876543210',
+        city: 'Pune',
+      },
+      now,
+    });
+    await createV2Services()
+      .repos()
+      .onboarding.save({
+        ...request,
+        status: 'approved',
+        submittedAt: now.toISOString(),
+        reviewedBy: 'admin_finance_test',
+        reviewedAt: now.toISOString(),
+        provisionedOrganizationId: org.id,
+        updatedAt: now.toISOString(),
+      });
+
+    const response = await listOrders(server, org.id);
+    expect(response.statusCode).toBe(403);
+    expect(response.json().message).toContain('Promoter workspaces');
     await server.close();
   });
 

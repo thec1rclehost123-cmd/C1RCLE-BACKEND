@@ -187,7 +187,10 @@ export class AnalyticsService {
       ),
     ]);
 
-    const captured = orders.filter((order) => isCaptured(order.status));
+    const captured = orders.filter(
+      (order) =>
+        isCaptured(order.status) || (order.id.startsWith('RSVP-') && order.status === 'cancelled'),
+    );
     const rsvpOrderIds = new Set(
       captured.filter((order) => order.id.startsWith('RSVP-')).map((order) => order.id),
     );
@@ -311,6 +314,7 @@ export class AnalyticsService {
       const current = byPromoter.get(attribution.promoterId) ?? {
         promoterOrganizationId: attribution.promoterId,
         attributedOrderCount: 0,
+        historicalRsvpConversionCount: 0,
         activeRsvpCount: 0,
         attributedTicketCount: 0,
         attributedTicketValuePaise: 0,
@@ -328,6 +332,8 @@ export class AnalyticsService {
       byPromoter.set(attribution.promoterId, {
         ...current,
         attributedOrderCount: current.attributedOrderCount + 1,
+        historicalRsvpConversionCount:
+          current.historicalRsvpConversionCount + (order.id.startsWith('RSVP-') ? 1 : 0),
         activeRsvpCount:
           current.activeRsvpCount +
           (order.id.startsWith('RSVP-') && order.status === 'paid' ? 1 : 0),
@@ -418,6 +424,10 @@ export class AnalyticsService {
       capturedTicketCount: captured.reduce((sum, order) => sum + ticketsIn(order), 0),
       historicalConversionCount: [...byPromoter.values()].reduce(
         (sum, item) => sum + item.attributedOrderCount,
+        0,
+      ),
+      historicalRsvpConversionCount: [...byPromoter.values()].reduce(
+        (sum, item) => sum + item.historicalRsvpConversionCount,
         0,
       ),
       activeRsvpCount: [...byPromoter.values()].reduce(
@@ -885,6 +895,7 @@ export interface EventPromoterAnalyticsItem {
   readonly promoterOrganizationId: EntityId;
   /** Historical acquisitions; settled refunds do not erase a conversion. */
   readonly attributedOrderCount: number;
+  readonly historicalRsvpConversionCount: number;
   /** RSVP acquisitions whose RSVP order is still active. */
   readonly activeRsvpCount: number;
   readonly attributedTicketCount: number;
@@ -913,6 +924,7 @@ export interface EventPromoterAnalytics {
   readonly refundValueComplete: boolean;
   /** Historical attributed orders, including settled refunds. */
   readonly historicalConversionCount: number;
+  readonly historicalRsvpConversionCount: number;
   /** Attributed RSVP orders whose current status remains active. */
   readonly activeRsvpCount: number;
   readonly capturedTicketCount: number;

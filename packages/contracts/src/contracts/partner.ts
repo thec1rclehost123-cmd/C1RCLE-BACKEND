@@ -87,14 +87,24 @@ export type SetVenueShareRequest = z.infer<typeof setVenueShareRequestSchema>;
 
 export const partnerTypeSchema = z.enum(['venue', 'host', 'promoter']);
 
-/** Bounded, server-computed Promoter activity totals from referral-link read models. */
+/** Bounded, server-computed Promoter acquisitions and settled ticket refunds. */
 export const promoterCampaignSummaryDtoSchema = z.object({
   linkCount: z.number().int().nonnegative(),
   clicks: z.number().int().nonnegative(),
   conversions: z.number().int().nonnegative(),
-  /** Gross attributed ticket value from link counters, before refund adjustments. */
+  historicalRsvpConversions: z.number().int().nonnegative(),
+  activeRsvpCount: z.number().int().nonnegative(),
+  /** Backward-compatible gross attributed ticket sales alias. */
   grossAttributedTicketRevenuePaise: z.number().int().nonnegative(),
+  grossAttributedTicketSalesPaise: z.number().int().nonnegative(),
+  refundedAttributedTicketSalesPaise: z.number().int().nonnegative(),
+  netAttributedTicketSalesPaise: z.number().int().nonnegative(),
+  refundValueComplete: z.boolean(),
+  recordedCommissionPaise: z.number().int().nonnegative(),
+  reversedCommissionPaise: z.number().int().nonnegative().nullable(),
+  complete: z.boolean(),
   hasMoreLinks: z.boolean(),
+  hasMoreOrders: z.boolean(),
 });
 export type PromoterCampaignSummaryDto = z.infer<typeof promoterCampaignSummaryDtoSchema>;
 
@@ -340,6 +350,7 @@ export const eventPromoterAnalyticsDtoSchema = z.object({
   complete: z.boolean(),
   refundValueComplete: z.boolean(),
   historicalConversionCount: z.number().int().nonnegative(),
+  historicalRsvpConversionCount: z.number().int().nonnegative(),
   activeRsvpCount: z.number().int().nonnegative(),
   capturedTicketCount: z.number().int().nonnegative(),
   attributedTicketCount: z.number().int().nonnegative(),
@@ -358,6 +369,7 @@ export const eventPromoterAnalyticsDtoSchema = z.object({
     z.object({
       promoterOrganizationId: opaqueIdSchema,
       attributedOrderCount: z.number().int().nonnegative(),
+      historicalRsvpConversionCount: z.number().int().nonnegative(),
       activeRsvpCount: z.number().int().nonnegative(),
       attributedTicketCount: z.number().int().nonnegative(),
       attributedTicketValuePaise: z.number().int().nonnegative(),

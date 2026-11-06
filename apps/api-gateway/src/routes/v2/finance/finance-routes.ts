@@ -16,7 +16,7 @@ import {
   disputeResponseSchema,
   disputeListResponseSchema,
 } from '@c1rcle/contracts/client';
-import { maskAccountNumber } from '@c1rcle/core/domain';
+import { ForbiddenError, maskAccountNumber } from '@c1rcle/core/domain';
 import { z } from 'zod';
 
 import type { FinanceOrderRow } from '@c1rcle/core/application';
@@ -142,6 +142,27 @@ export default async function financeRoutes(fastify: FastifyInstance) {
       const { organizationId } = request.params as z.infer<typeof organizationIdParam>;
       const query = request.query as z.infer<typeof paginationQuerySchema>;
       const actor = services.actor(request);
+      if (actor.organizationId !== organizationId) {
+        mapDomainError(
+          reply,
+          request,
+          organizationId,
+          new ForbiddenError('Finance organization does not match the active organization'),
+        );
+        return reply;
+      }
+      const onboarding = await services
+        .repos()
+        .onboarding.findByProvisionedOrganizationId(organizationId);
+      if (onboarding?.requestedType === 'promoter') {
+        mapDomainError(
+          reply,
+          request,
+          organizationId,
+          new ForbiddenError('Promoter workspaces cannot access purchaser order details'),
+        );
+        return reply;
+      }
       const page = await services.orders
         .listForOrganization(organizationId, actor, {
           cursor: query.cursor ?? null,
