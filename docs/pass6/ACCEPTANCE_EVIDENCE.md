@@ -39,7 +39,7 @@ Before this design pass, the candidate had broader focused evidence: 88 Core/Fir
 
 ## Remaining acceptance
 
-Founder review of the actual rendered transactional and auth artifacts and explicit visual approval (or waiver) are required before the separately authorized Resend batch. Current implementation work remains local and uncommitted. No final Pass 6 verdict is recorded here.
+Founder review of the actual rendered transactional and auth artifacts and explicit visual approval (or waiver) are required before the separately authorized Resend batch. The current candidate is committed locally on the isolated Pass 6 branch; the Email PR must remain unmerged and undeployed until #160 and #94 are verified in staging. No final Pass 6 verdict is recorded here.
 
 ## Current implementation follow-up
 
@@ -50,6 +50,7 @@ Founder review of the actual rendered transactional and auth artifacts and expli
 | Core typecheck | Passed after the current consumer changes |
 | API Gateway typecheck | Passed |
 | Current synthetic inventory | 43 transactional variants plus 4 auth/account-notification previews regenerated from the real consumer/sender methods |
+| Founder-only transactional dry run | 43 intercepted requests; exact sender and allowlist, every recipient the approved founder address, `[C1RCLE TEST]` subject prefix, 0 network egress, 0 provider acceptances, 0 deliveries |
 | Auth preview network egress | False; global fetch was intercepted and restored, with synthetic recipient/key only |
 | Strict staging guard | Tested in production-shaped mode: only the configured exact recipient reaches the provider adapter; other recipients fail before fetch |
 | Read-only reconciliation of historical V2 sends | Not completed: the connected Gmail search returned `UNAUTHORIZED` and requires reauthentication; no retry was attempted |
