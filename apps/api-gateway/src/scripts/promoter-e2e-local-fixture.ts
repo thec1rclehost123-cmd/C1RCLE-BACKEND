@@ -607,6 +607,70 @@ if (
   );
 }
 
+const hostAnalytics = await request<{
+  eventId: string;
+  historicalConversionCount: number;
+  historicalRsvpConversionCount: number;
+  activeRsvpCount: number;
+  grossAttributedTicketValuePaise: number;
+  refundedAttributedTicketValuePaise: number;
+  netAttributedTicketValuePaise: number;
+}>({
+  method: 'GET',
+  path: `/events/${eventA.eventId}/promoter-analytics`,
+  identity: hostA,
+  organizationId: hostAOrgId,
+});
+if (
+  hostAnalytics.eventId !== eventA.eventId ||
+  hostAnalytics.historicalConversionCount !== summaryAfterRefund.conversions ||
+  hostAnalytics.historicalRsvpConversionCount !== 1 ||
+  hostAnalytics.activeRsvpCount !== 1 ||
+  hostAnalytics.grossAttributedTicketValuePaise !==
+    summaryAfterRefund.grossAttributedTicketSalesPaise ||
+  hostAnalytics.refundedAttributedTicketValuePaise !==
+    summaryAfterRefund.refundedAttributedTicketSalesPaise ||
+  hostAnalytics.netAttributedTicketValuePaise !== summaryAfterRefund.netAttributedTicketSalesPaise
+) {
+  throw new Error('Host Promoter analytics do not match canonical acquisition and refund state');
+}
+
+const assignmentABeforeRevocation = await services
+  .repos()
+  .catalog.getAssignmentById(assignmentA.id);
+if (!assignmentABeforeRevocation) throw new Error('Synthetic assignment A missing before revoke');
+await request({
+  method: 'POST',
+  path: `/promoter-assignments/${assignmentA.id}/revoke`,
+  identity: hostA,
+  organizationId: hostAOrgId,
+  body: {
+    expectedVersion: assignmentABeforeRevocation.version,
+    reason: 'Synthetic local revocation acceptance',
+  },
+});
+const revokedClick = await click(linkA.code);
+const revokedQuote = await request<{
+  attribution: { promoterId: string } | null;
+}>({
+  method: 'POST',
+  path: '/checkout/quote',
+  identity: guest,
+  body: {
+    eventId: eventA.eventId,
+    lines: [{ tierId: eventA.paidTierId, quantity: 1 }],
+    referralContextTokens: [revokedClick.contextToken],
+  },
+});
+if (
+  (revokedQuote.attribution !== null && revokedQuote.attribution !== undefined) ||
+  (await services.repos().orders.getById(paid.order.id))?.attribution?.promoterId !==
+    promoterBOrgId ||
+  storedRsvpOrder?.attribution?.promoterId !== promoterBOrgId
+) {
+  throw new Error('Revocation acceptance failed to deny future attribution or preserve history');
+}
+
 await assertDenied({
   method: 'GET',
   path: `/promoters/${promoterBOrgId}/campaign-summary`,
@@ -632,6 +696,18 @@ await assertDenied({
   identity: hostA,
   organizationId: hostAOrgId,
   body: { promoterId: promoterAOrgId, ratePercent: 10, flatPaise: 0 },
+});
+await assertDenied({
+  method: 'GET',
+  path: `/events/${eventB.eventId}/promoter-analytics`,
+  identity: hostA,
+  organizationId: hostAOrgId,
+});
+await assertDenied({
+  method: 'GET',
+  path: `/events/${eventA.eventId}/promoter-analytics`,
+  identity: promoterB,
+  organizationId: promoterBOrgId,
 });
 
 await services.adminOps.suspendPromoter(
@@ -716,10 +792,13 @@ await writeFile(
       paymentAttributedToLatestPromoter: true,
       duplicatePaymentVerificationSafe: true,
       eventIsolation: true,
+      authenticatedContinuationPreservesAttribution: true,
       abandonedCheckoutHasNoOrder: true,
       rsvpAttributedToOriginalPromoter: true,
       transferPreservesOriginalAcquisition: true,
       refundPreservesHistoryAndUpdatesNetSales: true,
+      hostAnalyticsMatchesPromoterAcquisitionAndRefunds: true,
+      revocationBlocksFutureAttributionAndPreservesHistory: true,
       crossTenantReadsAndWritesDenied: true,
       suspensionBlocksFutureAttributionAndPreservesHistory: true,
       provider: 'MemoryPaymentProvider using signature-verified API fulfillment',
