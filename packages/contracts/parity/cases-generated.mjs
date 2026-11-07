@@ -346,17 +346,10 @@ const safe = (schema, value) => {
  * longer observed the run FAILS ("stale entry"), so the list cleans itself up
  * the moment the two sides converge. Keep it tiny and give every entry a reason.
  */
-const KNOWN_DRIFT = [
-  {
-    id: 'tax-rule-update-admin-action',
-    schemas: ['adminActionSchema', 'proposeActionSchema', 'proposedActionDtoSchema'],
-    labelIncludes: 'TAX_RULE_UPDATE',
-    reason:
-      'The frontend mirror (#74, merged) lists the TAX_RULE_UPDATE admin action; the backend ' +
-      'defines it only in the open tax-rule PRs (#127 part 2, #129). Until they merge the ' +
-      'admin console could submit an action the gateway rejects. Remove this entry when they land.',
-  },
-];
+// Empty: the TAX_RULE_UPDATE admin action drift this list once held (frontend mirror ahead
+// of the backend) is gone, so the entry was removed. Entry shape, for the next one:
+// { id, schemas: [...], labelIncludes: '...', reason: '...' }.
+const KNOWN_DRIFT = [];
 
 export function runGeneratedParityCases({ frontend, backend, checks, failures }) {
   const observed = new Map();

@@ -195,6 +195,7 @@ export function runWireParityCases({ agree }) {
   /* ── orders, tickets and RSVP ─────────────────────────────────────────────── */
   const order = {
     id: 'order_1',
+    bookingReference: 'C1-ABCDE-ABCDE-ABCDE-ABCDE',
     eventId: ID,
     organizationId: 'org_1',
     userId: 'user_1',
@@ -222,6 +223,7 @@ export function runWireParityCases({ agree }) {
     paidAt: ISO,
     reservationExpiresAt: ISO,
     failureReason: null,
+    eventCancellation: null,
     refundedPaise: 0,
     version: 2,
     createdAt: ISO,
@@ -324,7 +326,7 @@ export function runWireParityCases({ agree }) {
     intents: ['dance'],
   };
   matrix('upsertGuestProfileSchema', profile, [
-    ['rejects fewer than 3 tastes', withField('tastes', ['techno', 'house'])],
+    ['rejects no tastes (at least one is required)', withField('tastes', [])],
     [
       'rejects more than 20 tastes',
       withField(
@@ -332,11 +334,14 @@ export function runWireParityCases({ agree }) {
         Array.from({ length: 21 }, (_, i) => `t${i}`),
       ),
     ],
-    ['rejects no intents', withField('intents', [])],
     ['rejects a date that is not YYYY-MM-DD', withField('dateOfBirth', '02/04/1998')],
-    ['rejects an empty city', withField('city', '')],
     ['rejects an unknown key (strict)', extra],
   ]);
+  // The profile rules were relaxed after the first cut of these cases: one taste is
+  // enough, intents may be empty and the city may be blank. Pin the new boundaries.
+  agree('upsertGuestProfileSchema', 'accepts a single taste', { ...profile, tastes: ['a'] }, true);
+  agree('upsertGuestProfileSchema', 'accepts no intents', { ...profile, intents: [] }, true);
+  agree('upsertGuestProfileSchema', 'accepts an empty city', { ...profile, city: '' }, true);
   agree(
     'guestProfileDtoSchema',
     'accepts a stored profile',
@@ -345,8 +350,8 @@ export function runWireParityCases({ agree }) {
   );
   agree(
     'guestProfileDtoSchema',
-    'rejects a profile with fewer than 3 tastes',
-    { userId: 'user_1', ...profile, tastes: ['a'], createdAt: ISO, updatedAt: ISO },
+    'rejects a profile with no tastes',
+    { userId: 'user_1', ...profile, tastes: [], createdAt: ISO, updatedAt: ISO },
     false,
   );
 
