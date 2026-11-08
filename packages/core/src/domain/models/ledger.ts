@@ -9,7 +9,7 @@ import type { EntityId, VersionedEntity } from '../identity.js';
  * the ONLY source of truth for partner balances — never trust a cache without
  * being able to rebuild it from these entries (see `finance-service.ts`).
  *
- * One ticket sale produces up to 5 entries in the same idempotent write:
+ * One ticket sale produces up to 6 entries in the same idempotent write:
  * ticket_revenue (platform, settled) + platform_fee (host->platform,
  * settled) + venue_share (host->venue, pending) + host_payout (->host,
  * pending) + promoter_commission (host->promoter, pending, optional).
@@ -20,6 +20,7 @@ import type { EntityId, VersionedEntity } from '../identity.js';
 export type LedgerEntryType =
   | 'ticket_revenue'
   | 'platform_fee'
+  | 'gst'
   | 'venue_share'
   | 'host_payout'
   | 'promoter_commission'

@@ -1,5 +1,7 @@
 import { randomUUID } from 'crypto';
 
+import type { OnboardingPlan } from '../domain/models/onboarding.js';
+
 /**
  * ─── Core configuration ───────────────────────────────────────────────────────
  * Typed, validated application config for `@c1rcle/core` domain layers.
@@ -63,6 +65,12 @@ export interface CoreConfig {
    * link (the invitee asks their manager for it) rather than linking nowhere.
    */
   partnerDashboardUrl?: string | undefined;
+  /**
+   * Platform commission on ticket revenue per host plan, basis points (100 bps =
+   * 1%). All 0 by default: until plans carry a commission the platform earns the
+   * customer fee and GST only (payments plan, DP-01 / DP-13).
+   */
+  planCommissionBps: Readonly<Record<OnboardingPlan, number>>;
 }
 
 export interface CoreConfigInput {
@@ -76,6 +84,7 @@ export interface CoreConfigInput {
   bankEncryptionSecret?: string;
   bankEncryptionSalt?: string;
   emailOtpSecret?: string;
+  planCommissionBps?: Partial<Record<OnboardingPlan, number>>;
   partnerDashboardUrl?: string;
 }
 
@@ -123,6 +132,7 @@ export function createCoreConfig(input: CoreConfigInput): CoreConfig {
       input.bankEncryptionSecret ?? 'default-bank-encryption-secret-change-in-production',
     bankEncryptionSalt: input.bankEncryptionSalt ?? 'default-bank-encryption-salt',
     emailOtpSecret: input.emailOtpSecret ?? 'default-email-otp-secret-change-in-production',
+    planCommissionBps: { basic: 0, silver: 0, diamond: 0, ...input.planCommissionBps },
     ...(input.partnerDashboardUrl ? { partnerDashboardUrl: input.partnerDashboardUrl } : {}),
   };
 }

@@ -49,6 +49,7 @@ export class MemoryLedgerRepository implements LedgerRepository {
     const result: Record<LedgerEntryType, { pending: number; settled: number; paidOut: number }> = {
       ticket_revenue: { pending: 0, settled: 0, paidOut: 0 },
       platform_fee: { pending: 0, settled: 0, paidOut: 0 },
+      gst: { pending: 0, settled: 0, paidOut: 0 },
       venue_share: { pending: 0, settled: 0, paidOut: 0 },
       host_payout: { pending: 0, settled: 0, paidOut: 0 },
       promoter_commission: { pending: 0, settled: 0, paidOut: 0 },
