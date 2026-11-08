@@ -78,9 +78,10 @@ in staging so development defaults cannot silently activate:
 | `PUBLIC_API_URL` | Verified HTTPS API base URL; hostname must match `NGINX_SERVER_NAME`. |
 | `BETTER_AUTH_URL` | Verified HTTPS Better Auth base URL. |
 | `BETTER_AUTH_SECRET` | Secret-manager value at least 32 characters; never the development default. |
-| `EMAIL_OTP_SECRET` | Required in production (config fails boot without it). HMAC key for hashing email-OTP codes at rest. |
+| `EMAIL_OTP_SECRET` | Required in production, at least 32 characters (config fails boot otherwise). HMAC key for hashing email-OTP codes at rest. |
 | `RESEND_API_KEY` | Email OTP delivery; without it the OTP routes fail in production. |
 | `MAGIC_TICKET_SECRET` | Required in production, at least 32 characters (boot fails otherwise). Signs rotating door QRs and offline admission manifests; a leak or a shared default lets anyone mint a valid ticket QR. |
+| `ENCRYPTION_KEY` | Required in production, at least 32 characters (boot fails otherwise). At-rest key for bank-account numbers. Records written before it was wired stay readable via a legacy fallback; keep this value stable and backed up. |
 | `TRUSTED_PROXY_CIDRS` | Exact proxy peer list from the edge section. |
 | `APP_VERSION` | Semantic version returned by `/api/v2/internal/version`. |
 | `BUILD_SHA` | Optional explicit immutable commit SHA. On Render, the gateway and preflight fall back to documented `RENDER_GIT_COMMIT`. |

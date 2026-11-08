@@ -25,7 +25,7 @@ setup (`.github/actions/setup`), then `ci-ok` aggregates them.
 | `test` | `pnpm build` + full suite + coverage ratchet + sticky PR comment. The build step here is **the only place a `tsc` break in `@c1rcle/core` or `api-gateway` is caught**, because the Docker image compiles neither (see §4) |
 | `scenario` | `pnpm test:scenarios` — scenario suite, **merge only** (pushes to `main`/`staging`); `skipped` on PRs |
 | `docker` | Builds the real `Dockerfile`, Trivy-scans the image, boots the container, and asserts it **refuses** to boot when misconfigured |
-| `contract-parity` | Cross-repo schema agreement with `C1RCLE-FRONTEND` (opt-in, see §3) |
+| `contract-parity` | Cross-repo schema agreement with `C1RCLE-FRONTEND` (on by default, see §3) |
 | `actionlint` | Lints the workflows themselves, shellcheck included |
 | `commit-lint` | Conventional-commit check on the PR commits **and the PR title** — the title is what a squash merge writes to `main` |
 | `ci-ok` | **The one check to require in branch protection** |
@@ -198,9 +198,14 @@ so the approval happens before this workflow is even created.
 
 `scripts/contract-parity.mjs` cannot run in a single-repo job: it needs a
 `C1RCLE-FRONTEND` checkout plus built `dist` output on both sides. The job
-handles all of that, but it is off by default. It is deliberately **not**
+handles all of that and is on by default (set the `CONTRACT_PARITY_ENABLED` repo variable to `false` to disable). It compares against the frontend branch the PR targets, and needs the `FRONTEND_REPO_TOKEN` secret because the frontend repo is private. The frontend CI runs the mirror-image job. It is deliberately **not**
 `continue-on-error` — when it runs, it is a real gate. Its exit codes are
 `0` agree, `1` drift, `2` cannot check; only `0` passes.
+
+The fixtures it checks live in `packages/contracts/parity/cases.mjs`, next to the
+schemas they pin, so the `packages/contracts/**` path filter that triggers this job
+covers a fixture edit as well as a schema edit. `scripts/contract-parity.mjs` only
+loads the two built schema sets and reports.
 
 It also requires Node ≥ 22.15 for `module.registerHooks`. CI pins Node 24 via
 `.nvmrc`, so this is satisfied — but note the root `engines` range still permits

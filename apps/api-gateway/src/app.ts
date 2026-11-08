@@ -12,7 +12,13 @@ import {
   type GatewayConfig,
 } from './config/index.js';
 import { redactPaths } from './lib/logger-config.js';
+import {
+  createMemoryRateLimitStore,
+  createRedisRateLimitStore,
+  type RateLimitStore,
+} from './lib/rate-limit-store.js';
 import { createReadinessChecks } from './lib/readiness.js';
+import { createRedisClient, createRedisReadinessCheck } from './lib/redis.js';
 import { createRequestIdGenerator, onRequestHook } from './lib/request-tracing.js';
 import { createGatewayRuntimeState, type GatewayRuntimeState } from './lib/runtime-state.js';
 import { createV2Services } from './lib/v2-services.js';
@@ -42,7 +48,24 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   const logLevel = config.LOG_LEVEL === 'silent' ? 'silent' : config.LOG_LEVEL;
   const runtimeState = options.runtimeState ?? createGatewayRuntimeState();
   const trustedProxyMatcher = createTrustedProxyMatcher(getTrustedProxyCidrs(config));
-  const readinessChecks = options.readinessChecks ?? createReadinessChecks(config);
+  // Redis is only opened when something uses it: today that is the rate
+  // limiter (RATE_LIMIT_STORE=redis). Otherwise nothing connects and readiness
+  // doesn't report on a dependency the gateway doesn't have.
+  const redis =
+    config.RATE_LIMIT_STORE === 'redis' ? createRedisClient(config.REDIS_URL) : undefined;
+  const readinessChecks =
+    options.readinessChecks ??
+    createReadinessChecks(config, {
+      ...(redis ? { redisCheck: createRedisReadinessCheck(redis) } : {}),
+      // Any Razorpay variable being set means payments are meant to work, so a
+      // partial set (e.g. keys without the webhook secret) must show up here.
+      // A deployment that sets none keeps the check off.
+      paymentProviderActive: [
+        config.RAZORPAY_KEY_ID,
+        config.RAZORPAY_KEY_SECRET,
+        config.RAZORPAY_WEBHOOK_SECRET,
+      ].some(Boolean),
+    });
 
   const app = Fastify({
     trustProxy: (address) => trustedProxyMatcher(address),
@@ -68,6 +91,59 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         app.log.error(fields ?? {}, msg);
       },
     });
+
+  // Misconfigurations that are tolerated outside production but weaken a real
+  // deployment. Production refuses to boot for the hard ones (config/index.ts).
+  if (config.STORAGE_DRIVER === 'firestore') {
+    if (!config.ENCRYPTION_KEY) {
+      logger.warn('encryption_key_not_set', {
+        hint: 'Bank account numbers are sealed with the built-in development key. Set ENCRYPTION_KEY.',
+      });
+    }
+    const razorpaySet = [
+      config.RAZORPAY_KEY_ID,
+      config.RAZORPAY_KEY_SECRET,
+      config.RAZORPAY_WEBHOOK_SECRET,
+    ].filter(Boolean).length;
+    if (razorpaySet < 3) {
+      logger.warn('payments_not_configured', {
+        configured: razorpaySet,
+        of: 3,
+        hint: 'Set RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET and RAZORPAY_WEBHOOK_SECRET to enable payments.',
+      });
+    }
+  }
+  if (config.BETTER_AUTH_SECRET === 'dev-only-change-me' || config.BETTER_AUTH_SECRET.length < 32) {
+    logger.warn('weak_auth_secret', {
+      hint: 'BETTER_AUTH_SECRET is the development default or shorter than 32 characters.',
+    });
+  }
+
+  let rateLimitStore: RateLimitStore = createMemoryRateLimitStore();
+  if (redis) {
+    // ioredis emits 'error' on every failed reconnect; unhandled, that is noisy
+    // and (without a listener) alarming. The store already degrades to memory.
+    redis.on('error', (error: Error) => {
+      // Connection-refused arrives as an AggregateError with an empty message.
+      const code = (error as { code?: string }).code;
+      logger.warn('redis_error', {
+        message: error.message === '' ? (code ?? error.name) : error.message,
+      });
+    });
+    rateLimitStore = createRedisRateLimitStore(redis, {
+      fallback: rateLimitStore,
+      onError: (error) => {
+        logger.warn('rate_limit_redis_unavailable_using_memory', {
+          message: error instanceof Error ? error.message : String(error),
+        });
+      },
+    });
+    app.addHook('onClose', async () => {
+      await redis.quit().catch(() => {
+        redis.disconnect();
+      });
+    });
+  }
 
   app.addHook('onRequest', onRequestHook);
 
@@ -121,7 +197,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await app.register(rbacPlugin, {
     resolveActor: (request) => v2Services.actor(request),
   });
-  await app.register(rateLimitPlugin);
+  await app.register(rateLimitPlugin, { store: rateLimitStore });
   await app.register(cachePlugin);
 
   app.setErrorHandler((error, request, reply) => {

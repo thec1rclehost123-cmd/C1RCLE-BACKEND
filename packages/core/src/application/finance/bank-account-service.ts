@@ -1,3 +1,4 @@
+import { LEGACY_BANK_ENCRYPTION_SALT, LEGACY_BANK_ENCRYPTION_SECRET } from '../../config/index.js';
 import { InvalidOperationError, NotFoundError } from '../../domain/errors.js';
 import {
   createBankAccount,
@@ -113,12 +114,29 @@ export function createBankAccountService(deps: BankAccountServiceDeps): BankAcco
     if (!account.encryptedAccountNumber) {
       throw new InvalidOperationError('Bank account has no stored account number');
     }
-    return decryptField(
-      account.encryptedAccountNumber,
-      config.bankEncryptionSecret,
-      config.bankEncryptionSalt,
-      account.organizationId,
-    );
+    try {
+      return decryptField(
+        account.encryptedAccountNumber,
+        config.bankEncryptionSecret,
+        config.bankEncryptionSalt,
+        account.organizationId,
+      );
+    } catch (error) {
+      // Records written before `ENCRYPTION_KEY` was wired were sealed with the
+      // published legacy defaults. Keep them readable rather than stranding
+      // them; new writes always use the configured key. A record that fails
+      // under both keys is genuinely corrupt or tampered, so surface that.
+      const usingLegacy =
+        config.bankEncryptionSecret === LEGACY_BANK_ENCRYPTION_SECRET &&
+        config.bankEncryptionSalt === LEGACY_BANK_ENCRYPTION_SALT;
+      if (usingLegacy) throw error;
+      return decryptField(
+        account.encryptedAccountNumber,
+        LEGACY_BANK_ENCRYPTION_SECRET,
+        LEGACY_BANK_ENCRYPTION_SALT,
+        account.organizationId,
+      );
+    }
   }
 
   return {

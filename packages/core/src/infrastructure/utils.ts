@@ -50,6 +50,8 @@ import {
   FirestoreGuestProfileRepository,
   FirestoreFollowRepository,
   FirestoreSocialNotificationRepository,
+  FirestoreProviderPaymentRepository,
+  FirestoreTaxRuleRepository,
   FirestoreRefundRequestRepository,
   FirestoreSafetyReportRepository,
   FirestoreSupportTicketRepository,
@@ -95,6 +97,8 @@ import {
   MemoryGuestProfileRepository,
   MemoryFollowRepository,
   MemorySocialNotificationRepository,
+  MemoryProviderPaymentRepository,
+  MemoryTaxRuleRepository,
   MemoryRefundRequestRepository,
   MemorySafetyReportRepository,
   MemorySupportTicketRepository,
@@ -168,6 +172,8 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
       follows: new MemoryFollowRepository(),
       socialNotifications: new MemorySocialNotificationRepository(),
       refundRequests: new MemoryRefundRequestRepository(),
+      providerPayments: new MemoryProviderPaymentRepository(),
+      taxRules: new MemoryTaxRuleRepository(),
       supportTickets: new MemorySupportTicketRepository(),
       safetyReports: new MemorySafetyReportRepository(),
       users: new MemoryUserAccountRepository(),
@@ -229,6 +235,8 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
     follows: new FirestoreFollowRepository(db),
     socialNotifications: new FirestoreSocialNotificationRepository(db),
     refundRequests: new FirestoreRefundRequestRepository(db),
+    providerPayments: new FirestoreProviderPaymentRepository(db),
+    taxRules: new FirestoreTaxRuleRepository(db),
     supportTickets: new FirestoreSupportTicketRepository(db),
     safetyReports: new FirestoreSafetyReportRepository(db),
     users: new FirestoreUserAccountRepository(db),
@@ -256,7 +264,7 @@ export function buildIdempotencyStore() {
  */
 export function buildActorContext(request: { actor?: ActorContext }): ActorContext {
   if (!request.actor) {
-    throw new UnauthorizedError('No authenticated actor on request.');
+    throw new UnauthorizedError();
   }
   return request.actor;
 }

@@ -1,11 +1,16 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
 import { buildV2ErrorResponse } from '@c1rcle/contracts';
-import { z } from 'zod';
 
 import type { ActorContext } from '@c1rcle/core/application';
 
 import { getGatewayConfig } from '../../../config/index.js';
+import {
+  holdIdFromNotes,
+  providerEventFromWebhook,
+  summariseWebhookForLog,
+  webhookPayloadSchema,
+} from '../../../lib/razorpay-webhook.js';
 import { createV2Services } from '../../../lib/v2-services.js';
 import { mapDomainError } from '../partner/events.js';
 
@@ -50,26 +55,6 @@ declare module 'fastify' {
 }
 
 const services = createV2Services();
-
-/** Deliberately permissive — this is Razorpay's payload, not ours to constrain tightly. */
-const webhookPayloadSchema = z.object({
-  event: z.string(),
-  payload: z
-    .object({
-      payment: z
-        .object({
-          entity: z.object({
-            id: z.string().min(1),
-            order_id: z.string().min(1).nullable().optional(),
-            amount: z.number().optional(),
-            status: z.string().optional(),
-            notes: z.record(z.string(), z.unknown()).optional(),
-          }),
-        })
-        .optional(),
-    })
-    .optional(),
-});
 
 /** A fixed system actor — this is Razorpay calling, not a user session. HMAC is the auth. */
 const WEBHOOK_ACTOR: ActorContext = {
@@ -155,30 +140,45 @@ export default async function webhookRoutes(fastify: FastifyInstance) {
       if (!parsed.success) {
         // Signature was valid but the shape wasn't what we expect — ack with
         // 200 so Razorpay does not retry-storm an event type we don't model,
-        // but never call into fulfillment with an unparsed payload.
-        request.log.warn({ event: request.body }, 'razorpay_webhook_unrecognized_payload');
+        // but never call into fulfillment with an unparsed payload. Log the
+        // event name and identifiers ONLY: the body is a payer's personal data.
+        request.log.warn(
+          summariseWebhookForLog(request.body),
+          'razorpay_webhook_unrecognized_payload',
+        );
         return reply.status(200).send({ received: true });
       }
 
       const entity = parsed.data.payload?.payment?.entity;
       if (parsed.data.event !== 'payment.captured' || !entity) {
-        // Ack, no-op: only payment.captured triggers fulfillment.
+        // Not a capture: nothing to fulfil. Refunds and disputes are still facts
+        // about a payment, so record them for reconciliation and acknowledge.
+        const fact = providerEventFromWebhook(parsed.data, null, new Date());
+        if (fact) await services.providerPayments.recordEvent(fact);
         return reply.status(200).send({ received: true });
       }
 
-      const holdIdNote = entity.notes?.holdId;
-      const holdId = typeof holdIdNote === 'string' ? holdIdNote : undefined;
+      // The provider's capture (amount, fee, tax) is a fact whether or not we can
+      // tie it to a hold, so record it first. A failure here returns 5xx and
+      // Razorpay retries, which is safe: recording is idempotent.
+      const captured = providerEventFromWebhook(parsed.data, null, new Date());
+      if (captured) await services.providerPayments.recordEvent(captured);
+
+      const holdId = holdIdFromNotes(entity.notes);
       const paymentIntentId = entity.order_id ?? undefined;
 
       if (!holdId || !paymentIntentId) {
-        request.log.error({ entity }, 'razorpay_webhook_missing_correlation_ids');
-        return sendFlatError(
-          reply,
-          request,
-          400,
-          'validation',
-          'Webhook payload is missing hold/order correlation',
+        // A signed capture we cannot tie to a hold: a payment link, or another
+        // product on the same Razorpay account. A retry cannot supply the
+        // missing notes, and answering non-2xx makes Razorpay retry for a day
+        // and eventually disable the webhook, which would then stop real
+        // checkout confirmations too. Acknowledge it, and log at error level
+        // with identifiers only so a genuine orphan can be reconciled by hand.
+        request.log.error(
+          summariseWebhookForLog(parsed.data),
+          'razorpay_webhook_missing_correlation_ids',
         );
+        return reply.status(200).send({ received: true });
       }
 
       // (4) Idempotent claim: confirmPayment converges on `entity.id`
@@ -194,6 +194,10 @@ export default async function webhookRoutes(fastify: FastifyInstance) {
         })
         .catch((error: unknown) => mapDomainError(reply, request, holdId, error));
       if (result === undefined) return reply;
+
+      // Now the capture can be tied to our order, for reconciliation.
+      const fulfilled = providerEventFromWebhook(parsed.data, result.order.id, new Date());
+      if (fulfilled) await services.providerPayments.recordEvent(fulfilled);
 
       return reply.status(200).send({ received: true });
     });
