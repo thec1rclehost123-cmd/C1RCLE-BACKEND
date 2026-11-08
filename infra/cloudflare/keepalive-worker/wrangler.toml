@@ -1,0 +1,11 @@
+name = "c1rcle-keepalive-staging"
+main = "src/index.js"
+compatibility_date = "2026-11-01"
+workers_dev = false
+
+[triggers]
+# Every 10 minutes; Render free idles an instance after ~15 minutes.
+crons = ["*/10 * * * *"]
+
+[vars]
+HEALTH_URL = "https://api-staging.thec1rcle.com/api/v2/internal/health"
