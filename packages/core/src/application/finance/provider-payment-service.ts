@@ -9,6 +9,7 @@ import type {
   ProviderPaymentEvent,
   ReconciliationResult,
 } from '../../domain/models/provider-payment.js';
+import type { AdminAuthorityService } from '../admin/admin-authority-service.js';
 import type { ServiceDeps } from '../context.js';
 
 /** Webhooks for one payment can land together; a handful of retries is plenty. */
@@ -23,7 +24,10 @@ const MAX_ATTEMPTS = 5;
  * the books agree with the provider.
  */
 export class ProviderPaymentService {
-  constructor(private deps: ServiceDeps) {}
+  constructor(
+    private deps: ServiceDeps,
+    private authority: AdminAuthorityService,
+  ) {}
 
   private get providerPayments() {
     return this.deps.repositories.providerPayments;
@@ -50,6 +54,15 @@ export class ProviderPaymentService {
         if (!(error instanceof VersionConflictError) || attempt === MAX_ATTEMPTS) throw error;
       }
     }
+  }
+
+  /** Reconciliation for an admin: finance data, so any platform admin may read it. */
+  async reconcileOrderForAdmin(
+    adminUserId: EntityId,
+    orderId: EntityId,
+  ): Promise<ReconciliationResult> {
+    await this.authority.requireAdmin(adminUserId);
+    return this.reconcileOrder(orderId);
   }
 
   async reconcileOrder(orderId: EntityId): Promise<ReconciliationResult> {
