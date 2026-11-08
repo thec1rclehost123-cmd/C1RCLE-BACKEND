@@ -34,6 +34,24 @@ const ALLOWED_ORIGINS = [
   'http://localhost:3000',
   // Production.
   'https://thec1rcle.com',
+  // Staging partner dashboard (event posters and KYC documents are uploaded
+  // from here). Guest and admin do not PUT to the bucket.
+  'https://staging.thec1rcle.com',
+];
+
+/**
+ * GCS answers a preflight only when every header named in
+ * `Access-Control-Request-Headers` appears in `responseHeader`, so this list
+ * must cover every header the browser sends on the signed PUT: the content
+ * type, the content-length range, and the two headers event posters sign into
+ * their URL (`x-goog-acl: public-read`, `cache-control`; see
+ * `firebase-object-storage.ts`). Header names are matched case-insensitively.
+ */
+const ALLOWED_HEADERS = [
+  'Content-Type',
+  'Cache-Control',
+  'x-goog-acl',
+  'x-goog-content-length-range',
 ];
 
 async function main(): Promise<void> {
@@ -52,7 +70,7 @@ async function main(): Promise<void> {
     {
       origin: ALLOWED_ORIGINS,
       method: ['PUT'],
-      responseHeader: ['Content-Type', 'x-goog-content-length-range'],
+      responseHeader: ALLOWED_HEADERS,
       maxAgeSeconds: 3600,
     },
   ]);
