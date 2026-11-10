@@ -122,6 +122,8 @@ export const venuePublicProfileSchema = z.object({
   description: z.string().max(2000),
   shortDescription: z.string().max(200).optional(),
   photoUrl: z.url().nullable(),
+  coverUrl: z.url().nullable().optional(),
+  genres: z.array(z.string().min(1).max(60)).max(20).optional(),
   address: venueAddressSchema,
   facilities: z.array(z.string().min(1).max(60)),
   capacity: z.number().int().nonnegative().nullable(),

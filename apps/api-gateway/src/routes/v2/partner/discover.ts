@@ -65,6 +65,11 @@ export default async function partnerDiscoveryRoutes(fastify: FastifyInstance) {
           verified: item.verified,
           organizationId: item.organizationId,
           venueId: item.venueId,
+          ...(item.photoUrl !== undefined ? { photoUrl: item.photoUrl } : {}),
+          ...(item.coverUrl !== undefined ? { coverUrl: item.coverUrl } : {}),
+          ...(item.bio !== undefined ? { bio: item.bio } : {}),
+          ...(item.genres !== undefined ? { genres: item.genres } : {}),
+          ...(item.stats !== undefined ? { stats: item.stats } : {}),
         })),
         pageInfo: {
           page: 1,

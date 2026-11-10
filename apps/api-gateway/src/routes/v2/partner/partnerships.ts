@@ -281,6 +281,13 @@ interface PartnershipNames {
   venueName: string | null;
   venueSlug: string | null;
   venueCity: string | null;
+  hostPhotoUrl: string | null;
+  hostCoverUrl: string | null;
+  hostBio: string;
+  venuePhotoUrl: string | null;
+  venueCoverUrl: string | null;
+  venueBio: string;
+  venueGenres: string[];
 }
 
 /**
@@ -309,6 +316,13 @@ function partnershipToDto(partnership: Partnership, names: PartnershipNames | nu
     venueName: names?.venueName ?? null,
     venueSlug: names?.venueSlug ?? null,
     venueCity: names?.venueCity ?? null,
+    hostPhotoUrl: names?.hostPhotoUrl ?? null,
+    hostCoverUrl: names?.hostCoverUrl ?? null,
+    hostBio: names?.hostBio ?? '',
+    venuePhotoUrl: names?.venuePhotoUrl ?? null,
+    venueCoverUrl: names?.venueCoverUrl ?? null,
+    venueBio: names?.venueBio ?? '',
+    venueGenres: names?.venueGenres ?? [],
   };
 }
 

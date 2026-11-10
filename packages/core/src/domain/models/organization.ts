@@ -100,6 +100,27 @@ export interface OrganizationSettings {
   timezone?: string;
   /** ISO 4217 default currency for pricing; V1 proven default 'INR'. */
   defaultCurrency?: string;
+  /** Additive public Partner profile fields used by the dashboard and partner discovery. */
+  partnerProfile?: {
+    displayName?: string;
+    bio?: string;
+    photoUrl?: string | null;
+    coverUrl?: string | null;
+    city?: string;
+    genres?: string[];
+    instagram?: string;
+    website?: string;
+  };
+  /** Privacy controls for the public partner profile. */
+  partnerPrivacy?: { profileVisible?: boolean; showGuestList?: boolean };
+  /** In-app notification preferences. Email and WhatsApp are not exposed here. */
+  partnerNotifications?: {
+    eventUpdates?: boolean;
+    orderUpdates?: boolean;
+    requests?: boolean;
+    partnerships?: boolean;
+    payouts?: boolean;
+  };
 }
 
 export interface CreateOrganizationInput {

@@ -16,6 +16,10 @@ export interface VenuePublicProfile {
   description: string;
   shortDescription?: string;
   photoUrl: string | null;
+  /** Optional public cover artwork for the partner profile. */
+  coverUrl?: string | null;
+  /** Optional public profile genres. */
+  genres?: string[];
   address: VenueAddress;
   facilities: string[];
   capacity: number | null;

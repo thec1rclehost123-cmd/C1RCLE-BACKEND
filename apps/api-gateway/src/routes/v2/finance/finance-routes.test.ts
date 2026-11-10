@@ -889,6 +889,7 @@ describe('GET /organizations/:organizationId/finance/orders', () => {
       // second client-side lookup to fill.
       eventName: 'Sky Night',
       ticketCount: 2,
+      ticketLines: [{ tierName: 'General', quantity: 2 }],
       status: 'paid',
       currency: 'INR',
       refundedPaise: 0,

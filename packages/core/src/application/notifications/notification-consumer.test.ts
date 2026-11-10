@@ -26,7 +26,7 @@ interface Harness {
   orders: Map<string, unknown>;
 }
 
-function makeHarness(): Harness {
+function makeHarness(notificationOverrides: Record<string, Record<string, boolean>> = {}): Harness {
   const repo = new MemoryNotificationRepository();
   const orders = new Map<string, unknown>();
   let seq = 0;
@@ -34,8 +34,12 @@ function makeHarness(): Harness {
     repositories: {
       notifications: repo,
       organizations: {
-        getById: async (id: string) =>
-          id === 'org_promoter' ? { members: [{ capabilities: ['promoter'] }] } : null,
+        getById: async (id: string) => {
+          if (id === 'org_promoter') return { members: [{ capabilities: ['promoter'] }] };
+          if (notificationOverrides[id])
+            return { settings: { partnerNotifications: notificationOverrides[id] } };
+          return null;
+        },
       },
       orders: {
         getById: async (id: string) => (orders.get(id) as Order | undefined) ?? null,
@@ -108,6 +112,11 @@ const actorOf = (organizationId: string): ActorContext => ({
 });
 
 describe('notification consumer — producer mapping', () => {
+  it('honors saved in-app notification preferences for request categories', async () => {
+    const { repo, consume } = makeHarness({ org_venue: { requests: false } });
+    await consume(connectionRequested());
+    expect(repo.entries.size).toBe(0);
+  });
   it('deduplicates durable Promoter assignment invitation events', async () => {
     const { repo, consume } = makeHarness();
     const invited = event('promoter.assignment.invited', {

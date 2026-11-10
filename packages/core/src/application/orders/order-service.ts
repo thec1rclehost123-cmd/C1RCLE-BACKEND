@@ -25,6 +25,7 @@ export interface FinanceOrderRow {
   readonly order: Order;
   readonly eventName: string;
   readonly ticketCount: number;
+  readonly ticketLines: readonly { readonly tierName: string; readonly quantity: number }[];
 }
 
 /**
@@ -110,6 +111,10 @@ export class OrderService {
         order,
         eventName: names.get(order.eventId) ?? order.eventId,
         ticketCount: order.lines.reduce((sum, line) => sum + line.quantity, 0),
+        ticketLines: order.lines.map((line) => ({
+          tierName: line.tierName,
+          quantity: line.quantity,
+        })),
       })),
       total: page.total,
       nextCursor: page.nextCursor,

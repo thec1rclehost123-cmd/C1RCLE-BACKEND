@@ -222,6 +222,14 @@ interface PromoterConnectionNames {
   targetName: string | null;
   targetSlug: string | null;
   targetCity: string | null;
+  promoterPhotoUrl: string | null;
+  promoterCoverUrl: string | null;
+  promoterBio: string;
+  promoterGenres: string[];
+  targetPhotoUrl: string | null;
+  targetCoverUrl: string | null;
+  targetBio: string;
+  targetGenres: string[];
 }
 
 /**
@@ -251,6 +259,14 @@ function connectionToDto(
     targetName: names?.targetName ?? null,
     targetSlug: names?.targetSlug ?? null,
     targetCity: names?.targetCity ?? null,
+    promoterPhotoUrl: names?.promoterPhotoUrl ?? null,
+    promoterCoverUrl: names?.promoterCoverUrl ?? null,
+    promoterBio: names?.promoterBio ?? '',
+    promoterGenres: names?.promoterGenres ?? [],
+    targetPhotoUrl: names?.targetPhotoUrl ?? null,
+    targetCoverUrl: names?.targetCoverUrl ?? null,
+    targetBio: names?.targetBio ?? '',
+    targetGenres: names?.targetGenres ?? [],
   };
 }
 

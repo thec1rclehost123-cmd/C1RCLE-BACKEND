@@ -35,6 +35,14 @@ export interface PromoterConnectionWithNames {
   targetName: string | null;
   targetSlug: string | null;
   targetCity: string | null;
+  promoterPhotoUrl: string | null;
+  promoterCoverUrl: string | null;
+  promoterBio: string;
+  promoterGenres: string[];
+  targetPhotoUrl: string | null;
+  targetCoverUrl: string | null;
+  targetBio: string;
+  targetGenres: string[];
 }
 
 /**
@@ -173,23 +181,68 @@ export class PromoterConnectionService {
         const fallbackOrg =
           targetOrgByName.get(connection.targetId) ??
           (venue ? targetOrgByName.get(venue.organizationId) : undefined);
+        const ownerOrg = venue ? targetOrgByName.get(venue.organizationId) : fallbackOrg;
+        const promoterVisible = promoterOrg?.settings.partnerPrivacy?.profileVisible ?? true;
+        const targetVisible = ownerOrg?.settings.partnerPrivacy?.profileVisible ?? true;
         return {
           connection,
-          promoterName: promoterOrg?.name ?? null,
+          promoterName: promoterOrg
+            ? (promoterOrg.settings.partnerProfile?.displayName ?? promoterOrg.name)
+            : null,
           promoterSlug: promoterOrg?.slug ?? null,
-          targetName: venue?.public.name ?? fallbackOrg?.name ?? null,
+          targetName:
+            venue?.public.name ??
+            (fallbackOrg
+              ? (fallbackOrg.settings.partnerProfile?.displayName ?? fallbackOrg.name)
+              : null),
           targetSlug: venue?.public.slug ?? fallbackOrg?.slug ?? null,
           targetCity: venue?.public.address?.city ?? null,
+          promoterPhotoUrl: promoterVisible
+            ? (promoterOrg?.settings.partnerProfile?.photoUrl ?? null)
+            : null,
+          promoterCoverUrl: promoterVisible
+            ? (promoterOrg?.settings.partnerProfile?.coverUrl ?? null)
+            : null,
+          promoterBio: promoterVisible ? (promoterOrg?.settings.partnerProfile?.bio ?? '') : '',
+          promoterGenres: promoterVisible
+            ? (promoterOrg?.settings.partnerProfile?.genres ?? [])
+            : [],
+          targetPhotoUrl: targetVisible ? (venue?.public.photoUrl ?? null) : null,
+          targetCoverUrl: targetVisible ? (venue?.public.coverUrl ?? null) : null,
+          targetBio: targetVisible ? (venue?.public.description ?? '') : '',
+          targetGenres: targetVisible ? (venue?.public.genres ?? []) : [],
         };
       }
       const targetOrg = targetOrgByName.get(connection.targetId);
+      const promoterVisible = promoterOrg?.settings.partnerPrivacy?.profileVisible ?? true;
+      const targetVisible = targetOrg?.settings.partnerPrivacy?.profileVisible ?? true;
       return {
         connection,
-        promoterName: promoterOrg?.name ?? null,
+        promoterName: promoterOrg
+          ? (promoterOrg.settings.partnerProfile?.displayName ?? promoterOrg.name)
+          : null,
         promoterSlug: promoterOrg?.slug ?? null,
-        targetName: targetOrg?.name ?? null,
+        targetName: targetOrg
+          ? (targetOrg.settings.partnerProfile?.displayName ?? targetOrg.name)
+          : null,
         targetSlug: targetOrg?.slug ?? null,
         targetCity: null,
+        promoterPhotoUrl: promoterVisible
+          ? (promoterOrg?.settings.partnerProfile?.photoUrl ?? null)
+          : null,
+        promoterCoverUrl: promoterVisible
+          ? (promoterOrg?.settings.partnerProfile?.coverUrl ?? null)
+          : null,
+        promoterBio: promoterVisible ? (promoterOrg?.settings.partnerProfile?.bio ?? '') : '',
+        promoterGenres: promoterVisible ? (promoterOrg?.settings.partnerProfile?.genres ?? []) : [],
+        targetPhotoUrl: targetVisible
+          ? (targetOrg?.settings.partnerProfile?.photoUrl ?? null)
+          : null,
+        targetCoverUrl: targetVisible
+          ? (targetOrg?.settings.partnerProfile?.coverUrl ?? null)
+          : null,
+        targetBio: targetVisible ? (targetOrg?.settings.partnerProfile?.bio ?? '') : '',
+        targetGenres: targetVisible ? (targetOrg?.settings.partnerProfile?.genres ?? []) : [],
       };
     });
     return { ...page, items };

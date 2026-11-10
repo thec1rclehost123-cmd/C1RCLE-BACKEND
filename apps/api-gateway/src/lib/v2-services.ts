@@ -122,6 +122,7 @@ import type {
   StaffUserDirectory,
   VerificationProvider,
   UserDirectoryPort,
+  ObjectStoragePort,
 } from '@c1rcle/core/domain';
 import type { SocialNotificationRepository } from '@c1rcle/core/domain/ports';
 
@@ -184,6 +185,8 @@ export interface PartnerV2Services {
    * hatch (not part of this interface — see that class's doc comment).
    */
   paymentProvider: PaymentProvider;
+  /** Signed media-upload grants; credentials remain server-side. */
+  objectStorage: ObjectStoragePort;
   /** Phase 4 PR3: guest-facing order reads (GET /orders, /orders/:id[/status]). */
   orders: OrderService;
   /** Phase 4 PR3: guest-facing ticket reads (GET /tickets/:id, /wallet/tickets). */
@@ -813,6 +816,7 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
     fulfilmentRepair,
     public: new PublicService(deps),
     paymentProvider,
+    objectStorage: deps.objectStorage,
     orders: new OrderService(deps),
     tickets: new TicketService(deps),
     ticketAccess: new TicketAccessService(deps),

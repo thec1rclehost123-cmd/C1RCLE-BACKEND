@@ -40,6 +40,9 @@ export function createNotificationConsumer(deps: NotificationConsumerDeps) {
   async function notificationConsumer(event: DomainEvent): Promise<void> {
     const input = await notificationFor(event, deps.orders, deps.organizations);
     if (input === null) return;
+    const recipient = await deps.organizations.getById(input.recipientId).catch(() => null);
+    const preference = notificationPreferenceFor(input.type);
+    if (preference && recipient?.settings?.partnerNotifications?.[preference] === false) return;
 
     const notification = createNotification({
       id: input.dedupeKey
@@ -56,6 +59,18 @@ export function createNotificationConsumer(deps: NotificationConsumerDeps) {
       type: notification.type,
     });
   }
+}
+
+function notificationPreferenceFor(
+  type: string,
+): 'eventUpdates' | 'orderUpdates' | 'requests' | 'partnerships' | 'payouts' | null {
+  if (type.startsWith('promoter_connection.') || type.startsWith('slot_request.'))
+    return 'requests';
+  if (type.startsWith('partnership.')) return 'partnerships';
+  if (type.startsWith('order.')) return 'orderUpdates';
+  if (type.startsWith('finance.payout')) return 'payouts';
+  if (type.startsWith('event.')) return 'eventUpdates';
+  return null;
 }
 
 interface NotificationForInput {
