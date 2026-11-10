@@ -129,6 +129,8 @@ export class OnboardingService {
    * would leave admins deciding which of two drafts is real.
    */
   async start(userId: EntityId, command: StartApplicationCommand): Promise<OnboardingRequest> {
+    await this.requireVerifiedEmail(userId);
+    await this.requireVerifiedPhone(userId, command.profile.phone);
     const open = await this.repo.findOpenForUser(userId);
     if (open) {
       throw new InvalidOperationError('You already have an onboarding application in progress');
@@ -151,14 +153,27 @@ export class OnboardingService {
 
   /** The applicant's own application, if any. `null` rather than a 404. */
   async getMine(userId: EntityId): Promise<OnboardingRequest | null> {
+    if (!(await this.hasVerifiedEmail(userId))) return null;
+    const verifiedPhone = await this.latestVerifiedPhone(userId);
+    if (!verifiedPhone) return null;
     const open = await this.repo.findOpenForUser(userId);
-    if (open) return open;
+    if (open) return withVerifiedPhone(open, verifiedPhone);
     const latest = await this.repo.listForUser(userId, { limit: 1, cursor: null });
-    return latest.items[0] ?? null;
+    const request = latest.items[0] ?? null;
+    return request ? withVerifiedPhone(request, verifiedPhone) : null;
   }
 
   async listMine(userId: EntityId, query: PaginationQuery) {
-    return this.repo.listForUser(userId, query);
+    if (!(await this.hasVerifiedEmail(userId))) {
+      return { items: [], total: 0, nextCursor: null };
+    }
+    const verifiedPhone = await this.latestVerifiedPhone(userId);
+    if (!verifiedPhone) return { items: [], total: 0, nextCursor: null };
+    const page = await this.repo.listForUser(userId, query);
+    return {
+      ...page,
+      items: page.items.map((request) => withVerifiedPhone(request, verifiedPhone)),
+    };
   }
 
   getCurrentPromoterAgreement() {
@@ -201,12 +216,13 @@ export class OnboardingService {
     requestId: EntityId,
     body: Record<string, unknown>,
   ): Promise<OnboardingRequest> {
-    const request = await this.requireOwn(userId, requestId);
+    const request = await this.requireOwn(userId, requestId, true);
     const updated = updateOnboardingProfile(
       request,
       sanitizeApplicantProfile(body),
       this.deps.config.clock.now(),
     );
+    await this.requireVerifiedPhone(userId, updated.profile.phone);
     await this.repo.save(updated);
     return updated;
   }
@@ -313,6 +329,7 @@ export class OnboardingService {
     userId: EntityId,
     command: VerifyDocumentCommand,
   ): Promise<VerificationResult> {
+    if (command.documentType === 'phone') await this.requireVerifiedEmail(userId);
     const now = this.deps.config.clock.now();
     const since = now.getTime() - VERIFICATION_WINDOW_MS;
     const attempts = await this.deps.repositories.verificationAttempts.countSince(userId, since);
@@ -334,6 +351,9 @@ export class OnboardingService {
       command.documentType,
       result.passed ? 'passed' : 'failed',
       result.provider,
+      result.passed && command.documentType === 'phone' && result.provider === 'firebase-phone'
+        ? normalizePhone(command.documentNumber)
+        : undefined,
     );
     return result;
   }
@@ -343,6 +363,7 @@ export class OnboardingService {
     documentType: string,
     outcome: 'passed' | 'failed' | 'error',
     provider: string,
+    verifiedPhoneNumber?: string,
   ): Promise<void> {
     await this.deps.repositories.verificationAttempts.append({
       id: this.deps.config.ids(),
@@ -351,7 +372,44 @@ export class OnboardingService {
       outcome,
       provider,
       attemptedAt: this.deps.config.clock.now().getTime(),
+      ...(verifiedPhoneNumber ? { verifiedPhoneNumber } : {}),
     });
+  }
+
+  private async hasVerifiedEmail(userId: EntityId): Promise<boolean> {
+    const user = await this.deps.repositories.users.getById(userId);
+    return user?.emailVerified === true;
+  }
+
+  private async requireVerifiedEmail(userId: EntityId): Promise<void> {
+    if (!(await this.hasVerifiedEmail(userId))) {
+      throw new ForbiddenError('Verify your email address before starting partner onboarding');
+    }
+  }
+
+  private async latestVerifiedPhone(userId: EntityId): Promise<string | null> {
+    const attempts = await this.deps.repositories.verificationAttempts.listForUser(userId, 100);
+    return (
+      attempts.find(
+        (attempt) =>
+          attempt.documentType === 'phone' &&
+          attempt.outcome === 'passed' &&
+          attempt.provider === 'firebase-phone' &&
+          typeof attempt.verifiedPhoneNumber === 'string',
+      )?.verifiedPhoneNumber ?? null
+    );
+  }
+
+  private async hasVerifiedPhone(userId: EntityId, phone: string | undefined): Promise<boolean> {
+    if (!phone) return false;
+    const latest = await this.latestVerifiedPhone(userId);
+    return latest !== null && normalizePhone(phone) === normalizePhone(latest);
+  }
+
+  private async requireVerifiedPhone(userId: EntityId, phone: string | undefined): Promise<void> {
+    if (!(await this.hasVerifiedPhone(userId, phone))) {
+      throw new ForbiddenError('Verify this phone number before using it for partner onboarding');
+    }
   }
 
   /* ─── Admin side ─────────────────────────────────────────────────────────── */
@@ -681,13 +739,38 @@ export class OnboardingService {
    * Another applicant's request reads as "no such request" — a distinct
    * "forbidden" would confirm that a given id exists.
    */
-  private async requireOwn(userId: EntityId, requestId: EntityId): Promise<OnboardingRequest> {
+  private async requireOwn(
+    userId: EntityId,
+    requestId: EntityId,
+    allowPhoneReplacement = false,
+  ): Promise<OnboardingRequest> {
     const request = await this.repo.getById(requestId);
     if (!request || request.userId !== userId) {
       throw new OnboardingRequestNotFoundError(requestId);
     }
+    await this.requireVerifiedEmail(userId);
+    if (allowPhoneReplacement) {
+      if (!(await this.latestVerifiedPhone(userId))) {
+        throw new ForbiddenError('Verify your phone number before using partner onboarding');
+      }
+    } else {
+      await this.requireVerifiedPhone(userId, request.profile.phone);
+    }
     return request;
   }
+}
+
+function normalizePhone(phone: string): string {
+  const normalized = phone.replace(/[^\d+]/g, '');
+  if (normalized.startsWith('+')) return normalized;
+  if (/^\d{10}$/.test(normalized)) return `+91${normalized}`;
+  return `+${normalized}`;
+}
+
+function withVerifiedPhone(request: OnboardingRequest, verifiedPhone: string): OnboardingRequest {
+  return normalizePhone(request.profile.phone) === normalizePhone(verifiedPhone)
+    ? request
+    : { ...request, profile: { ...request.profile, phone: verifiedPhone } };
 }
 
 function kycObjectKey(request: OnboardingRequest, label: string): string {

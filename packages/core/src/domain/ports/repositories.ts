@@ -670,6 +670,8 @@ export interface VerificationAttempt {
   provider: string;
   /** Epoch ms. */
   attemptedAt: number;
+  /** Present only when Firebase proved this exact phone number for the user. */
+  verifiedPhoneNumber?: string;
 }
 
 export interface VerificationAttemptRepository {

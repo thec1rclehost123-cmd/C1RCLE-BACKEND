@@ -262,6 +262,9 @@ function toAttempt(data: DocumentData): VerificationAttempt {
     outcome: data.outcome as VerificationAttempt['outcome'],
     provider: data.provider as string,
     attemptedAt: data.attemptedAt as number,
+    ...(typeof data.verifiedPhoneNumber === 'string'
+      ? { verifiedPhoneNumber: data.verifiedPhoneNumber }
+      : {}),
   };
 }
 

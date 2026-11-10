@@ -64,6 +64,7 @@ async function startApplication(
   userId: string,
   plan: 'basic' | 'silver' | 'diamond' = 'basic',
 ): Promise<ApplicationView> {
+  await seedVerifiedApplicant(userId);
   const response = await server.inject({
     method: 'POST',
     url: '/onboarding/applications',
@@ -72,6 +73,40 @@ async function startApplication(
   });
   expect(response.statusCode).toBe(201);
   return response.json<ApplicationView>();
+}
+
+async function seedVerifiedApplicant(userId: string): Promise<void> {
+  const users = services.repos().users as unknown as {
+    save(user: {
+      id: string;
+      email: string;
+      name: string;
+      image: null;
+      emailVerified: boolean;
+      role: string;
+      createdAt: number;
+      updatedAt: number;
+    }): void;
+  };
+  users.save({
+    id: userId,
+    email: `${userId}@example.test`,
+    name: userId,
+    image: null,
+    emailVerified: true,
+    role: 'partner',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+  await services.repos().verificationAttempts.append({
+    id: `phone-proof-${userId}`,
+    userId,
+    documentType: 'phone',
+    outcome: 'passed',
+    provider: 'firebase-phone',
+    attemptedAt: Date.now(),
+    verifiedPhoneNumber: '+919876543210',
+  });
 }
 
 /** Uploads the three labels `submit` requires. */
@@ -95,6 +130,7 @@ beforeEach(async () => {
   (repos.platformAdmins as unknown as { admins: Map<string, unknown> }).admins.clear();
   (repos.proposals as unknown as { proposals: Map<string, unknown> }).proposals.clear();
   (repos.verificationAttempts as unknown as { attempts: unknown[] }).attempts.length = 0;
+  (repos.users as unknown as { users: Map<string, unknown> }).users.clear();
 
   server = await buildPartnerTestServer({ routes: [onboardingRoutes, adminRoutes] });
 });
@@ -108,6 +144,91 @@ describe('applicant onboarding', () => {
     const created = await startApplication('user_a');
     expect(created.status).toBe('draft');
     expect(created.missingDocuments).toEqual(['id_front', 'id_back', 'selfie']);
+  });
+
+  it('rejects unverified email or phone before writing any application profile', async () => {
+    const users = services.repos().users as unknown as {
+      save(user: {
+        id: string;
+        email: string;
+        name: string;
+        image: null;
+        emailVerified: boolean;
+        role: string;
+        createdAt: number;
+        updatedAt: number;
+      }): void;
+    };
+    users.save({
+      id: 'pending_email',
+      email: 'pending@example.test',
+      name: 'Pending',
+      image: null,
+      emailVerified: false,
+      role: 'partner',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    users.save({
+      id: 'pending_phone',
+      email: 'verified@example.test',
+      name: 'Verified',
+      image: null,
+      emailVerified: true,
+      role: 'partner',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    users.save({
+      id: 'mismatched_phone',
+      email: 'verified@example.test',
+      name: 'Mismatch',
+      image: null,
+      emailVerified: true,
+      role: 'partner',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    await services.repos().verificationAttempts.append({
+      id: 'wrong-number-proof',
+      userId: 'mismatched_phone',
+      documentType: 'phone',
+      outcome: 'passed',
+      provider: 'firebase-phone',
+      attemptedAt: Date.now(),
+      verifiedPhoneNumber: '+919999999999',
+    });
+
+    for (const userId of ['pending_email', 'pending_phone', 'mismatched_phone']) {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/onboarding/applications',
+        headers: asUser(userId),
+        payload: { requestedType: 'venue', plan: 'basic', profile: FULL_PROFILE },
+      });
+      expect(response.statusCode).toBe(403);
+    }
+    expect(
+      (services.repos().onboarding as unknown as { requests: Map<string, unknown> }).requests.size,
+    ).toBe(0);
+  });
+
+  it('hides an existing application and rejects edits until its phone is reverified', async () => {
+    const created = await startApplication('user_a');
+    (services.repos().verificationAttempts as unknown as { attempts: unknown[] }).attempts.length =
+      0;
+
+    const mine = await server.inject({ url: '/onboarding/me', headers: asUser('user_a') });
+    expect(mine.statusCode).toBe(200);
+    expect(mine.json()).toEqual({ request: null });
+
+    const update = await server.inject({
+      method: 'PATCH',
+      url: `/onboarding/applications/${created.id}`,
+      headers: asUser('user_a'),
+      payload: { city: 'Pune' },
+    });
+    expect(update.statusCode).toBe(403);
   });
 
   it('records versioned test-fixture agreement evidence and exposes it to Admin review', async () => {
@@ -126,6 +247,8 @@ describe('applicant onboarding', () => {
         textSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       },
     });
+
+    await seedVerifiedApplicant('promoter_applicant');
 
     const application = await server.inject({
       method: 'POST',

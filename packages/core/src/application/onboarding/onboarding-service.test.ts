@@ -30,6 +30,7 @@ import {
   MemoryOrganizationRepository,
   MemoryVenueRepository,
 } from '../../infrastructure/memory/memory-repositories.js';
+import { MemoryUserAccountRepository } from '../../infrastructure/memory/memory-user-account-repository.js';
 import { noopLogger } from '../../telemetry/logger.js';
 import { AdminAuthorityService } from '../admin/admin-authority-service.js';
 import { InventoryService } from '../inventory/inventory-service.js';
@@ -114,6 +115,7 @@ function buildDeps() {
     orders: new MemoryOrderRepository(),
     entitlements: new MemoryEntitlementRepository(),
     venues: new MemoryVenueRepository(),
+    users: new MemoryUserAccountRepository(),
   } as unknown as ServiceDeps['repositories'];
 
   const emailSender = new FakeEmailSender();
@@ -177,11 +179,160 @@ async function seedAdmin(repositories: ServiceDeps['repositories'], id: string) 
   );
 }
 
+async function seedVerifiedApplicant(ctx: ReturnType<typeof buildDeps>, id: string) {
+  (ctx.repositories.users as unknown as MemoryUserAccountRepository).save({
+    id,
+    email: `${id}@example.test`,
+    name: id,
+    image: null,
+    emailVerified: true,
+    role: 'partner',
+    createdAt: NOW.getTime(),
+    updatedAt: NOW.getTime(),
+  });
+  await ctx.repositories.verificationAttempts.append({
+    id: `phone-proof-${id}`,
+    userId: id,
+    documentType: 'phone',
+    outcome: 'passed',
+    provider: 'firebase-phone',
+    attemptedAt: NOW.getTime(),
+    verifiedPhoneNumber: '+919876543210',
+  });
+}
+
 describe('OnboardingService — KYC document desk', () => {
   let ctx: ReturnType<typeof buildDeps>;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     ctx = buildDeps();
+    await seedVerifiedApplicant(ctx, 'user_a');
+    await seedVerifiedApplicant(ctx, 'user_biz');
+  });
+
+  it('requires server-verified email and matching Firebase phone proof before persisting an application', async () => {
+    const { service, repositories } = ctx;
+    const users = repositories.users as unknown as MemoryUserAccountRepository;
+    users.save({
+      id: 'unverified_email',
+      email: 'pending@example.test',
+      name: 'Pending',
+      image: null,
+      emailVerified: false,
+      role: 'partner',
+      createdAt: NOW.getTime(),
+      updatedAt: NOW.getTime(),
+    });
+    await expect(
+      service.start('unverified_email', {
+        requestedType: 'venue',
+        plan: 'basic',
+        profile: PROFILE,
+      }),
+    ).rejects.toThrow(/Verify your email/);
+    await expect(
+      service.verifyDocument('unverified_email', {
+        documentType: 'phone',
+        documentNumber: PROFILE.phone,
+        proofToken: 'token',
+      }),
+    ).rejects.toThrow(/Verify your email/);
+    expect(
+      (repositories.onboarding as unknown as { requests: Map<string, unknown> }).requests.size,
+    ).toBe(0);
+
+    users.save({
+      id: 'no_phone_proof',
+      email: 'verified@example.test',
+      name: 'Verified',
+      image: null,
+      emailVerified: true,
+      role: 'partner',
+      createdAt: NOW.getTime(),
+      updatedAt: NOW.getTime(),
+    });
+    await expect(
+      service.start('no_phone_proof', {
+        requestedType: 'venue',
+        plan: 'basic',
+        profile: PROFILE,
+      }),
+    ).rejects.toThrow(/Verify this phone number/);
+    expect(
+      (repositories.onboarding as unknown as { requests: Map<string, unknown> }).requests.size,
+    ).toBe(0);
+  });
+
+  it('does not reveal or update an existing application after its contact proof is unavailable', async () => {
+    const { service, repositories } = ctx;
+    const created = await service.start('user_a', {
+      requestedType: 'venue',
+      plan: 'basic',
+      profile: PROFILE,
+    });
+    (repositories.verificationAttempts as unknown as { attempts: unknown[] }).attempts.length = 0;
+    expect(await service.getMine('user_a')).toBeNull();
+    await expect(service.saveProgress('user_a', created.id, { city: 'Pune' })).rejects.toThrow(
+      /Verify your phone number/,
+    );
+  });
+
+  it('lets a returning applicant replace a legacy phone only with their newly verified number', async () => {
+    const { service, repositories } = ctx;
+    const created = await service.start('user_a', {
+      requestedType: 'venue',
+      plan: 'basic',
+      profile: PROFILE,
+    });
+    await repositories.verificationAttempts.append({
+      id: 'replacement-phone-proof',
+      userId: 'user_a',
+      documentType: 'phone',
+      outcome: 'passed',
+      provider: 'firebase-phone',
+      attemptedAt: NOW.getTime() + 1,
+      verifiedPhoneNumber: '+919111111111',
+    });
+
+    const resumed = await service.getMine('user_a');
+    expect(resumed?.profile.phone).toBe('+919111111111');
+    const updated = await service.saveProgress('user_a', created.id, {
+      phone: '+919111111111',
+      city: 'Pune',
+    });
+    expect(updated.profile).toMatchObject({ phone: '+919111111111', city: 'Pune' });
+  });
+
+  it('binds phone proof to the exact number only after the Firebase provider passes', async () => {
+    const { service, deps, repositories } = ctx;
+    deps.verification = {
+      name: 'firebase-phone',
+      verify: async () => ({ passed: true, provider: 'firebase-phone' }),
+    };
+    await service.verifyDocument('user_a', {
+      documentType: 'phone',
+      documentNumber: '+91 98765 43210',
+      proofToken: 'synthetic-proof-token',
+    });
+    const proof = (await repositories.verificationAttempts.listForUser('user_a', 10)).find(
+      (attempt) => attempt.verifiedPhoneNumber !== undefined,
+    );
+    expect(proof?.verifiedPhoneNumber).toBe('+919876543210');
+
+    deps.verification = {
+      name: 'firebase-phone',
+      verify: async () => ({ passed: false, provider: 'firebase-phone' }),
+    };
+    await service.verifyDocument('user_a', {
+      documentType: 'phone',
+      documentNumber: '+919111111111',
+      proofToken: 'synthetic-invalid-token',
+    });
+    expect(
+      (await repositories.verificationAttempts.listForUser('user_a', 10)).some(
+        (attempt) => attempt.verifiedPhoneNumber === '+919111111111',
+      ),
+    ).toBe(false);
   });
 
   it.each(['host', 'venue', 'promoter'] as const)(
