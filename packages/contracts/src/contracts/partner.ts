@@ -41,6 +41,13 @@ export const partnershipDtoSchema = z.object({
   venueName: z.string().min(1).max(200).nullish(),
   venueSlug: z.string().min(1).max(60).nullish(),
   venueCity: z.string().max(100).nullish(),
+  hostPhotoUrl: z.url().nullable().optional(),
+  hostCoverUrl: z.url().nullable().optional(),
+  hostBio: z.string().max(2000).optional(),
+  venuePhotoUrl: z.url().nullable().optional(),
+  venueCoverUrl: z.url().nullable().optional(),
+  venueBio: z.string().max(2000).optional(),
+  venueGenres: z.array(z.string().max(60)).max(20).optional(),
 });
 export type PartnershipDto = z.infer<typeof partnershipDtoSchema>;
 
@@ -341,6 +348,27 @@ export const eventAnalyticsDtoSchema = z.object({
 });
 export type EventAnalyticsDto = z.infer<typeof eventAnalyticsDtoSchema>;
 
+/** Historical successful bookings by weekday/hour in product time. */
+export const eventBookingHeatmapDtoSchema = z
+  .object({
+    eventId: opaqueIdSchema,
+    timeZone: z.literal('Asia/Kolkata'),
+    weekdays: z
+      .array(
+        z
+          .object({
+            day: z.enum(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']),
+            hours: z.array(z.number().int().nonnegative()).length(24),
+          })
+          .strict(),
+      )
+      .length(7),
+    totalBookings: z.number().int().nonnegative(),
+    complete: z.boolean(),
+  })
+  .strict();
+export type EventBookingHeatmapDto = z.infer<typeof eventBookingHeatmapDtoSchema>;
+
 /**
  * Event-level Promoter attribution analytics. Historical acquisition and
  * current refund/RSVP outcomes remain separate.
@@ -511,6 +539,14 @@ export const promoterConnectionDtoSchema = z.object({
   targetName: z.string().min(1).max(200).nullish(),
   targetSlug: z.string().min(1).max(60).nullish(),
   targetCity: z.string().max(100).nullish(),
+  promoterPhotoUrl: z.url().nullable().optional(),
+  promoterCoverUrl: z.url().nullable().optional(),
+  promoterBio: z.string().max(2000).optional(),
+  promoterGenres: z.array(z.string().max(60)).max(20).optional(),
+  targetPhotoUrl: z.url().nullable().optional(),
+  targetCoverUrl: z.url().nullable().optional(),
+  targetBio: z.string().max(2000).optional(),
+  targetGenres: z.array(z.string().max(60)).max(20).optional(),
 });
 export type PromoterConnectionDto = z.infer<typeof promoterConnectionDtoSchema>;
 
@@ -552,6 +588,14 @@ export const discoverPartnerDtoSchema = z.object({
   organizationId: opaqueIdSchema.nullable(),
   /** Venue id behind a venue candidate (the partnership request key). */
   venueId: opaqueIdSchema.nullable(),
+  photoUrl: z.url().nullable().optional(),
+  coverUrl: z.url().nullable().optional(),
+  bio: z.string().max(2000).optional(),
+  genres: z.array(z.string().max(60)).max(20).optional(),
+  stats: z
+    .array(z.object({ label: z.string().max(80), value: z.string().max(40) }))
+    .max(4)
+    .optional(),
 });
 export type DiscoverPartnerDto = z.infer<typeof discoverPartnerDtoSchema>;
 
@@ -562,3 +606,30 @@ export const discoverPartnersQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 export type DiscoverPartnersQuery = z.infer<typeof discoverPartnersQuerySchema>;
+
+/** Tenant-scoped global search results. Guest and order identities are excluded by design. */
+export const partnerGlobalSearchQuerySchema = z.object({ q: z.string().trim().min(2).max(120) });
+export const partnerGlobalSearchResultSchema = z.object({
+  id: opaqueIdSchema,
+  type: z.enum(['event', 'partner']),
+  title: z.string().min(1).max(200),
+  subtitle: z.string().max(200),
+});
+export const partnerGlobalSearchResponseSchema = z.object({
+  results: z.array(partnerGlobalSearchResultSchema).max(12),
+});
+export type PartnerGlobalSearchQuery = z.infer<typeof partnerGlobalSearchQuerySchema>;
+export type PartnerGlobalSearchResponse = z.infer<typeof partnerGlobalSearchResponseSchema>;
+
+export const eventComparisonItemSchema = z.object({
+  eventId: opaqueIdSchema,
+  title: z.string().min(1).max(200),
+  startAt: z.iso.datetime(),
+  status: z.enum(['current', 'final']),
+  analytics: eventAnalyticsDtoSchema,
+});
+export const eventComparisonResponseSchema = z.object({
+  current: eventComparisonItemSchema,
+  previous: z.array(eventComparisonItemSchema).max(5),
+});
+export type EventComparisonResponse = z.infer<typeof eventComparisonResponseSchema>;

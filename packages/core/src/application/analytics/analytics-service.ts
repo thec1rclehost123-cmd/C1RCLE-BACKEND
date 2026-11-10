@@ -236,6 +236,80 @@ export class AnalyticsService {
     };
   }
 
+  /** Historical successful bookings, bucketed by product-local weekday and hour. */
+  async getEventBookingHeatmap(actor: ActorContext, eventId: EntityId) {
+    const event = await this.deps.repositories.events.getById(eventId);
+    if (!event || event.organizationId !== actor.organizationId)
+      throw new EventNotFoundError(eventId);
+
+    const buckets = Array.from({ length: 7 }, () => Array.from({ length: 24 }, () => 0));
+    const dayIndexes: Record<string, number> = {
+      Mon: 0,
+      Tue: 1,
+      Wed: 2,
+      Thu: 3,
+      Fri: 4,
+      Sat: 5,
+      Sun: 6,
+    };
+    const formatter = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Kolkata',
+      weekday: 'short',
+      hour: '2-digit',
+      hourCycle: 'h23',
+    });
+    let scanned = 0;
+    let pages = 0;
+    let cursor: string | null = null;
+    let complete = true;
+    do {
+      const page = await this.deps.repositories.orders.listByEvent(eventId, {
+        limit: Math.min(250, COMPUTE_SCAN_LIMIT - scanned),
+        cursor,
+      });
+      pages += 1;
+      scanned += page.items.length;
+      for (const order of page.items) {
+        const successful =
+          isCaptured(order.status) ||
+          (order.id.startsWith('RSVP-') && order.status === 'cancelled');
+        if (!successful) continue;
+        const timestamp = Date.parse(order.bookedAt ?? order.createdAt);
+        if (!Number.isFinite(timestamp)) continue;
+        const parts = formatter.formatToParts(new Date(timestamp));
+        const day = dayIndexes[parts.find((part) => part.type === 'weekday')?.value ?? ''];
+        const hour = Number(parts.find((part) => part.type === 'hour')?.value);
+        const dayBuckets = day === undefined ? undefined : buckets.at(day);
+        const currentHourCount = dayBuckets?.at(hour);
+        if (
+          dayBuckets &&
+          Number.isInteger(hour) &&
+          hour >= 0 &&
+          hour < 24 &&
+          currentHourCount !== undefined
+        ) {
+          dayBuckets[hour] = currentHourCount + 1;
+        }
+      }
+      cursor = page.nextCursor;
+      if (cursor !== null && (scanned >= COMPUTE_SCAN_LIMIT || pages >= COMPUTE_SCAN_LIMIT))
+        complete = false;
+    } while (cursor !== null && scanned < COMPUTE_SCAN_LIMIT && pages < COMPUTE_SCAN_LIMIT);
+
+    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const;
+    const weekdays = days.flatMap((day, index) => {
+      const hours = buckets.at(index);
+      return hours ? [{ day, hours }] : [];
+    });
+    return {
+      eventId,
+      timeZone: 'Asia/Kolkata' as const,
+      weekdays,
+      totalBookings: buckets.flat().reduce((sum, count) => sum + count, 0),
+      complete,
+    };
+  }
+
   /**
    * Server-derived Promoter sales for an event. Ticket value and commission
    * use the same captured-order states as event analytics and are explicitly

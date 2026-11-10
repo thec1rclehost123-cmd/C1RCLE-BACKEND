@@ -35,6 +35,13 @@ export interface PartnershipWithNames {
   venueName: string | null;
   venueSlug: string | null;
   venueCity: string | null;
+  hostPhotoUrl: string | null;
+  hostCoverUrl: string | null;
+  hostBio: string;
+  venuePhotoUrl: string | null;
+  venueCoverUrl: string | null;
+  venueBio: string;
+  venueGenres: string[];
 }
 
 /**
@@ -219,11 +226,41 @@ export class PartnershipService {
       const venueOrg = venueOrgByName.get(partnership.venueOrganizationId);
       return {
         partnership,
-        hostName: hostOrg?.name ?? null,
+        hostName: hostOrg ? (hostOrg.settings.partnerProfile?.displayName ?? hostOrg.name) : null,
         hostSlug: hostOrg?.slug ?? null,
-        venueName: venue?.public.name ?? venueOrg?.name ?? null,
+        venueName:
+          venue?.public.name ??
+          (venueOrg ? (venueOrg.settings.partnerProfile?.displayName ?? venueOrg.name) : null),
         venueSlug: venue?.public.slug ?? venueOrg?.slug ?? null,
         venueCity: venue?.public.address?.city ?? null,
+        hostPhotoUrl:
+          (hostOrg?.settings.partnerPrivacy?.profileVisible ?? true)
+            ? (hostOrg?.settings.partnerProfile?.photoUrl ?? null)
+            : null,
+        hostCoverUrl:
+          (hostOrg?.settings.partnerPrivacy?.profileVisible ?? true)
+            ? (hostOrg?.settings.partnerProfile?.coverUrl ?? null)
+            : null,
+        hostBio:
+          (hostOrg?.settings.partnerPrivacy?.profileVisible ?? true)
+            ? (hostOrg?.settings.partnerProfile?.bio ?? '')
+            : '',
+        venuePhotoUrl:
+          (venueOrg?.settings.partnerPrivacy?.profileVisible ?? true)
+            ? (venue?.public.photoUrl ?? null)
+            : null,
+        venueCoverUrl:
+          (venueOrg?.settings.partnerPrivacy?.profileVisible ?? true)
+            ? (venue?.public.coverUrl ?? null)
+            : null,
+        venueBio:
+          (venueOrg?.settings.partnerPrivacy?.profileVisible ?? true)
+            ? (venue?.public.description ?? '')
+            : '',
+        venueGenres:
+          (venueOrg?.settings.partnerPrivacy?.profileVisible ?? true)
+            ? (venue?.public.genres ?? [])
+            : [],
       };
     });
     return { ...page, items };

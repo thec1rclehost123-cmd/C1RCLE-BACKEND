@@ -581,13 +581,14 @@ export default async function financeRoutes(fastify: FastifyInstance) {
 }
 
 function financeOrderToDto(row: FinanceOrderRow) {
-  const { order, eventName, ticketCount } = row;
+  const { order, eventName, ticketCount, ticketLines } = row;
   return {
     id: order.id,
     eventId: order.eventId,
     eventName,
     buyerName: order.contact.name,
     ticketCount,
+    ticketLines,
     currency: order.currency,
     grandTotalPaise: order.grandTotalPaise,
     refundedPaise: order.refundedPaise,

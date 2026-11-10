@@ -328,9 +328,15 @@ describe('event analytics', () => {
       url: '/events/evt_someone_else/analytics',
       headers: read(org),
     });
+    const heatmapResponse = await server.inject({
+      method: 'GET',
+      url: '/events/evt_someone_else/analytics/booking-heatmap',
+      headers: read(org),
+    });
 
     // Never confirms whether that event exists.
     expect(response.statusCode).toBe(404);
+    expect(heatmapResponse.statusCode).toBe(404);
     await server.close();
   });
 
@@ -385,6 +391,27 @@ describe('event analytics', () => {
       sellThroughRate: null,
       noShowRate: null,
     });
+    const heatmap = await server.inject({
+      method: 'GET',
+      url: `/events/${eventId}/analytics/booking-heatmap`,
+      headers: read(org),
+    });
+    expect(heatmap.statusCode).toBe(200);
+    expect(heatmap.json()).toMatchObject({
+      eventId,
+      timeZone: 'Asia/Kolkata',
+      totalBookings: 0,
+      complete: true,
+    });
+    expect(heatmap.json().weekdays).toHaveLength(7);
+    expect(
+      heatmap
+        .json()
+        .weekdays.every(
+          (day: { hours: number[] }) =>
+            day.hours.length === 24 && day.hours.every((count) => count === 0),
+        ),
+    ).toBe(true);
     await server.close();
   });
 

@@ -45,6 +45,11 @@ export interface DiscoveredPartner {
   organizationId: EntityId | null;
   /** Venue behind a venue candidate (the partnership request key). */
   venueId: EntityId | null;
+  photoUrl?: string | null;
+  coverUrl?: string | null;
+  bio?: string;
+  genres?: string[];
+  stats?: { label: string; value: string }[];
 }
 
 export interface DiscoverPartnersPage {
@@ -78,6 +83,10 @@ export class PartnerDiscoveryService {
         limit: BROWSE_CAP,
       }),
     ]);
+    const venueOwners = await this.deps.repositories.organizations.getByIds([
+      ...new Set(venues.map((venue) => venue.organizationId)),
+    ]);
+    const venueOwnerById = new Map(venueOwners.map((owner) => [owner.id, owner] as const));
 
     // Counterparts a new request to would collide with ("one live per pair").
     const livePartnerOrgIds = new Set<EntityId>();
@@ -117,15 +126,22 @@ export class PartnerDiscoveryService {
         if (wants('host') && capabilities.has('host')) kind = 'host';
         else if (wants('promoter') && capabilities.has('promoter')) kind = 'promoter';
         if (kind === null || !matchesQ(org.name)) continue;
+        if (org.settings.partnerPrivacy?.profileVisible === false) continue;
+        const profile = org.settings.partnerProfile ?? {};
         items.push({
           id: org.id,
           kind,
-          name: org.name,
+          name: profile.displayName ?? org.name,
           slug: org.slug,
           city: null,
           verified: false,
           organizationId: org.id,
           venueId: null,
+          photoUrl: profile.photoUrl ?? null,
+          coverUrl: profile.coverUrl ?? null,
+          bio: profile.bio ?? '',
+          genres: profile.genres ?? [],
+          stats: [],
         });
       }
     }
@@ -134,6 +150,13 @@ export class PartnerDiscoveryService {
       for (const venue of venues) {
         if (venue.organizationId === organizationId) continue;
         if (liveVenueIds.has(venue.id)) continue;
+        const owner = venueOwnerById.get(venue.organizationId);
+        if (
+          !owner ||
+          owner.status !== 'active' ||
+          owner.settings.partnerPrivacy?.profileVisible === false
+        )
+          continue;
         if (!matchesQ(venue.public.name)) continue;
         items.push({
           id: venue.id,
@@ -144,6 +167,19 @@ export class PartnerDiscoveryService {
           verified: false,
           organizationId: venue.organizationId,
           venueId: venue.id,
+          photoUrl: venue.public.photoUrl,
+          coverUrl: venue.public.coverUrl ?? null,
+          bio: venue.public.description,
+          genres: venue.public.genres ?? [],
+          stats: [
+            {
+              label: 'Capacity',
+              value:
+                venue.public.capacity === null
+                  ? 'Not listed'
+                  : venue.public.capacity.toLocaleString('en-IN'),
+            },
+          ],
         });
       }
     }

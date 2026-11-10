@@ -25,6 +25,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 export type Permission =
   | 'organization.read'
   | 'organization.update'
+  | 'partner.profile.update'
   | 'organization.create'
   | 'staff.manage'
   | 'venue.read'
@@ -97,6 +98,7 @@ export const ROLE_PERMISSIONS: Readonly<Record<OrganizationRole, readonly Permis
   owner: [
     'organization.read',
     'organization.update',
+    'partner.profile.update',
     'organization.create',
     'staff.manage',
     'venue.read',
@@ -117,6 +119,7 @@ export const ROLE_PERMISSIONS: Readonly<Record<OrganizationRole, readonly Permis
   admin: [
     'organization.read',
     'organization.update',
+    'partner.profile.update',
     'staff.manage',
     'venue.read',
     'venue.create',
@@ -135,6 +138,7 @@ export const ROLE_PERMISSIONS: Readonly<Record<OrganizationRole, readonly Permis
   ],
   manager: [
     'organization.read',
+    'partner.profile.update',
     'venue.read',
     'venue.manage',
     'venue.schedule',

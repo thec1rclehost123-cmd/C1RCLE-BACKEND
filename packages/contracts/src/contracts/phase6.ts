@@ -80,6 +80,14 @@ export const financeOrderDtoSchema = z.object({
   buyerName: z.string(),
   /** Sum of `lines[].quantity` — what "3 tickets" means on the row. */
   ticketCount: z.number().int().nonnegative(),
+  /** Safe tier and quantity summary for partner order activity. */
+  ticketLines: z
+    .array(
+      z
+        .object({ tierName: z.string().min(1).max(200), quantity: z.number().int().positive() })
+        .strict(),
+    )
+    .optional(),
   currency: z.string().length(3),
   grandTotalPaise: z.number().int().nonnegative(),
   /** GST included in the grand total; defaults for older gateways. */

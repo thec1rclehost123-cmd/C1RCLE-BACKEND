@@ -79,8 +79,12 @@ const updateVenueBody = z
         name: z.string().min(1).max(200).optional(),
         description: z.string().max(2000).optional(),
         shortDescription: z.string().max(200).optional(),
+        photoUrl: z.url().nullable().optional(),
+        coverUrl: z.url().nullable().optional(),
+        genres: z.array(z.string().min(1).max(60)).max(20).optional(),
         facilities: z.array(z.string().min(1).max(60)).max(50).optional(),
         capacity: z.number().int().nonnegative().nullable().optional(),
+        settings: z.object({ showGuestList: z.boolean(), activityEnabled: z.boolean() }).optional(),
         // Additive (D-030): lets an owner set the venue's GPS coordinates,
         // which `door-ops-service.ts`'s shift-open geofence check reads.
         // Domain-level `updateVenue()` does a SHALLOW merge on `public` —
