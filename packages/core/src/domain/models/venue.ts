@@ -422,6 +422,13 @@ export interface SlotRequest extends VersionedEntity {
   hostId: EntityId;
   status: SlotRequestStatus;
   message?: string;
+  /** Validated event proposal, private to the Host and Venue until approved. */
+  eventDraft?: {
+    event: Record<string, unknown>;
+    tiers: { localId: EntityId; command: Record<string, unknown> }[];
+    promotions: Record<string, unknown>[];
+    promoters: Record<string, unknown>[];
+  };
 }
 
 export type SlotRequestStatus = 'pending' | 'accepted' | 'rejected' | 'cancelled';
@@ -463,6 +470,7 @@ export function createSlotRequest(input: {
   eventId: EntityId | null;
   hostId: EntityId;
   message?: string;
+  eventDraft?: SlotRequest['eventDraft'];
   now?: Date;
 }): SlotRequest {
   return {
@@ -476,6 +484,7 @@ export function createSlotRequest(input: {
     hostId: input.hostId,
     status: 'pending',
     message: input.message,
+    ...(input.eventDraft ? { eventDraft: input.eventDraft } : {}),
     ...newVersionedEntity(input.now ?? new Date()),
   };
 }

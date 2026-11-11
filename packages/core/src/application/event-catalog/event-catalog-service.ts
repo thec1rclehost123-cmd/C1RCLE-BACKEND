@@ -42,6 +42,8 @@ import type { ActorContext, ServiceDeps } from '../context.js';
 
 export interface CreateTierCommand {
   eventId: EntityId;
+  /** Internal approval-workflow id; ordinary routes leave this unset. */
+  id?: EntityId;
   name: string;
   description?: string;
   entryType?: string;
@@ -135,7 +137,7 @@ export class EventCatalogService {
     if (command.audienceType === 'STUDENT' || command.audienceType === 'MEMBER')
       throw new InvalidOperationError('This ticket category is not available in V1');
     const tier = createTicketTier({
-      id: this.deps.config.ids(),
+      id: command.id ?? this.deps.config.ids(),
       eventId: command.eventId,
       organizationId: actor.organizationId,
       name: command.name,

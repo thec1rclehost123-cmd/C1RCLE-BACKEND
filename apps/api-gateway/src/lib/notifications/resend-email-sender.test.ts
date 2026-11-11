@@ -254,7 +254,7 @@ describe('ResendEmailSender transactional delivery', () => {
     );
   });
 
-  it('does not log credentials or recipient data when development email delivery is suppressed', async () => {
+  it('fails auth email flows when development delivery is unavailable without logging secrets', async () => {
     const info = vi.fn((_message: string, _fields?: Record<string, unknown>) => {});
     const logger: Logger = { info, warn: () => {}, error: () => {} };
     const sender = new ResendEmailSender(undefined, 'test', logger);
@@ -265,25 +265,41 @@ describe('ResendEmailSender transactional delivery', () => {
       recipient: 'private@example.test',
     };
 
-    await sender.sendOtpEmail(secretValues.recipient, secretValues.otp);
-    await sender.sendStaffInvitationEmail({
-      to: secretValues.recipient,
-      orgName: 'Test Organization',
-      role: 'member',
-      capabilities: [],
-      expiresAt: '2026-11-01T00:00:00.000Z',
-      temporaryPassword: secretValues.temporaryPassword,
-    });
-    await sender.sendPasswordResetEmail(secretValues.recipient, secretValues.resetUrl);
+    await expect(sender.sendOtpEmail(secretValues.recipient, secretValues.otp)).rejects.toThrow(
+      'Email provider not configured',
+    );
+    await expect(
+      sender.sendStaffInvitationEmail({
+        to: secretValues.recipient,
+        orgName: 'Test Organization',
+        role: 'member',
+        capabilities: [],
+        expiresAt: '2026-11-01T00:00:00.000Z',
+        temporaryPassword: secretValues.temporaryPassword,
+      }),
+    ).rejects.toThrow('Email provider not configured');
+    await expect(
+      sender.sendPasswordResetEmail(secretValues.recipient, secretValues.resetUrl),
+    ).rejects.toThrow('Email provider not configured');
 
-    expect(info).toHaveBeenNthCalledWith(1, 'dev_email_otp', { delivery: 'suppressed' });
-    expect(info).toHaveBeenNthCalledWith(2, 'dev_email_staff_invitation', {
-      delivery: 'suppressed',
-    });
-    expect(info).toHaveBeenNthCalledWith(3, 'dev_email_password_reset', {
-      delivery: 'suppressed',
-    });
+    expect(info).not.toHaveBeenCalled();
     const logged = JSON.stringify(info.mock.calls);
     for (const secret of Object.values(secretValues)) expect(logged).not.toContain(secret);
+  });
+
+  it('rejects a non-allowlisted auth recipient before requesting the provider', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const sender = new ResendEmailSender(
+      'test-key',
+      'development',
+      noopLogger,
+      'THE C1RCLE <hello@example.test>',
+      'founder@example.test',
+    );
+    await expect(sender.sendOtpEmail('guest@example.test', '123456')).rejects.toBeInstanceOf(
+      PermanentEmailDeliveryError,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

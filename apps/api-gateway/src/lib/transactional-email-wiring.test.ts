@@ -37,6 +37,10 @@ describe('transactional email subscriber wiring', () => {
       'event-cover.refunded',
       'ticket.addon.redeemed',
       'event.material_change.refund_requested',
+      'venue.slot_request.created',
+      'venue.slot_request.accepted',
+      'venue.slot_request.rejected',
+      'venue.slot_request.cancelled',
     ]) {
       expect(registered).toContain(type);
     }
@@ -92,6 +96,67 @@ describe('transactional email subscriber wiring', () => {
     });
     expect([...emailDeliveries.records.values()]).toMatchObject([
       { kind: 'promoter_assignment_status', status: 'sent' },
+    ]);
+  });
+
+  it('routes a new slot request to the Venue owner through a durable email intent', async () => {
+    const now = new Date('2026-11-05T12:00:00.000Z');
+    const emailDeliveries = new MemoryEmailDeliveryRepository();
+    const sendTransactionalEmail = vi.fn(async (_message: TransactionalEmail) => ({
+      outcome: 'accepted_by_provider' as const,
+      providerMessageId: 'synthetic-slot-request-id',
+    }));
+    const deps = {
+      config: { clock: { now: () => now } },
+      logger: noopLogger,
+      emailDeliveries,
+      emailSender: { name: 'synthetic', sendTransactionalEmail },
+      userDirectory: { getEmailById: async () => 'venue-owner@synthetic.test' },
+      repositories: {
+        slotRequests: {
+          getById: async () => ({
+            id: 'slot-request-synthetic',
+            venueId: 'venue-synthetic',
+            hostId: 'host-synthetic',
+            eventId: null,
+          }),
+        },
+        venues: {
+          getById: async () => ({
+            id: 'venue-synthetic',
+            organizationId: 'venue-org',
+            ownerId: 'venue-owner',
+          }),
+        },
+        organizations: { getById: async (id: string) => ({ id, ownerId: 'host-owner' }) },
+        events: { getById: async () => null },
+      },
+    };
+    const bus = new InProcessEventBus(new MemoryOutboxStore(), { now: () => now.getTime() });
+    subscribeTransactionalEmailConsumer(
+      bus,
+      createTransactionalEmailConsumer(deps as unknown as ServiceDeps),
+    );
+    await bus.append(
+      domainEvent({
+        id: 'slot-request-created-synthetic',
+        type: 'venue.slot_request.created',
+        aggregateId: 'slot-request-synthetic',
+        organizationId: 'host-synthetic',
+        actorId: 'host-owner',
+        occurredAt: now.getTime(),
+        payload: { venueId: 'venue-synthetic', slotId: 'slot-synthetic' },
+      }),
+    );
+    expect(sendTransactionalEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: 'venue-owner@synthetic.test',
+        templateType: 'venue_slot_request_created',
+        idempotencyKey: 'venue-slot-request:slot-request-synthetic:venue.slot_request.created',
+      }),
+    );
+    expect([...emailDeliveries.records.values()]).toMatchObject([
+      { kind: 'venue_slot_request_created', status: 'sent' },
     ]);
   });
 });

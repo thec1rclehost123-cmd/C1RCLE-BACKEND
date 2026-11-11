@@ -33,6 +33,7 @@ export type {
   VenueSlotDto,
   CreateVenueBlockInput,
   PublishVenueAvailabilityInput,
+  SlotRequestEventDraft,
   SlotRequestDto,
   CreateSlotRequestInput,
   SlotRequestListResponse,

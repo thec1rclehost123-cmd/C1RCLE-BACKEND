@@ -360,6 +360,64 @@ async function buildMessage(event: DomainEvent, deps: ServiceDeps) {
       }
     }
   } else if (
+    event.type === 'venue.slot_request.created' ||
+    event.type === 'venue.slot_request.accepted' ||
+    event.type === 'venue.slot_request.rejected' ||
+    event.type === 'venue.slot_request.cancelled'
+  ) {
+    const request = await deps.repositories.slotRequests.getById(event.aggregateId);
+    if (!request) return null;
+    const venue = await deps.repositories.venues.getById(request.venueId);
+    const host = await deps.repositories.organizations.getById(request.hostId);
+    if (!venue || !host) return null;
+    const recipientOrganization =
+      event.type === 'venue.slot_request.created'
+        ? venue.organizationId
+        : event.type === 'venue.slot_request.cancelled' && event.organizationId === request.hostId
+          ? venue.organizationId
+          : request.hostId;
+    const organization = recipientOrganization === venue.organizationId ? null : host;
+    const ownerId =
+      recipientOrganization === venue.organizationId ? venue.ownerId : organization?.ownerId;
+    if (!ownerId) return null;
+    explicitRecipient = await deps.userDirectory.getEmailById(ownerId);
+    if (!explicitRecipient || !isDeliverableRecipient(explicitRecipient)) return null;
+    deliveryAggregateId = request.id;
+    kind = `venue_slot_request_${event.type.slice('venue.slot_request.'.length)}`;
+    idempotencyKey = `venue-slot-request:${request.id}:${event.type}`;
+    const linkedEvent = request.eventId
+      ? await deps.repositories.events.getById(request.eventId)
+      : null;
+    const proposedTitle = request.eventDraft?.event.title;
+    const eventName =
+      linkedEvent?.title ?? (typeof proposedTitle === 'string' ? proposedTitle : 'a Host event');
+    const accepted = event.type === 'venue.slot_request.accepted';
+    const rejected = event.type === 'venue.slot_request.rejected';
+    const cancelled = event.type === 'venue.slot_request.cancelled';
+    subject = accepted
+      ? 'Your C1RCLE Venue slot request was accepted'
+      : rejected
+        ? 'Update on your C1RCLE Venue slot request'
+        : cancelled
+          ? 'A C1RCLE Venue slot request was cancelled'
+          : 'A Host requested a Venue slot';
+    heading = accepted
+      ? 'Slot request accepted'
+      : rejected
+        ? 'Slot request declined'
+        : cancelled
+          ? 'Slot request cancelled'
+          : 'New slot request';
+    details = accepted
+      ? request.eventDraft
+        ? `<p>Your request for <strong>${escapeHtml(eventName)}</strong> was accepted and the event is now published on the Guest Portal.</p>`
+        : `<p>Your request for <strong>${escapeHtml(eventName)}</strong> was accepted. The Host can now continue preparing the event.</p>`
+      : rejected
+        ? `<p>The Venue declined the slot request for <strong>${escapeHtml(eventName)}</strong>.</p>`
+        : cancelled
+          ? `<p>The slot request for <strong>${escapeHtml(eventName)}</strong> was cancelled.</p>`
+          : `<p>A Host requested a Venue slot for <strong>${escapeHtml(eventName)}</strong>. Sign in to review the request and its proposed time.</p>`;
+  } else if (
     event.type === 'promoter.assignment.invited' ||
     event.type === 'promoter.assignment.accepted' ||
     event.type === 'promoter.assignment.rejected' ||

@@ -145,7 +145,10 @@ export async function registerV2Routes(
       await promoterConnectionRoutes(v2);
       // Phase 2: not org-scoped — an applicant has no organization yet, and a
       // platform admin acts across all of them.
-      await onboardingRoutes(v2);
+      // Onboarding has an applicant-specific verification preHandler. Keep its
+      // hooks encapsulated so they cannot gate unrelated routes such as
+      // internal health/readiness or public Guest endpoints.
+      await v2.register(onboardingRoutes);
       // Guest profile: session-scoped like onboarding — a guest belongs to no org.
       await guestProfileRoutes(v2);
       await adminRoutes(v2);

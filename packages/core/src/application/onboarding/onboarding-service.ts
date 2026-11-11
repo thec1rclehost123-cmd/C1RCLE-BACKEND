@@ -26,6 +26,7 @@ import {
 import { createOrganization } from '../../domain/models/organization.js';
 import { recordPromoterAgreementAcceptance } from '../../domain/models/promoter-agreement.js';
 import { createVenue } from '../../domain/models/venue.js';
+import { createGuestProfileService } from '../guest-profile/guest-profile-service.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type { PlatformAdmin } from '../../domain/models/admin-authority.js';
@@ -129,6 +130,20 @@ export class OnboardingService {
    * would leave admins deciding which of two drafts is real.
    */
   async start(userId: EntityId, command: StartApplicationCommand): Promise<OnboardingRequest> {
+    const account = await this.deps.repositories.users.getById(userId);
+    if (!account?.emailVerified) {
+      throw new InvalidOperationError('Verify your email before starting partner onboarding');
+    }
+    const contactProfile = await this.deps.repositories.guestProfiles.getByUserId(userId);
+    if (!contactProfile?.phoneVerifiedAt || !contactProfile.phoneNumber) {
+      throw new InvalidOperationError('Verify your phone before starting partner onboarding');
+    }
+    if (
+      !command.profile.phone ||
+      normalizePhone(contactProfile.phoneNumber) !== normalizePhone(command.profile.phone)
+    ) {
+      throw new InvalidOperationError('Use the phone number verified for this account');
+    }
     const open = await this.repo.findOpenForUser(userId);
     if (open) {
       throw new InvalidOperationError('You already have an onboarding application in progress');
@@ -322,7 +337,24 @@ export class OnboardingService {
 
     let result: VerificationResult;
     try {
-      result = await this.deps.verification.verify(command);
+      if (command.documentType === 'phone') {
+        await createGuestProfileService({
+          guestProfiles: this.deps.repositories.guestProfiles,
+          config: this.deps.config,
+        }).verifyPhone(
+          userId,
+          command.documentNumber,
+          command.proofToken ?? '',
+          this.deps.verification,
+        );
+        result = {
+          passed: true,
+          provider: 'firebase-phone',
+          reason: 'phone_verified',
+        };
+      } else {
+        result = await this.deps.verification.verify(command);
+      }
     } catch (error) {
       // A provider outage is recorded as an attempt too: otherwise an attacker
       // who can induce errors gets unlimited free tries.
@@ -688,6 +720,11 @@ export class OnboardingService {
     }
     return request;
   }
+}
+
+function normalizePhone(phone: string): string {
+  const digits = phone.replace(/\D/g, '');
+  return digits.length === 10 ? `91${digits}` : digits;
 }
 
 function kycObjectKey(request: OnboardingRequest, label: string): string {

@@ -47,6 +47,26 @@ const commandHeaders = z.looseObject({ 'idempotency-key': idempotencyKeySchema }
 const requestListSchema = paginatedSchema(onboardingRequestDtoSchema);
 
 export default async function onboardingRoutes(fastify: FastifyInstance) {
+  fastify.addHook('preHandler', async (request, reply) => {
+    const path = (request.raw.url ?? '').split('?')[0] ?? '';
+    if (path.endsWith('/onboarding/verify-document') || path.includes('/admin/onboarding/')) return;
+    const userId = requireUserId(request, reply);
+    if (userId === undefined) return reply;
+    const account = await services.repos().users.getById(userId);
+    if (!account?.emailVerified) {
+      return reply.status(403).send({
+        message: 'Verify your email before using Partner onboarding.',
+        code: 'contact_verification_required',
+      });
+    }
+    const profile = await services.repos().guestProfiles.getByUserId(userId);
+    if (!profile?.phoneVerifiedAt) {
+      return reply.status(403).send({
+        message: 'Verify your phone before using Partner onboarding.',
+        code: 'contact_verification_required',
+      });
+    }
+  });
   fastify.addHook('onSend', async (_request, reply, payload) => {
     reply.header('cache-control', 'private, no-store');
     return payload;

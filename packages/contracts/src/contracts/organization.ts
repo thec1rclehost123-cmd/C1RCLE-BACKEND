@@ -1,6 +1,12 @@
 import { z } from 'zod';
 
-import { eventDtoSchema } from './event.js';
+import {
+  assignPromoterSchema,
+  createEventSchema,
+  createPromoCodeSchema,
+  createTicketTierSchema,
+  eventDtoSchema,
+} from './event.js';
 import { opaqueIdSchema, paginatedSchema } from './shared.js';
 
 /**
@@ -197,6 +203,18 @@ export const publishVenueAvailabilitySchema = z
   });
 export type PublishVenueAvailabilityInput = z.infer<typeof publishVenueAvailabilitySchema>;
 
+export const slotRequestEventDraftSchema = z
+  .object({
+    event: createEventSchema.omit({ slotRequestId: true }),
+    tiers: z
+      .array(z.object({ localId: opaqueIdSchema, command: createTicketTierSchema }).strict())
+      .max(100),
+    promotions: z.array(createPromoCodeSchema).max(100),
+    promoters: z.array(assignPromoterSchema).max(100),
+  })
+  .strict();
+export type SlotRequestEventDraft = z.infer<typeof slotRequestEventDraftSchema>;
+
 export const slotRequestDtoSchema = z.object({
   id: opaqueIdSchema,
   venueId: opaqueIdSchema,
@@ -208,6 +226,7 @@ export const slotRequestDtoSchema = z.object({
   hostId: opaqueIdSchema,
   status: z.enum(['pending', 'accepted', 'rejected', 'cancelled']),
   message: z.string().max(2000).optional(),
+  eventDraft: slotRequestEventDraftSchema.optional(),
   version: z.number().int().positive(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
@@ -221,6 +240,7 @@ export const createSlotRequestSchema = z
     endTime: z.iso.datetime().optional(),
     eventId: opaqueIdSchema.nullable().optional(),
     message: z.string().max(2000).optional(),
+    eventDraft: slotRequestEventDraftSchema.optional(),
   })
   .strict()
   .refine(

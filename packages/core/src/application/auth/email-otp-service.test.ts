@@ -116,6 +116,13 @@ describe('EmailOtpService', () => {
     expect(emailSender.sent).toHaveLength(0);
   });
 
+  it('removes only the undelivered code when the sender fails', async () => {
+    const { service, emailOtp, emailSender } = build();
+    vi.spyOn(emailSender, 'sendOtpEmail').mockRejectedValueOnce(new Error('provider unavailable'));
+    await expect(service.send('foo@example.com')).rejects.toThrow('provider unavailable');
+    expect(await emailOtp.get('foo@example.com')).toBeNull();
+  });
+
   it('allows only one concurrent send for a normalized recipient', async () => {
     const { service, emailSender } = build();
     const results = await Promise.allSettled([
