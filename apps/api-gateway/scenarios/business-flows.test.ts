@@ -67,6 +67,35 @@ const FULL_PROFILE = {
   },
 };
 
+/** Scenario applicants have already completed both required contact proofs. */
+async function seedVerifiedPartnerApplicant(userId: string): Promise<void> {
+  const repos = services.repos();
+  (repos.users as MemoryUserAccountRepository).save({
+    id: userId,
+    email: `${userId}@c1rcle.test`,
+    name: userId,
+    image: null,
+    emailVerified: true,
+    role: 'partner',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+  const now = new Date().toISOString();
+  await repos.guestProfiles.save({
+    userId,
+    displayName: userId,
+    dateOfBirth: '',
+    city: '',
+    tastes: [],
+    intents: [],
+    phoneNumber: '+919876543210',
+    phoneVerifiedAt: now,
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
 const WEBHOOK_SECRET = 'test_webhook_secret';
 
 function sign(rawBody: string): string {
@@ -104,6 +133,7 @@ async function onboardAndApproveHost(
   server: FastifyInstance,
 ): Promise<{ requestId: string; orgId: string }> {
   const applicantId = 'host_1';
+  await seedVerifiedPartnerApplicant(applicantId);
   const start = await server.inject({
     method: 'POST',
     url: '/api/v2/onboarding/applications',
@@ -326,6 +356,7 @@ describe('scenario: host lifecycle (onboarding -> publish -> public discovery)',
 describe('scenario: KYC document reject, re-upload, request-changes, and the approve gate', () => {
   it('walks the full document review lifecycle through the real HTTP routes', async () => {
     const applicantId = 'applicant_kyc_1';
+    await seedVerifiedPartnerApplicant(applicantId);
     const start = await server.inject({
       method: 'POST',
       url: '/api/v2/onboarding/applications',
@@ -446,6 +477,7 @@ describe('scenario: KYC document reject, re-upload, request-changes, and the app
 
   it('requests changes with a note the applicant can read back on their own application', async () => {
     const applicantId = 'applicant_kyc_2';
+    await seedVerifiedPartnerApplicant(applicantId);
     const start = await server.inject({
       method: 'POST',
       url: '/api/v2/onboarding/applications',
@@ -645,6 +677,7 @@ describe('scenario: M4 Promoter campaign attribution over the full API', () => {
     // hosted artifact. No production legal terms are supplied by this scenario.
     const configuredAgreement = getGatewayConfig().PROMOTER_AGREEMENT_ARTIFACT;
     const promoterUserId = 'promoter_m4_scenario';
+    await seedVerifiedPartnerApplicant(promoterUserId);
     const agreement = await server.inject({
       method: 'GET',
       url: '/api/v2/onboarding/promoter-agreement',
