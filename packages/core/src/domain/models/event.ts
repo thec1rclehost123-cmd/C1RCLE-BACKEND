@@ -174,6 +174,24 @@ function assertMediaVisibility(
   }
 }
 
+function hasValidExternalContactEmail(value: string): boolean {
+  if (value.length > 254 || /\s/.test(value)) return false;
+  const at = value.indexOf('@');
+  if (at < 1 || at !== value.lastIndexOf('@') || at === value.length - 1) return false;
+  const local = value.slice(0, at);
+  const domain = value.slice(at + 1);
+  if (local.length > 64 || local.startsWith('.') || local.endsWith('.') || local.includes('..'))
+    return false;
+  const labels = domain.split('.');
+  return (
+    labels.length > 1 &&
+    labels.every(
+      (label) =>
+        label.length > 0 && label.length <= 63 && !label.startsWith('-') && !label.endsWith('-'),
+    )
+  );
+}
+
 export interface Event extends VersionedEntity {
   id: EntityId;
   organizationId: EntityId;
@@ -310,7 +328,7 @@ export function createEvent(input: CreateEventInput): Event {
       throw new InvalidOperationError('External venue name, address and manager are required');
     if (!/^\+?[\d\s()-]{10,18}$/.test(location.contact.phone.trim()))
       throw new InvalidOperationError('Enter a valid external venue manager phone number');
-    if (location.contact.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(location.contact.email))
+    if (location.contact.email && !hasValidExternalContactEmail(location.contact.email))
       throw new InvalidOperationError('Enter a valid external venue manager email');
   }
   return {

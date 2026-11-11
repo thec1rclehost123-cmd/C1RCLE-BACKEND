@@ -102,12 +102,10 @@ export default async function adminEventActionRoutes(fastify: FastifyInstance) {
           items: z.array(externalVenueReviewQueueItemSchema).parse(items),
         });
       } catch (error) {
-        return reply
-          .status(403)
-          .send({
-            code: 'forbidden',
-            message: error instanceof Error ? error.message : 'Forbidden',
-          });
+        return reply.status(403).send({
+          code: 'forbidden',
+          message: error instanceof Error ? error.message : 'Forbidden',
+        });
       }
     },
   );
@@ -131,12 +129,10 @@ export default async function adminEventActionRoutes(fastify: FastifyInstance) {
       const body = request.body as z.infer<typeof externalVenueReviewDecisionSchema>;
       const headers = request.v2Headers ?? {};
       const admin = await reviewer(userId).catch((error: unknown) => {
-        reply
-          .status(403)
-          .send({
-            code: 'forbidden',
-            message: error instanceof Error ? error.message : 'Forbidden',
-          });
+        reply.status(403).send({
+          code: 'forbidden',
+          message: error instanceof Error ? error.message : 'Forbidden',
+        });
         return undefined;
       });
       if (!admin) return reply;

@@ -155,6 +155,21 @@ describe('external location review gate', () => {
     expect(append).toHaveBeenCalledOnce();
   });
 
+  it('rejects malformed external venue contact email addresses', () => {
+    const location = externalDraft.externalLocation;
+    if (!location) throw new Error('Expected external location fixture');
+    expect(() =>
+      createEvent({
+        ...externalDraft,
+        id: 'external-invalid-contact',
+        externalLocation: {
+          ...location,
+          contact: { ...location.contact, email: 'manager@@example.test' },
+        },
+      }),
+    ).toThrow('Enter a valid external venue manager email');
+  });
+
   it('allows only the owning Host to resubmit a rejected location into a fresh pending review', async () => {
     const originalLocation = externalDraft.externalLocation;
     if (!originalLocation) throw new Error('Expected external location fixture');
