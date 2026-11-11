@@ -355,6 +355,7 @@ export default async function onboardingRoutes(fastify: FastifyInstance) {
   fastify.post(
     '/onboarding/verify-phone',
     {
+      config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
       preHandler: [
         fastify.rateLimit('SENSITIVE_COMMAND'),
         fastify.validateV2({ body: verifyPhoneSchema }),
