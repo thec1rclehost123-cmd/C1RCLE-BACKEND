@@ -264,12 +264,19 @@ describe('OnboardingService — KYC document desk', () => {
       name: 'synthetic-phone-verifier',
       verify: async () => ({ passed: true, provider: 'firebase-phone', reason: 'phone_verified' }),
     };
-    const result = await ctx.service.verifyDocument('user_a', {
-      documentType: 'phone',
-      documentNumber: '+919876543210',
-      proofToken: 'synthetic-id-token',
-    });
+    const result = await ctx.service.verifyPhone('user_a', '+919876543210', 'synthetic-id-token');
     expect(result).toMatchObject({ passed: true, provider: 'firebase-phone' });
+    expect(ctx.contactProfiles.get('user_a')?.phoneVerifiedAt).toBe(NOW.toISOString());
+  });
+
+  it('does not allow generic document verification to establish phone proof', async () => {
+    await expect(
+      ctx.service.verifyDocument('user_a', {
+        documentType: 'phone',
+        documentNumber: '+919876543210',
+        proofToken: 'synthetic-id-token',
+      }),
+    ).rejects.toThrow('Use the phone verification flow for phone numbers');
     expect(ctx.contactProfiles.get('user_a')?.phoneVerifiedAt).toBe(NOW.toISOString());
   });
 

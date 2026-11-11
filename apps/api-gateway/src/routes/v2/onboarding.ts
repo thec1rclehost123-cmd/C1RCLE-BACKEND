@@ -13,6 +13,7 @@ import {
   startOnboardingSchema,
   verificationResultDtoSchema,
   verifyDocumentSchema,
+  verifyPhoneSchema,
 } from '@c1rcle/contracts/client';
 import { missingDocuments } from '@c1rcle/core/domain';
 import { z } from 'zod';
@@ -49,7 +50,7 @@ const requestListSchema = paginatedSchema(onboardingRequestDtoSchema);
 export default async function onboardingRoutes(fastify: FastifyInstance) {
   fastify.addHook('preHandler', async (request, reply) => {
     const path = (request.raw.url ?? '').split('?')[0] ?? '';
-    if (path.endsWith('/onboarding/verify-document') || path.includes('/admin/onboarding/')) return;
+    if (path.endsWith('/onboarding/verify-phone') || path.includes('/admin/onboarding/')) return;
     const userId = requireUserId(request, reply);
     if (userId === undefined) return reply;
     const account = await services.repos().users.getById(userId);
@@ -351,6 +352,33 @@ export default async function onboardingRoutes(fastify: FastifyInstance) {
    * rate, the attempt budget bounds one *applicant's* total tries, and only
    * the second survives a caller rotating IPs.
    */
+  fastify.post(
+    '/onboarding/verify-phone',
+    {
+      preHandler: [
+        fastify.rateLimit('SENSITIVE_COMMAND'),
+        fastify.validateV2({ body: verifyPhoneSchema }),
+      ],
+    },
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+      const body = request.body as z.infer<typeof verifyPhoneSchema>;
+      const result = await services.onboarding
+        .verifyPhone(userId, body.phoneNumber, body.idToken)
+        .catch((error: unknown) => mapDomainError(reply, request, userId, error));
+      if (result === undefined) return reply;
+      const validated = validateV2Response(reply, request, verificationResultDtoSchema, {
+        passed: result.passed,
+        provider: result.provider,
+        reason: result.reason ?? null,
+        referenceId: result.referenceId ?? null,
+      });
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
   fastify.post(
     '/onboarding/verify-document',
     {

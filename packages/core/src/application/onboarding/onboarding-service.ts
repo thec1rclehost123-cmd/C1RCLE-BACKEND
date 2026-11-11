@@ -328,6 +328,9 @@ export class OnboardingService {
     userId: EntityId,
     command: VerifyDocumentCommand,
   ): Promise<VerificationResult> {
+    if (command.documentType === 'phone') {
+      throw new InvalidOperationError('Use the phone verification flow for phone numbers');
+    }
     const now = this.deps.config.clock.now();
     const since = now.getTime() - VERIFICATION_WINDOW_MS;
     const attempts = await this.deps.repositories.verificationAttempts.countSince(userId, since);
@@ -337,24 +340,7 @@ export class OnboardingService {
 
     let result: VerificationResult;
     try {
-      if (command.documentType === 'phone') {
-        await createGuestProfileService({
-          guestProfiles: this.deps.repositories.guestProfiles,
-          config: this.deps.config,
-        }).verifyPhone(
-          userId,
-          command.documentNumber,
-          command.proofToken ?? '',
-          this.deps.verification,
-        );
-        result = {
-          passed: true,
-          provider: 'firebase-phone',
-          reason: 'phone_verified',
-        };
-      } else {
-        result = await this.deps.verification.verify(command);
-      }
+      result = await this.deps.verification.verify(command);
     } catch (error) {
       // A provider outage is recorded as an attempt too: otherwise an attacker
       // who can induce errors gets unlimited free tries.
@@ -368,6 +354,31 @@ export class OnboardingService {
       result.provider,
     );
     return result;
+  }
+
+  async verifyPhone(
+    userId: EntityId,
+    phoneNumber: string,
+    idToken: string,
+  ): Promise<VerificationResult> {
+    const now = this.deps.config.clock.now();
+    const since = now.getTime() - VERIFICATION_WINDOW_MS;
+    const attempts = await this.deps.repositories.verificationAttempts.countSince(userId, since);
+    if (attempts >= VERIFICATION_ATTEMPT_LIMIT) {
+      throw new ForbiddenError('Too many verification attempts — try again tomorrow');
+    }
+
+    try {
+      await createGuestProfileService({
+        guestProfiles: this.deps.repositories.guestProfiles,
+        config: this.deps.config,
+      }).verifyPhone(userId, phoneNumber, idToken, this.deps.verification);
+    } catch (error) {
+      await this.recordAttempt(userId, 'phone', 'error', this.deps.verification.name);
+      throw error;
+    }
+    await this.recordAttempt(userId, 'phone', 'passed', 'firebase-phone');
+    return { passed: true, provider: 'firebase-phone', reason: 'phone_verified' };
   }
 
   private async recordAttempt(

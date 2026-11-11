@@ -409,6 +409,31 @@ describe('applicant onboarding', () => {
     expect(body.reason).toBe('format_ok');
   });
 
+  it('does not accept phone proof through the generic document endpoint', async () => {
+    const response = await server.inject({
+      method: 'POST',
+      url: '/onboarding/verify-document',
+      headers: asUser('user_a'),
+      payload: {
+        documentType: 'phone',
+        documentNumber: '+919876543210',
+        proofToken: 'synthetic-token',
+      },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().message).toContain('Use the phone verification flow');
+  });
+
+  it('validates the dedicated phone proof request before verification', async () => {
+    const response = await server.inject({
+      method: 'POST',
+      url: '/onboarding/verify-phone',
+      headers: asUser('user_a'),
+      payload: { phoneNumber: 'not-a-phone', idToken: '' },
+    });
+    expect(response.statusCode).toBe(422);
+  });
+
   it('bounds verification attempts per applicant', async () => {
     for (let attempt = 0; attempt < 5; attempt++) {
       const response = await server.inject({
