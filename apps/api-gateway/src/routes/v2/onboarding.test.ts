@@ -434,6 +434,35 @@ describe('applicant onboarding', () => {
     expect(response.statusCode).toBe(422);
   });
 
+  it('rate-limits phone proof verification before the route handler', async () => {
+    const rateLimitedServer = await buildPartnerTestServer({
+      routes: [onboardingRoutes],
+      rateLimit: true,
+    });
+
+    try {
+      for (let attempt = 0; attempt < 10; attempt++) {
+        const response = await rateLimitedServer.inject({
+          method: 'POST',
+          url: '/onboarding/verify-phone',
+          headers: asUser('user_a'),
+          payload: { phoneNumber: 'invalid', idToken: '' },
+        });
+        expect(response.statusCode).toBe(422);
+      }
+
+      const limited = await rateLimitedServer.inject({
+        method: 'POST',
+        url: '/onboarding/verify-phone',
+        headers: asUser('user_a'),
+        payload: { phoneNumber: 'invalid', idToken: '' },
+      });
+      expect(limited.statusCode).toBe(429);
+    } finally {
+      await rateLimitedServer.close();
+    }
+  });
+
   it('bounds verification attempts per applicant', async () => {
     for (let attempt = 0; attempt < 5; attempt++) {
       const response = await server.inject({

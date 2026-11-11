@@ -360,6 +360,9 @@ export default async function onboardingRoutes(fastify: FastifyInstance) {
         fastify.validateV2({ body: verifyPhoneSchema }),
       ],
     },
+    // codeql[js/missing-rate-limiting] This route is rate-limited by the
+    // SENSITIVE_COMMAND preHandler above. CodeQL cannot follow the custom
+    // Fastify decorator; onboarding.test.ts verifies the 429 boundary.
     async (request, reply) => {
       const userId = requireUserId(request, reply);
       if (userId === undefined) return reply;
