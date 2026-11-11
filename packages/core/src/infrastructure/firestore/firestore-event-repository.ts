@@ -104,6 +104,9 @@ function toEvent(data: DocumentData): Event {
     id: data.id as string,
     organizationId: data.organizationId as string,
     venueId: (data.venueId as string | null) ?? null,
+    ...(data.externalLocation
+      ? { externalLocation: data.externalLocation as NonNullable<Event['externalLocation']> }
+      : {}),
     slug: data.slug as string,
     title: data.title as string,
     summary: data.summary as string,

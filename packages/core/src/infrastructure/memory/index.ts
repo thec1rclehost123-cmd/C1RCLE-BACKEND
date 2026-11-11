@@ -22,6 +22,7 @@ export * from './memory-user-account-repository.js';
 export * from './memory-user-ban-repository.js';
 export * from './memory-waitlist-repository.js';
 export * from './memory-onboarding-repository.js';
+export * from './memory-event-draft-repository.js';
 export * from './memory-scan-ledger-repository.js';
 export * from './memory-event-code-repository.js';
 export * from './memory-scanner-device-repository.js';

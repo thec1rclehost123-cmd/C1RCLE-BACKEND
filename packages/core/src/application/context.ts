@@ -33,6 +33,7 @@ import type {
   SlotRequestRepository,
   VenueSlotRepository,
   EventRepository,
+  EventDraftRepository,
   EventCatalogRepository,
   AnalyticsReadModelRepository,
   CartReservationRepository,
@@ -150,6 +151,7 @@ export interface ServiceDeps {
     slotRequests: SlotRequestRepository;
     venueSlots: VenueSlotRepository;
     events: EventRepository;
+    eventDrafts: EventDraftRepository;
     catalog: EventCatalogRepository;
     analytics: AnalyticsReadModelRepository;
     onboarding: OnboardingRepository;

@@ -59,6 +59,7 @@ import type {
   EventCoverPolicyAcceptance,
   EventCoverPolicyProposal,
 } from '../models/event-cover.js';
+import type { EventDraft } from '../models/event-draft.js';
 import type { Event } from '../models/event.js';
 import type {
   FinancialComponentBreakdown,
@@ -380,6 +381,12 @@ export interface EventRepository {
   listUpcomingPublic(startAtOrAfter: string, limit: number): Promise<Event[]>;
   save(event: Event, tx?: TxContext | null, outboxEvent?: DomainEvent): Promise<void>;
   delete(eventId: EntityId, tx?: TxContext | null): Promise<void>;
+}
+
+export interface EventDraftRepository {
+  getForUserOrganization(userId: EntityId, organizationId: EntityId): Promise<EventDraft | null>;
+  save(draft: EventDraft): Promise<void>;
+  deleteForUserOrganization(userId: EntityId, organizationId: EntityId): Promise<void>;
 }
 
 // ─── Event catalog (tiers / promos / tables / assignments) ───────────────────

@@ -42,7 +42,19 @@ describe('transactional email consumer', () => {
             lines: [],
           }),
         },
-        events: { getById: async () => ({ title: 'Captured Event' }) },
+        events: {
+          getById: async () => ({
+            title: 'Captured Event',
+            startAt: '2026-11-12T18:00:00.000Z',
+            venueId: null,
+            externalLocation: {
+              name: 'Independent Hall',
+              address: '12 Example Road',
+              city: 'Pune',
+              contact: { managerName: 'Private Manager', phone: '+91 98765 43210' },
+            },
+          }),
+        },
       },
     } as unknown as ServiceDeps);
     await consumer(
@@ -66,6 +78,10 @@ describe('transactional email consumer', () => {
     });
     expect(captured?.html).toContain('https://guest-staging.example.test/tickets');
     expect(captured?.html).toContain('display:none!important');
+    expect(captured?.html).toContain('Independent Hall');
+    expect(captured?.html).toContain('12 Example Road');
+    expect(captured?.html).not.toContain('Private Manager');
+    expect(captured?.html).not.toContain('+91 98765 43210');
     expect(captured?.text).toContain(
       'View your tickets (https://guest-staging.example.test/tickets)',
     );

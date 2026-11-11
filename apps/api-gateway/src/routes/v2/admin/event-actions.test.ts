@@ -54,6 +54,42 @@ async function seedPublishedEvent(): Promise<Event> {
   return event;
 }
 
+async function seedExternalVenueEvent(ownerId = 'host_1'): Promise<Event> {
+  const org = createOrganization({
+    id: `org_external_${++keySeq}`,
+    name: `External host ${keySeq}`,
+    slug: `external-host-${keySeq}`,
+    ownerId,
+  });
+  await services.repos().organizations.save(org);
+  const event = createEvent({
+    id: `event_external_${keySeq}`,
+    organizationId: org.id,
+    venueId: null,
+    externalLocation: {
+      name: 'Independent Hall',
+      address: '12 Example Road',
+      city: 'Pune',
+      contact: {
+        managerName: 'Private Manager',
+        phone: '+91 98765 43210',
+        email: 'manager@example.test',
+      },
+      review: {
+        status: 'pending',
+        submittedAt: new Date('2026-11-01T10:00:00.000Z').toISOString(),
+        reviewedAt: null,
+        reviewedBy: null,
+        rejectionReason: null,
+      },
+    },
+    title: 'External event',
+    startAt: '2026-12-01T18:00:00Z',
+  });
+  await services.repos().events.save(event);
+  return event;
+}
+
 let server: FastifyInstance;
 
 beforeEach(async () => {
@@ -250,5 +286,71 @@ describe('EVENT_FORCE_PAUSE (force-complete, TIER1, any admin)', () => {
       headers: asUser('admin_a'),
     });
     expect(executed.statusCode).toBe(404);
+  });
+});
+
+describe('external venue review', () => {
+  it('limits contact-bearing review requests to admin, ops, and super reviewers', async () => {
+    const event = await seedExternalVenueEvent();
+    await seedAdmin('support_user', 'support');
+    await seedAdmin('ops_user', 'ops');
+
+    const denied = await server.inject({
+      method: 'GET',
+      url: '/admin/external-venue-requests',
+      headers: { 'x-user-id': 'support_user' },
+    });
+    expect(denied.statusCode).toBe(403);
+
+    const allowed = await server.inject({
+      method: 'GET',
+      url: '/admin/external-venue-requests',
+      headers: { 'x-user-id': 'ops_user' },
+    });
+    expect(allowed.statusCode).toBe(200);
+    expect(allowed.json().items).toContainEqual(
+      expect.objectContaining({
+        eventId: event.id,
+        location: expect.objectContaining({
+          contact: {
+            managerName: 'Private Manager',
+            phone: '+91 98765 43210',
+            email: 'manager@example.test',
+          },
+        }),
+      }),
+    );
+  });
+
+  it('prevents a Host from reviewing their own request and records reviewer decisions', async () => {
+    const selfOwned = await seedExternalVenueEvent('admin_owner');
+    await seedAdmin('admin_owner', 'admin');
+    const selfReview = await server.inject({
+      method: 'POST',
+      url: `/admin/events/${selfOwned.id}/external-venue-review`,
+      headers: asUser('admin_owner'),
+      payload: { decision: 'approve' },
+    });
+    expect(selfReview.statusCode).toBe(403);
+
+    const event = await seedExternalVenueEvent();
+    await seedAdmin('ops_user', 'ops');
+    const rejected = await server.inject({
+      method: 'POST',
+      url: `/admin/events/${event.id}/external-venue-review`,
+      headers: asUser('ops_user'),
+      payload: { decision: 'reject', reason: 'Please provide the venue permission letter.' },
+    });
+    expect(rejected.statusCode).toBe(200);
+    expect(
+      (await services.repos().events.getById(event.id))?.externalLocation?.review,
+    ).toMatchObject({
+      status: 'rejected',
+      reviewedBy: 'ops_user',
+      rejectionReason: 'Please provide the venue permission letter.',
+    });
+    expect(await services.adminAudits().listForTarget(event.id, 10)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ action: 'EXTERNAL_VENUE_REJECT' })]),
+    );
   });
 });

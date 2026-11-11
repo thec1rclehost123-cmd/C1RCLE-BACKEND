@@ -140,6 +140,25 @@ export interface EventMedia {
   }[];
 }
 
+/** Immutable event-scoped location for a physical venue without a C1RCLE account. */
+export interface ExternalEventLocation {
+  name: string;
+  address: string;
+  city?: string;
+  region?: string;
+  postalCode?: string;
+  country?: string;
+  mapUrl?: string | null;
+  contact: { managerName: string; phone: string; email?: string | null };
+  review: {
+    status: 'pending' | 'approved' | 'rejected';
+    submittedAt: string;
+    reviewedAt: string | null;
+    reviewedBy: EntityId | null;
+    rejectionReason: string | null;
+  };
+}
+
 function assertMediaVisibility(
   media: EventMedia | undefined,
   visibility: EventVisibilityMode | undefined,
@@ -159,6 +178,7 @@ export interface Event extends VersionedEntity {
   id: EntityId;
   organizationId: EntityId;
   venueId: EntityId | null;
+  externalLocation?: ExternalEventLocation;
   /**
    * URL-safe public identifier — V1 events always carried one and the public
    * surface addresses events by `idOrSlug`. Server-derived at create
@@ -227,7 +247,8 @@ export interface Event extends VersionedEntity {
 export interface CreateEventInput {
   id: EntityId;
   organizationId: EntityId;
-  venueId: EntityId;
+  venueId: EntityId | null;
+  externalLocation?: ExternalEventLocation;
   title: string;
   summary?: string;
   description?: string;
@@ -280,10 +301,23 @@ export function createEvent(input: CreateEventInput): Event {
   if (input.entryRules?.reentryAllowed === true)
     throw new InvalidOperationError('Automatic re-entry is unavailable in V1');
   assertMediaVisibility(input.media, input.visibilityMode);
+  if ((input.venueId === null) === (input.externalLocation === undefined)) {
+    throw new InvalidOperationError('Choose either a C1RCLE Venue or an external event location');
+  }
+  if (input.externalLocation) {
+    const location = input.externalLocation;
+    if (!location.name.trim() || !location.address.trim() || !location.contact.managerName.trim())
+      throw new InvalidOperationError('External venue name, address and manager are required');
+    if (!/^\+?[\d\s()-]{10,18}$/.test(location.contact.phone.trim()))
+      throw new InvalidOperationError('Enter a valid external venue manager phone number');
+    if (location.contact.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(location.contact.email))
+      throw new InvalidOperationError('Enter a valid external venue manager email');
+  }
   return {
     id: input.id,
     organizationId: input.organizationId,
     venueId: input.venueId,
+    ...(input.externalLocation ? { externalLocation: input.externalLocation } : {}),
     slug: slugifyEventTitle(input.title) || input.id,
     title: input.title,
     status: 'draft',
@@ -391,6 +425,61 @@ export function cancelEvent(event: Event, reason: string, now?: Date): Event {
   transitionStatus(event.status, 'cancelled', EVENT_TRANSITIONS);
   const stamped = bumpVersion(event, now ?? new Date());
   return { ...stamped, status: 'cancelled', isPublic: false, cancellationReason: reason };
+}
+
+/** Records an external-location decision; privileged actor checks belong to the application boundary. */
+export function decideExternalLocationReview(
+  event: Event,
+  decision: { approved: boolean; reviewerId: EntityId; reason?: string | null; now?: Date },
+): Event {
+  const location = event.externalLocation;
+  if (!location) throw new InvalidOperationError('Event has no external location to review');
+  if (location.review.status !== 'pending')
+    throw new InvalidOperationError('Only a pending external location can be reviewed');
+  const at = decision.now ?? new Date();
+  const reason = decision.reason?.trim();
+  return {
+    ...bumpVersion(event, at),
+    externalLocation: {
+      ...location,
+      review: {
+        status: decision.approved ? 'approved' : 'rejected',
+        submittedAt: location.review.submittedAt,
+        reviewedAt: at.toISOString(),
+        reviewedBy: decision.reviewerId,
+        rejectionReason: decision.approved
+          ? null
+          : reason && reason.length > 0
+            ? reason
+            : 'Please provide additional venue evidence.',
+      },
+    },
+  };
+}
+
+/** Resubmission retains the historical location snapshot and starts a fresh review cycle. */
+export function resubmitExternalLocation(
+  event: Event,
+  submission: Omit<ExternalEventLocation, 'review'>,
+  now?: Date,
+): Event {
+  const location = event.externalLocation;
+  if (!location || location.review.status !== 'rejected')
+    throw new InvalidOperationError('Only a rejected external location can be resubmitted');
+  const at = now ?? new Date();
+  return {
+    ...bumpVersion(event, at),
+    externalLocation: {
+      ...submission,
+      review: {
+        status: 'pending',
+        submittedAt: at.toISOString(),
+        reviewedAt: null,
+        reviewedBy: null,
+        rejectionReason: null,
+      },
+    },
+  };
 }
 
 /** Freeze the canonical event without erasing its last announced schedule. */
