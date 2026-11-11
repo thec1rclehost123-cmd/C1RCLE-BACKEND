@@ -54,11 +54,7 @@ export class ResendEmailSender implements EmailSender {
   ) {}
 
   async sendOtpEmail(recipient: string, code: string): Promise<void> {
-    if (!this.canSendToProvider(recipient)) {
-      if (this.nodeEnv === 'production') throw new Error('Email provider not configured');
-      this.logger.info('dev_email_otp', { delivery: 'suppressed' });
-      return;
-    }
+    this.assertAuthDeliveryAllowed(recipient);
     const rendered = renderBrandedEmail({
       preheader: 'Your C1RCLE access code.',
       eyebrow: 'EMAIL VERIFICATION',
@@ -78,11 +74,7 @@ ${code}`,
   }
 
   async sendStaffInvitationEmail(invitation: StaffInvitationEmail): Promise<void> {
-    if (!this.canSendToProvider(invitation.to)) {
-      if (this.nodeEnv === 'production') throw new Error('Email provider not configured');
-      this.logger.info('dev_email_staff_invitation', { delivery: 'suppressed' });
-      return;
-    }
+    this.assertAuthDeliveryAllowed(invitation.to);
 
     const roleLabel = invitation.role.charAt(0).toUpperCase() + invitation.role.slice(1);
     const details = [
@@ -124,11 +116,7 @@ ${code}`,
   }
 
   async sendPasswordResetEmail(recipient: string, resetUrl: string): Promise<void> {
-    if (!this.canSendToProvider(recipient)) {
-      if (this.nodeEnv === 'production') throw new Error('Email provider not configured');
-      this.logger.info('dev_email_password_reset', { delivery: 'suppressed' });
-      return;
-    }
+    this.assertAuthDeliveryAllowed(recipient);
     const rendered = renderBrandedEmail({
       preheader: 'Choose a new password for your C1RCLE account.',
       eyebrow: 'ACCOUNT SECURITY',
@@ -155,14 +143,7 @@ ${code}`,
     recipient: string,
     params: OnboardingChangesRequestedEmailParams,
   ): Promise<void> {
-    if (!this.canSendToProvider(recipient)) {
-      if (this.nodeEnv === 'production') throw new Error('Email provider not configured');
-      this.logger.info('dev_email_onboarding_changes_requested', {
-        delivery: 'suppressed',
-        noteLength: params.note.length,
-      });
-      return;
-    }
+    this.assertAuthDeliveryAllowed(recipient);
     const rendered = renderBrandedEmail({
       preheader: 'A reviewer requested changes to your application.',
       eyebrow: 'PARTNER APPLICATION',
@@ -244,6 +225,12 @@ Sign back in to update your application and resubmit.`,
   private requireFromEmail(): string {
     if (this.fromEmail) return this.fromEmail;
     throw new Error('Resend sender identity not configured');
+  }
+
+  /** Auth flows must never report success when a message was only suppressed. */
+  private assertAuthDeliveryAllowed(recipient: string): void {
+    if (!this.apiKey) throw new Error('Email provider not configured');
+    if (!this.canSendToProvider(recipient)) throw new PermanentEmailDeliveryError();
   }
 
   private async sendAuthEmail(

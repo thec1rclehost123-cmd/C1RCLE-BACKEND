@@ -799,6 +799,7 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
             endTime: body.endTime,
             eventId: body.eventId ?? null,
             message: body.message,
+            eventDraft: body.eventDraft,
           });
           const validated = validateV2Response(reply, request, slotRequestDtoSchema, slotRequest);
           if (validated === undefined) throw new Error('v2 response validation failed');

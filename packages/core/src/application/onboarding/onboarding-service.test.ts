@@ -103,7 +103,37 @@ function buildDeps() {
     clock: { now: () => NOW },
   });
 
+  const contactAccounts = new Map<string, { emailVerified: boolean }>();
+  const contactProfiles = new Map<string, { phoneVerifiedAt?: string; phoneNumber?: string }>();
+  for (const id of ['user_a', 'user_biz']) {
+    contactAccounts.set(id, { emailVerified: true });
+    contactProfiles.set(id, { phoneVerifiedAt: NOW.toISOString(), phoneNumber: '+919876543210' });
+  }
   const repositories = {
+    users: {
+      getById: async (id: string) => ({
+        id,
+        emailVerified: contactAccounts.get(id)?.emailVerified ?? true,
+      }),
+    },
+    guestProfiles: {
+      getByUserId: async (id: string) => {
+        const profile = contactProfiles.get(id);
+        return profile
+          ? ({
+              userId: id,
+              phoneVerifiedAt: profile.phoneVerifiedAt,
+              phoneNumber: profile.phoneNumber,
+            } as never)
+          : null;
+      },
+      save: async (profile: { userId: string; phoneVerifiedAt?: string; phoneNumber?: string }) => {
+        contactProfiles.set(profile.userId, {
+          phoneVerifiedAt: profile.phoneVerifiedAt,
+          phoneNumber: profile.phoneNumber,
+        });
+      },
+    },
     organizations: new MemoryOrganizationRepository(),
     onboarding: new MemoryOnboardingRepository(),
     platformAdmins: new MemoryPlatformAdminRepository(),
@@ -144,7 +174,17 @@ function buildDeps() {
 
   const authority = new AdminAuthorityService(deps);
   const service = new OnboardingService(deps, authority);
-  return { deps, authority, service, repositories, emailSender, userDirectory, outbox };
+  return {
+    deps,
+    authority,
+    service,
+    repositories,
+    emailSender,
+    userDirectory,
+    outbox,
+    contactAccounts,
+    contactProfiles,
+  };
 }
 
 const PROFILE = {
@@ -182,6 +222,62 @@ describe('OnboardingService — KYC document desk', () => {
 
   beforeEach(() => {
     ctx = buildDeps();
+  });
+
+  it('requires verified email and phone before starting an application', async () => {
+    ctx.contactAccounts.set('user_a', { emailVerified: false });
+    await expect(
+      ctx.service.start('user_a', { requestedType: 'venue', plan: 'basic', profile: PROFILE }),
+    ).rejects.toThrow('Verify your email before starting partner onboarding');
+
+    ctx.contactAccounts.set('user_a', { emailVerified: true });
+    ctx.contactProfiles.set('user_a', {});
+    await expect(
+      ctx.service.start('user_a', { requestedType: 'venue', plan: 'basic', profile: PROFILE }),
+    ).rejects.toThrow('Verify your phone before starting partner onboarding');
+  });
+
+  it('rejects an application phone number that differs from the verified account number', async () => {
+    await expect(
+      ctx.service.start('user_a', {
+        requestedType: 'venue',
+        plan: 'basic',
+        profile: { ...PROFILE, phone: '9123456789' },
+      }),
+    ).rejects.toThrow('Use the phone number verified for this account');
+  });
+
+  it('requires the verified phone number to be included in the application', async () => {
+    const { phone: _verifiedPhone, ...profileWithoutPhone } = PROFILE;
+    await expect(
+      ctx.service.start('user_a', {
+        requestedType: 'venue',
+        plan: 'basic',
+        profile: profileWithoutPhone,
+      }),
+    ).rejects.toThrow('Use the phone number verified for this account');
+  });
+
+  it('persists Firebase phone proof before returning a successful verification result', async () => {
+    ctx.contactProfiles.delete('user_a');
+    ctx.deps.verification = {
+      name: 'synthetic-phone-verifier',
+      verify: async () => ({ passed: true, provider: 'firebase-phone', reason: 'phone_verified' }),
+    };
+    const result = await ctx.service.verifyPhone('user_a', '+919876543210', 'synthetic-id-token');
+    expect(result).toMatchObject({ passed: true, provider: 'firebase-phone' });
+    expect(ctx.contactProfiles.get('user_a')?.phoneVerifiedAt).toBe(NOW.toISOString());
+  });
+
+  it('does not allow generic document verification to establish phone proof', async () => {
+    await expect(
+      ctx.service.verifyDocument('user_a', {
+        documentType: 'phone',
+        documentNumber: '+919876543210',
+        proofToken: 'synthetic-id-token',
+      }),
+    ).rejects.toThrow('Use the phone verification flow for phone numbers');
+    expect(ctx.contactProfiles.get('user_a')?.phoneVerifiedAt).toBe(NOW.toISOString());
   });
 
   it.each(['host', 'venue', 'promoter'] as const)(

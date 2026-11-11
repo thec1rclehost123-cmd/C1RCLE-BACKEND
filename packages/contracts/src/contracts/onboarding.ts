@@ -256,6 +256,15 @@ export const verifyDocumentSchema = z
   .strict();
 export type VerifyDocumentRequest = z.infer<typeof verifyDocumentSchema>;
 
+/** Server-verified Firebase phone proof, kept separate from document checks. */
+export const verifyPhoneSchema = z
+  .object({
+    phoneNumber: z.string().regex(/^\+[1-9]\d{7,14}$/),
+    idToken: z.string().min(1).max(4096),
+  })
+  .strict();
+export type VerifyPhoneRequest = z.infer<typeof verifyPhoneSchema>;
+
 /**
  * `passed` is never rendered as "verified" by the frontend unless `provider`
  * is a real one — the default provider reports `format-check` / `format_ok`

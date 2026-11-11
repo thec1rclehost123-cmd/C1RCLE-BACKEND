@@ -60,7 +60,7 @@ export async function internalRoutes(
         }
 
         const ok = Object.values(checks).every((status) => status === 'up');
-        void reply.code(ok ? 200 : 503).send({ ok, checks });
+        return reply.code(ok ? 200 : 503).send({ ok, checks });
       });
     },
     { prefix: '/internal' },

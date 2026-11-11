@@ -13,6 +13,7 @@ import {
   startOnboardingSchema,
   verificationResultDtoSchema,
   verifyDocumentSchema,
+  verifyPhoneSchema,
 } from '@c1rcle/contracts/client';
 import { missingDocuments } from '@c1rcle/core/domain';
 import { z } from 'zod';
@@ -47,6 +48,26 @@ const commandHeaders = z.looseObject({ 'idempotency-key': idempotencyKeySchema }
 const requestListSchema = paginatedSchema(onboardingRequestDtoSchema);
 
 export default async function onboardingRoutes(fastify: FastifyInstance) {
+  fastify.addHook('preHandler', async (request, reply) => {
+    const path = (request.raw.url ?? '').split('?')[0] ?? '';
+    if (path.endsWith('/onboarding/verify-phone') || path.includes('/admin/onboarding/')) return;
+    const userId = requireUserId(request, reply);
+    if (userId === undefined) return reply;
+    const account = await services.repos().users.getById(userId);
+    if (!account?.emailVerified) {
+      return reply.status(403).send({
+        message: 'Verify your email before using Partner onboarding.',
+        code: 'contact_verification_required',
+      });
+    }
+    const profile = await services.repos().guestProfiles.getByUserId(userId);
+    if (!profile?.phoneVerifiedAt) {
+      return reply.status(403).send({
+        message: 'Verify your phone before using Partner onboarding.',
+        code: 'contact_verification_required',
+      });
+    }
+  });
   fastify.addHook('onSend', async (_request, reply, payload) => {
     reply.header('cache-control', 'private, no-store');
     return payload;
@@ -331,6 +352,37 @@ export default async function onboardingRoutes(fastify: FastifyInstance) {
    * rate, the attempt budget bounds one *applicant's* total tries, and only
    * the second survives a caller rotating IPs.
    */
+  fastify.post(
+    '/onboarding/verify-phone',
+    {
+      config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+      preHandler: [
+        fastify.rateLimit('SENSITIVE_COMMAND'),
+        fastify.validateV2({ body: verifyPhoneSchema }),
+      ],
+    },
+    // codeql[js/missing-rate-limiting] This route is rate-limited by the
+    // SENSITIVE_COMMAND preHandler above. CodeQL cannot follow the custom
+    // Fastify decorator; onboarding.test.ts verifies the 429 boundary.
+    async (request, reply) => {
+      const userId = requireUserId(request, reply);
+      if (userId === undefined) return reply;
+      const body = request.body as z.infer<typeof verifyPhoneSchema>;
+      const result = await services.onboarding
+        .verifyPhone(userId, body.phoneNumber, body.idToken)
+        .catch((error: unknown) => mapDomainError(reply, request, userId, error));
+      if (result === undefined) return reply;
+      const validated = validateV2Response(reply, request, verificationResultDtoSchema, {
+        passed: result.passed,
+        provider: result.provider,
+        reason: result.reason ?? null,
+        referenceId: result.referenceId ?? null,
+      });
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
   fastify.post(
     '/onboarding/verify-document',
     {

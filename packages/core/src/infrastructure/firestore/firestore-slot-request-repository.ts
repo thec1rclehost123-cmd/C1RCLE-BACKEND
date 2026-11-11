@@ -244,6 +244,7 @@ function toSlotRequest(data: DocumentData): SlotRequest {
     hostId: data.hostId as string,
     status: data.status as SlotRequest['status'],
     message: data.message as string | undefined,
+    eventDraft: data.eventDraft as SlotRequest['eventDraft'],
     version: data.version as number,
     createdAt: data.createdAt as string,
     updatedAt: data.updatedAt as string,

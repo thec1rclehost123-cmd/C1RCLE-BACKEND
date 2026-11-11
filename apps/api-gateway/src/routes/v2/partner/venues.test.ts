@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { createV2Services } from '../../../lib/v2-services.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 
 import partnerEventRoutes from './events.js';
@@ -84,6 +85,7 @@ async function activateHostPartnership(
 async function createHostSlotRequestFixture(
   server: Awaited<ReturnType<typeof buildServer>>,
   linkLiveEvent = false,
+  eventDraft?: (venueId: string) => Record<string, unknown>,
 ) {
   const { id: venueId } = await createVenue(server);
   const hostOrganizationId = `org_host_slot_test_${String(venueSeq)}`;
@@ -111,6 +113,7 @@ async function createHostSlotRequestFixture(
     payload: {
       slotId: slotResponse.json().id,
       message: 'M3 slot request fixture',
+      ...(eventDraft ? { eventDraft: eventDraft(venueId) } : {}),
     },
   });
   expect(requestResponse.statusCode).toBe(201);
@@ -988,6 +991,126 @@ describe('V2 partners venues slice — slot requests', () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ id: fixture.request.id, status: 'accepted' });
+    await server.close();
+  });
+
+  it('publishes the complete Host proposal after Venue approval and safely replays approval', async () => {
+    const server = await buildSlotRequestServer();
+    const startAt = '2030-11-04T12:30:00.000Z';
+    const endAt = '2030-11-04T16:30:00.000Z';
+    const fixture = await createHostSlotRequestFixture(server, false, (venueId) => ({
+      event: {
+        venueId,
+        title: 'Approved Host proposal',
+        summary: 'A public summary for the event.',
+        description: 'A complete guest-facing description for the event.',
+        startAt,
+        endAt,
+        tags: ['Afrobeats'],
+      },
+      tiers: [
+        {
+          localId: 'host-tier-general',
+          command: {
+            name: 'General Admission',
+            quantity: 100,
+            priceInPaise: 10000,
+            accessType: 'ENTRY',
+            audienceType: 'GENERAL',
+          },
+        },
+      ],
+      promotions: [],
+      promoters: [],
+    }));
+    expect(fixture.request.status).toBe('pending');
+    const accepted = await server.inject({
+      method: 'POST',
+      url: `/venues/slot-requests/${fixture.request.id}/accept`,
+      headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
+    });
+    expect(accepted.statusCode, accepted.body).toBe(200);
+    expect(accepted.json()).toMatchObject({ status: 'accepted' });
+    const eventId = String(accepted.json().eventId);
+    const published = await server.inject({
+      method: 'GET',
+      url: `/events/${eventId}`,
+      headers: { 'x-organization-id': fixture.hostOrganizationId },
+    });
+    expect(published.statusCode).toBe(200);
+    expect(published.json()).toMatchObject({ id: eventId, status: 'published' });
+    const replay = await server.inject({
+      method: 'POST',
+      url: `/venues/slot-requests/${fixture.request.id}/accept`,
+      headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
+    });
+    expect(replay.statusCode, replay.body).toBe(200);
+    expect(replay.json().eventId).toBe(eventId);
+    await server.close();
+  });
+
+  it('does not overwrite a ticket tier owned by another event during approval', async () => {
+    const server = await buildSlotRequestServer();
+    const fixture = await createHostSlotRequestFixture(server, false, (venueId) => ({
+      event: {
+        venueId,
+        title: 'Collision proposal',
+        startAt: '2030-11-04T12:30:00.000Z',
+        endAt: '2030-11-04T16:30:00.000Z',
+      },
+      tiers: [
+        {
+          localId: 'shared-tier-id',
+          command: {
+            name: 'Proposed',
+            quantity: 5,
+            priceInPaise: 5000,
+            accessType: 'ENTRY',
+            audienceType: 'GENERAL',
+          },
+        },
+      ],
+      promotions: [],
+      promoters: [],
+    }));
+    const services = createV2Services();
+    const foreignEvent = await services.events.create(
+      { userId: 'venue_owner_test', organizationId: ORG, role: 'owner', capabilities: ['venue'] },
+      {
+        venueId: fixture.request.venueId,
+        title: 'Unrelated existing event',
+        startAt: '2030-12-01T12:00:00.000Z',
+      },
+    );
+    const foreignTier = await services.catalog.createTier(
+      { userId: 'venue_owner_test', organizationId: ORG, role: 'owner', capabilities: ['venue'] },
+      {
+        id: 'shared-tier-id',
+        eventId: foreignEvent.id,
+        name: 'Keep this tier',
+        quantity: 42,
+        priceInPaise: 9000,
+      },
+    );
+    const accepted = await server.inject({
+      method: 'POST',
+      url: `/venues/slot-requests/${fixture.request.id}/accept`,
+      headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
+    });
+    expect(accepted.statusCode).toBe(400);
+    expect(
+      await services.catalog.listTiers(
+        { userId: 'venue_owner_test', organizationId: ORG, role: 'owner', capabilities: ['venue'] },
+        foreignEvent.id,
+      ),
+    ).toContainEqual(
+      expect.objectContaining({
+        id: 'shared-tier-id',
+        eventId: foreignEvent.id,
+        name: foreignTier.name,
+        quantity: 42,
+      }),
+    );
     await server.close();
   });
 

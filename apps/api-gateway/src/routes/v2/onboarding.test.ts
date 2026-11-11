@@ -64,6 +64,7 @@ async function startApplication(
   userId: string,
   plan: 'basic' | 'silver' | 'diamond' = 'basic',
 ): Promise<ApplicationView> {
+  await seedVerifiedApplicant(userId);
   const response = await server.inject({
     method: 'POST',
     url: '/onboarding/applications',
@@ -72,6 +73,33 @@ async function startApplication(
   });
   expect(response.statusCode).toBe(201);
   return response.json<ApplicationView>();
+}
+
+async function seedVerifiedApplicant(userId: string) {
+  const repos = services.repos();
+  (repos.users as unknown as { save: (user: unknown) => void }).save({
+    id: userId,
+    email: `${userId}@synthetic.test`,
+    name: 'Synthetic applicant',
+    image: null,
+    emailVerified: true,
+    role: 'partner',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+  await repos.guestProfiles.save({
+    userId,
+    displayName: '',
+    dateOfBirth: '',
+    city: '',
+    tastes: [],
+    intents: [],
+    phoneNumber: '+919876543210',
+    phoneVerifiedAt: new Date().toISOString(),
+    version: 1,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
 }
 
 /** Uploads the three labels `submit` requires. */
@@ -95,6 +123,12 @@ beforeEach(async () => {
   (repos.platformAdmins as unknown as { admins: Map<string, unknown> }).admins.clear();
   (repos.proposals as unknown as { proposals: Map<string, unknown> }).proposals.clear();
   (repos.verificationAttempts as unknown as { attempts: unknown[] }).attempts.length = 0;
+  (repos.users as unknown as { users: Map<string, unknown> }).users.clear();
+  (repos.guestProfiles as unknown as { entries: Map<string, unknown> }).entries.clear();
+
+  await Promise.all(
+    ['user_a', 'user_b', 'promoter_applicant'].map((userId) => seedVerifiedApplicant(userId)),
+  );
 
   server = await buildPartnerTestServer({ routes: [onboardingRoutes, adminRoutes] });
 });
@@ -108,6 +142,17 @@ describe('applicant onboarding', () => {
     const created = await startApplication('user_a');
     expect(created.status).toBe('draft');
     expect(created.missingDocuments).toEqual(['id_front', 'id_back', 'selfie']);
+  });
+
+  it('blocks application creation until server-verified contacts exist', async () => {
+    const response = await server.inject({
+      method: 'POST',
+      url: '/onboarding/applications',
+      headers: asUser('unverified_applicant'),
+      payload: { requestedType: 'venue', plan: 'basic', profile: FULL_PROFILE },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ code: 'contact_verification_required' });
   });
 
   it('records versioned test-fixture agreement evidence and exposes it to Admin review', async () => {
@@ -127,6 +172,7 @@ describe('applicant onboarding', () => {
       },
     });
 
+    await seedVerifiedApplicant('promoter_applicant');
     const application = await server.inject({
       method: 'POST',
       url: '/onboarding/applications',
@@ -361,6 +407,60 @@ describe('applicant onboarding', () => {
     expect(body.passed).toBe(true);
     expect(body.provider).toBe('format-check');
     expect(body.reason).toBe('format_ok');
+  });
+
+  it('does not accept phone proof through the generic document endpoint', async () => {
+    const response = await server.inject({
+      method: 'POST',
+      url: '/onboarding/verify-document',
+      headers: asUser('user_a'),
+      payload: {
+        documentType: 'phone',
+        documentNumber: '+919876543210',
+        proofToken: 'synthetic-token',
+      },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().message).toContain('Use the phone verification flow');
+  });
+
+  it('validates the dedicated phone proof request before verification', async () => {
+    const response = await server.inject({
+      method: 'POST',
+      url: '/onboarding/verify-phone',
+      headers: asUser('user_a'),
+      payload: { phoneNumber: 'not-a-phone', idToken: '' },
+    });
+    expect(response.statusCode).toBe(422);
+  });
+
+  it('rate-limits phone proof verification before the route handler', async () => {
+    const rateLimitedServer = await buildPartnerTestServer({
+      routes: [onboardingRoutes],
+      rateLimit: true,
+    });
+
+    try {
+      for (let attempt = 0; attempt < 10; attempt++) {
+        const response = await rateLimitedServer.inject({
+          method: 'POST',
+          url: '/onboarding/verify-phone',
+          headers: asUser('user_a'),
+          payload: { phoneNumber: 'invalid', idToken: '' },
+        });
+        expect(response.statusCode).toBe(422);
+      }
+
+      const limited = await rateLimitedServer.inject({
+        method: 'POST',
+        url: '/onboarding/verify-phone',
+        headers: asUser('user_a'),
+        payload: { phoneNumber: 'invalid', idToken: '' },
+      });
+      expect(limited.statusCode).toBe(429);
+    } finally {
+      await rateLimitedServer.close();
+    }
   });
 
   it('bounds verification attempts per applicant', async () => {

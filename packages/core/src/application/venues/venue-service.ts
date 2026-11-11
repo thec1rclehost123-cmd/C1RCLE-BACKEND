@@ -21,6 +21,8 @@ import {
   updateVenueMenu,
 } from '../../domain/models/venue.js';
 import { requireOrgAccess, emit } from '../context.js';
+import { EventCatalogService } from '../event-catalog/event-catalog-service.js';
+import { EventService } from '../events/event-service.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type { Event } from '../../domain/models/event.js';
@@ -41,6 +43,12 @@ import type {
   PaginationQuery,
 } from '../../domain/ports/repositories.js';
 import type { ActorContext, ServiceDeps } from '../context.js';
+import type {
+  CreatePromotionCommand,
+  CreateTierCommand,
+  AssignPromoterCommand,
+} from '../event-catalog/event-catalog-service.js';
+import type { CreateEventCommand } from '../events/event-service.js';
 
 export interface CreateVenueCommand {
   name: string;
@@ -64,6 +72,7 @@ export interface CreateSlotRequestCommand {
   endTime?: string;
   eventId: EntityId | null;
   message?: string;
+  eventDraft?: SlotRequest['eventDraft'];
 }
 
 /** Venue-owner review of one slot request (see `VenueSlotRequestService.getDetailForVenue`). */
@@ -578,9 +587,12 @@ export class VenueSlotRequestService {
       slotStartTime: slot.startTime,
       slotEndTime: slot.endTime,
       timezone: slot.timezone ?? 'UTC',
-      eventId: command.eventId,
+      // Reserve an event id together with the complete proposal. Approval and
+      // every retry then converge on the same event identity.
+      eventId: command.eventDraft ? this.deps.config.ids() : command.eventId,
       hostId: actor.organizationId,
       message: command.message,
+      eventDraft: command.eventDraft,
       now: this.deps.config.clock.now(),
     });
     await this.repo.createForOpenSlot(request, implicitSlot);
@@ -644,16 +656,114 @@ export class VenueSlotRequestService {
 
   async accept(actor: ActorContext, slotRequestId: EntityId): Promise<SlotRequest> {
     const request = await this.assertOwnedRequest(actor, slotRequestId);
-    const updated = transitionSlotRequest(request, 'accepted', this.deps.config.clock.now());
-    if (request.slotId) await this.repo.transitionForSlot(request, updated);
-    else await this.repo.save(updated);
-    if (request.slotId) {
+    if (request.status === 'accepted' && !request.eventDraft) {
+      throw new InvalidOperationError('Slot request already accepted');
+    }
+    if (request.status !== 'pending' && request.status !== 'accepted') {
+      throw new InvalidOperationError('Only a pending slot request can be accepted');
+    }
+    const newlyAccepted = request.status === 'pending';
+    const updated = newlyAccepted
+      ? transitionSlotRequest(request, 'accepted', this.deps.config.clock.now())
+      : request;
+    if (newlyAccepted && request.slotId) await this.repo.transitionForSlot(request, updated);
+    else if (newlyAccepted) await this.repo.save(updated);
+    if (updated.eventDraft && updated.eventId) {
+      await this.publishApprovedDraft(actor, updated);
+      if (updated.slotId) {
+        await emit(this.deps, actor, updated.id, 'venue.slot_request.accepted', {
+          venueId: updated.venueId,
+          slotId: updated.slotId,
+        });
+      }
+    } else if (newlyAccepted && request.slotId) {
       await emit(this.deps, actor, updated.id, 'venue.slot_request.accepted', {
         venueId: updated.venueId,
         slotId: updated.slotId ?? '',
       });
     }
     return updated;
+  }
+
+  private async publishApprovedDraft(actor: ActorContext, request: SlotRequest): Promise<void> {
+    const draft = request.eventDraft;
+    if (!draft || !request.eventId || request.status !== 'accepted') return;
+    if (draft.event.venueId !== request.venueId) {
+      throw new InvalidOperationError('The event proposal does not match this Venue request');
+    }
+    // This narrowly scoped delegated actor is created only after the Venue
+    // owner check above; the domain still applies Host ownership and slot
+    // validation to the Host's event and catalog operations.
+    const hostActor: ActorContext = {
+      ...actor,
+      organizationId: request.hostId,
+      capabilities: ['host'],
+    };
+    const events = new EventService(this.deps);
+    const catalog = new EventCatalogService(this.deps);
+    const event = await events.create(hostActor, {
+      ...(draft.event as unknown as CreateEventCommand),
+      slotRequestId: request.id,
+    });
+    const serverTierIds = new Set<string>();
+    for (const tier of draft.tiers) {
+      const tierWithRequestedId = await this.deps.repositories.catalog.getTierById(tier.localId);
+      if (tierWithRequestedId && tierWithRequestedId.eventId !== event.id) {
+        throw new InvalidOperationError('The proposed ticket tier identifier is already in use');
+      }
+      const prior = (await catalog.listTiers(hostActor, event.id)).find(
+        (candidate) => candidate.id === tier.localId,
+      );
+      if (prior) {
+        if (
+          prior.name !== tier.command.name ||
+          prior.quantity !== tier.command.quantity ||
+          prior.priceInPaise !== tier.command.priceInPaise
+        )
+          throw new InvalidOperationError('The saved event ticket proposal no longer matches');
+      } else {
+        await catalog.createTier(hostActor, {
+          ...(tier.command as unknown as CreateTierCommand),
+          id: tier.localId,
+          eventId: event.id,
+        });
+      }
+      serverTierIds.add(tier.localId);
+    }
+    const promotions = await catalog.listPromotions(hostActor, event.id, {
+      limit: 1000,
+      cursor: null,
+    });
+    for (const promotion of draft.promotions) {
+      const command = promotion as unknown as CreatePromotionCommand;
+      const prior = promotions.items.find((item) => item.code === command.code);
+      if (!prior) await catalog.createPromotion(hostActor, { ...command, eventId: event.id });
+    }
+    const assignments = await catalog.listAssignments(hostActor, event.id);
+    for (const promoter of draft.promoters) {
+      const command = promoter as unknown as AssignPromoterCommand & {
+        ratePercent?: number;
+        flatPaise?: number;
+        tierRates?: Record<string, { ratePercent: number; flatPaise: number }>;
+      };
+      if (assignments.some((assignment) => assignment.promoterId === command.promoterId)) continue;
+      const eligibleTierIds = (command.eligibleTierIds ?? []).filter((id) => serverTierIds.has(id));
+      await catalog.assignPromoter(hostActor, {
+        eventId: event.id,
+        promoterId: command.promoterId,
+        startsAt: command.startsAt,
+        expiresAt: command.expiresAt,
+        eligibleTierIds,
+        term: {
+          version: 1,
+          ratePercent: command.ratePercent ?? 0,
+          flatPaise: command.flatPaise ?? 0,
+          ...(command.tierRates ? { tierRates: command.tierRates } : {}),
+        },
+      });
+    }
+    const ready = event.status === 'draft' ? await events.review(hostActor, event.id) : event;
+    if (ready.status !== 'published') await events.publish(hostActor, event.id);
   }
 
   async reject(actor: ActorContext, slotRequestId: EntityId): Promise<SlotRequest> {

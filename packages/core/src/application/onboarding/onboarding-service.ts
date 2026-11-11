@@ -26,6 +26,7 @@ import {
 import { createOrganization } from '../../domain/models/organization.js';
 import { recordPromoterAgreementAcceptance } from '../../domain/models/promoter-agreement.js';
 import { createVenue } from '../../domain/models/venue.js';
+import { createGuestProfileService } from '../guest-profile/guest-profile-service.js';
 
 import type { EntityId } from '../../domain/identity.js';
 import type { PlatformAdmin } from '../../domain/models/admin-authority.js';
@@ -129,6 +130,20 @@ export class OnboardingService {
    * would leave admins deciding which of two drafts is real.
    */
   async start(userId: EntityId, command: StartApplicationCommand): Promise<OnboardingRequest> {
+    const account = await this.deps.repositories.users.getById(userId);
+    if (!account?.emailVerified) {
+      throw new InvalidOperationError('Verify your email before starting partner onboarding');
+    }
+    const contactProfile = await this.deps.repositories.guestProfiles.getByUserId(userId);
+    if (!contactProfile?.phoneVerifiedAt || !contactProfile.phoneNumber) {
+      throw new InvalidOperationError('Verify your phone before starting partner onboarding');
+    }
+    if (
+      !command.profile.phone ||
+      normalizePhone(contactProfile.phoneNumber) !== normalizePhone(command.profile.phone)
+    ) {
+      throw new InvalidOperationError('Use the phone number verified for this account');
+    }
     const open = await this.repo.findOpenForUser(userId);
     if (open) {
       throw new InvalidOperationError('You already have an onboarding application in progress');
@@ -313,6 +328,9 @@ export class OnboardingService {
     userId: EntityId,
     command: VerifyDocumentCommand,
   ): Promise<VerificationResult> {
+    if (command.documentType === 'phone') {
+      throw new InvalidOperationError('Use the phone verification flow for phone numbers');
+    }
     const now = this.deps.config.clock.now();
     const since = now.getTime() - VERIFICATION_WINDOW_MS;
     const attempts = await this.deps.repositories.verificationAttempts.countSince(userId, since);
@@ -336,6 +354,31 @@ export class OnboardingService {
       result.provider,
     );
     return result;
+  }
+
+  async verifyPhone(
+    userId: EntityId,
+    phoneNumber: string,
+    idToken: string,
+  ): Promise<VerificationResult> {
+    const now = this.deps.config.clock.now();
+    const since = now.getTime() - VERIFICATION_WINDOW_MS;
+    const attempts = await this.deps.repositories.verificationAttempts.countSince(userId, since);
+    if (attempts >= VERIFICATION_ATTEMPT_LIMIT) {
+      throw new ForbiddenError('Too many verification attempts — try again tomorrow');
+    }
+
+    try {
+      await createGuestProfileService({
+        guestProfiles: this.deps.repositories.guestProfiles,
+        config: this.deps.config,
+      }).verifyPhone(userId, phoneNumber, idToken, this.deps.verification);
+    } catch (error) {
+      await this.recordAttempt(userId, 'phone', 'error', this.deps.verification.name);
+      throw error;
+    }
+    await this.recordAttempt(userId, 'phone', 'passed', 'firebase-phone');
+    return { passed: true, provider: 'firebase-phone', reason: 'phone_verified' };
   }
 
   private async recordAttempt(
@@ -688,6 +731,11 @@ export class OnboardingService {
     }
     return request;
   }
+}
+
+function normalizePhone(phone: string): string {
+  const digits = phone.replace(/\D/g, '');
+  return digits.length === 10 ? `91${digits}` : digits;
 }
 
 function kycObjectKey(request: OnboardingRequest, label: string): string {

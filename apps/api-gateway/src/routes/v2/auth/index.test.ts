@@ -291,6 +291,28 @@ describe('auth routes — login failure is not an account-existence oracle', () 
     expect(res.json().message).toBe('Email already registered');
     await app.close();
   });
+
+  it('maps Better Auth duplicate-email signup to the conflict status expected by onboarding', async () => {
+    const app = await buildTestApp(
+      fakeAuth({
+        signUpEmail: () =>
+          Promise.resolve(
+            jsonResponse(422, {
+              code: 'USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL',
+              message: 'User already exists. Use another email.',
+            }),
+          ),
+      }),
+    );
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v2/auth/partner/signup',
+      payload: { email: 'taken@example.com', password: 'longenough1', displayName: 'Taken' },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ code: 'conflict', message: 'Email already registered.' });
+    await app.close();
+  });
 });
 
 describe('auth routes — first-login password rotation', () => {

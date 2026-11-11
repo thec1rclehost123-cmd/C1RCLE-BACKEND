@@ -43,16 +43,27 @@ export function createEmailOtpService(deps: EmailOtpServiceDeps): EmailOtpServic
     const account = await users.getByEmail(normalized);
     if (!account) throw new InvalidOperationError('No account available for verification.');
     const code = generateEmailOtpCode();
+    const now = config.clock.now();
+    const issuedOtp = createEmailOtp(normalized, code, config.emailOtpSecret, now, account.id);
     await emailOtp.updateAtomically(normalized, (existing) => {
-      const now = config.clock.now();
-      assertCanResend(existing, now);
+      assertCanResend(existing, config.clock.now());
       return {
-        next: createEmailOtp(normalized, code, config.emailOtpSecret, now, account.id),
+        next: issuedOtp,
         result: undefined,
       };
     });
     // Provider calls must never run inside a retryable transaction.
-    await emailSender.sendOtpEmail(normalized, code);
+    try {
+      await emailSender.sendOtpEmail(normalized, code);
+    } catch (error) {
+      // Do not strand the account behind an OTP that was never delivered. The
+      // comparison prevents a late provider failure from deleting a newer code.
+      await emailOtp.updateAtomically(normalized, (current) => ({
+        next: current?.codeHash === issuedOtp.codeHash ? null : current,
+        result: undefined,
+      }));
+      throw error;
+    }
   }
 
   async function verify(recipient: string, code: string): Promise<void> {

@@ -517,25 +517,28 @@ async function forwardAuthErrorResponse(
   // `unauthorized` code at 401. Collapsing it also broke the D-024 guarantee's
   // own shape: the anti-oracle constant message is still identical for every
   // credential failure, so nothing about account existence leaks.
-  const status =
-    response.status === 422 || response.status === 401
+  let errorBody: { message?: string; code?: string } = {};
+  try {
+    errorBody = (await response.json()) as { message?: string; code?: string };
+  } catch {
+    // Non-JSON error body — keep the generic message.
+  }
+  const duplicateEmail = errorBody.code === 'USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL';
+  const status = duplicateEmail
+    ? 409
+    : response.status === 422 || response.status === 401
       ? response.status
       : response.status >= 500
         ? 500
         : 400;
-  let message = 'Authentication request failed';
+  let message = duplicateEmail ? 'Email already registered.' : 'Authentication request failed';
   if (genericClientErrorMessage !== undefined && status < 500) {
     // Login path: discard Better Auth's own message and return one constant for
     // every 4xx, so the response cannot distinguish "no such user" from "wrong
     // password" (account-existence oracle — spec §11.7 / D-024).
     message = genericClientErrorMessage;
-  } else {
-    try {
-      const body = (await response.json()) as { message?: string };
-      if (body?.message) message = body.message;
-    } catch {
-      // Non-JSON error body — keep the generic message.
-    }
+  } else if (!duplicateEmail && errorBody.message) {
+    message = errorBody.message;
   }
   reply.status(status).send(
     buildV2ErrorResponse({
