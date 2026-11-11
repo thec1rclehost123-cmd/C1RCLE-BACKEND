@@ -248,41 +248,41 @@ export const externalVenueReviewQueueItemSchema = z
   })
   .strict();
 
-export const createEventSchema = z
-  .object({
-    venueId: opaqueIdSchema.optional(),
-    externalLocation: externalEventLocationInputSchema.optional(),
-    slotRequestId: opaqueIdSchema.optional(),
-    title: z.string().min(1).max(200),
-    summary: z.string().max(1000).optional(),
-    description: z.string().max(20_000).optional(),
-    imageUrl: z.url().nullable().optional(),
-    startAt: z.iso.datetime(),
-    endAt: z.iso.datetime().nullable().optional(),
-    tags: z.array(z.string().min(1).max(40)).max(50).default([]),
-    refundPolicy: eventRefundPolicySchema.optional(),
-    compensation: eventCompensationSchema.nullable().optional(),
-    visibilityMode: eventVisibilityModeValueSchema.optional(),
-    addressDisclosure: eventAddressDisclosureSchema.optional(),
-    entryRules: eventEntryRulesSchema.optional(),
-    media: eventMediaSchema.optional(),
-  })
-  .superRefine((event, ctx) => {
-    if (Boolean(event.venueId) === Boolean(event.externalLocation)) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['venueId'],
-        message: 'Choose a C1RCLE Venue or enter an external location.',
-      });
-    }
-    if (event.externalLocation && event.slotRequestId) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['slotRequestId'],
-        message: 'External locations cannot use Venue slot requests.',
-      });
-    }
-  });
+export const createEventBaseSchema = z.object({
+  venueId: opaqueIdSchema.optional(),
+  externalLocation: externalEventLocationInputSchema.optional(),
+  slotRequestId: opaqueIdSchema.optional(),
+  title: z.string().min(1).max(200),
+  summary: z.string().max(1000).optional(),
+  description: z.string().max(20_000).optional(),
+  imageUrl: z.url().nullable().optional(),
+  startAt: z.iso.datetime(),
+  endAt: z.iso.datetime().nullable().optional(),
+  tags: z.array(z.string().min(1).max(40)).max(50).default([]),
+  refundPolicy: eventRefundPolicySchema.optional(),
+  compensation: eventCompensationSchema.nullable().optional(),
+  visibilityMode: eventVisibilityModeValueSchema.optional(),
+  addressDisclosure: eventAddressDisclosureSchema.optional(),
+  entryRules: eventEntryRulesSchema.optional(),
+  media: eventMediaSchema.optional(),
+});
+
+export const createEventSchema = createEventBaseSchema.superRefine((event, ctx) => {
+  if (Boolean(event.venueId) === Boolean(event.externalLocation)) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['venueId'],
+      message: 'Choose a C1RCLE Venue or enter an external location.',
+    });
+  }
+  if (event.externalLocation && event.slotRequestId) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['slotRequestId'],
+      message: 'External locations cannot use Venue slot requests.',
+    });
+  }
+});
 export type CreateEventInput = z.infer<typeof createEventSchema>;
 
 export const posterContentTypeSchema = z.enum(['image/jpeg', 'image/png', 'image/webp']);
