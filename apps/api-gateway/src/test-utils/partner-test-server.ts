@@ -1,6 +1,6 @@
 import Fastify from 'fastify';
 
-import type { OrganizationRole } from '@c1rcle/core/domain';
+import type { Capability, OrganizationRole } from '@c1rcle/core/domain';
 
 import { createV2Services } from '../lib/v2-services.js';
 import cachePlugin from '../plugins/cache.js';
@@ -36,6 +36,8 @@ export interface PartnerTestServerOptions {
    * org, so the hook installs one from the test's own org header.
    */
   actorRole?: OrganizationRole;
+  /** Optional actor capabilities for Host/Venue boundary tests. */
+  actorCapabilities?: Capability[];
 }
 
 export async function buildPartnerTestServer(
@@ -45,13 +47,14 @@ export async function buildPartnerTestServer(
   // Installed before any plugin registers so every child context inherits it.
   if (options.actorRole) {
     const role = options.actorRole;
+    const capabilities = options.actorCapabilities ?? [];
     server.addHook('onRequest', async (request) => {
       const header = request.headers['x-organization-id'];
       request.authContext = {
         activeMembership: {
           organizationId: Array.isArray(header) ? (header[0] ?? '') : (header ?? ''),
           role,
-          capabilities: [],
+          capabilities,
         },
       };
     });

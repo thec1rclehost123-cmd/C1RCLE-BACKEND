@@ -94,6 +94,169 @@ describe('event media', () => {
   });
 });
 
+describe('server-backed Host event drafts', () => {
+  it('restores drafts only for the authenticated user and matching organization, then discards them', async () => {
+    const server = await buildServer();
+    const headers = { 'x-organization-id': 'org_draft_a', 'x-user-id': 'draft_user' };
+    const path = '/organizations/org_draft_a/event-draft';
+    const empty = await server.inject({ method: 'GET', url: path, headers });
+    expect(empty.statusCode).toBe(200);
+    expect(empty.json()).toEqual({ draft: null });
+
+    const saved = await server.inject({
+      method: 'PUT',
+      url: path,
+      headers,
+      payload: {
+        schemaVersion: 1,
+        data: {
+          name: 'Restored event',
+          description: 'Saved before submission.',
+          externalVenue: {
+            name: 'Independent Hall',
+            address: '12 Example Road',
+            managerName: 'Manager',
+            managerPhone: '+91 98765 43210',
+            managerEmail: 'manager@example.test',
+          },
+        },
+      },
+    });
+    expect(saved.statusCode).toBe(200);
+    const restored = await server.inject({ method: 'GET', url: path, headers });
+    expect(restored.json().draft.data).toMatchObject({
+      name: 'Restored event',
+      externalVenue: { name: 'Independent Hall', managerEmail: 'manager@example.test' },
+    });
+
+    const anotherOrganization = await server.inject({
+      method: 'GET',
+      url: '/organizations/org_draft_b/event-draft',
+      headers: { ...headers, 'x-organization-id': 'org_draft_b' },
+    });
+    expect(anotherOrganization.json()).toEqual({ draft: null });
+
+    const discarded = await server.inject({ method: 'DELETE', url: path, headers });
+    expect(discarded.statusCode).toBe(204);
+    expect((await server.inject({ method: 'GET', url: path, headers })).json()).toEqual({
+      draft: null,
+    });
+    await server.close();
+  });
+
+  it('rejects unsafe credentials and signed media URLs', async () => {
+    const server = await buildServer();
+    const response = await server.inject({
+      method: 'PUT',
+      url: '/organizations/org_1/event-draft',
+      headers: { 'x-organization-id': 'org_1', 'x-user-id': 'draft_user' },
+      payload: {
+        schemaVersion: 1,
+        data: { name: 'Event', media: { imageUrl: 'https://storage.test/image?token=secret' } },
+      },
+    });
+    expect(response.statusCode).toBe(422);
+    await server.close();
+  });
+});
+
+describe('external venue contact privacy', () => {
+  it('creates an external-location event without a C1RCLE Venue or slot request', async () => {
+    const server = await buildPartnerTestServer({
+      routes: [partnerEventRoutes],
+      actorRole: 'owner',
+      actorCapabilities: ['host'],
+    });
+    const response = await server.inject({
+      method: 'POST',
+      url: '/organizations/org_1/events',
+      headers: { 'x-organization-id': 'org_1', 'idempotency-key': nextEventKey() },
+      payload: {
+        externalLocation: {
+          name: 'Independent Hall',
+          address: '12 Example Road',
+          city: 'Pune',
+          contact: { managerName: 'Private Manager', phone: '+91 98765 43210' },
+        },
+        title: 'External event',
+        summary: 'An external venue event.',
+        description: 'Guests can attend this event at an approved external location.',
+        startAt: '2026-12-01T18:00:00Z',
+      },
+    });
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      venueId: null,
+      externalVenueReviewStatus: 'pending',
+      externalLocation: { name: 'Independent Hall', address: '12 Example Road' },
+      status: 'draft',
+    });
+    expect(JSON.stringify(response.json())).not.toContain('Private Manager');
+    await server.close();
+  });
+
+  it('returns private contact only through the Host-scoped endpoint', async () => {
+    const services = (await import('../../../lib/v2-services.js')).createV2Services();
+    const event = makeEvent({
+      id: `evt_contact_${++eventSeq}`,
+      organizationId: 'org_contact_host',
+      venueId: null,
+      externalLocation: {
+        name: 'Independent Hall',
+        address: '12 Example Road',
+        contact: {
+          managerName: 'Private Manager',
+          phone: '+91 98765 43210',
+          email: 'private@example.test',
+        },
+        review: {
+          status: 'pending',
+          submittedAt: new Date().toISOString(),
+          reviewedAt: null,
+          reviewedBy: null,
+          rejectionReason: null,
+        },
+      },
+      title: 'Contact privacy event',
+      startAt: '2026-12-01T18:00:00Z',
+    });
+    await services.repos().events.save(event);
+    const hostServer = await buildPartnerTestServer({
+      routes: [partnerEventRoutes],
+      actorRole: 'owner',
+      actorCapabilities: ['host'],
+    });
+    const hostResponse = await hostServer.inject({
+      method: 'GET',
+      url: `/events/${event.id}/external-location/contact`,
+      headers: { 'x-organization-id': event.organizationId },
+    });
+    expect(hostResponse.statusCode).toBe(200);
+    expect(hostResponse.json()).toEqual({
+      managerName: 'Private Manager',
+      phone: '+91 98765 43210',
+      email: 'private@example.test',
+    });
+    expect(JSON.stringify(eventToDto(event))).not.toContain('Private Manager');
+    const unrelatedOrganization = await hostServer.inject({
+      method: 'GET',
+      url: `/events/${event.id}/external-location/contact`,
+      headers: { 'x-organization-id': 'org_unrelated' },
+    });
+    expect(unrelatedOrganization.statusCode).toBe(404);
+    await hostServer.close();
+
+    const nonHostServer = await buildServer();
+    const denied = await nonHostServer.inject({
+      method: 'GET',
+      url: `/events/${event.id}/external-location/contact`,
+      headers: { 'x-organization-id': event.organizationId },
+    });
+    expect(denied.statusCode).toBe(403);
+    await nonHostServer.close();
+  });
+});
+
 // The services (and their idempotency store) are memoized per test file, so
 // every test needs a unique idempotency-key — reusing one replays a previous
 // test's result instead of creating a fresh event.

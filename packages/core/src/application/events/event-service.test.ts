@@ -87,6 +87,155 @@ describe('guest-facing copy before publication', () => {
   });
 });
 
+describe('external location review gate', () => {
+  const externalDraft = createEvent({
+    id: 'external-draft',
+    organizationId: 'host',
+    venueId: null,
+    externalLocation: {
+      name: 'Independent Hall',
+      address: '12 Example Road',
+      city: 'Pune',
+      contact: { managerName: 'Venue Manager', phone: '+91 98765 43210' },
+      review: {
+        status: 'pending',
+        submittedAt: NOW.toISOString(),
+        reviewedAt: null,
+        reviewedBy: null,
+        rejectionReason: null,
+      },
+    },
+    title: 'External venue event',
+    summary: 'A guest-facing summary.',
+    description: 'A guest-facing event description with sufficient detail.',
+    startAt: '2026-11-28T20:00:00.000Z',
+    now: NOW,
+  });
+
+  it('keeps pending external-location events out of publication review and publishing', async () => {
+    await expect(service(externalDraft).review(owner, externalDraft.id)).rejects.toThrow(
+      'C1RCLE must approve the external venue',
+    );
+    await expect(service(externalDraft).publish(owner, externalDraft.id)).rejects.toThrow(
+      'C1RCLE must approve the external venue',
+    );
+  });
+
+  it('creates an external-location event without creating a Venue or requiring a slot request', async () => {
+    const save = vi.fn(async () => undefined);
+    const append = vi.fn(async () => undefined);
+    const service = new EventService({
+      config: { features: {}, clock: { now: () => NOW }, ids: () => 'external-created' },
+      repositories: {
+        events: { save },
+        venues: {
+          getById: vi.fn(async () => {
+            throw new Error('Venue lookup must be skipped');
+          }),
+        },
+      },
+      outbox: { append },
+    } as never);
+    const event = await service.create(
+      { userId: 'host-user', organizationId: 'host', role: 'owner', capabilities: ['host'] },
+      {
+        venueId: null,
+        externalLocation: {
+          name: 'Independent Hall',
+          address: '12 Example Road',
+          contact: { managerName: 'Venue Manager', phone: '+91 98765 43210' },
+        },
+        title: 'External venue event',
+        startAt: '2026-11-28T20:00:00.000Z',
+      },
+    );
+    expect(event.venueId).toBeNull();
+    expect(event.externalLocation?.review.status).toBe('pending');
+    expect(save).toHaveBeenCalledOnce();
+    expect(append).toHaveBeenCalledOnce();
+  });
+
+  it('rejects malformed external venue contact email addresses', () => {
+    const location = externalDraft.externalLocation;
+    if (!location) throw new Error('Expected external location fixture');
+    expect(() =>
+      createEvent({
+        ...externalDraft,
+        id: 'external-invalid-contact',
+        externalLocation: {
+          ...location,
+          contact: { ...location.contact, email: 'manager@@example.test' },
+        },
+      }),
+    ).toThrow('Enter a valid external venue manager email');
+  });
+
+  it('allows only the owning Host to resubmit a rejected location into a fresh pending review', async () => {
+    const originalLocation = externalDraft.externalLocation;
+    if (!originalLocation) throw new Error('Expected external location fixture');
+    const rejected = {
+      ...externalDraft,
+      externalLocation: {
+        ...originalLocation,
+        review: {
+          status: 'rejected' as const,
+          submittedAt: NOW.toISOString(),
+          reviewedAt: NOW.toISOString(),
+          reviewedBy: 'ops',
+          rejectionReason: 'Provide venue authorization.',
+        },
+      },
+    };
+    const save = vi.fn(async () => undefined);
+    const service = new EventService({
+      config: { features: {}, clock: { now: () => NOW } },
+      repositories: { events: { getById: async () => rejected, save } },
+    } as never);
+    const updated = await service.resubmitExternalLocation(
+      { userId: 'host-user', organizationId: 'host', role: 'owner', capabilities: ['host'] },
+      rejected.id,
+      {
+        name: 'Independent Hall Annex',
+        address: '15 Example Road',
+        contact: { managerName: 'New Manager', phone: '+91 98765 11111' },
+      },
+    );
+    expect(updated.externalLocation).toMatchObject({
+      name: 'Independent Hall Annex',
+      review: { status: 'pending', reviewedBy: null, rejectionReason: null },
+    });
+    expect(save).toHaveBeenCalledOnce();
+  });
+
+  it('allows an external-location Host to reschedule without a Venue slot', async () => {
+    const save = vi.fn(async () => undefined);
+    const append = vi.fn(async () => undefined);
+    const service = new EventService({
+      config: { features: {}, clock: { now: () => NOW } },
+      repositories: { events: { getById: async () => externalDraft, save } },
+      outbox: { append },
+    } as never);
+    const updated = await service.update(
+      { userId: 'host-user', organizationId: 'host', role: 'owner', capabilities: ['host'] },
+      {
+        eventId: externalDraft.id,
+        expectedVersion: null,
+        changes: {
+          startAt: '2026-12-01T20:00:00.000Z',
+          endAt: '2026-12-02T00:00:00.000Z',
+        },
+      },
+    );
+    expect(updated).toMatchObject({
+      venueId: null,
+      startAt: '2026-12-01T20:00:00.000Z',
+      endAt: '2026-12-02T00:00:00.000Z',
+    });
+    expect(save).toHaveBeenCalledOnce();
+    expect(append).toHaveBeenCalledOnce();
+  });
+});
+
 describe('private event poster privacy', () => {
   const publicEvent = createEvent({
     id: 'public-event',

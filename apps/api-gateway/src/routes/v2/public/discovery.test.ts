@@ -1,4 +1,9 @@
-import { createTicketAccessCode, createTicketAddon, UnauthorizedError } from '@c1rcle/core/domain';
+import {
+  createEvent as makeEvent,
+  createTicketAccessCode,
+  createTicketAddon,
+  UnauthorizedError,
+} from '@c1rcle/core/domain';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createV2Services } from '../../../lib/v2-services.js';
@@ -133,6 +138,48 @@ describe('V2 public/discovery routes', () => {
     const body = response.json();
     expect(body.items).toEqual([]);
     expect(body.pageInfo.total).toBe(0);
+    await server.close();
+  });
+
+  it('exposes only public external-location details to guests', async () => {
+    const server = await buildServer();
+    const services = createV2Services();
+    const draft = makeEvent({
+      id: 'evt_external_public',
+      organizationId: 'org_external_public',
+      venueId: null,
+      externalLocation: {
+        name: 'Independent Hall',
+        address: '12 Example Road',
+        city: 'Pune',
+        mapUrl: 'https://maps.example.test/independent-hall',
+        contact: {
+          managerName: 'Private Manager',
+          phone: '+91 98765 43210',
+          email: 'private@example.test',
+        },
+        review: {
+          status: 'approved',
+          submittedAt: new Date().toISOString(),
+          reviewedAt: new Date().toISOString(),
+          reviewedBy: 'ops_1',
+          rejectionReason: null,
+        },
+      },
+      title: 'External public event',
+      startAt: new Date(Date.now() + 7 * 86400 * 1000).toISOString(),
+    });
+    await services.repos().events.save({ ...draft, status: 'published', isPublic: true });
+    const response = await server.inject({ method: 'GET', url: '/events/external-public-event' });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().externalLocation).toMatchObject({
+      name: 'Independent Hall',
+      address: '12 Example Road',
+      city: 'Pune',
+    });
+    expect(JSON.stringify(response.json())).not.toContain('Private Manager');
+    expect(JSON.stringify(response.json())).not.toContain('+91 98765 43210');
+    expect(JSON.stringify(response.json())).not.toContain('private@example.test');
     await server.close();
   });
 

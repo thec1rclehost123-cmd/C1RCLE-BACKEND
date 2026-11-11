@@ -1090,7 +1090,7 @@ function getEmailLayoutFamily(kind: string): 'event' | 'partner' | 'financial' |
 function renderEventHeader(event: Event, venue: Venue | null): string {
   const poster = renderEventPoster(event, 472, 22);
   const date = formatPurchaseEventDate(event.startAt);
-  const venueLine = formatPurchaseVenue(venue);
+  const venueLine = formatPurchaseVenue(venue, event);
   const facts = [
     date ? `<span style="color:#f2f2f2;font-weight:700;">${escapeHtml(date)}</span>` : '',
     venueLine ? `<span style="color:#a9a9a9;">${escapeHtml(venueLine)}</span>` : '',
@@ -1140,9 +1140,9 @@ function renderPurchaseReceiptEmail(view: PurchaseReceiptViewModel): string {
   const { order, event, venue, guestOrigin, actionUrl, supportUrl, termsUrl, preheader } = view;
   const title = event?.title ?? 'Event details unavailable';
   const dateLine = event ? formatPurchaseEventDate(event.startAt) : null;
-  const venueLine = formatPurchaseVenue(venue);
+  const venueLine = formatPurchaseVenue(venue, event);
   const eventUrl = event ? getPurchaseEventUrl(event, guestOrigin) : null;
-  const directionsUrl = getPurchaseDirectionsUrl(venue);
+  const directionsUrl = getPurchaseDirectionsUrl(venue, event);
   const poster = event ? renderEventPoster(event, 472, 24) : '';
   const total = compactMoney(order.grandTotalPaise);
   const bookingReference = order.bookingReference?.trim() ?? '';
@@ -1177,7 +1177,7 @@ function purchaseReceiptText(view: PurchaseReceiptViewModel): string {
     "You're in.",
     event?.title ?? 'Event details unavailable',
     event ? (formatPurchaseEventDate(event.startAt) ?? '') : '',
-    formatPurchaseVenue(venue) ?? '',
+    formatPurchaseVenue(venue, event) ?? '',
     ...order.lines.map((line) => `${line.quantity} × ${line.tierName}`),
     `Total paid: ${compactMoney(order.grandTotalPaise)}`,
     '',
@@ -1187,7 +1187,7 @@ function purchaseReceiptText(view: PurchaseReceiptViewModel): string {
   if (eventUrl) {
     lines.push(`View event (${eventUrl})`);
   }
-  const directionsUrl = getPurchaseDirectionsUrl(venue);
+  const directionsUrl = getPurchaseDirectionsUrl(venue, event);
   if (directionsUrl) lines.push(`Directions: ${directionsUrl}`);
   lines.push(
     '',
@@ -1241,8 +1241,30 @@ function formatPurchaseEventDate(value: string): string | null {
   return `${part('weekday')} · ${part('month')} ${part('day')} · ${part('hour')}:${part('minute')} ${part('dayPeriod')} IST`.toUpperCase();
 }
 
-function formatPurchaseVenue(venue: Venue | null): string | null {
-  if (!venue) return null;
+function externalAddressIsDisclosed(event: Event | null | undefined): boolean {
+  if (!event) return false;
+  const disclosure =
+    event.addressDisclosure ??
+    (event.visibilityMode === 'code' || event.visibilityMode === 'invited' ? 'hidden' : 'public');
+  // Purchase and ticket transfer messages are delivered only after an order or
+  // ticket grant exists, so after-grant disclosure is authorized here.
+  return disclosure === 'public' || disclosure === 'after_grant';
+}
+
+function formatPurchaseVenue(venue: Venue | null, event?: Event | null): string | null {
+  if (!venue) {
+    const location = event?.externalLocation;
+    if (!location) return null;
+    const parts = [location.name];
+    if (externalAddressIsDisclosed(event)) {
+      parts.push(
+        [location.address, location.city, location.region, location.country]
+          .filter(Boolean)
+          .join(', '),
+      );
+    }
+    return parts.filter(Boolean).join(' · ');
+  }
   const address = venue.public.address;
   const locality = [address?.street, address?.city].filter(Boolean).join(', ');
   return [venue.public.name, locality].filter(Boolean).join(' · ');
@@ -1254,8 +1276,26 @@ function getPurchaseEventUrl(event: Event, guestOrigin: string): string | null {
   return new URL(`/event/${encodeURIComponent(idOrSlug)}`, guestOrigin).toString();
 }
 
-function getPurchaseDirectionsUrl(venue: Venue | null): string | null {
-  if (!venue) return null;
+function getPurchaseDirectionsUrl(venue: Venue | null, event?: Event | null): string | null {
+  if (!venue) {
+    const location = event?.externalLocation;
+    if (!location || !externalAddressIsDisclosed(event)) return null;
+    if (location.mapUrl) return location.mapUrl;
+    const destination = [
+      location.name,
+      location.address,
+      location.city,
+      location.region,
+      location.country,
+    ]
+      .filter(Boolean)
+      .join(', ');
+    if (!destination) return null;
+    const url = new URL('https://www.google.com/maps/dir/');
+    url.searchParams.set('api', '1');
+    url.searchParams.set('destination', destination);
+    return url.toString();
+  }
   const { address } = venue.public;
   const hasCoordinates = Number.isFinite(address.lat) && Number.isFinite(address.lng);
   const destination = hasCoordinates

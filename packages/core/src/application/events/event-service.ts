@@ -11,6 +11,7 @@ import {
   transitionEventStatus,
   postponeEvent,
   cancelEvent,
+  resubmitExternalLocation,
   updateEvent,
   type EventStatus,
   type Event,
@@ -29,7 +30,8 @@ import type { EventRepository, PaginationQuery } from '../../domain/ports/reposi
 import type { ActorContext, ServiceDeps } from '../context.js';
 
 export interface CreateEventCommand {
-  venueId: EntityId;
+  venueId: EntityId | null;
+  externalLocation?: Omit<NonNullable<Event['externalLocation']>, 'review'>;
   title: string;
   summary?: string;
   description?: string;
@@ -110,10 +112,20 @@ export class EventService {
     ) {
       throw new InvalidOperationError('After-grant address disclosure requires a private event');
     }
-    await this.assertVenueAccess(actor, command.venueId);
     const isHost = actor.capabilities.includes('host');
+    const externalLocation = command.externalLocation;
+    if (externalLocation) {
+      if (!isHost || command.venueId !== null || command.slotRequestId) {
+        throw new InvalidOperationError(
+          'External event locations are available to Hosts without Venue slots',
+        );
+      }
+    } else {
+      if (!command.venueId) throw new InvalidOperationError('Choose a Venue');
+      await this.assertVenueAccess(actor, command.venueId);
+    }
     let acceptedRequest: SlotRequest | null = null;
-    if (isHost) {
+    if (isHost && !externalLocation) {
       if (!command.slotRequestId) {
         throw new InvalidOperationError(
           'Hosts must create events from an accepted Venue slot request',
@@ -200,10 +212,10 @@ export class EventService {
       ) {
         throw new InvalidOperationError('The accepted Venue slot conflicts with another event');
       }
-    } else if (command.slotRequestId) {
+    } else if (!isHost && command.slotRequestId) {
       throw new InvalidOperationError('Only a Host can create an event from a Host slot request');
     }
-    if (command.endAt) {
+    if (command.endAt && command.venueId) {
       const overlappingSlots = await this.deps.repositories.venueSlots.listOverlappingSlots(
         command.venueId,
         command.startAt,
@@ -221,10 +233,25 @@ export class EventService {
     const privateImageStoragePath = privateVisibility
       ? await this.revokePrivatePoster(posterUrl, actor.organizationId)
       : null;
+    const now = this.deps.config.clock.now();
     const event = createEvent({
       id: acceptedRequest?.eventId ?? this.deps.config.ids(),
       organizationId: actor.organizationId,
       venueId: command.venueId,
+      ...(externalLocation
+        ? {
+            externalLocation: {
+              ...externalLocation,
+              review: {
+                status: 'pending' as const,
+                submittedAt: now.toISOString(),
+                reviewedAt: null,
+                reviewedBy: null,
+                rejectionReason: null,
+              },
+            },
+          }
+        : {}),
       title: command.title,
       summary: command.summary ?? '',
       description: command.description ?? '',
@@ -239,7 +266,7 @@ export class EventService {
       tags: command.tags ?? [],
       refundPolicy: command.refundPolicy,
       compensation: command.compensation ?? null,
-      now: this.deps.config.clock.now(),
+      now,
     });
     if (acceptedRequest) {
       await this.deps.repositories.slotRequests.claimAcceptedSlotEvent(
@@ -419,15 +446,27 @@ export class EventService {
       slotRequestId !== undefined;
     let approvedRequest: SlotRequest | null = null;
     if (actor.capabilities.includes('host') && scheduleChange) {
-      approvedRequest = await this.assertHostRescheduleFitsAcceptedSlot(
-        actor,
-        event,
-        nextStartAt,
-        nextEndAt,
-        nextVenueId,
-        slotRequestId,
-      );
-      requestedChanges.venueId = approvedRequest.venueId;
+      if (event.externalLocation) {
+        if (slotRequestId !== undefined || nextVenueId !== null)
+          throw new InvalidOperationError('External-location events cannot use Venue slots');
+        if (
+          !Number.isFinite(Date.parse(nextStartAt)) ||
+          (nextEndAt !== null &&
+            (!Number.isFinite(Date.parse(nextEndAt)) ||
+              Date.parse(nextEndAt) <= Date.parse(nextStartAt)))
+        )
+          throw new InvalidOperationError('Event end must be after a valid event start');
+      } else {
+        approvedRequest = await this.assertHostRescheduleFitsAcceptedSlot(
+          actor,
+          event,
+          nextStartAt,
+          nextEndAt,
+          nextVenueId,
+          slotRequestId,
+        );
+        requestedChanges.venueId = approvedRequest.venueId;
+      }
     } else if (slotRequestId !== undefined || nextVenueId !== event.venueId) {
       throw new InvalidOperationError('Only a Host can apply a Venue-approved slot request');
     }
@@ -498,6 +537,10 @@ export class EventService {
   /** Request a review pass: allowed only from `draft`/`review` (FSM-guarded). */
   async review(actor: ActorContext, eventId: EntityId): Promise<Event> {
     const event = await this.fetchOwned(actor, eventId);
+    if (event.externalLocation && event.externalLocation.review.status !== 'approved')
+      throw new InvalidOperationError(
+        'C1RCLE must approve the external venue before this event can enter publication review',
+      );
     const updated = transitionEvent(event, 'review', this.deps.config.clock.now());
     if (updated === event) return event;
     await this.repo.save(updated);
@@ -516,6 +559,10 @@ export class EventService {
    */
   async publish(actor: ActorContext, eventId: EntityId): Promise<Event> {
     const event = await this.fetchOwned(actor, eventId);
+    if (event.externalLocation && event.externalLocation.review.status !== 'approved')
+      throw new InvalidOperationError(
+        'C1RCLE must approve the external venue before this event can be published',
+      );
     this.assertPrivateAccessEnabled(event);
     if (event.status === 'postponed')
       throw new InvalidOperationError(
@@ -579,6 +626,19 @@ export class EventService {
     return updated;
   }
 
+  async resubmitExternalLocation(
+    actor: ActorContext,
+    eventId: EntityId,
+    submission: Omit<NonNullable<Event['externalLocation']>, 'review'>,
+  ): Promise<Event> {
+    const event = await this.fetchOwned(actor, eventId);
+    if (!actor.capabilities.includes('host'))
+      throw new InvalidOperationError('Only the Host can resubmit an external venue request');
+    const updated = resubmitExternalLocation(event, submission, this.deps.config.clock.now());
+    await this.repo.save(updated);
+    return updated;
+  }
+
   async pauseSales(actor: ActorContext, eventId: EntityId): Promise<Event> {
     const event = await this.fetchOwned(actor, eventId);
     const updated = transitionEvent(event, 'sales_paused', this.deps.config.clock.now());
@@ -592,6 +652,10 @@ export class EventService {
 
   async resumeSales(actor: ActorContext, eventId: EntityId): Promise<Event> {
     const event = await this.fetchOwned(actor, eventId);
+    if (event.externalLocation && event.externalLocation.review.status !== 'approved')
+      throw new InvalidOperationError(
+        'C1RCLE must approve the external venue before sales can resume',
+      );
     this.assertPrivateAccessEnabled(event);
     if (event.status === 'postponed')
       throw new InvalidOperationError(
@@ -854,6 +918,14 @@ export class EventService {
   /** Direct status transition used by idempotent flows (validate-then-transition). */
   async transitionTo(actor: ActorContext, eventId: EntityId, to: EventStatus): Promise<Event> {
     const event = await this.fetchOwned(actor, eventId);
+    if (
+      event.externalLocation &&
+      (to === 'review' || to === 'published') &&
+      event.externalLocation.review.status !== 'approved'
+    )
+      throw new InvalidOperationError(
+        'C1RCLE must approve the external venue before this event can progress',
+      );
     if (event.status === 'postponed' && to === 'published')
       throw new InvalidOperationError(
         'Announce a replacement date before resuming a postponed event',

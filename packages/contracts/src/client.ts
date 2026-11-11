@@ -157,6 +157,19 @@ export type {
   PromoterAssignmentActionRequest,
   PromoterAssignmentRevokeRequest,
 } from './contracts/event.js';
+export {
+  externalEventLocationInputSchema,
+  externalVenueContactSchema,
+  externalVenueReviewDecisionSchema,
+  externalVenueReviewQueueItemSchema,
+} from './contracts/event.js';
+export type { ExternalEventLocationInput, ExternalVenueContact } from './contracts/event.js';
+export {
+  eventDraftRequestSchema,
+  eventDraftDtoSchema,
+  eventDraftResponseSchema,
+} from './contracts/event-draft.js';
+export type { EventDraftRequest, EventDraftDto } from './contracts/event-draft.js';
 
 export {
   eventStatusSchema,

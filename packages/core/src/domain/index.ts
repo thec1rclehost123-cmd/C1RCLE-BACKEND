@@ -4,6 +4,7 @@ export * from './errors.js';
 export * from './models/organization.js';
 export * from './models/venue.js';
 export * from './models/event.js';
+export type * from './models/event-draft.js';
 export * from './models/event-catalog.js';
 export * from './models/ticket-addon.js';
 export * from './models/partnership.js';

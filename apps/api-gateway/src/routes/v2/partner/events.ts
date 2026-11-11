@@ -15,8 +15,16 @@ import {
   posterUploadUrlDtoSchema,
   eventPreviewDtoSchema,
   createEventSchema,
+  eventDraftRequestSchema,
+  eventDraftDtoSchema,
+  externalEventLocationInputSchema,
+  externalVenueContactSchema,
 } from '@c1rcle/contracts/client';
-import { promoterAssignmentStatusAt } from '@c1rcle/core/domain';
+import {
+  EventNotFoundError,
+  ForbiddenError,
+  promoterAssignmentStatusAt,
+} from '@c1rcle/core/domain';
 import { z } from 'zod';
 
 import type { ActorContext } from '@c1rcle/core/application';
@@ -83,6 +91,160 @@ const assignedEventListSchema = z.array(promoterAssignedEventDtoSchema);
 const promoterInvitationListSchema = z.array(promoterAssignmentDtoSchema);
 
 export default async function partnerEventRoutes(fastify: FastifyInstance) {
+  // One authenticated resumable editor draft per Host organization and user.
+  fastify.get(
+    '/organizations/:organizationId/event-draft',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({ params: orgIdParam, headers: readHeaders }),
+        fastify.requirePermission('event.create'),
+      ],
+    },
+    async (request, reply) => {
+      const { organizationId } = request.params as z.infer<typeof orgIdParam>;
+      const actor = services.actor(request);
+      if (requirePathOrg(reply, request, actor, organizationId) === undefined) return reply;
+      reply.header('cache-control', 'private, no-store');
+      const saved = await services
+        .repos()
+        .eventDrafts.getForUserOrganization(actor.userId, organizationId);
+      if (!saved) return reply.send({ draft: null });
+      const response = eventDraftDtoSchema.parse({
+        schemaVersion: saved.schemaVersion,
+        data: saved.data,
+        updatedAt: saved.updatedAt,
+      });
+      return reply.send({ draft: response });
+    },
+  );
+
+  fastify.put(
+    '/organizations/:organizationId/event-draft',
+    {
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({
+          params: orgIdParam,
+          headers: readHeaders,
+          body: eventDraftRequestSchema,
+        }),
+        fastify.requirePermission('event.create'),
+      ],
+    },
+    async (request, reply) => {
+      const { organizationId } = request.params as z.infer<typeof orgIdParam>;
+      const actor = services.actor(request);
+      if (requirePathOrg(reply, request, actor, organizationId) === undefined) return reply;
+      const body = request.body as z.infer<typeof eventDraftRequestSchema>;
+      const updatedAt = new Date().toISOString();
+      await services.repos().eventDrafts.save({
+        id: `event-draft:${organizationId}:${actor.userId}`,
+        userId: actor.userId,
+        organizationId,
+        schemaVersion: body.schemaVersion,
+        data: body.data,
+        updatedAt,
+      });
+      reply.header('cache-control', 'private, no-store');
+      return reply.send({ schemaVersion: body.schemaVersion, data: body.data, updatedAt });
+    },
+  );
+
+  fastify.delete(
+    '/organizations/:organizationId/event-draft',
+    {
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({ params: orgIdParam, headers: readHeaders }),
+        fastify.requirePermission('event.create'),
+      ],
+    },
+    async (request, reply) => {
+      const { organizationId } = request.params as z.infer<typeof orgIdParam>;
+      const actor = services.actor(request);
+      if (requirePathOrg(reply, request, actor, organizationId) === undefined) return reply;
+      await services.repos().eventDrafts.deleteForUserOrganization(actor.userId, organizationId);
+      return reply.status(204).send();
+    },
+  );
+
+  fastify.get(
+    '/events/:eventId/external-location/contact',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({ params: eventIdParam, headers: readHeaders }),
+        fastify.requirePermission('event.read'),
+      ],
+    },
+    async (request, reply) => {
+      const { eventId } = request.params as z.infer<typeof eventIdParam>;
+      try {
+        const actor = services.actor(request);
+        if (!actor.capabilities.includes('host'))
+          throw new ForbiddenError('External venue contact is available only to the Host');
+        const event = await services.events.get(actor, eventId);
+        if (!event.externalLocation) throw new EventNotFoundError(eventId);
+        const contact = event.externalLocation.contact;
+        reply.header('cache-control', 'private, no-store');
+        return await reply.send(
+          externalVenueContactSchema.parse({
+            managerName: contact.managerName,
+            phone: contact.phone,
+            email: contact.email ?? null,
+          }),
+        );
+      } catch (error) {
+        return mapDomainError(reply, request, eventId, error);
+      }
+    },
+  );
+
+  fastify.post(
+    '/events/:eventId/external-location/resubmit',
+    {
+      preHandler: [
+        fastify.rateLimit('SENSITIVE_COMMAND'),
+        fastify.validateV2({
+          params: eventIdParam,
+          headers: createEventHeaders,
+          body: externalEventLocationInputSchema,
+        }),
+        fastify.requirePermission('event.update'),
+      ],
+    },
+    async (request, reply) => {
+      const { eventId } = request.params as z.infer<typeof eventIdParam>;
+      const actor = services.actor(request);
+      const body = request.body as z.infer<typeof externalEventLocationInputSchema>;
+      const headers = request.v2Headers ?? {};
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: actor.userId,
+        commandName: 'event.external_location.resubmit',
+        idempotencyKey: headers['idempotency-key'],
+        context: { path: { eventId }, body },
+        run: async () => {
+          const event = await services.events.resubmitExternalLocation(actor, eventId, {
+            name: body.name,
+            address: body.address,
+            ...(body.city ? { city: body.city } : {}),
+            ...(body.region ? { region: body.region } : {}),
+            ...(body.postalCode ? { postalCode: body.postalCode } : {}),
+            ...(body.country ? { country: body.country } : {}),
+            ...(body.mapUrl ? { mapUrl: body.mapUrl } : {}),
+            contact: body.contact,
+          });
+          return { statusCode: 200, body: eventToDto(event) };
+        },
+      }).catch((error: unknown) => mapDomainError(reply, request, eventId, error));
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
+
   // Promoters see only events with an active assignment to their own org.
   // This is intentionally separate from the owner-scoped organization list.
   fastify.get(
@@ -225,6 +387,7 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
       const items = page.items.map(({ event, ...operations }) => ({
         ...eventToDto(event),
         ...operations,
+        venueName: operations.venueName ?? event.externalLocation?.name ?? null,
       }));
       const payload = {
         items,
@@ -268,7 +431,7 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
       const validated = validateV2Response(reply, request, eventOperationsDtoSchema, {
         ...eventToDto(event.event),
         capacity: event.capacity,
-        venueName: event.venueName,
+        venueName: event.venueName ?? event.event.externalLocation?.name ?? null,
         ticketsSold: event.ticketsSold,
         salesCountComplete: event.salesCountComplete,
       });
@@ -306,7 +469,29 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
         context: { path: {}, body },
         run: async () => {
           const event = await services.events.create(actor, {
-            venueId: body.venueId,
+            venueId: body.venueId ?? null,
+            ...(body.externalLocation
+              ? {
+                  externalLocation: {
+                    name: body.externalLocation.name,
+                    address: body.externalLocation.address,
+                    ...(body.externalLocation.city ? { city: body.externalLocation.city } : {}),
+                    ...(body.externalLocation.region
+                      ? { region: body.externalLocation.region }
+                      : {}),
+                    ...(body.externalLocation.postalCode
+                      ? { postalCode: body.externalLocation.postalCode }
+                      : {}),
+                    ...(body.externalLocation.country
+                      ? { country: body.externalLocation.country }
+                      : {}),
+                    ...(body.externalLocation.mapUrl
+                      ? { mapUrl: body.externalLocation.mapUrl }
+                      : {}),
+                    contact: body.externalLocation.contact,
+                  },
+                }
+              : {}),
             slotRequestId: body.slotRequestId ?? null,
             title: body.title,
             summary: body.summary,
@@ -653,6 +838,24 @@ export function eventToDto(event: Event) {
     id: event.id,
     organizationId: event.organizationId,
     venueId: event.venueId,
+    ...(event.externalLocation
+      ? { externalVenueReviewStatus: event.externalLocation.review.status }
+      : {}),
+    ...(event.externalLocation
+      ? {
+          externalLocation: {
+            name: event.externalLocation.name,
+            address: event.externalLocation.address,
+            ...(event.externalLocation.city ? { city: event.externalLocation.city } : {}),
+            ...(event.externalLocation.region ? { region: event.externalLocation.region } : {}),
+            ...(event.externalLocation.postalCode
+              ? { postalCode: event.externalLocation.postalCode }
+              : {}),
+            ...(event.externalLocation.country ? { country: event.externalLocation.country } : {}),
+            ...(event.externalLocation.mapUrl ? { mapUrl: event.externalLocation.mapUrl } : {}),
+          },
+        }
+      : {}),
     slug: event.slug,
     title: event.title,
     summary: event.summary,

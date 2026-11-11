@@ -35,6 +35,31 @@ import type { FastifyInstance } from 'fastify';
  */
 
 const services = createV2Services();
+
+function publicEventToDto(event: Parameters<typeof eventToDto>[0], revealAfterGrant = false) {
+  const dto = eventToDto(event);
+  if (!event.externalLocation) return dto;
+  const disclosure =
+    event.addressDisclosure ??
+    (event.visibilityMode === 'code' || event.visibilityMode === 'invited' ? 'hidden' : 'public');
+  const reveal = disclosure === 'public' || (revealAfterGrant && disclosure === 'after_grant');
+  return {
+    ...dto,
+    externalLocation: {
+      name: event.externalLocation.name,
+      address: reveal ? event.externalLocation.address : null,
+      ...(reveal && event.externalLocation.city ? { city: event.externalLocation.city } : {}),
+      ...(reveal && event.externalLocation.region ? { region: event.externalLocation.region } : {}),
+      ...(reveal && event.externalLocation.postalCode
+        ? { postalCode: event.externalLocation.postalCode }
+        : {}),
+      ...(reveal && event.externalLocation.country
+        ? { country: event.externalLocation.country }
+        : {}),
+      ...(reveal && event.externalLocation.mapUrl ? { mapUrl: event.externalLocation.mapUrl } : {}),
+    },
+  };
+}
 const publicTierHeadersSchema = z.looseObject({
   'x-ticket-access-grant-id': z.string().min(1).max(64).optional(),
 });
@@ -221,7 +246,7 @@ export default async function publicDiscoveryRoutes(fastify: FastifyInstance) {
         cursor: query.cursor ?? null,
       });
       const payload = {
-        items: page.items.map(eventToDto),
+        items: page.items.map((event) => publicEventToDto(event)),
         pageInfo: {
           page: 1,
           pageSize: query.limit,
@@ -257,7 +282,7 @@ export default async function publicDiscoveryRoutes(fastify: FastifyInstance) {
       const privateEvent =
         detail.event.visibilityMode === 'code' || detail.event.visibilityMode === 'invited';
       const payload = {
-        ...eventToDto(detail.event),
+        ...publicEventToDto(detail.event, true),
         // PublicService emits only a short-lived signed URL for an event grant;
         // partner and anonymous projections always redact private poster URLs.
         imageUrl: detail.event.imageUrl,
@@ -378,7 +403,7 @@ export default async function publicDiscoveryRoutes(fastify: FastifyInstance) {
     async (request, reply) => {
       reply.header('cache-control', 'private, no-store');
       const events = await services.public.discovery();
-      const payload = { items: events.map(eventToDto) };
+      const payload = { items: events.map((event) => publicEventToDto(event)) };
       const validated = validateV2Response(reply, request, discoveryFeedDtoSchema, payload);
       if (validated === undefined) return reply;
       return reply.send(validated);
@@ -402,7 +427,7 @@ export default async function publicDiscoveryRoutes(fastify: FastifyInstance) {
         cursor: query.cursor ?? null,
       });
       const payload = {
-        items: page.items.map(eventToDto),
+        items: page.items.map((event) => publicEventToDto(event)),
         pageInfo: {
           page: 1,
           pageSize: query.limit,
