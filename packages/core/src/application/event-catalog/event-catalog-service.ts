@@ -120,6 +120,32 @@ export type { CommissionTerms };
 export class EventCatalogService {
   constructor(private deps: ServiceDeps) {}
 
+  /** Validate the relationship-dependent portion of a promoter invitation before a workflow commits. */
+  async assertPromoterAssignable(actor: ActorContext, promoterId: EntityId): Promise<void> {
+    const promoter = await this.deps.repositories.organizations.getById(promoterId);
+    const onboarding =
+      await this.deps.repositories.onboarding.findByProvisionedOrganizationId(promoterId);
+    const connection = await this.deps.repositories.promoterConnections.findByPair(
+      promoterId,
+      actor.organizationId,
+    );
+    if (
+      !promoter ||
+      promoter.status !== 'active' ||
+      !promoter.members.some((member) => member.capabilities.includes('promoter')) ||
+      onboarding?.status !== 'approved' ||
+      onboarding.requestedType !== 'promoter' ||
+      !hasCurrentPromoterAgreementAcceptance(
+        onboarding,
+        currentPromoterAgreement(this.deps.config),
+        this.testAgreementFixtureAllowed(),
+      ) ||
+      connection?.status !== 'active'
+    ) {
+      throw new PromoterAssignmentNotFoundError(promoterId);
+    }
+  }
+
   private get repo(): EventCatalogRepository {
     return this.deps.repositories.catalog;
   }
@@ -337,29 +363,7 @@ export class EventCatalogService {
     command: AssignPromoterCommand,
   ): Promise<PromoterAssignment> {
     await this.assertEventOwned(actor, command.eventId);
-    const promoter = await this.deps.repositories.organizations.getById(command.promoterId);
-    const onboarding = await this.deps.repositories.onboarding.findByProvisionedOrganizationId(
-      command.promoterId,
-    );
-    const connection = await this.deps.repositories.promoterConnections.findByPair(
-      command.promoterId,
-      actor.organizationId,
-    );
-    if (
-      !promoter ||
-      promoter.status !== 'active' ||
-      !promoter.members.some((member) => member.capabilities.includes('promoter')) ||
-      onboarding?.status !== 'approved' ||
-      onboarding.requestedType !== 'promoter' ||
-      !hasCurrentPromoterAgreementAcceptance(
-        onboarding,
-        currentPromoterAgreement(this.deps.config),
-        this.testAgreementFixtureAllowed(),
-      ) ||
-      connection?.status !== 'active'
-    ) {
-      throw new PromoterAssignmentNotFoundError(command.promoterId);
-    }
+    await this.assertPromoterAssignable(actor, command.promoterId);
     const eventTiers = await this.repo.listTiers(command.eventId);
     const requestedTierIds =
       command.eligibleTierIds ??
