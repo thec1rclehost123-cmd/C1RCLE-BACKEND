@@ -507,7 +507,7 @@ export class VenueSlotRequestService {
         if (typeof promoterId !== 'string') {
           throw new InvalidOperationError('The proposed Promoter selection is invalid');
         }
-        const assignment = candidate as Record<string, unknown>;
+        const assignment = candidate;
         const term = {
           version: 1 as const,
           ratePercent: typeof assignment.ratePercent === 'number' ? assignment.ratePercent : 0,

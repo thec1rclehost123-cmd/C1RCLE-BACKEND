@@ -22,10 +22,10 @@ import { MemoryEmailDeliveryRepository } from '../../infrastructure/memory/memor
 import { MemoryOutboxStore } from '../../infrastructure/memory/memory-outbox-store.js';
 import { buildRepositories } from '../../infrastructure/utils.js';
 import { noopLogger } from '../../telemetry/logger.js';
+import { EventCatalogService } from '../event-catalog/event-catalog-service.js';
 import { EventService } from '../events/event-service.js';
 import { InventoryService } from '../inventory/inventory-service.js';
 import { PricingService } from '../pricing/pricing-service.js';
-import { EventCatalogService } from '../event-catalog/event-catalog-service.js';
 
 import { VenueCalendarService, VenueService, VenueSlotRequestService } from './venue-service.js';
 
