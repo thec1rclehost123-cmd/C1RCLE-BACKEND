@@ -42,6 +42,56 @@ const PREFERENCES_DEFAULTS = {
   partnerships: true,
   payouts: true,
 } as const;
+const PROFILE_STATS_PAGE_LIMIT = 1000;
+const PROFILE_STATS_SCAN_LIMIT = 10_000;
+
+async function sourceBackedProfileStats(
+  repos: ReturnType<typeof services.repos>,
+  organizationId: string,
+) {
+  let ticketsSold: number | null = 0;
+  let checkIns: number | null = 0;
+  let scannedOrders = 0;
+  let scannedEntitlements = 0;
+  let orderCursor: string | null = null;
+  let entitlementCursor: string | null = null;
+
+  do {
+    const page = await repos.orders.listByOrganization(organizationId, {
+      limit: PROFILE_STATS_PAGE_LIMIT,
+      cursor: orderCursor,
+    });
+    for (const order of page.items) {
+      if (
+        order.status === 'paid' ||
+        order.status === 'refund_requested' ||
+        order.status === 'refunded'
+      ) {
+        ticketsSold =
+          (ticketsSold ?? 0) + order.lines.reduce((sum, line) => sum + line.quantity, 0);
+      }
+    }
+    scannedOrders += page.items.length;
+    orderCursor = page.nextCursor;
+    if (scannedOrders >= PROFILE_STATS_SCAN_LIMIT && orderCursor !== null) ticketsSold = null;
+  } while (orderCursor !== null && scannedOrders < PROFILE_STATS_SCAN_LIMIT);
+
+  do {
+    const page = await repos.entitlements.listByOrganization(organizationId, {
+      limit: PROFILE_STATS_PAGE_LIMIT,
+      cursor: entitlementCursor,
+    });
+    for (const entitlement of page.items) {
+      checkIns = (checkIns ?? 0) + entitlement.scanCount;
+    }
+    scannedEntitlements += page.items.length;
+    entitlementCursor = page.nextCursor;
+    if (scannedEntitlements >= PROFILE_STATS_SCAN_LIMIT && entitlementCursor !== null)
+      checkIns = null;
+  } while (entitlementCursor !== null && scannedEntitlements < PROFILE_STATS_SCAN_LIMIT);
+
+  return { ticketsSold, checkIns };
+}
 
 async function promoterStats(repos: ReturnType<typeof services.repos>, promoterId: string) {
   const assignments = await repos.catalog.listAssignmentsByPromoter(promoterId);
@@ -78,9 +128,10 @@ async function settingsStats(
   organizationId: string,
   promoter: boolean,
 ) {
-  const [overview, promoterSummary, partnerships, connections] = await Promise.all([
+  const [overview, promoterSummary, sourceStats, partnerships, connections] = await Promise.all([
     repos.analytics.getOrganizationOverview(organizationId).catch(() => null),
     promoter ? promoterStats(repos, organizationId) : Promise.resolve(null),
+    promoter ? Promise.resolve(null) : sourceBackedProfileStats(repos, organizationId),
     repos.partnerships
       .listForOrganization(organizationId, { limit: 100, cursor: null })
       .catch(() => ({ items: [], total: 0, nextCursor: null })),
@@ -91,8 +142,8 @@ async function settingsStats(
   return {
     events: promoterSummary?.events ?? overview?.totalEvents ?? null,
     ticketsSold:
-      promoterSummary?.ticketsSold ?? (promoter ? null : (overview?.totalTicketsSold ?? null)),
-    checkIns: promoter ? null : (overview?.totalCheckIns ?? null),
+      promoterSummary?.ticketsSold ?? (promoter ? null : (sourceStats?.ticketsSold ?? null)),
+    checkIns: promoter ? null : (sourceStats?.checkIns ?? null),
     connections:
       partnerships.items.filter((item) => item.status === 'active').length +
       connections.items.filter((item) => item.status === 'active').length,
