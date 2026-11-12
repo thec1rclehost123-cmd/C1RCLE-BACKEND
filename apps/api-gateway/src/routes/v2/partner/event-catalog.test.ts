@@ -79,7 +79,12 @@ async function seed(server: Server): Promise<{ org: string; eventId: string }> {
   return { org, eventId };
 }
 
-async function seedApprovedPromoter(targetId: string, promoterId: string, acceptAgreement = true) {
+async function seedApprovedPromoter(
+  targetId: string,
+  promoterId: string,
+  acceptAgreement = true,
+  targetType: 'host' | 'venue' = 'host',
+) {
   const repos = services.repos();
   const now = new Date('2026-10-28T12:00:00.000Z');
   const promoter = createOrganization({
@@ -129,7 +134,7 @@ async function seedApprovedPromoter(targetId: string, promoterId: string, accept
     id: 'connection-' + promoterId,
     promoterId,
     targetId,
-    targetType: 'host',
+    targetType,
     initiatedBy: 'target',
     now,
   });
@@ -1020,6 +1025,7 @@ describe('promoter assignments', () => {
     const server = await buildServer();
     const { org, eventId } = await seed(server);
     await seedApprovedPromoter(org, 'promoter_approved');
+    await seedApprovedPromoter(org, 'promoter_venue_connection', true, 'venue');
     const repos = services.repos();
     const unapproved = createOrganization({
       id: 'promoter_pending',
@@ -1049,7 +1055,44 @@ describe('promoter assignments', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual([
       { id: 'promoter_approved', name: 'Approved Promoter', slug: 'promoter-promoter_approved' },
+      {
+        id: 'promoter_venue_connection',
+        name: 'Approved Promoter',
+        slug: 'promoter-promoter_venue_connection',
+      },
     ]);
+    await server.close();
+  });
+
+  it('serves the same assignable Promoters for the Host event-creation picker', async () => {
+    const server = await buildServer();
+    const { org, eventId } = await seed(server);
+    await seedApprovedPromoter(org, 'promoter_picker_eligible');
+    await seedApprovedPromoter(org, 'promoter_picker_venue_only', true, 'venue');
+    await seedApprovedPromoter(org, 'promoter_picker_missing_agreement', false);
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/promoter-candidates',
+      headers: read(org),
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual([
+      {
+        id: 'promoter_picker_eligible',
+        name: 'Approved Promoter',
+        slug: 'promoter-promoter_picker_eligible',
+      },
+    ]);
+    const eventCandidates = await server.inject({
+      method: 'GET',
+      url: `/events/${eventId}/promoter-candidates`,
+      headers: read(org),
+    });
+    expect(eventCandidates.statusCode).toBe(200);
+    expect(eventCandidates.json().map((candidate: { id: string }) => candidate.id)).toContain(
+      'promoter_picker_venue_only',
+    );
     await server.close();
   });
 

@@ -36,6 +36,7 @@ import { requireOrgAccess } from '../context.js';
 import type { EntityId } from '../../domain/identity.js';
 import type { Event } from '../../domain/models/event.js';
 import type { DiscountFundingOwner } from '../../domain/models/financial-journal.js';
+import type { ConnectionTargetType } from '../../domain/models/promoter-connection.js';
 import type { TicketAddon } from '../../domain/models/ticket-addon.js';
 import type { EventCatalogRepository, PaginationQuery } from '../../domain/ports/repositories.js';
 import type { ActorContext, ServiceDeps } from '../context.js';
@@ -120,30 +121,74 @@ export type { CommissionTerms };
 export class EventCatalogService {
   constructor(private deps: ServiceDeps) {}
 
-  /** Validate the relationship-dependent portion of a promoter invitation before a workflow commits. */
-  async assertPromoterAssignable(actor: ActorContext, promoterId: EntityId): Promise<void> {
-    const promoter = await this.deps.repositories.organizations.getById(promoterId);
-    const onboarding =
-      await this.deps.repositories.onboarding.findByProvisionedOrganizationId(promoterId);
-    const connection = await this.deps.repositories.promoterConnections.findByPair(
-      promoterId,
-      actor.organizationId,
-    );
-    if (
-      !promoter ||
-      promoter.status !== 'active' ||
-      !promoter.members.some((member) => member.capabilities.includes('promoter')) ||
-      onboarding?.status !== 'approved' ||
-      onboarding.requestedType !== 'promoter' ||
-      !hasCurrentPromoterAgreementAcceptance(
+  /** The canonical rule for selecting a Promoter for an event owned by this Host. */
+  async isPromoterAssignable(
+    actor: ActorContext,
+    promoterId: EntityId,
+    targetType: ConnectionTargetType | 'either' = 'host',
+  ): Promise<boolean> {
+    const [promoter, onboarding, connection] = await Promise.all([
+      this.deps.repositories.organizations.getById(promoterId),
+      this.deps.repositories.onboarding.findByProvisionedOrganizationId(promoterId),
+      this.deps.repositories.promoterConnections.findByPair(promoterId, actor.organizationId),
+    ]);
+    return (
+      promoter?.status === 'active' &&
+      promoter.members.some((member) => member.capabilities.includes('promoter')) &&
+      onboarding?.status === 'approved' &&
+      onboarding.requestedType === 'promoter' &&
+      hasCurrentPromoterAgreementAcceptance(
         onboarding,
         currentPromoterAgreement(this.deps.config),
         this.testAgreementFixtureAllowed(),
-      ) ||
-      connection?.status !== 'active'
-    ) {
+      ) &&
+      connection?.status === 'active' &&
+      (targetType === 'either' || connection.targetType === targetType) &&
+      connection.targetId === actor.organizationId
+    );
+  }
+
+  /** Fail closed when a selected Promoter no longer satisfies the canonical rule. */
+  async assertPromoterAssignable(
+    actor: ActorContext,
+    promoterId: EntityId,
+    targetType: ConnectionTargetType | 'either' = 'host',
+  ): Promise<void> {
+    if (!(await this.isPromoterAssignable(actor, promoterId, targetType))) {
       throw new PromoterAssignmentNotFoundError(promoterId);
     }
+  }
+
+  /** Approved Promoters currently selectable by an event owner. */
+  async listAssignablePromoters(
+    actor: ActorContext,
+    targetType: ConnectionTargetType | 'either' = 'host',
+  ): Promise<{ id: EntityId; name: string; slug: string }[]> {
+    const connections = await this.deps.repositories.promoterConnections.listForOrganization(
+      actor.organizationId,
+      { limit: 100, cursor: null },
+    );
+    const candidateIds = [
+      ...new Set(
+        connections.items
+          .filter(
+            (connection) =>
+              (targetType === 'either' || connection.targetType === targetType) &&
+              connection.status === 'active' &&
+              connection.targetId === actor.organizationId,
+          )
+          .map((connection) => connection.promoterId),
+      ),
+    ];
+    const organizations = await this.deps.repositories.organizations.getByIds(candidateIds);
+    const eligible = await Promise.all(
+      organizations.map(async (organization) =>
+        (await this.isPromoterAssignable(actor, organization.id, targetType))
+          ? { id: organization.id, name: organization.name, slug: organization.slug }
+          : null,
+      ),
+    );
+    return eligible.filter((item): item is NonNullable<typeof item> => item !== null);
   }
 
   private get repo(): EventCatalogRepository {
@@ -363,7 +408,9 @@ export class EventCatalogService {
     command: AssignPromoterCommand,
   ): Promise<PromoterAssignment> {
     await this.assertEventOwned(actor, command.eventId);
-    await this.assertPromoterAssignable(actor, command.promoterId);
+    // Existing event assignment may target a Host or Venue owner. The Host
+    // slot-request picker and approval path pass `host` explicitly instead.
+    await this.assertPromoterAssignable(actor, command.promoterId, 'either');
     const eventTiers = await this.repo.listTiers(command.eventId);
     const requestedTierIds =
       command.eligibleTierIds ??
@@ -472,42 +519,7 @@ export class EventCatalogService {
     eventId: EntityId,
   ): Promise<{ id: EntityId; name: string; slug: string }[]> {
     await this.assertEventOwned(actor, eventId);
-    const connections = await this.deps.repositories.promoterConnections.listForOrganization(
-      actor.organizationId,
-      { limit: 100, cursor: null },
-    );
-    const activePromoterIds = [
-      ...new Set(
-        connections.items
-          .filter(
-            (connection) =>
-              connection.status === 'active' && connection.targetId === actor.organizationId,
-          )
-          .map((connection) => connection.promoterId),
-      ),
-    ];
-    const organizations = await this.deps.repositories.organizations.getByIds(activePromoterIds);
-    const rows = await Promise.all(
-      organizations.map(async (organization) => {
-        const onboarding = await this.deps.repositories.onboarding.findByProvisionedOrganizationId(
-          organization.id,
-        );
-        if (
-          organization.status !== 'active' ||
-          !organization.members.some((member) => member.capabilities.includes('promoter')) ||
-          onboarding?.status !== 'approved' ||
-          onboarding.requestedType !== 'promoter' ||
-          !hasCurrentPromoterAgreementAcceptance(
-            onboarding,
-            currentPromoterAgreement(this.deps.config),
-            this.testAgreementFixtureAllowed(),
-          )
-        )
-          return null;
-        return { id: organization.id, name: organization.name, slug: organization.slug };
-      }),
-    );
-    return rows.filter((row): row is { id: EntityId; name: string; slug: string } => row !== null);
+    return this.listAssignablePromoters(actor, 'either');
   }
 
   /** Events currently assigned to the promoter's own organization. */

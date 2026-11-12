@@ -9,6 +9,7 @@ import partnerVenueRoutes from './venues.js';
 
 const buildServer = () =>
   buildPartnerTestServer({ routes: [partnerVenueRoutes, partnerPartnershipRoutes] });
+const services = createV2Services();
 
 async function buildSlotRequestServer() {
   const server = await buildPartnerTestServer({
@@ -966,6 +967,58 @@ describe('V2 partners venues slice — slot requests', () => {
     await server.close();
   });
 
+  it('rejects an ineligible Promoter when the Host submits a Venue request', async () => {
+    const server = await buildSlotRequestServer();
+    const fixture = await createHostSlotRequestFixture(server);
+    const nextSlot = await server.inject({
+      method: 'POST',
+      url: `/venues/${fixture.venueId}/calendar/availability`,
+      headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
+      payload: {
+        label: 'Promoter submission validation',
+        startTime: '2030-11-05T12:30:00.000Z',
+        endTime: '2030-11-05T16:30:00.000Z',
+        timezone: 'Asia/Kolkata',
+        visibleToHostIds: [fixture.hostOrganizationId],
+      },
+    });
+    expect(nextSlot.statusCode).toBe(201);
+
+    const response = await server.inject({
+      method: 'POST',
+      url: `/venues/${fixture.venueId}/slot-requests`,
+      headers: {
+        'x-organization-id': fixture.hostOrganizationId,
+        'idempotency-key': nextVenueKey(),
+      },
+      payload: {
+        slotId: nextSlot.json().id,
+        eventDraft: {
+          event: {
+            venueId: fixture.venueId,
+            title: 'Ineligible Promoter submission',
+            startAt: '2030-11-05T12:30:00.000Z',
+            endAt: '2030-11-05T16:30:00.000Z',
+          },
+          tiers: [],
+          promotions: [],
+          promoters: [{ promoterId: 'unconnected-promoter' }],
+        },
+      },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().message).toContain('not currently eligible for this Host');
+
+    const outgoing = await server.inject({
+      method: 'GET',
+      url: `/organizations/${fixture.hostOrganizationId}/slot-requests?limit=10`,
+      headers: { 'x-organization-id': fixture.hostOrganizationId },
+    });
+    expect(outgoing.statusCode).toBe(200);
+    expect(outgoing.json().items).toHaveLength(1);
+    await server.close();
+  });
+
   it('lists slot requests owned by the venue org', async () => {
     const server = await buildSlotRequestServer();
     const fixture = await createHostSlotRequestFixture(server);
@@ -1051,25 +1104,37 @@ describe('V2 partners venues slice — slot requests', () => {
 
   it('keeps Venue approval pending when a proposed Promoter is no longer eligible', async () => {
     const server = await buildSlotRequestServer();
-    const fixture = await createHostSlotRequestFixture(server, false, (venueId) => ({
-      event: {
-        venueId,
-        title: 'Promoter eligibility approval test',
-        startAt: '2030-11-04T12:30:00.000Z',
-        endAt: '2030-11-04T16:30:00.000Z',
+    const fixture = await createHostSlotRequestFixture(server);
+    // Simulate a legacy/stale request that was created before submission began
+    // enforcing the canonical Promoter eligibility rule.
+    await services.repos().slotRequests.save({
+      ...fixture.request,
+      eventId: 'stale-event-with-ineligible-promoter',
+      version: Number(fixture.request.version) + 1,
+      eventDraft: {
+        event: {
+          venueId: fixture.venueId,
+          title: 'Promoter eligibility approval test',
+          startAt: '2030-11-04T12:30:00.000Z',
+          endAt: '2030-11-04T16:30:00.000Z',
+        },
+        tiers: [],
+        promotions: [],
+        promoters: [{ promoterId: 'missing-promoter-org' }],
       },
-      tiers: [],
-      promotions: [],
-      promoters: [{ promoterId: 'missing-promoter-org' }],
-    }));
+    });
 
     const response = await server.inject({
       method: 'POST',
       url: `/venues/slot-requests/${fixture.request.id}/accept`,
       headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
     });
-    expect(response.statusCode).toBe(404);
-    expect(response.json()).toMatchObject({ code: 'not_found' });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      code: 'validation',
+      message: expect.stringContaining('no longer eligible for this Host'),
+    });
+    expect(response.json().message).not.toContain('missing-promoter-org');
 
     const outgoing = await server.inject({
       method: 'GET',
@@ -1081,7 +1146,7 @@ describe('V2 partners venues slice — slot requests', () => {
       expect.objectContaining({
         id: fixture.request.id,
         status: 'pending',
-        eventId: fixture.request.eventId,
+        eventId: 'stale-event-with-ineligible-promoter',
       }),
     );
     const event = await server.inject({

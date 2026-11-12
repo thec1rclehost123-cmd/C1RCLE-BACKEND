@@ -78,6 +78,28 @@ const accessCodeIdParam = eventIdParam.extend({ codeId: opaqueIdSchema });
 const DEFAULT_COMMISSION_RATE_PERCENT = 15;
 
 export default async function partnerEventCatalogRoutes(fastify: FastifyInstance) {
+  fastify.get(
+    '/promoter-candidates',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({ headers: readHeaders }),
+        fastify.requirePermission('event.create'),
+      ],
+    },
+    async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
+      const actor = services.actor(request);
+      const candidates = await services.catalog
+        .listAssignablePromoters(actor)
+        .catch((error: unknown) => mapDomainError(reply, request, actor.organizationId, error));
+      if (candidates === undefined) return reply;
+      const validated = validateV2Response(reply, request, assignmentCandidatesSchema, candidates);
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
   // ── VERSIONED EVENT-COVER POLICY ──────────────────────────────────────────
   fastify.get(
     '/events/:eventId/cover-policy',
