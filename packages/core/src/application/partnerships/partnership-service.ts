@@ -268,12 +268,14 @@ export class PartnershipService {
 
   async approve(actor: ActorContext, partnershipId: EntityId): Promise<Partnership> {
     const partnership = await this.fetchParty(actor, partnershipId);
-    const approved = approvePartnership(
-      partnership,
-      actor.organizationId,
-      this.deps.config.clock.now(),
-    );
+    const now = this.deps.config.clock.now();
+    const approved = approvePartnership(partnership, actor.organizationId, now);
     await this.repo.save(approved);
+    await this.deps.repositories.notifications.resolveAction(
+      'partnership',
+      partnershipId,
+      now.toISOString(),
+    );
     return approved;
   }
 
@@ -283,32 +285,40 @@ export class PartnershipService {
     reason?: string,
   ): Promise<Partnership> {
     const partnership = await this.fetchParty(actor, partnershipId);
-    const rejected = rejectPartnership(
-      partnership,
-      actor.organizationId,
-      reason,
-      this.deps.config.clock.now(),
-    );
+    const now = this.deps.config.clock.now();
+    const rejected = rejectPartnership(partnership, actor.organizationId, reason, now);
     await this.repo.save(rejected);
+    await this.deps.repositories.notifications.resolveAction(
+      'partnership',
+      partnershipId,
+      now.toISOString(),
+    );
     return rejected;
   }
 
   async block(actor: ActorContext, partnershipId: EntityId, reason?: string): Promise<Partnership> {
     const partnership = await this.fetchParty(actor, partnershipId);
-    const blocked = blockPartnership(
-      partnership,
-      actor.organizationId,
-      reason,
-      this.deps.config.clock.now(),
-    );
+    const now = this.deps.config.clock.now();
+    const blocked = blockPartnership(partnership, actor.organizationId, reason, now);
     await this.repo.save(blocked);
+    await this.deps.repositories.notifications.resolveAction(
+      'partnership',
+      partnershipId,
+      now.toISOString(),
+    );
     return blocked;
   }
 
   async end(actor: ActorContext, partnershipId: EntityId): Promise<Partnership> {
     const partnership = await this.fetchParty(actor, partnershipId);
-    const ended = endPartnership(partnership, actor.organizationId, this.deps.config.clock.now());
+    const now = this.deps.config.clock.now();
+    const ended = endPartnership(partnership, actor.organizationId, now);
     await this.repo.save(ended);
+    await this.deps.repositories.notifications.resolveAction(
+      'partnership',
+      partnershipId,
+      now.toISOString(),
+    );
     return ended;
   }
 

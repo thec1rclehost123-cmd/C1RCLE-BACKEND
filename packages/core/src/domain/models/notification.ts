@@ -83,3 +83,14 @@ export function markNotificationRead(notification: Notification, now: Date): Not
   if (notification.read) return notification;
   return { ...notification, read: true, readAt: now.toISOString() };
 }
+
+/** Keeps resolved requests in history without leaving a stale quick action. */
+export function resolveNotificationAction(notification: Notification, now: Date): Notification {
+  if (!notification.action) return notification;
+  return {
+    ...notification,
+    read: true,
+    readAt: notification.readAt ?? now.toISOString(),
+    action: null,
+  };
+}

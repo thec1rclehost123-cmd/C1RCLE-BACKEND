@@ -290,8 +290,14 @@ export class PromoterConnectionService {
     if (!connection || !isPartyToConnection(connection, actor.organizationId)) {
       throw new PartnershipNotFoundError(connectionId);
     }
-    const updated = apply(connection, this.deps.config.clock.now());
+    const now = this.deps.config.clock.now();
+    const updated = apply(connection, now);
     await this.repo.save(updated);
+    await this.deps.repositories.notifications.resolveAction(
+      'promoter_connection',
+      connectionId,
+      now.toISOString(),
+    );
     return updated;
   }
 }

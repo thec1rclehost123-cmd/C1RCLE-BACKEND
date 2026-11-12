@@ -106,6 +106,30 @@ export class FirestoreNotificationRepository implements NotificationRepository {
     return snap.size;
   }
 
+  async resolveAction(
+    resourceType: 'promoter_connection' | 'partnership' | 'slot_request',
+    resourceId: EntityId,
+    nowIso: string,
+  ): Promise<number> {
+    const snap = await this.collection.where('action.resourceId', '==', resourceId).get();
+    const matches = snap.docs.filter(
+      (doc) => (doc.get('action.resourceType') as string | undefined) === resourceType,
+    );
+    if (matches.length === 0) return 0;
+    const now = new Date(nowIso);
+    const batch = this.db.batch();
+    for (const doc of matches) {
+      const notification = toNotification(doc.data());
+      batch.update(doc.ref, {
+        read: true,
+        readAt: notification.readAt ?? now.toISOString(),
+        action: null,
+      });
+    }
+    await batch.commit();
+    return matches.length;
+  }
+
   async countUnread(recipientId: EntityId): Promise<number> {
     const countSnap = await this.collection
       .where('recipientId', '==', recipientId)
