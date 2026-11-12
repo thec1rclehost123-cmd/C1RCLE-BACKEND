@@ -189,6 +189,17 @@ export class CheckoutService {
   private readonly leaderboardService: LeaderboardService;
   private readonly providerPayments: ProviderPaymentService;
 
+  private async requireVerifiedGuestPhone(actor: ActorContext): Promise<void> {
+    // Guest sessions are not acting for an organization. Organization-scoped
+    // service actors (for example staff-created orders) keep their existing
+    // authorization path; their callers are not Guest checkout sessions.
+    if (!actor.userId || isSystemActor(actor) || actor.organizationId) return;
+    const profile = await this.deps.repositories.guestProfiles.getByUserId(actor.userId);
+    if (!profile?.phoneNumber || !profile.phoneVerifiedAt) {
+      throw new ForbiddenError('Phone verification is required before booking tickets');
+    }
+  }
+
   constructor(
     private readonly deps: ServiceDeps,
     providerPayments = new ProviderPaymentService(deps),
@@ -288,6 +299,7 @@ export class CheckoutService {
     attribution: CheckoutAttribution | null;
     upgrade: TicketUpgradeSnapshot | null;
   }> {
+    await this.requireVerifiedGuestPhone(input.actor);
     const {
       eventId,
       lines,
@@ -661,6 +673,7 @@ export class CheckoutService {
     idempotencyKey: string;
     reservationTtlMs?: number;
   }): Promise<CartReservation> {
+    await this.requireVerifiedGuestPhone(input.actor);
     const {
       eventId,
       organizationId,
@@ -1012,6 +1025,8 @@ export class CheckoutService {
     if (!actor.userId || isSystemActor(actor)) {
       throw new UnauthorizedError('Authentication is required to book tickets');
     }
+
+    await this.requireVerifiedGuestPhone(actor);
 
     // M5 RSVP uniqueness is enforced per account backed by the platform's
     // existing verified identity signal. Missing directory records fail

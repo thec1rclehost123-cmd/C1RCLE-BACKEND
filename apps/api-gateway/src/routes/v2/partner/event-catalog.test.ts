@@ -4,6 +4,7 @@ import {
   createOnboardingRequest,
   createPromoCode,
   createPromoterConnection,
+  createGuestProfile,
   PROMOTER_AGREEMENT_TEST_FIXTURE,
   recordPromoterAgreementAcceptance,
 } from '@c1rcle/core/domain';
@@ -13,6 +14,7 @@ import { createV2Services } from '../../../lib/v2-services.js';
 import { seedApprovedPartnerOrganization } from '../../../test-utils/approved-partner-organization.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 import { publishEventForTest } from '../../../test-utils/publish-event.js';
+import { seedVerifiedCheckoutUsers } from '../../../test-utils/verified-test-users.js';
 import checkoutRoutes from '../checkout/checkout-routes.js';
 import notificationRoutes from '../notifications/notifications-routes.js';
 import publicDiscoveryRoutes from '../public/discovery.js';
@@ -30,8 +32,9 @@ import partnerVenueRoutes from './venues.js';
  */
 
 let keySeq = 0;
-const buildServer = () =>
-  buildPartnerTestServer({
+const buildServer = () => {
+  seedVerifiedCheckoutUsers();
+  return buildPartnerTestServer({
     routes: [
       partnerOrganizationRoutes,
       partnerVenueRoutes,
@@ -41,6 +44,7 @@ const buildServer = () =>
       checkoutRoutes,
     ],
   });
+};
 const services = createV2Services();
 const buildPublicServer = () => buildPartnerTestServer({ routes: [publicDiscoveryRoutes] });
 
@@ -723,6 +727,17 @@ describe('private tier access codes', () => {
       role: 'guest',
       createdAt: now,
       updatedAt: now,
+    });
+    await services.repos().guestProfiles.save({
+      ...createGuestProfile('guest_access_code', {
+        displayName: 'Access Guest',
+        dateOfBirth: '2000-01-01',
+        city: '',
+        tastes: [],
+        intents: [],
+      }),
+      phoneNumber: '+919876543211',
+      phoneVerifiedAt: new Date(now).toISOString(),
     });
     const redeemed = await publicServer.inject({
       method: 'POST',
