@@ -1,3 +1,4 @@
+import { createGuestProfile } from '@c1rcle/core/domain';
 import { describe, expect, it } from 'vitest';
 
 import { createV2Services } from '../../../lib/v2-services.js';
@@ -34,7 +35,8 @@ const buildServer = () =>
   });
 
 function seedVerifiedTestAccounts(): void {
-  const users = createV2Services().repos().users;
+  const services = createV2Services();
+  const users = services.repos().users;
   if (!('save' in users) || typeof users.save !== 'function') {
     throw new Error('RSVP route tests require the in-memory user-account repository');
   }
@@ -48,6 +50,17 @@ function seedVerifiedTestAccounts(): void {
       role: 'guest',
       createdAt: 0,
       updatedAt: 0,
+    });
+    void services.repos().guestProfiles.save({
+      ...createGuestProfile(id, {
+        displayName: id,
+        dateOfBirth: '2000-01-01',
+        city: '',
+        tastes: [],
+        intents: [],
+      }),
+      phoneNumber: `+9198765432${id.endsWith('1') ? '01' : '02'}`,
+      phoneVerifiedAt: new Date(0).toISOString(),
     });
   }
 }
