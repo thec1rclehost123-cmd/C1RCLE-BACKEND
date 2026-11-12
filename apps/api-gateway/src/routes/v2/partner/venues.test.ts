@@ -1007,7 +1007,7 @@ describe('V2 partners venues slice — slot requests', () => {
       },
     });
     expect(response.statusCode).toBe(400);
-    expect(response.json().message).toContain('not currently eligible for this Host');
+    expect(response.json().message).toContain('no longer eligible for this Host');
 
     const outgoing = await server.inject({
       method: 'GET',
