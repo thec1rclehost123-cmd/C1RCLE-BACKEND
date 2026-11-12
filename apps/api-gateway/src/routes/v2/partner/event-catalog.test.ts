@@ -142,6 +142,22 @@ async function seedApprovedPromoter(
   await repos.promoterConnections.save(approveConnection(pending, promoterId, now));
 }
 
+async function seedCommissionableTier(server: Server, org: string, eventId: string) {
+  const tier = await server.inject({
+    method: 'POST',
+    url: `/events/${eventId}/ticket-tiers`,
+    headers: write(org),
+    payload: {
+      name: 'Commissionable',
+      priceInPaise: 10_000,
+      quantity: 20,
+      accessType: 'ENTRY',
+      commissionEligible: true,
+    },
+  });
+  expect(tier.statusCode).toBe(201);
+}
+
 describe('ticket tiers', () => {
   it('creates and lists event-scoped non-cover add-ons through the authorized catalog API', async () => {
     const server = await buildServer();
@@ -1209,6 +1225,7 @@ describe('promoter assignments', () => {
     const { org, eventId } = await seed(server);
     const promoterId = 'promoter_owner';
     await seedApprovedPromoter(org, promoterId);
+    await seedCommissionableTier(server, org, eventId);
     const invitation = await server.inject({
       method: 'POST',
       url: `/events/${eventId}/promoter-assignments`,
@@ -1301,6 +1318,7 @@ describe('promoter assignments', () => {
     const server = await buildServer();
     const { org, eventId } = await seed(server);
     await seedApprovedPromoter(org, 'promoter_terms');
+    await seedCommissionableTier(server, org, eventId);
 
     const created = await server.inject({
       method: 'POST',
@@ -1324,6 +1342,7 @@ describe('promoter assignments', () => {
     const server = await buildServer();
     const { org, eventId } = await seed(server);
     await seedApprovedPromoter(org, 'promoter_2');
+    await seedCommissionableTier(server, org, eventId);
 
     const created = await server.inject({
       method: 'POST',
@@ -1355,6 +1374,7 @@ describe('promoter assignments', () => {
     const server = await buildServer();
     const { org, eventId } = await seed(server);
     await seedApprovedPromoter(org, 'promoter_end');
+    await seedCommissionableTier(server, org, eventId);
 
     const created = await server.inject({
       method: 'POST',
@@ -1388,6 +1408,7 @@ describe('promoter assignments', () => {
     const server = await buildServer();
     const { org, eventId } = await seed(server);
     await seedApprovedPromoter(org, 'promoter_revoke');
+    await seedCommissionableTier(server, org, eventId);
     const created = await server.inject({
       method: 'POST',
       url: `/events/${eventId}/promoter-assignments`,
