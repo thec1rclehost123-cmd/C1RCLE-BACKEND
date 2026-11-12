@@ -663,6 +663,21 @@ export class VenueSlotRequestService {
       throw new InvalidOperationError('Only a pending slot request can be accepted');
     }
     const newlyAccepted = request.status === 'pending';
+    if (newlyAccepted && request.eventDraft) {
+      const hostActor: ActorContext = {
+        ...actor,
+        organizationId: request.hostId,
+        capabilities: ['host'],
+      };
+      const catalog = new EventCatalogService(this.deps);
+      for (const promoter of request.eventDraft.promoters) {
+        const promoterId = promoter.promoterId;
+        if (typeof promoterId !== 'string') {
+          throw new InvalidOperationError('The proposed Promoter assignment is invalid');
+        }
+        await catalog.assertPromoterAssignable(hostActor, promoterId);
+      }
+    }
     const updated = newlyAccepted
       ? transitionSlotRequest(request, 'accepted', this.deps.config.clock.now())
       : request;

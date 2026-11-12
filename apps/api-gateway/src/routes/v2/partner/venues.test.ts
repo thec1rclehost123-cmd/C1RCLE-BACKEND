@@ -1049,6 +1049,50 @@ describe('V2 partners venues slice — slot requests', () => {
     await server.close();
   });
 
+  it('keeps Venue approval pending when a proposed Promoter is no longer eligible', async () => {
+    const server = await buildSlotRequestServer();
+    const fixture = await createHostSlotRequestFixture(server, false, (venueId) => ({
+      event: {
+        venueId,
+        title: 'Promoter eligibility approval test',
+        startAt: '2030-11-04T12:30:00.000Z',
+        endAt: '2030-11-04T16:30:00.000Z',
+      },
+      tiers: [],
+      promotions: [],
+      promoters: [{ promoterId: 'missing-promoter-org' }],
+    }));
+
+    const response = await server.inject({
+      method: 'POST',
+      url: `/venues/slot-requests/${fixture.request.id}/accept`,
+      headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
+    });
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toMatchObject({ code: 'not_found' });
+
+    const outgoing = await server.inject({
+      method: 'GET',
+      url: `/organizations/${fixture.hostOrganizationId}/slot-requests?limit=10`,
+      headers: { 'x-organization-id': fixture.hostOrganizationId },
+    });
+    expect(outgoing.statusCode).toBe(200);
+    expect(outgoing.json().items).toContainEqual(
+      expect.objectContaining({
+        id: fixture.request.id,
+        status: 'pending',
+        eventId: fixture.request.eventId,
+      }),
+    );
+    const event = await server.inject({
+      method: 'GET',
+      url: `/events/${fixture.request.eventId}`,
+      headers: { 'x-organization-id': fixture.hostOrganizationId },
+    });
+    expect(event.statusCode).toBe(404);
+    await server.close();
+  });
+
   it('does not overwrite a ticket tier owned by another event during approval', async () => {
     const server = await buildSlotRequestServer();
     const fixture = await createHostSlotRequestFixture(server, false, (venueId) => ({
