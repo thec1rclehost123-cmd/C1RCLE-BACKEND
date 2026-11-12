@@ -46,6 +46,9 @@ const services = createV2Services();
 const requestIdParam = z.object({ requestId: opaqueIdSchema });
 const commandHeaders = z.looseObject({ 'idempotency-key': idempotencyKeySchema });
 const requestListSchema = paginatedSchema(onboardingRequestDtoSchema);
+const onboardingMeQuerySchema = z.object({
+  requestedType: z.enum(['venue', 'host', 'promoter']).optional(),
+});
 
 export default async function onboardingRoutes(fastify: FastifyInstance) {
   fastify.addHook('preHandler', async (request, reply) => {
@@ -151,8 +154,15 @@ export default async function onboardingRoutes(fastify: FastifyInstance) {
       const userId = requireUserId(request, reply);
       if (userId === undefined) return reply;
 
+      const query = onboardingMeQuerySchema.safeParse(request.query);
+      if (!query.success) {
+        return reply
+          .status(400)
+          .send({ code: 'invalid_query', message: 'Invalid onboarding role.' });
+      }
+
       const found = await services.onboarding
-        .getMine(userId)
+        .getMine(userId, query.data.requestedType)
         .catch((error: unknown) => mapDomainError(reply, request, userId, error));
       if (found === undefined) return reply;
       if (found === null) return reply.status(200).send({ request: null });

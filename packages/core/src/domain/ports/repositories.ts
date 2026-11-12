@@ -630,6 +630,11 @@ export interface OnboardingRepository {
   getById(requestId: EntityId): Promise<OnboardingRequest | null>;
   /** The applicant's request that is still in play (draft/submitted/changes). */
   findOpenForUser(userId: EntityId): Promise<OnboardingRequest | null>;
+  /** Latest request for one role, preferring an in-progress request. */
+  findForUserAndType(
+    userId: EntityId,
+    requestedType: OnboardingRequest['requestedType'],
+  ): Promise<OnboardingRequest | null>;
   listForUser(userId: EntityId, query: PaginationQuery): Promise<Page<OnboardingRequest>>;
   /** The admin review queue. `status: null` lists every request. */
   listByStatus(

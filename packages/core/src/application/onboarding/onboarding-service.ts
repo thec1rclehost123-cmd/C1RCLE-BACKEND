@@ -165,7 +165,11 @@ export class OnboardingService {
   }
 
   /** The applicant's own application, if any. `null` rather than a 404. */
-  async getMine(userId: EntityId): Promise<OnboardingRequest | null> {
+  async getMine(
+    userId: EntityId,
+    requestedType?: OnboardingRequest['requestedType'],
+  ): Promise<OnboardingRequest | null> {
+    if (requestedType) return this.repo.findForUserAndType(userId, requestedType);
     const open = await this.repo.findOpenForUser(userId);
     if (open) return open;
     const latest = await this.repo.listForUser(userId, { limit: 1, cursor: null });
