@@ -64,6 +64,29 @@ export class FirestoreOnboardingRepository implements OnboardingRepository {
     return doc ? toRequest(doc.data()) : null;
   }
 
+  async findForUserAndType(
+    userId: EntityId,
+    requestedType: OnboardingRequest['requestedType'],
+  ): Promise<OnboardingRequest | null> {
+    const open = await this.collection
+      .where('userId', '==', userId)
+      .where('requestedType', '==', requestedType)
+      .where('status', 'in', OPEN_STATUSES)
+      .limit(1)
+      .get();
+    const openDoc = open.docs[0];
+    if (openDoc) return toRequest(openDoc.data());
+
+    const latest = await this.collection
+      .where('userId', '==', userId)
+      .where('requestedType', '==', requestedType)
+      .orderBy('createdAt', 'desc')
+      .limit(1)
+      .get();
+    const latestDoc = latest.docs[0];
+    return latestDoc ? toRequest(latestDoc.data()) : null;
+  }
+
   async listForUser(userId: EntityId, query: PaginationQuery): Promise<Page<OnboardingRequest>> {
     const base = this.collection.where('userId', '==', userId).orderBy('createdAt', 'desc');
     return paginateQuery(base, query, toRequest);

@@ -60,6 +60,16 @@ export class MemoryOnboardingRepository implements OnboardingRepository {
     );
   }
 
+  async findForUserAndType(
+    userId: EntityId,
+    requestedType: OnboardingRequest['requestedType'],
+  ): Promise<OnboardingRequest | null> {
+    const matches = [...this.requests.values()]
+      .filter((request) => request.userId === userId && request.requestedType === requestedType)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    return matches.find((request) => OPEN_STATUSES.includes(request.status)) ?? matches[0] ?? null;
+  }
+
   async listForUser(userId: EntityId, query: PaginationQuery): Promise<Page<OnboardingRequest>> {
     const all = [...this.requests.values()]
       .filter((request) => request.userId === userId)

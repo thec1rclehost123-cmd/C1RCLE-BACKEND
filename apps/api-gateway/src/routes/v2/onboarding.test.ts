@@ -1,4 +1,4 @@
-import { createPlatformAdmin } from '@c1rcle/core/domain';
+import { createOnboardingRequest, createPlatformAdmin } from '@c1rcle/core/domain';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AdminRole } from '@c1rcle/core/domain';
@@ -134,6 +134,46 @@ beforeEach(async () => {
 });
 
 describe('applicant onboarding', () => {
+  it('returns the latest application for the explicitly requested role', async () => {
+    const repo = services.repos().onboarding;
+    await repo.save(
+      createOnboardingRequest({
+        id: 'venue_request',
+        userId: 'promoter_applicant',
+        requestedType: 'venue',
+        plan: 'basic',
+        profile: FULL_PROFILE as Parameters<typeof createOnboardingRequest>[0]['profile'],
+      }),
+    );
+    await repo.save(
+      createOnboardingRequest({
+        id: 'promoter_request',
+        userId: 'promoter_applicant',
+        requestedType: 'promoter',
+        plan: 'basic',
+        profile: FULL_PROFILE as Parameters<typeof createOnboardingRequest>[0]['profile'],
+      }),
+    );
+
+    const response = await server.inject({
+      url: '/onboarding/me?requestedType=promoter',
+      headers: asUser('promoter_applicant'),
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().request).toMatchObject({
+      id: 'promoter_request',
+      requestedType: 'promoter',
+    });
+  });
+
+  it('rejects an unsupported requested role query', async () => {
+    const response = await server.inject({
+      url: '/onboarding/me?requestedType=admin',
+      headers: asUser('user_a'),
+    });
+    expect(response.statusCode).toBe(400);
+  });
+
   it('marks private application progress as non-cacheable', async () => {
     const response = await server.inject({ url: '/onboarding/me', headers: asUser('user_a') });
     expect(response.headers['cache-control']).toBe('private, no-store');
