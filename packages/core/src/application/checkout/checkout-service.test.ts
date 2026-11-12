@@ -80,6 +80,18 @@ function buildService(serviceConfig = config) {
       createdAt: NOW.getTime(),
       updatedAt: NOW.getTime(),
     });
+    void guestProfiles.save({
+      ...createGuestProfile(id, {
+        displayName: id,
+        dateOfBirth: '2000-01-01',
+        city: '',
+        tastes: [],
+        intents: [],
+        now: NOW,
+      }),
+      phoneNumber: `+91987654321${id.endsWith('1') ? '1' : '2'}`,
+      phoneVerifiedAt: NOW.toISOString(),
+    });
   }
   const deps = {
     config: serviceConfig,
@@ -303,8 +315,8 @@ describe('CheckoutService.createRsvp', () => {
     const { events, catalog, guestProfiles, service } = buildService();
     await seedPublishedFreeEvent(events);
     seedTier(catalog);
-    await guestProfiles.save(
-      createGuestProfile('user_1', {
+    await guestProfiles.save({
+      ...createGuestProfile('user_1', {
         displayName: 'M3 RSVP Buyer',
         dateOfBirth: '2000-01-01',
         city: 'Pune',
@@ -312,7 +324,9 @@ describe('CheckoutService.createRsvp', () => {
         intents: ['Meet people'],
         now: NOW,
       }),
-    );
+      phoneNumber: '+919876543211',
+      phoneVerifiedAt: NOW.toISOString(),
+    });
 
     const { order, entitlements } = await service.createRsvp({
       actor: actor('user_1'),
@@ -611,6 +625,26 @@ describe('M3 RSVP cancellation', () => {
 });
 
 describe('M3 verified acquisition', () => {
+  it('requires verified phone proof for quotes and RSVPs', async () => {
+    const { events, catalog, guestProfiles, service } = buildService();
+    await seedPublishedFreeEvent(events);
+    seedTier(catalog);
+    const profile = await guestProfiles.getByUserId('user_1');
+    if (!profile) throw new Error('Guest profile fixture missing');
+    await guestProfiles.save({ ...profile, phoneNumber: undefined, phoneVerifiedAt: undefined });
+
+    await expect(
+      service.quote({
+        actor: actor('user_1'),
+        eventId: 'evt_1',
+        lines: [{ tierId: 'tier_1', quantity: 1 }],
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(
+      service.createRsvp({ actor: actor('user_1'), eventId: 'evt_1', tierId: 'tier_1' }),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
   it('does not let an unverified account reserve paid checkout inventory', async () => {
     const { events, catalog, service, users } = buildService();
     await seedPublishedFreeEvent(events);
