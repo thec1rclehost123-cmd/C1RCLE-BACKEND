@@ -121,6 +121,40 @@ export type { CommissionTerms };
 export class EventCatalogService {
   constructor(private deps: ServiceDeps) {}
 
+  /**
+   * Validate a Host's proposed assignment before the event exists. This uses
+   * the same tier eligibility and distributable-value rules as final event
+   * assignment, so Venue acceptance only has to revalidate current state.
+   */
+  async validateProposedPromoterAssignment(
+    actor: ActorContext,
+    input: {
+      venueId: EntityId;
+      tiers: readonly Pick<
+        TicketTier,
+        'id' | 'accessType' | 'commissionEligible' | 'priceInPaise' | 'doorPriceInPaise'
+      >[];
+      promoterId: EntityId;
+      term: CommissionTerms;
+      eligibleTierIds?: EntityId[];
+    },
+  ): Promise<EntityId[]> {
+    requireOrgAccess(actor, actor.organizationId);
+    await this.assertPromoterAssignable(actor, input.promoterId, 'host');
+    const owner = await this.deps.repositories.organizations.getById(actor.organizationId);
+    if (!owner) throw new EventNotFoundError(actor.organizationId);
+    let venueShareRate = 0;
+    const partnership = await this.deps.repositories.partnerships.findByPair(
+      actor.organizationId,
+      input.venueId,
+    );
+    venueShareRate = (partnership?.venueShareRate ?? 0) / 100;
+    return validatePromoterCommissionAssignment(input.tiers, input.term, input.eligibleTierIds, {
+      platformFeeRate: owner.platformFeePercent / 100,
+      venueShareRate,
+    });
+  }
+
   /** The canonical rule for selecting a Promoter for an event owned by this Host. */
   async isPromoterAssignable(
     actor: ActorContext,
@@ -412,41 +446,6 @@ export class EventCatalogService {
     // slot-request picker and approval path pass `host` explicitly instead.
     await this.assertPromoterAssignable(actor, command.promoterId, 'either');
     const eventTiers = await this.repo.listTiers(command.eventId);
-    const requestedTierIds =
-      command.eligibleTierIds ??
-      eventTiers
-        .filter((tier) => tier.commissionEligible && tier.accessType !== 'RSVP')
-        .map((tier) => tier.id);
-    if (requestedTierIds.length === 0 && command.eligibleTierIds !== undefined) {
-      const rsvpOnlyEvent =
-        eventTiers.length > 0 && eventTiers.every((tier) => tier.accessType === 'RSVP');
-      const zeroCommissionTerms =
-        command.term.ratePercent === 0 &&
-        command.term.flatPaise === 0 &&
-        Object.values(command.term.tierRates ?? {}).every(
-          (terms) => terms.ratePercent === 0 && terms.flatPaise === 0,
-        );
-      if (!rsvpOnlyEvent || !zeroCommissionTerms) {
-        throw new InvalidOperationError(
-          'An assignment without commission-eligible tiers must be an RSVP-only campaign with zero commission',
-        );
-      }
-    }
-    if (
-      requestedTierIds.some(
-        (tierId) =>
-          !eventTiers.some(
-            (tier) => tier.id === tierId && tier.commissionEligible && tier.accessType !== 'RSVP',
-          ),
-      )
-    ) {
-      throw new InvalidOperationError('Commission terms include an ineligible ticket tier');
-    }
-    if (
-      Object.keys(command.term.tierRates ?? {}).some((tierId) => !requestedTierIds.includes(tierId))
-    ) {
-      throw new InvalidOperationError('Commission terms include a tier outside the assignment');
-    }
     const owner = await this.deps.repositories.organizations.getById(actor.organizationId);
     const event = await this.deps.repositories.events.getById(command.eventId);
     if (!owner || !event) throw new EventNotFoundError(command.eventId);
@@ -458,24 +457,12 @@ export class EventCatalogService {
       );
       venueShareRate = (partnership?.venueShareRate ?? 0) / 100;
     }
-    for (const tier of eventTiers.filter((candidate) => requestedTierIds.includes(candidate.id))) {
-      const tierTerms = command.term.tierRates?.[tier.id] ?? command.term;
-      const faceValue = effectiveTierPricePaise(tier);
-      const commission =
-        Math.floor((faceValue * tierTerms.ratePercent) / 100) + tierTerms.flatPaise;
-      if (
-        !promoterCommissionFitsDistributableValue(
-          faceValue,
-          commission,
-          owner.platformFeePercent / 100,
-          venueShareRate,
-        )
-      ) {
-        throw new InvalidOperationError(
-          `Promoter commission exceeds distributable ticket value for tier ${tier.id}`,
-        );
-      }
-    }
+    const requestedTierIds = validatePromoterCommissionAssignment(
+      eventTiers,
+      command.term,
+      command.eligibleTierIds,
+      { platformFeeRate: owner.platformFeePercent / 100, venueShareRate },
+    );
     const existing = await this.repo.listAssignments(command.eventId);
     const now = this.deps.config.clock.now();
     if (
@@ -732,4 +719,69 @@ export class EventCatalogService {
   private testAgreementFixtureAllowed(): boolean {
     return this.deps.config.features.m4PromoterAgreementFixture === true;
   }
+}
+
+type CommissionValidationTier = Pick<
+  TicketTier,
+  'id' | 'accessType' | 'commissionEligible' | 'priceInPaise' | 'doorPriceInPaise'
+>;
+
+/** Canonical commission eligibility and finance check shared by submission and approval. */
+function validatePromoterCommissionAssignment(
+  eventTiers: readonly CommissionValidationTier[],
+  term: CommissionTerms,
+  eligibleTierIds: readonly EntityId[] | undefined,
+  shares: { platformFeeRate: number; venueShareRate: number },
+): EntityId[] {
+  const requestedTierIds =
+    eligibleTierIds ??
+    eventTiers
+      .filter((tier) => tier.commissionEligible && tier.accessType !== 'RSVP')
+      .map((tier) => tier.id);
+  if (requestedTierIds.length === 0) {
+    const rsvpOnlyEvent =
+      eventTiers.length > 0 && eventTiers.every((tier) => tier.accessType === 'RSVP');
+    const zeroCommissionTerms =
+      term.ratePercent === 0 &&
+      term.flatPaise === 0 &&
+      Object.values(term.tierRates ?? {}).every(
+        (terms) => terms.ratePercent === 0 && terms.flatPaise === 0,
+      );
+    if (!rsvpOnlyEvent || !zeroCommissionTerms) {
+      throw new InvalidOperationError(
+        'Select at least one paid ticket tier for Promoter commission. Only RSVP-only events can have no commission-eligible tiers.',
+      );
+    }
+  }
+  if (
+    requestedTierIds.some(
+      (tierId) =>
+        !eventTiers.some(
+          (tier) => tier.id === tierId && tier.commissionEligible && tier.accessType !== 'RSVP',
+        ),
+    )
+  ) {
+    throw new InvalidOperationError('Commission terms include an ineligible ticket tier');
+  }
+  if (Object.keys(term.tierRates ?? {}).some((tierId) => !requestedTierIds.includes(tierId))) {
+    throw new InvalidOperationError('Commission terms include a tier outside the assignment');
+  }
+  for (const tier of eventTiers.filter((candidate) => requestedTierIds.includes(candidate.id))) {
+    const tierTerms = term.tierRates?.[tier.id] ?? term;
+    const faceValue = tier.priceInPaise ?? tier.doorPriceInPaise ?? 0;
+    const commission = Math.floor((faceValue * tierTerms.ratePercent) / 100) + tierTerms.flatPaise;
+    if (
+      !promoterCommissionFitsDistributableValue(
+        faceValue,
+        commission,
+        shares.platformFeeRate,
+        shares.venueShareRate,
+      )
+    ) {
+      throw new InvalidOperationError(
+        `Promoter commission exceeds distributable ticket value for tier ${tier.id}`,
+      );
+    }
+  }
+  return [...new Set(requestedTierIds)];
 }

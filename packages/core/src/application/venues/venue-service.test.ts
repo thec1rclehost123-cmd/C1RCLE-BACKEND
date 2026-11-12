@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createCoreConfig } from '../../config/index.js';
 import { createEvent, transitionEvent } from '../../domain/models/event.js';
@@ -22,6 +22,7 @@ import { MemoryEmailDeliveryRepository } from '../../infrastructure/memory/memor
 import { MemoryOutboxStore } from '../../infrastructure/memory/memory-outbox-store.js';
 import { buildRepositories } from '../../infrastructure/utils.js';
 import { noopLogger } from '../../telemetry/logger.js';
+import { EventCatalogService } from '../event-catalog/event-catalog-service.js';
 import { EventService } from '../events/event-service.js';
 import { InventoryService } from '../inventory/inventory-service.js';
 import { PricingService } from '../pricing/pricing-service.js';
@@ -275,6 +276,77 @@ describe('VenueSlotRequestService reschedule requests', () => {
 });
 
 describe('Venue availability and Host request lifecycle', () => {
+  it('stores server-resolved commission-eligible tier ids in a Host proposal', async () => {
+    const deps = createTestDeps();
+    const venue = createVenue({
+      id: 'venue_commission_proposal',
+      organizationId: 'venue_org_commission_proposal',
+      ownerId: 'venue_owner_commission_proposal',
+      name: 'Commission Proposal Venue',
+      slug: 'commission-proposal-venue',
+      now: NOW,
+    });
+    await deps.repositories.venues.save(venue);
+    const partnership = createPartnership({
+      id: 'partnership_commission_proposal',
+      hostOrganizationId: 'host_org_commission_proposal',
+      venueOrganizationId: venue.organizationId,
+      venueId: venue.id,
+      initiatedBy: 'host',
+      now: NOW,
+    });
+    await deps.repositories.partnerships.save(
+      approvePartnership(partnership, venue.organizationId, NOW),
+    );
+    const venueActor: ActorContext = {
+      userId: 'venue_owner_commission_proposal',
+      organizationId: venue.organizationId,
+      role: 'owner',
+      capabilities: ['venue'],
+    };
+    const hostActor: ActorContext = {
+      userId: 'host_owner_commission_proposal',
+      organizationId: 'host_org_commission_proposal',
+      role: 'owner',
+      capabilities: ['host'],
+    };
+    const slot = await new VenueCalendarService(deps).publishAvailability(venueActor, {
+      venueId: venue.id,
+      label: 'Commission proposal slot',
+      startTime: '2026-11-20T12:00:00.000Z',
+      endTime: '2026-11-20T18:00:00.000Z',
+      timezone: 'Asia/Kolkata',
+    });
+    const validate = vi
+      .spyOn(EventCatalogService.prototype, 'validateProposedPromoterAssignment')
+      .mockResolvedValue(['paid-tier']);
+
+    const request = await new VenueSlotRequestService(deps).create(hostActor, {
+      venueId: venue.id,
+      slotId: slot.id,
+      eventId: null,
+      eventDraft: {
+        event: { venueId: venue.id },
+        tiers: [
+          {
+            localId: 'paid-tier',
+            command: { name: 'General', priceInPaise: 5_000, quantity: 50 },
+          },
+        ],
+        promotions: [],
+        promoters: [{ promoterId: 'promoter_1', ratePercent: 15 }],
+      },
+    });
+
+    expect(validate).toHaveBeenCalledWith(
+      hostActor,
+      expect.objectContaining({ venueId: venue.id, promoterId: 'promoter_1' }),
+    );
+    expect(request.eventDraft?.promoters).toEqual([
+      { promoterId: 'promoter_1', ratePercent: 15, eligibleTierIds: ['paid-tier'] },
+    ]);
+  });
+
   it('publishes an open offer, atomically holds it for one Host, then reserves it on acceptance', async () => {
     const deps = createTestDeps();
     const venue = createVenue({
