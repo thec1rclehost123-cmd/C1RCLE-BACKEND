@@ -845,17 +845,7 @@ describe('scenario: M4 Promoter campaign attribution over the full API', () => {
       payload: { label: 'Free RSVP campaign' },
     });
     expect(freeLink.statusCode, JSON.stringify(freeLink.json())).toBe(201);
-    const now = Date.now();
-    (services.repos().users as MemoryUserAccountRepository).save({
-      id: 'guest_m4_rsvp',
-      email: 'guest-m4-rsvp@example.test',
-      name: 'M4 RSVP Guest',
-      image: null,
-      emailVerified: true,
-      role: 'guest',
-      createdAt: now,
-      updatedAt: now,
-    });
+    seedVerifiedCheckoutUsers(['guest_m4_rsvp']);
     const rsvp = await server.inject({
       method: 'POST',
       url: '/api/v2/rsvp',
