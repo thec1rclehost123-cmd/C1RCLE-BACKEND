@@ -1,5 +1,12 @@
+import {
+  calculatePricing,
+  createOrder,
+  createTicketTier,
+  issueEntitlements,
+} from '@c1rcle/core/domain';
 import { describe, expect, it } from 'vitest';
 
+import { createV2Services } from '../../../lib/v2-services.js';
 import { seedApprovedPartnerOrganization } from '../../../test-utils/approved-partner-organization.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 
@@ -55,6 +62,63 @@ describe('partner settings routes', () => {
     });
     expect(response.json()).not.toHaveProperty('stats.revenue');
     expect(response.json()).not.toHaveProperty('guestIdentities');
+    await server.close();
+  });
+
+  it('uses current orders and admissions instead of a stale overview projection for profile stats', async () => {
+    const server = await makeServer();
+    const org = await makeOrganization('venue');
+    const services = createV2Services();
+    const repositories = services.repos();
+    const eventId = `event-settings-stats-${sequence}`;
+    const now = new Date('2026-11-12T00:00:00.000Z');
+    const tier = createTicketTier({
+      id: `tier-settings-stats-${sequence}`,
+      eventId,
+      organizationId: org.id,
+      name: 'General',
+      priceInPaise: 10_000,
+      quantity: 1,
+      now,
+    });
+    const order = {
+      ...createOrder({
+        id: `order-settings-stats-${sequence}`,
+        eventId,
+        organizationId: org.id,
+        contact: { name: 'Guest', email: '', phone: '' },
+        pricing: calculatePricing({ lines: [{ tier, quantity: 1 }] }),
+        now,
+      }),
+      status: 'paid' as const,
+      paymentIntentId: null,
+      paymentId: `payment-settings-stats-${sequence}`,
+      paidAt: now.toISOString(),
+    };
+    await repositories.orders.save(order);
+    await Promise.all(
+      issueEntitlements({ order, now }).map((ticket) =>
+        repositories.entitlements.save({ ...ticket, status: 'redeemed', scanCount: 1 }),
+      ),
+    );
+    await repositories.analytics.saveOrganizationOverview({
+      organizationId: org.id,
+      totalEvents: 1,
+      publishedEvents: 0,
+      totalRevenuePaise: 0,
+      totalTicketsSold: 0,
+      totalCheckIns: 0,
+      topEvents: [],
+      lastEventAt: null,
+    });
+
+    const response = await server.inject({
+      url: `/organizations/${org.id}/partner-settings`,
+      headers: orgHeaders(org.id),
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().stats).toMatchObject({ ticketsSold: 1, checkIns: 1 });
     await server.close();
   });
 
