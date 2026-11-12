@@ -1791,6 +1791,12 @@ export interface NotificationRepository {
   markRead(notificationId: EntityId, nowIso: string): Promise<Notification | null>;
   /** Marks every unread row for the recipient; returns the count flipped. */
   markAllRead(recipientId: EntityId, nowIso: string): Promise<number>;
+  /** Resolves stale request actions while keeping their notification history. */
+  resolveAction(
+    resourceType: 'promoter_connection' | 'partnership' | 'slot_request',
+    resourceId: EntityId,
+    nowIso: string,
+  ): Promise<number>;
   countUnread(recipientId: EntityId): Promise<number>;
 }
 

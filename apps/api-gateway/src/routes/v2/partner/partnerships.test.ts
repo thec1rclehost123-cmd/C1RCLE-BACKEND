@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { createV2Services } from '../../../lib/v2-services.js';
 import { seedApprovedPartnerOrganization } from '../../../test-utils/approved-partner-organization.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 
@@ -283,6 +284,15 @@ describe('answering a request', () => {
   it('lets the venue (the counterparty) approve', async () => {
     const server = await buildServer();
     const { venueOrg, partnershipId } = await pendingRequest(server);
+    const notifications = createV2Services().repos().notifications;
+    const before = await notifications.listUnreadByRecipient(venueOrg, {
+      limit: 100,
+      cursor: null,
+    });
+    const requestNotification = before.items.find(
+      (notification) => notification.action?.resourceId === partnershipId,
+    );
+    expect(requestNotification).toBeDefined();
 
     const response = await server.inject({
       method: 'POST',
@@ -292,6 +302,11 @@ describe('answering a request', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ status: 'active' });
+    if (!requestNotification) throw new Error('partnership request notification was not created');
+    await expect(notifications.getById(requestNotification.id)).resolves.toMatchObject({
+      read: true,
+      action: null,
+    });
     await server.close();
   });
 
@@ -314,6 +329,14 @@ describe('answering a request', () => {
   it('records a rejection reason', async () => {
     const server = await buildServer();
     const { venueOrg, partnershipId } = await pendingRequest(server);
+    const notifications = createV2Services().repos().notifications;
+    const before = await notifications.listUnreadByRecipient(venueOrg, {
+      limit: 100,
+      cursor: null,
+    });
+    const requestNotification = before.items.find(
+      (notification) => notification.action?.resourceId === partnershipId,
+    );
 
     const response = await server.inject({
       method: 'POST',
@@ -326,12 +349,25 @@ describe('answering a request', () => {
       status: 'rejected',
       resolutionReason: 'Fully booked',
     });
+    if (!requestNotification) throw new Error('partnership request notification was not created');
+    await expect(notifications.getById(requestNotification.id)).resolves.toMatchObject({
+      read: true,
+      action: null,
+    });
     await server.close();
   });
 
   it('lets the requester withdraw a pending request', async () => {
     const server = await buildServer();
-    const { host, partnershipId } = await pendingHostRequest(server);
+    const { host, venueOrg, partnershipId } = await pendingHostRequest(server);
+    const notifications = createV2Services().repos().notifications;
+    const before = await notifications.listUnreadByRecipient(venueOrg, {
+      limit: 100,
+      cursor: null,
+    });
+    const requestNotification = before.items.find(
+      (notification) => notification.action?.resourceId === partnershipId,
+    );
 
     // The legacy Sent tab offers "Cancel request", which posts to `end`.
     const response = await server.inject({
@@ -343,6 +379,11 @@ describe('answering a request', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ status: 'ended' });
+    if (!requestNotification) throw new Error('partnership request notification was not created');
+    await expect(notifications.getById(requestNotification.id)).resolves.toMatchObject({
+      read: true,
+      action: null,
+    });
     await server.close();
   });
 

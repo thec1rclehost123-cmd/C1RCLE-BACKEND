@@ -286,7 +286,7 @@ describe('quick actions', () => {
     expect(respond.json()).toMatchObject({
       id,
       read: true,
-      action: { resourceType: 'promoter_connection' },
+      action: null,
     });
 
     const listed = await server.inject({

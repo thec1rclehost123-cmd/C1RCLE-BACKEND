@@ -79,6 +79,15 @@ describe('answering', () => {
   it('lets the recipient approve', async () => {
     const server = await buildServer();
     const { target, connectionId } = await pending(server);
+    const notifications = createV2Services().repos().notifications;
+    const before = await notifications.listUnreadByRecipient(target, {
+      limit: 100,
+      cursor: null,
+    });
+    const requestNotification = before.items.find(
+      (notification) => notification.action?.resourceId === connectionId,
+    );
+    expect(requestNotification).toBeDefined();
 
     const response = await server.inject({
       method: 'POST',
@@ -88,6 +97,39 @@ describe('answering', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ status: 'active' });
+    if (!requestNotification) throw new Error('connection request notification was not created');
+    await expect(notifications.getById(requestNotification.id)).resolves.toMatchObject({
+      read: true,
+      action: null,
+    });
+    await server.close();
+  });
+
+  it('resolves the recipient notification when it rejects a connection', async () => {
+    const server = await buildServer();
+    const { target, connectionId } = await pending(server);
+    const notifications = createV2Services().repos().notifications;
+    const before = await notifications.listUnreadByRecipient(target, {
+      limit: 100,
+      cursor: null,
+    });
+    const requestNotification = before.items.find(
+      (notification) => notification.action?.resourceId === connectionId,
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: `/promoter-connections/${connectionId}/reject`,
+      headers: write(target),
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ status: 'rejected' });
+    if (!requestNotification) throw new Error('connection request notification was not created');
+    await expect(notifications.getById(requestNotification.id)).resolves.toMatchObject({
+      read: true,
+      action: null,
+    });
     await server.close();
   });
 
