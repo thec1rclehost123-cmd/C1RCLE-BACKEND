@@ -4,6 +4,7 @@ import {
   NotFoundError,
   VersionConflictError,
   InvalidOperationError,
+  PromoterAssignmentNotFoundError,
 } from '../../domain/errors.js';
 import { deterministicDomainEventId, domainEvent } from '../../domain/events.js';
 import { isPublicStatus, postponeEvent } from '../../domain/models/event.js';
@@ -474,6 +475,30 @@ export class VenueSlotRequestService {
     if (!actor.capabilities.includes('host')) {
       throw new InvalidOperationError('Only an authorized Host organization can request a slot');
     }
+    if (command.eventDraft) {
+      const catalog = new EventCatalogService(this.deps);
+      const proposedPromoters = command.eventDraft.promoters;
+      if (!Array.isArray(proposedPromoters)) {
+        throw new InvalidOperationError('The proposed Promoter selection is invalid');
+      }
+      for (const candidate of proposedPromoters) {
+        const promoterId =
+          candidate && typeof candidate === 'object' && 'promoterId' in candidate
+            ? candidate.promoterId
+            : null;
+        if (typeof promoterId !== 'string') {
+          throw new InvalidOperationError('The proposed Promoter selection is invalid');
+        }
+        try {
+          await catalog.assertPromoterAssignable(actor, promoterId);
+        } catch (error) {
+          if (!(error instanceof PromoterAssignmentNotFoundError)) throw error;
+          throw new InvalidOperationError(
+            'A selected Promoter is not currently eligible for this Host. Update the Promoter selection before submitting the Venue request.',
+          );
+        }
+      }
+    }
     const venue = await this.deps.repositories.venues.getById(command.venueId);
     if (!venue || venue.status !== 'active') throw new VenueNotFoundError(command.venueId);
     const partnership = await this.deps.repositories.partnerships.findByPair(
@@ -675,7 +700,14 @@ export class VenueSlotRequestService {
         if (typeof promoterId !== 'string') {
           throw new InvalidOperationError('The proposed Promoter assignment is invalid');
         }
-        await catalog.assertPromoterAssignable(hostActor, promoterId);
+        try {
+          await catalog.assertPromoterAssignable(hostActor, promoterId);
+        } catch (error) {
+          if (!(error instanceof PromoterAssignmentNotFoundError)) throw error;
+          throw new InvalidOperationError(
+            'The selected Promoter is no longer eligible for this Host. The request remains pending; ask the Host to update the Promoter selection before trying again.',
+          );
+        }
       }
     }
     const updated = newlyAccepted
