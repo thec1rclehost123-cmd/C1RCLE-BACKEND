@@ -52,9 +52,9 @@ const config = createCoreConfig({
   features: { m5EligibilityRulesEnabled: true },
 });
 
-const actor = (userId: string): ActorContext => ({
+const actor = (userId: string, organizationId = 'org_1'): ActorContext => ({
   userId,
-  organizationId: 'org_1',
+  organizationId,
   role: 'owner',
   capabilities: [],
 });
@@ -635,13 +635,17 @@ describe('M3 verified acquisition', () => {
 
     await expect(
       service.quote({
-        actor: actor('user_1'),
+        actor: actor('user_1', ''),
         eventId: 'evt_1',
         lines: [{ tierId: 'tier_1', quantity: 1 }],
       }),
     ).rejects.toBeInstanceOf(ForbiddenError);
     await expect(
-      service.createRsvp({ actor: actor('user_1'), eventId: 'evt_1', tierId: 'tier_1' }),
+      service.createRsvp({
+        actor: actor('user_1', ''),
+        eventId: 'evt_1',
+        tierId: 'tier_1',
+      }),
     ).rejects.toBeInstanceOf(ForbiddenError);
   });
 

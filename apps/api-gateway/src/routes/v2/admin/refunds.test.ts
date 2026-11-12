@@ -7,6 +7,7 @@ import {
   MemoryPaymentProvider,
   IdempotencyFailedError,
   IdempotencyInFlightError,
+  createGuestProfile,
 } from '@c1rcle/core/domain';
 import { MemoryUserAccountRepository } from '@c1rcle/core/infrastructure';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -82,6 +83,17 @@ async function seedPaidOrder(
     role: 'guest',
     createdAt: Date.now(),
     updatedAt: Date.now(),
+  });
+  await services.repos().guestProfiles.save({
+    ...createGuestProfile('user_1', {
+      displayName: 'Refund test guest',
+      dateOfBirth: '2000-01-01',
+      city: '',
+      tastes: [],
+      intents: [],
+    }),
+    phoneNumber: '+919876543211',
+    phoneVerifiedAt: new Date().toISOString(),
   });
   const write = (org: string) => ({
     'x-organization-id': org,

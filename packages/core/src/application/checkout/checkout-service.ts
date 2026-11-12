@@ -190,7 +190,10 @@ export class CheckoutService {
   private readonly providerPayments: ProviderPaymentService;
 
   private async requireVerifiedGuestPhone(actor: ActorContext): Promise<void> {
-    if (!actor.userId || isSystemActor(actor)) return;
+    // Guest sessions are not acting for an organization. Organization-scoped
+    // service actors (for example staff-created orders) keep their existing
+    // authorization path; their callers are not Guest checkout sessions.
+    if (!actor.userId || isSystemActor(actor) || actor.organizationId) return;
     const profile = await this.deps.repositories.guestProfiles.getByUserId(actor.userId);
     if (!profile?.phoneNumber || !profile.phoneVerifiedAt) {
       throw new ForbiddenError('Phone verification is required before booking tickets');
