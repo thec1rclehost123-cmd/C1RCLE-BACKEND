@@ -475,12 +475,30 @@ export class VenueSlotRequestService {
     if (!actor.capabilities.includes('host')) {
       throw new InvalidOperationError('Only an authorized Host organization can request a slot');
     }
-    if (command.eventDraft) {
+    let eventDraft = command.eventDraft;
+    if (eventDraft) {
       const catalog = new EventCatalogService(this.deps);
-      const proposedPromoters = command.eventDraft.promoters;
+      const proposedPromoters = eventDraft.promoters;
       if (!Array.isArray(proposedPromoters)) {
         throw new InvalidOperationError('The proposed Promoter selection is invalid');
       }
+      const proposedTiers = eventDraft.tiers.map(({ localId, command: tier }) => {
+        const accessType = tier.accessType === 'RSVP' ? 'RSVP' : 'ENTRY';
+        const priceInPaise = typeof tier.priceInPaise === 'number' ? tier.priceInPaise : 0;
+        return {
+          id: localId,
+          accessType,
+          priceInPaise,
+          doorPriceInPaise:
+            typeof tier.doorPriceInPaise === 'number' ? tier.doorPriceInPaise : null,
+          commissionEligible:
+            accessType !== 'RSVP' &&
+            (typeof tier.commissionEligible === 'boolean'
+              ? tier.commissionEligible
+              : priceInPaise > 0),
+        } as const;
+      });
+      const validatedPromoters = [];
       for (const candidate of proposedPromoters) {
         const promoterId =
           candidate && typeof candidate === 'object' && 'promoterId' in candidate
@@ -489,15 +507,40 @@ export class VenueSlotRequestService {
         if (typeof promoterId !== 'string') {
           throw new InvalidOperationError('The proposed Promoter selection is invalid');
         }
+        const assignment = candidate as Record<string, unknown>;
+        const term = {
+          version: 1 as const,
+          ratePercent: typeof assignment.ratePercent === 'number' ? assignment.ratePercent : 0,
+          flatPaise: typeof assignment.flatPaise === 'number' ? assignment.flatPaise : 0,
+          ...(assignment.tierRates && typeof assignment.tierRates === 'object'
+            ? {
+                tierRates: assignment.tierRates as Record<
+                  string,
+                  { ratePercent: number; flatPaise: number }
+                >,
+              }
+            : {}),
+        };
+        let eligibleTierIds: string[];
         try {
-          await catalog.assertPromoterAssignable(actor, promoterId);
+          eligibleTierIds = await catalog.validateProposedPromoterAssignment(actor, {
+            venueId: command.venueId,
+            tiers: proposedTiers,
+            promoterId,
+            term,
+            ...(Array.isArray(assignment.eligibleTierIds)
+              ? { eligibleTierIds: assignment.eligibleTierIds as string[] }
+              : {}),
+          });
         } catch (error) {
           if (!(error instanceof PromoterAssignmentNotFoundError)) throw error;
           throw new InvalidOperationError(
-            'A selected Promoter is not currently eligible for this Host. Update the Promoter selection before submitting the Venue request.',
+            'A selected Promoter is no longer eligible for this Host. Update the Promoter selection before submitting the Venue request.',
           );
         }
+        validatedPromoters.push({ ...assignment, eligibleTierIds });
       }
+      eventDraft = { ...eventDraft, promoters: validatedPromoters };
     }
     const venue = await this.deps.repositories.venues.getById(command.venueId);
     if (!venue || venue.status !== 'active') throw new VenueNotFoundError(command.venueId);
@@ -617,7 +660,7 @@ export class VenueSlotRequestService {
       eventId: command.eventDraft ? this.deps.config.ids() : command.eventId,
       hostId: actor.organizationId,
       message: command.message,
-      eventDraft: command.eventDraft,
+      eventDraft,
       now: this.deps.config.clock.now(),
     });
     await this.repo.createForOpenSlot(request, implicitSlot);

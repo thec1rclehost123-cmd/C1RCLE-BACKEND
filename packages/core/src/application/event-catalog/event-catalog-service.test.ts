@@ -245,3 +245,94 @@ describe('Host ticket tier limits', () => {
     ).rejects.toThrow('not available in V1');
   });
 });
+
+describe('Host Promoter commission proposal validation', () => {
+  function setup() {
+    const deps = {
+      config: createCoreConfig({
+        redis: { url: 'redis://localhost:6379' },
+        firestore: { projectId: 'tests' },
+      }),
+      repositories: {
+        organizations: {
+          getById: async () => ({ platformFeePercent: 10 }),
+        },
+        partnerships: { findByPair: async () => ({ venueShareRate: 10 }) },
+      },
+    } as unknown as ServiceDeps;
+    const service = new EventCatalogService(deps);
+    vi.spyOn(service, 'assertPromoterAssignable').mockResolvedValue();
+    return service;
+  }
+
+  it('derives eligible paid tiers with the same canonical rules used at final assignment', async () => {
+    const service = setup();
+    await expect(
+      service.validateProposedPromoterAssignment(
+        {
+          userId: 'host_user',
+          organizationId: 'host_org',
+          role: 'owner',
+          capabilities: ['host'],
+        },
+        {
+          venueId: 'venue_1',
+          promoterId: 'promoter_1',
+          tiers: [
+            {
+              id: 'paid',
+              accessType: 'ENTRY',
+              commissionEligible: true,
+              priceInPaise: 5_000,
+              doorPriceInPaise: null,
+            },
+            {
+              id: 'rsvp',
+              accessType: 'RSVP',
+              commissionEligible: false,
+              priceInPaise: 0,
+              doorPriceInPaise: null,
+            },
+            {
+              id: 'excluded',
+              accessType: 'ENTRY',
+              commissionEligible: false,
+              priceInPaise: 5_000,
+              doorPriceInPaise: null,
+            },
+          ],
+          term: { version: 1, ratePercent: 15, flatPaise: 0 },
+        },
+      ),
+    ).resolves.toEqual(['paid']);
+  });
+
+  it('rejects a paid event assignment with no eligible tiers before Venue review', async () => {
+    const service = setup();
+    await expect(
+      service.validateProposedPromoterAssignment(
+        {
+          userId: 'host_user',
+          organizationId: 'host_org',
+          role: 'owner',
+          capabilities: ['host'],
+        },
+        {
+          venueId: 'venue_1',
+          promoterId: 'promoter_1',
+          tiers: [
+            {
+              id: 'paid',
+              accessType: 'ENTRY',
+              commissionEligible: true,
+              priceInPaise: 5_000,
+              doorPriceInPaise: null,
+            },
+          ],
+          term: { version: 1, ratePercent: 0, flatPaise: 0 },
+          eligibleTierIds: [],
+        },
+      ),
+    ).rejects.toThrow(/at least one paid ticket tier/);
+  });
+});
