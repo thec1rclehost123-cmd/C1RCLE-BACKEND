@@ -345,6 +345,52 @@ describe('Venue availability and Host request lifecycle', () => {
     expect(request.eventDraft?.promoters).toEqual([
       { promoterId: 'promoter_1', ratePercent: 15, eligibleTierIds: ['paid-tier'] },
     ]);
+
+    validate.mockRejectedValueOnce(
+      new Error('Select at least one paid ticket tier for Promoter commission.'),
+    );
+    await expect(new VenueSlotRequestService(deps).accept(venueActor, request.id)).rejects.toThrow(
+      /paid ticket tier/,
+    );
+    expect(await deps.repositories.slotRequests.getById(request.id)).toMatchObject({
+      status: 'pending',
+    });
+    if (!request.eventId) throw new Error('Expected the request to reserve an event ID');
+    expect(await deps.repositories.events.getById(request.eventId)).toBeNull();
+
+    const partiallyCreatedEvent = createEvent({
+      id: request.eventId,
+      organizationId: hostActor.organizationId,
+      venueId: venue.id,
+      title: 'Partial commission proposal',
+      startAt: '2026-11-20T12:00:00.000Z',
+      now: NOW,
+    });
+    await deps.repositories.events.save(partiallyCreatedEvent);
+    await new EventCatalogService(deps).createTier(hostActor, {
+      id: 'paid-tier',
+      eventId: request.eventId,
+      name: 'General',
+      priceInPaise: 5_000,
+      quantity: 50,
+      commissionEligible: false,
+    });
+    const accepted = transitionSlotRequest(request, 'accepted', NOW);
+    await deps.repositories.slotRequests.save(accepted);
+    validate.mockRejectedValueOnce(new Error('Commission terms are no longer valid.'));
+    await expect(new VenueSlotRequestService(deps).accept(venueActor, request.id)).rejects.toThrow(
+      /no longer valid/,
+    );
+    expect(await deps.repositories.slotRequests.getById(request.id)).toMatchObject({
+      status: 'accepted',
+    });
+    expect(validate).toHaveBeenLastCalledWith(
+      expect.objectContaining({ organizationId: hostActor.organizationId }),
+      expect.objectContaining({
+        tiers: [expect.objectContaining({ id: 'paid-tier', commissionEligible: false })],
+      }),
+    );
+    expect(validate).toHaveBeenCalledTimes(3);
   });
 
   it('publishes an open offer, atomically holds it for one Host, then reserves it on acceptance', async () => {

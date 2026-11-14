@@ -34,6 +34,38 @@ describe('restricted event projection privacy', () => {
   });
 });
 
+describe('Venue-owned event read route authorization', () => {
+  it('requires Venue capability for the Venue event read model', async () => {
+    const server = await buildPartnerTestServer({
+      routes: [partnerEventRoutes],
+      actorRole: 'owner',
+      actorCapabilities: ['host'],
+    });
+    const response = await server.inject({
+      method: 'GET',
+      url: '/organizations/org_1/venue-events',
+      headers: VALID_HEADERS,
+    });
+    expect(response.statusCode, response.body).toBe(403);
+    await server.close();
+  });
+
+  it('rejects a Venue organization path that differs from the active membership', async () => {
+    const server = await buildPartnerTestServer({
+      routes: [partnerEventRoutes],
+      actorRole: 'owner',
+      actorCapabilities: ['venue'],
+    });
+    const response = await server.inject({
+      method: 'GET',
+      url: '/organizations/org_1/venue-events',
+      headers: { 'x-organization-id': 'org_2' },
+    });
+    expect(response.statusCode).toBe(403);
+    await server.close();
+  });
+});
+
 describe('event media', () => {
   const media = {
     youtubeUrl: 'https://www.youtube.com/watch?v=abc123',
