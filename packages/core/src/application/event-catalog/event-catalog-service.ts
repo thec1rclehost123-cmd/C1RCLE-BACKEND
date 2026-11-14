@@ -413,7 +413,19 @@ export class EventCatalogService {
 
   async listPromotions(actor: ActorContext, eventId: EntityId, query: PaginationQuery) {
     await this.assertEventOwned(actor, eventId);
-    return this.repo.listPromos(eventId, query);
+    const page = await this.repo.listPromos(eventId, query);
+    const items = await Promise.all(
+      page.items.map(async (promo) => ({
+        ...promo,
+        // Redemption rows are authoritative. PromoCode.redemptionCount is a
+        // creation-time snapshot, while checkout records successful uses in
+        // the redemption repository after order capture.
+        redemptionCount:
+          (await this.deps.repositories.promoRedemptions.countByPromo(promo.id)) +
+          (await this.deps.repositories.promoRedemptions.countByPromo(promo.code)),
+      })),
+    );
+    return { ...page, items };
   }
 
   async createTable(actor: ActorContext, command: CreateTableCommand): Promise<TablePackage> {
