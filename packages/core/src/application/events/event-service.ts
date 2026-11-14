@@ -1,4 +1,5 @@
 import {
+  ForbiddenError,
   EventNotFoundError,
   VersionConflictError,
   InvalidOperationError,
@@ -370,6 +371,74 @@ export class EventService {
         venueName: event.venueId ? (venueNames.get(event.venueId) ?? null) : null,
         ticketsSold: soldByEvent.get(event.id) ?? 0,
         salesCountComplete,
+      })),
+    };
+  }
+
+  /** Venue view: list events assigned to the Venue's own records, while
+   * preserving the Host as the event owner. */
+  async listForVenueOrganization(actor: ActorContext, query: PaginationQuery) {
+    requireOrgAccess(actor, actor.organizationId);
+    if (!actor.capabilities.includes('venue')) {
+      throw new ForbiddenError('Venue access is required to list Venue events');
+    }
+    const venuePage = await this.deps.repositories.venues.listByOrganization(actor.organizationId, {
+      cursor: null,
+      limit: 100,
+    });
+    const venueIds = new Set(venuePage.items.map((venue) => venue.id));
+    const allEvents: Event[] = [];
+    for (const venueId of venueIds) {
+      let cursor: string | null = null;
+      let pages = 0;
+      do {
+        const page = await this.repo.listByVenue(venueId, { cursor, limit: 100 });
+        allEvents.push(...page.items);
+        cursor = page.nextCursor;
+        pages += 1;
+      } while (cursor && pages < 10);
+    }
+    const uniqueEvents = [...new Map(allEvents.map((event) => [event.id, event])).values()]
+      .filter((event) => event.venueId !== null && venueIds.has(event.venueId))
+      .sort(
+        (left, right) =>
+          left.startAt.localeCompare(right.startAt) || left.id.localeCompare(right.id),
+      );
+    const limit = Math.min(Math.max(query.limit, 1), 100);
+    const offset = query.cursor ? Number.parseInt(query.cursor, 10) || 0 : 0;
+    const events = uniqueEvents.slice(offset, offset + limit);
+    const ownerIds = [...new Set(events.map((event) => event.organizationId))];
+    const ownerOrders = await Promise.all(
+      ownerIds.map(async (ownerId) => ({
+        ownerId,
+        page: await this.deps.repositories.orders.listByOrganization(ownerId, {
+          cursor: null,
+          limit: 1000,
+        }),
+      })),
+    );
+    const soldByEvent = new Map<EntityId, number>();
+    for (const { page } of ownerOrders) {
+      for (const order of page.items) {
+        if (!['paid', 'refund_requested', 'refunded'].includes(order.status)) continue;
+        soldByEvent.set(
+          order.eventId,
+          (soldByEvent.get(order.eventId) ?? 0) +
+            order.lines.reduce((sum, line) => sum + line.quantity, 0),
+        );
+      }
+    }
+    const venuePageById = new Map(venuePage.items.map((venue) => [venue.id, venue]));
+    return {
+      total: uniqueEvents.length,
+      nextCursor:
+        offset + events.length < uniqueEvents.length ? String(offset + events.length) : null,
+      items: events.map((event) => ({
+        event,
+        capacity: event.capacity,
+        venueName: event.venueId ? (venuePageById.get(event.venueId)?.public.name ?? null) : null,
+        ticketsSold: soldByEvent.get(event.id) ?? 0,
+        salesCountComplete: ownerOrders.every(({ page }) => page.nextCursor === null),
       })),
     };
   }
