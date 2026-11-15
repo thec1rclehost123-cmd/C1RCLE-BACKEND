@@ -360,6 +360,56 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
     },
   );
 
+  // Venue read model: events remain Host-owned, but the Venue can read events
+  // linked to Venue records owned by its authenticated organization.
+  fastify.get(
+    '/organizations/:organizationId/venue-events',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({
+          params: orgIdParam,
+          querystring: paginationQuerySchema,
+          headers: readHeaders,
+        }),
+        fastify.requirePermission('venue.read'),
+      ],
+    },
+    async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
+      const { organizationId } = request.params as z.infer<typeof orgIdParam>;
+      const query = request.query as z.infer<typeof paginationQuerySchema>;
+      const actor = services.actor(request);
+      if (requirePathOrg(reply, request, actor, organizationId) === undefined) return reply;
+      let page: Awaited<ReturnType<typeof services.events.listForVenueOrganization>>;
+      try {
+        page = await services.events.listForVenueOrganization(actor, {
+          limit: query.limit,
+          cursor: query.cursor ?? null,
+        });
+      } catch (error) {
+        return mapDomainError(reply, request, organizationId, error);
+      }
+      const items = page.items.map(({ event, ...operations }) => ({
+        ...eventToDto(event),
+        ...operations,
+      }));
+      const payload = {
+        items,
+        pageInfo: {
+          page: 1,
+          pageSize: query.limit,
+          total: page.total,
+          hasNextPage: page.nextCursor !== null,
+          nextCursor: page.nextCursor,
+        },
+      };
+      const validated = validateV2Response(reply, request, eventListSchema, payload);
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
   // ── LIST (org-scoped path, matches task.md §5) ────────────────────────────
   fastify.get(
     '/organizations/:organizationId/events',

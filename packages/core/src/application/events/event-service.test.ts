@@ -87,6 +87,73 @@ describe('guest-facing copy before publication', () => {
   });
 });
 
+describe('Venue event read model', () => {
+  it('returns Host-owned events only for Venues belonging to the active Venue organization', async () => {
+    const ownVenueEvent = createEvent({
+      id: 'host-event-at-owned-venue',
+      organizationId: 'host-org',
+      venueId: 'owned-venue',
+      title: 'Owned Venue Event',
+      startAt: '2026-11-28T20:00:00.000Z',
+      now: NOW,
+    });
+    const otherVenueEvent = createEvent({
+      id: 'event-at-unrelated-venue',
+      organizationId: 'other-host-org',
+      venueId: 'unrelated-venue',
+      title: 'Unrelated Venue Event',
+      startAt: '2026-11-29T20:00:00.000Z',
+      now: NOW,
+    });
+    const service = new EventService({
+      config: { features: {}, clock: { now: () => NOW } },
+      repositories: {
+        venues: {
+          listByOrganization: vi.fn(async () => ({
+            items: [
+              { id: 'owned-venue', organizationId: 'venue-org', public: { name: 'Owned venue' } },
+            ],
+            total: 1,
+            nextCursor: null,
+          })),
+        },
+        events: {
+          listByVenue: vi.fn(async (venueId: string) => ({
+            // A faulty/stale repository response must not expose another Venue's
+            // event merely because it appears in this page.
+            items: venueId === 'owned-venue' ? [ownVenueEvent, otherVenueEvent] : [],
+            total: 1,
+            nextCursor: null,
+          })),
+        },
+        orders: {
+          listByOrganization: vi.fn(async () => ({ items: [], total: 0, nextCursor: null })),
+        },
+      },
+    } as never);
+
+    const page = await service.listForVenueOrganization(
+      { userId: 'venue-user', organizationId: 'venue-org', role: 'owner', capabilities: ['venue'] },
+      { cursor: null, limit: 50 },
+    );
+
+    expect(page.items.map(({ event }) => event.id)).toEqual(['host-event-at-owned-venue']);
+    expect(page.items[0]?.event.organizationId).toBe('host-org');
+    expect(page.items[0]?.venueName).toBe('Owned venue');
+  });
+
+  it('requires authenticated Venue capability for the Venue event read model', async () => {
+    const service = new EventService({
+      config: { features: {}, clock: { now: () => NOW } },
+      repositories: { venues: { listByOrganization: vi.fn() } },
+    } as never);
+
+    await expect(
+      service.listForVenueOrganization(owner, { cursor: null, limit: 50 }),
+    ).rejects.toThrow('Venue access is required');
+  });
+});
+
 describe('external location review gate', () => {
   const externalDraft = createEvent({
     id: 'external-draft',
