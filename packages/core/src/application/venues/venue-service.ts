@@ -731,28 +731,7 @@ export class VenueSlotRequestService {
       throw new InvalidOperationError('Only a pending slot request can be accepted');
     }
     const newlyAccepted = request.status === 'pending';
-    if (newlyAccepted && request.eventDraft) {
-      const hostActor: ActorContext = {
-        ...actor,
-        organizationId: request.hostId,
-        capabilities: ['host'],
-      };
-      const catalog = new EventCatalogService(this.deps);
-      for (const promoter of request.eventDraft.promoters) {
-        const promoterId = promoter.promoterId;
-        if (typeof promoterId !== 'string') {
-          throw new InvalidOperationError('The proposed Promoter assignment is invalid');
-        }
-        try {
-          await catalog.assertPromoterAssignable(hostActor, promoterId);
-        } catch (error) {
-          if (!(error instanceof PromoterAssignmentNotFoundError)) throw error;
-          throw new InvalidOperationError(
-            'The selected Promoter is no longer eligible for this Host. The request remains pending; ask the Host to update the Promoter selection before trying again.',
-          );
-        }
-      }
-    }
+    if (request.eventDraft) await this.validateDraftPromoters(actor, request);
     const updated = newlyAccepted
       ? transitionSlotRequest(request, 'accepted', this.deps.config.clock.now())
       : request;
@@ -773,6 +752,77 @@ export class VenueSlotRequestService {
       });
     }
     return updated;
+  }
+
+  /** Recheck the exact Host submission rules before approval and every publish retry. */
+  private async validateDraftPromoters(actor: ActorContext, request: SlotRequest): Promise<void> {
+    const draft = request.eventDraft;
+    if (!draft) return;
+    const hostActor: ActorContext = {
+      ...actor,
+      organizationId: request.hostId,
+      capabilities: ['host'],
+    };
+    const catalog = new EventCatalogService(this.deps);
+    const existingEvent = request.eventId
+      ? await this.deps.repositories.events.getById(request.eventId)
+      : null;
+    const persistedTiers = existingEvent
+      ? await catalog.listTiers(hostActor, existingEvent.id)
+      : [];
+    const tiers = persistedTiers.length
+      ? persistedTiers
+      : draft.tiers.map(({ localId, command }) => {
+          const accessType = command.accessType === 'RSVP' ? 'RSVP' : 'ENTRY';
+          const priceInPaise = typeof command.priceInPaise === 'number' ? command.priceInPaise : 0;
+          return {
+            id: localId,
+            accessType,
+            priceInPaise,
+            doorPriceInPaise:
+              typeof command.doorPriceInPaise === 'number' ? command.doorPriceInPaise : null,
+            commissionEligible:
+              accessType !== 'RSVP' &&
+              (typeof command.commissionEligible === 'boolean'
+                ? command.commissionEligible
+                : priceInPaise > 0),
+          } as const;
+        });
+    for (const candidate of draft.promoters) {
+      const promoterId = candidate.promoterId;
+      if (typeof promoterId !== 'string') {
+        throw new InvalidOperationError('The proposed Promoter assignment is invalid');
+      }
+      const term = {
+        version: 1 as const,
+        ratePercent: typeof candidate.ratePercent === 'number' ? candidate.ratePercent : 0,
+        flatPaise: typeof candidate.flatPaise === 'number' ? candidate.flatPaise : 0,
+        ...(candidate.tierRates && typeof candidate.tierRates === 'object'
+          ? {
+              tierRates: candidate.tierRates as Record<
+                string,
+                { ratePercent: number; flatPaise: number }
+              >,
+            }
+          : {}),
+      };
+      try {
+        await catalog.validateProposedPromoterAssignment(hostActor, {
+          venueId: request.venueId,
+          tiers,
+          promoterId,
+          term,
+          ...(Array.isArray(candidate.eligibleTierIds)
+            ? { eligibleTierIds: candidate.eligibleTierIds as string[] }
+            : {}),
+        });
+      } catch (error) {
+        if (!(error instanceof PromoterAssignmentNotFoundError)) throw error;
+        throw new InvalidOperationError(
+          'A selected Promoter is no longer eligible for this Host. The request remains pending if not yet approved; ask the Host to update the Promoter selection before trying again.',
+        );
+      }
+    }
   }
 
   private async publishApprovedDraft(actor: ActorContext, request: SlotRequest): Promise<void> {
