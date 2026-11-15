@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createCoreConfig } from '../../config/index.js';
-import { createPromoterAssignment, createTicketTier } from '../../domain/models/event-catalog.js';
+import {
+  createPromoCode,
+  createPromoterAssignment,
+  createTicketTier,
+} from '../../domain/models/event-catalog.js';
 import { MemoryOutboxStore } from '../../infrastructure/memory/memory-outbox-store.js';
 import { MemoryEventCatalogRepository } from '../../infrastructure/memory/memory-repositories.js';
 
@@ -80,6 +84,56 @@ describe('Promoter assignment expiry worker', () => {
         },
       },
     });
+  });
+});
+
+describe('promotion redemption analytics', () => {
+  it('returns completed redemption counts from canonical id and legacy code records', async () => {
+    const now = new Date('2026-11-13T00:00:00.000Z');
+    const promo = createPromoCode({
+      id: 'promo_analytics_1',
+      eventId: 'event_analytics_1',
+      organizationId: 'host_analytics_1',
+      code: 'NIGHT10',
+      discountType: 'percent',
+      discountValue: 10,
+      discountFundingOwner: 'host',
+      now,
+    });
+    const catalog = new MemoryEventCatalogRepository();
+    await catalog.savePromo(promo);
+    const countByPromo = vi.fn(async (promoId: string) =>
+      promoId === promo.id ? 2 : promoId === promo.code ? 1 : 0,
+    );
+    const service = new EventCatalogService({
+      config: createCoreConfig({
+        redis: { url: 'redis://localhost:6379' },
+        firestore: { projectId: 'tests' },
+        clock: { now: () => now },
+      }),
+      repositories: {
+        catalog,
+        events: {
+          getById: vi.fn(async () => ({ id: promo.eventId, organizationId: promo.organizationId })),
+        },
+        promoRedemptions: { countByPromo },
+      },
+    } as unknown as ServiceDeps);
+
+    const result = await service.listPromotions(
+      {
+        userId: 'host-user',
+        organizationId: 'host_analytics_1',
+        role: 'owner',
+        capabilities: ['host'],
+      },
+      'event_analytics_1',
+      { cursor: null, limit: 20 },
+    );
+
+    expect(result.items[0]).toMatchObject({ id: promo.id, code: promo.code, redemptionCount: 3 });
+    expect(countByPromo).toHaveBeenNthCalledWith(1, promo.id);
+    expect(countByPromo).toHaveBeenNthCalledWith(2, promo.code);
   });
 });
 
