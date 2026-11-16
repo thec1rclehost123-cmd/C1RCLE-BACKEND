@@ -17,6 +17,7 @@ import {
   createEventSchema,
   eventDraftRequestSchema,
   eventDraftDtoSchema,
+  venueEventDetailResponseSchema,
   externalEventLocationInputSchema,
   externalVenueContactSchema,
 } from '@c1rcle/contracts/client';
@@ -405,6 +406,38 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
         },
       };
       const validated = validateV2Response(reply, request, eventListSchema, payload);
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
+  fastify.get(
+    '/organizations/:organizationId/venue-events/:eventId',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({
+          params: orgIdParam.extend({ eventId: opaqueIdSchema }),
+          headers: readHeaders,
+        }),
+        fastify.requirePermission('venue.read'),
+      ],
+    },
+    async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
+      const { organizationId, eventId } = request.params as z.infer<typeof orgIdParam> & {
+        eventId: string;
+      };
+      const actor = services.actor(request);
+      if (requirePathOrg(reply, request, actor, organizationId) === undefined) return reply;
+      const result = await services.events
+        .getForVenueOrganization(actor, eventId)
+        .catch((error: unknown) => mapDomainError(reply, request, eventId, error));
+      if (result === undefined) return reply;
+      const validated = validateV2Response(reply, request, venueEventDetailResponseSchema, {
+        event: eventToDto(result.event),
+        tiers: result.tiers,
+      });
       if (validated === undefined) return reply;
       return reply.send(validated);
     },

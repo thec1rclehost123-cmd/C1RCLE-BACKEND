@@ -740,16 +740,30 @@ export class VenueSlotRequestService {
     if (updated.eventDraft && updated.eventId) {
       await this.publishApprovedDraft(actor, updated);
       if (updated.slotId) {
-        await emit(this.deps, actor, updated.id, 'venue.slot_request.accepted', {
-          venueId: updated.venueId,
-          slotId: updated.slotId,
-        });
+        await emit(
+          this.deps,
+          actor,
+          updated.id,
+          'venue.slot_request.accepted',
+          {
+            venueId: updated.venueId,
+            slotId: updated.slotId,
+          },
+          deterministicDomainEventId('venue.slot_request.accepted', updated.id),
+        );
       }
     } else if (newlyAccepted && request.slotId) {
-      await emit(this.deps, actor, updated.id, 'venue.slot_request.accepted', {
-        venueId: updated.venueId,
-        slotId: updated.slotId ?? '',
-      });
+      await emit(
+        this.deps,
+        actor,
+        updated.id,
+        'venue.slot_request.accepted',
+        {
+          venueId: updated.venueId,
+          slotId: updated.slotId ?? '',
+        },
+        deterministicDomainEventId('venue.slot_request.accepted', updated.id),
+      );
     }
     return updated;
   }

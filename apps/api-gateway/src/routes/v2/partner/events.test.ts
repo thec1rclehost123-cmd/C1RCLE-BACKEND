@@ -1,6 +1,7 @@
-import { createEvent as makeEvent } from '@c1rcle/core/domain';
+import { createEvent as makeEvent, createVenue } from '@c1rcle/core/domain';
 import { describe, expect, it } from 'vitest';
 
+import { createV2Services } from '../../../lib/v2-services.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 
 import partnerEventRoutes, { eventToDto } from './events.js';
@@ -35,6 +36,89 @@ describe('restricted event projection privacy', () => {
 });
 
 describe('Venue-owned event read route authorization', () => {
+  it('returns a Host-owned event only through its own Venue association', async () => {
+    const server = await buildPartnerTestServer({
+      routes: [partnerEventRoutes],
+      actorRole: 'owner',
+      actorCapabilities: ['venue'],
+    });
+    const repos = createV2Services().repos();
+    const now = new Date();
+    await repos.venues.save(
+      createVenue({
+        id: 'venue_detail_owned',
+        organizationId: 'org_1',
+        ownerId: 'user_1',
+        name: 'Owned venue',
+        slug: 'owned-venue',
+        now,
+      }),
+    );
+    await repos.venues.save(
+      createVenue({
+        id: 'venue_detail_other',
+        organizationId: 'org_2',
+        ownerId: 'user_1',
+        name: 'Other venue',
+        slug: 'other-venue',
+        now,
+      }),
+    );
+    const owned = makeEvent({
+      id: 'host_owned_venue_event',
+      organizationId: 'host_org_detail',
+      venueId: 'venue_detail_owned',
+      title: 'Host owned event',
+      startAt: '2030-08-01T18:00:00.000Z',
+    });
+    const other = makeEvent({
+      id: 'other_venue_event',
+      organizationId: 'host_org_detail',
+      venueId: 'venue_detail_other',
+      title: 'Other Venue event',
+      startAt: '2030-08-01T18:00:00.000Z',
+    });
+    await repos.events.save({ ...owned, status: 'published', isPublic: true });
+    await repos.events.save(other);
+    await repos.events.save(
+      makeEvent({
+        id: 'host_draft_venue_event',
+        organizationId: 'host_org_detail',
+        venueId: 'venue_detail_owned',
+        title: 'Host draft event',
+        startAt: '2030-08-01T18:00:00.000Z',
+      }),
+    );
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/organizations/org_1/venue-events/host_owned_venue_event',
+      headers: VALID_HEADERS,
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().event).toMatchObject({
+      id: owned.id,
+      organizationId: 'host_org_detail',
+      venueId: 'venue_detail_owned',
+    });
+    expect(response.json().tiers).toEqual([]);
+
+    const denied = await server.inject({
+      method: 'GET',
+      url: '/organizations/org_1/venue-events/other_venue_event',
+      headers: VALID_HEADERS,
+    });
+    expect(denied.statusCode).toBe(404);
+
+    const hiddenDraft = await server.inject({
+      method: 'GET',
+      url: '/organizations/org_1/venue-events/host_draft_venue_event',
+      headers: VALID_HEADERS,
+    });
+    expect(hiddenDraft.statusCode).toBe(404);
+    await server.close();
+  });
+
   it('requires Venue capability for the Venue event read model', async () => {
     const server = await buildPartnerTestServer({
       routes: [partnerEventRoutes],

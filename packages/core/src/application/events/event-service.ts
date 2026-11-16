@@ -493,6 +493,27 @@ export class EventService {
     };
   }
 
+  /** Read a Host-owned event only when it is associated with this Venue org. */
+  async getForVenueOrganization(actor: ActorContext, eventId: EntityId) {
+    requireOrgAccess(actor, actor.organizationId);
+    if (!actor.capabilities.includes('venue')) {
+      throw new ForbiddenError('Venue access is required to read Venue events');
+    }
+    const event = await this.repo.getById(eventId);
+    if (!event?.venueId) throw new EventNotFoundError(eventId);
+    if (event.status === 'draft' || event.status === 'review' || event.status === 'scheduled') {
+      throw new EventNotFoundError(eventId);
+    }
+    const venue = await this.deps.repositories.venues.getById(event.venueId);
+    if (!venue || venue.organizationId !== actor.organizationId) {
+      throw new EventNotFoundError(eventId);
+    }
+    return {
+      event,
+      tiers: await this.deps.repositories.catalog.listTiers(event.id),
+    };
+  }
+
   /** Tenant-scoped event detail with the same bounded sales evidence as the list. */
   async getWithOperations(actor: ActorContext, eventId: EntityId) {
     const event = await this.fetchOwned(actor, eventId);

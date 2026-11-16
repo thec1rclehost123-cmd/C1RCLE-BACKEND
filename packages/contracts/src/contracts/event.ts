@@ -496,6 +496,12 @@ export const ticketTierDtoSchema = z.object({
 });
 export type TicketTierDto = z.infer<typeof ticketTierDtoSchema>;
 
+/** Authorized Venue read model for one Host-owned event at its Venue. */
+export const venueEventDetailResponseSchema = z
+  .object({ event: eventDtoSchema, tiers: z.array(ticketTierDtoSchema) })
+  .strict();
+export type VenueEventDetailResponse = z.infer<typeof venueEventDetailResponseSchema>;
+
 const createTicketTierBaseSchema = z
   .object({
     name: z.string().min(1).max(120),
