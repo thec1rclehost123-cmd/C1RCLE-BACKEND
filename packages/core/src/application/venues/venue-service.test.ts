@@ -276,6 +276,117 @@ describe('VenueSlotRequestService reschedule requests', () => {
 });
 
 describe('Venue availability and Host request lifecycle', () => {
+  it('makes accepted-request recovery idempotent for publication entities and acceptance outbox events', async () => {
+    const deps = createTestDeps();
+    const venue = createVenue({
+      id: 'venue_accept_retry',
+      organizationId: 'venue_org_accept_retry',
+      ownerId: 'venue_owner_accept_retry',
+      name: 'Retry venue',
+      slug: 'retry-venue',
+      now: NOW,
+    });
+    await deps.repositories.venues.save(venue);
+    const partnership = createPartnership({
+      id: 'partnership_accept_retry',
+      hostOrganizationId: 'host_org_accept_retry',
+      venueOrganizationId: venue.organizationId,
+      venueId: venue.id,
+      initiatedBy: 'host',
+      now: NOW,
+    });
+    await deps.repositories.partnerships.save(
+      approvePartnership(partnership, venue.organizationId, NOW),
+    );
+    const venueActor: ActorContext = {
+      userId: 'venue_owner_accept_retry',
+      organizationId: venue.organizationId,
+      role: 'owner',
+      capabilities: ['venue'],
+    };
+    const hostActor: ActorContext = {
+      userId: 'host_owner_accept_retry',
+      organizationId: 'host_org_accept_retry',
+      role: 'owner',
+      capabilities: ['host'],
+    };
+    const slot = await new VenueCalendarService(deps).publishAvailability(venueActor, {
+      venueId: venue.id,
+      label: 'Acceptance retry slot',
+      startTime: '2026-11-06T12:30:00.000Z',
+      endTime: '2026-11-06T16:30:00.000Z',
+      timezone: 'Asia/Kolkata',
+    });
+    const request = await new VenueSlotRequestService(deps).create(hostActor, {
+      venueId: venue.id,
+      slotId: slot.id,
+      eventId: null,
+      eventDraft: {
+        event: {
+          venueId: venue.id,
+          title: 'Retry-safe publication',
+          summary: 'Acceptance retry regression.',
+          description: 'A valid synthetic event draft for retry safety.',
+          startAt: '2026-11-06T13:00:00.000Z',
+          endAt: '2026-11-06T15:00:00.000Z',
+        },
+        tiers: [
+          {
+            localId: 'retry-tier',
+            command: { name: 'General', priceInPaise: 5_000, quantity: 50, maxPerOrder: 4 },
+          },
+        ],
+        promotions: [
+          {
+            code: 'RETRY10',
+            discountType: 'percent',
+            discountValue: 10,
+            discountFundingOwner: 'host',
+            maxRedemptions: 25,
+            endsAt: '2026-11-28T12:30:00.000Z',
+          },
+        ],
+        promoters: [],
+      },
+    });
+    const requestService = new VenueSlotRequestService(deps);
+
+    await requestService.accept(venueActor, request.id);
+    const firstOutbox = (deps.outbox as MemoryOutboxStore)
+      .all()
+      .filter((row) => row.type === 'venue.slot_request.accepted');
+    expect(firstOutbox).toHaveLength(1);
+    const accepted = await deps.repositories.slotRequests.getById(request.id);
+    if (!accepted?.eventId) throw new Error('Expected an event id after acceptance');
+    expect(await deps.repositories.events.getById(accepted.eventId)).toMatchObject({
+      organizationId: hostActor.organizationId,
+      venueId: venue.id,
+      status: 'published',
+    });
+    expect(await deps.repositories.catalog.listTiers(accepted.eventId)).toHaveLength(1);
+    expect(
+      (await deps.repositories.catalog.listPromos(accepted.eventId, { limit: 10, cursor: null }))
+        .items,
+    ).toHaveLength(1);
+
+    await requestService.accept(venueActor, request.id);
+    expect(await deps.repositories.events.getById(accepted.eventId)).toMatchObject({
+      organizationId: hostActor.organizationId,
+      venueId: venue.id,
+      status: 'published',
+    });
+    expect(await deps.repositories.catalog.listTiers(accepted.eventId)).toHaveLength(1);
+    expect(
+      (await deps.repositories.catalog.listPromos(accepted.eventId, { limit: 10, cursor: null }))
+        .items,
+    ).toHaveLength(1);
+    expect(
+      (deps.outbox as MemoryOutboxStore)
+        .all()
+        .filter((row) => row.type === 'venue.slot_request.accepted'),
+    ).toHaveLength(1);
+  });
+
   it('stores server-resolved commission-eligible tier ids in a Host proposal', async () => {
     const deps = createTestDeps();
     const venue = createVenue({

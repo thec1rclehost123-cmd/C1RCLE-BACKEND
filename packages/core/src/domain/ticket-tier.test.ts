@@ -45,6 +45,28 @@ describe('ticket tier extensions', () => {
     expect(tier.pricingPhases).toHaveLength(1);
   });
 
+  it('resolves inclusive India calendar pricing dates to UTC instants', () => {
+    const tier = createTicketTier({
+      ...base,
+      pricingPhases: [
+        {
+          id: 'EARLY-BIRD',
+          name: 'Early Bird',
+          priceInPaise: 65_000,
+          startDate: '16-11',
+          endDate: '22-11',
+          quantity: null,
+        },
+      ],
+      now: new Date('2026-11-13T10:00:00.000Z'),
+    });
+
+    expect(tier.pricingPhases?.[0]).toMatchObject({
+      startsAt: '2026-11-15T18:30:00.000Z',
+      endsAt: '2026-11-22T18:30:00.000Z',
+    });
+  });
+
   it('rejects paid RSVP tickets', () => {
     expect(() => createTicketTier({ ...base, accessType: 'RSVP', priceInPaise: 1 })).toThrow(
       InvalidOperationError,

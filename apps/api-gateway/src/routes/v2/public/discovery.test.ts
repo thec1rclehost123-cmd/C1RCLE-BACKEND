@@ -141,6 +141,82 @@ describe('V2 public/discovery routes', () => {
     await server.close();
   });
 
+  it('normalizes legacy private poster URLs in discovery and event detail reads', async () => {
+    const server = await buildServer();
+    const services = createV2Services();
+    const event = makeEvent({
+      id: 'evt_legacy_local_poster',
+      organizationId: 'org_legacy_local_poster',
+      venueId: 'ven_legacy_local_poster',
+      title: 'Legacy poster event',
+      startAt: new Date(Date.now() + 7 * 86400 * 1000).toISOString(),
+    });
+    await services.repos().events.save({
+      ...event,
+      imageUrl: 'http://localhost:3001/poster.jpg',
+      status: 'published',
+      isPublic: true,
+      media: {
+        youtubeUrl: null,
+        gallery: [{ url: 'http://192.168.1.8/private.jpg', alt: 'private' }],
+        spotlights: [],
+      },
+    });
+
+    const discovery = await server.inject({ method: 'GET', url: '/discovery' });
+    expect(discovery.statusCode, discovery.body).toBe(200);
+    const discovered = discovery.json().items.find((item: { id: string }) => item.id === event.id);
+    expect(discovered).toMatchObject({ imageUrl: null, media: { gallery: [] } });
+    expect(JSON.stringify(discovered)).not.toMatch(/localhost|192\.168\.1\.8|blob:|data:/i);
+
+    const detail = await server.inject({ method: 'GET', url: `/events/${event.id}` });
+    expect(detail.statusCode, detail.body).toBe(200);
+    expect(detail.json().imageUrl).toBeNull();
+    expect(JSON.stringify(detail.json())).not.toMatch(/localhost|192\.168\.1\.8|blob:|data:/i);
+    await server.close();
+  });
+
+  it('preserves valid public HTTPS poster and gallery URLs', async () => {
+    const server = await buildServer();
+    const services = createV2Services();
+    const event = makeEvent({
+      id: 'evt_valid_public_poster',
+      organizationId: 'org_valid_public_poster',
+      venueId: 'ven_valid_public_poster',
+      title: 'Valid public poster event',
+      startAt: new Date(Date.now() + 7 * 86400 * 1000).toISOString(),
+      imageUrl: 'https://storage.googleapis.com/c1rcle-v2.firebasestorage.app/posters/public.jpg',
+    });
+    await services.repos().events.save({
+      ...event,
+      status: 'published',
+      isPublic: true,
+      media: {
+        youtubeUrl: 'https://youtu.be/abc123',
+        gallery: [
+          {
+            url: 'https://storage.googleapis.com/c1rcle-v2.firebasestorage.app/gallery/1.jpg',
+            alt: 'Stage',
+          },
+        ],
+        spotlights: [],
+      },
+    });
+
+    const detail = await server.inject({ method: 'GET', url: `/events/${event.id}` });
+    expect(detail.statusCode, detail.body).toBe(200);
+    expect(detail.json()).toMatchObject({
+      imageUrl: 'https://storage.googleapis.com/c1rcle-v2.firebasestorage.app/posters/public.jpg',
+      media: {
+        youtubeUrl: 'https://youtu.be/abc123',
+        gallery: [
+          { url: 'https://storage.googleapis.com/c1rcle-v2.firebasestorage.app/gallery/1.jpg' },
+        ],
+      },
+    });
+    await server.close();
+  });
+
   it('exposes only public external-location details to guests', async () => {
     const server = await buildServer();
     const services = createV2Services();
@@ -266,9 +342,7 @@ describe('V2 public/discovery routes', () => {
     });
     const revealed = await request();
     expect(revealed.statusCode).toBe(200);
-    expect(revealed.json().imageUrl).toBe(
-      'memory://reads/posters/org_private_address_policy/private-poster.webp',
-    );
+    expect(revealed.json().imageUrl).toBe(null);
     expect(revealed.json().venue.address).toMatchObject({
       street: '1 Test Street',
       zip: '411001',

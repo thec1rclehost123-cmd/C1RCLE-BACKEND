@@ -125,6 +125,7 @@ export {
   posterUploadUrlDtoSchema,
   ticketTierStatusSchema,
   ticketTierDtoSchema,
+  venueEventDetailResponseSchema,
   createTicketTierSchema,
   updateTicketTierLimitsSchema,
   publicTicketTierDtoSchema,

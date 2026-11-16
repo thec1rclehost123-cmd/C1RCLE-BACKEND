@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import type { TicketTier } from '@c1rcle/core/domain';
+
 import { createV2Services } from '../../../lib/v2-services.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 
@@ -26,9 +28,14 @@ const buildServer = () => buildPartnerTestServer({ routes: [publicDiscoveryRoute
 let seq = 0;
 
 async function seedPublishedEventWithTiers(
-  tiers: { name: string; priceInPaise: number; quantity: number; status?: string }[] = [
-    { name: 'RSVP', priceInPaise: 0, quantity: 50 },
-  ],
+  tiers: {
+    name: string;
+    priceInPaise: number;
+    quantity: number;
+    status?: string;
+    maxPerOrder?: number | null;
+    pricingPhases?: TicketTier['pricingPhases'];
+  }[] = [{ name: 'RSVP', priceInPaise: 0, quantity: 50 }],
 ): Promise<{ eventId: string; slug: string }> {
   seq += 1;
   const services = createV2Services();
@@ -79,6 +86,8 @@ async function seedPublishedEventWithTiers(
       salesEndAt: null,
       minPerOrder: null,
       maxPerOrder: null,
+      ...(tier.maxPerOrder === undefined ? {} : { maxPerOrder: tier.maxPerOrder }),
+      ...(tier.pricingPhases === undefined ? {} : { pricingPhases: tier.pricingPhases }),
       version: 1,
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
@@ -108,9 +117,42 @@ describe('GET /public/events/:idOrSlug/tiers', () => {
       availableQuantity: 50,
     });
     expect(body.items[1]).toMatchObject({ name: 'VIP', priceInPaise: 200_000 });
-    // Internal bounds stay hidden from guests.
+    // Minimum purchase rules stay internal, while the public per-order cap
+    // lets Guest controls avoid offering a quantity checkout will reject.
     expect(body.items[0]).not.toHaveProperty('minPerOrder');
-    expect(body.items[0]).not.toHaveProperty('maxPerOrder');
+    expect(body.items[0].maxPerOrder).toBeNull();
+    await server.close();
+  });
+
+  it('returns the currently active pricing phase price and per-order cap', async () => {
+    const server = await buildServer();
+    const now = Date.now();
+    const { slug } = await seedPublishedEventWithTiers([
+      {
+        name: 'General',
+        priceInPaise: 80_000,
+        quantity: 80,
+        maxPerOrder: 4,
+        pricingPhases: [
+          {
+            id: 'early-bird',
+            name: 'Early Bird',
+            priceInPaise: 65_000,
+            startsAt: new Date(now - 60_000).toISOString(),
+            endsAt: new Date(now + 60_000).toISOString(),
+            quantity: null,
+          },
+        ],
+      },
+    ]);
+
+    const response = await server.inject({ method: 'GET', url: `/events/${slug}/tiers` });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().items[0]).toMatchObject({
+      priceInPaise: 65_000,
+      availableQuantity: 80,
+      maxPerOrder: 4,
+    });
     await server.close();
   });
 
