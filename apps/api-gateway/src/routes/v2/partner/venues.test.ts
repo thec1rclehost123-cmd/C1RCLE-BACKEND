@@ -1034,6 +1034,123 @@ describe('V2 partners venues slice — slot requests', () => {
     await server.close();
   });
 
+  it('normalizes one malformed legacy poster without failing the slot-request collection', async () => {
+    const server = await buildSlotRequestServer();
+    const fixture = await createHostSlotRequestFixture(server, false, (venueId) => ({
+      event: {
+        venueId,
+        title: 'Legacy poster compatibility',
+        startAt: '2030-11-04T12:30:00.000Z',
+        endAt: '2030-11-04T16:30:00.000Z',
+      },
+      tiers: [],
+      promotions: [],
+      promoters: [],
+    }));
+    const malformedRequest = {
+      ...fixture.request,
+      version: Number(fixture.request.version) + 1,
+      eventDraft: {
+        ...fixture.request.eventDraft,
+        event: {
+          ...fixture.request.eventDraft.event,
+          imageUrl: 'http://localhost:3000/poster.jpg',
+        },
+      },
+    };
+    await services.repos().slotRequests.save(malformedRequest);
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/organizations/${fixture.hostOrganizationId}/slot-requests?limit=10`,
+      headers: { 'x-organization-id': fixture.hostOrganizationId },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const returnedRequest = response
+      .json()
+      .items.find((item: { id: string }) => item.id === fixture.request.id);
+    expect(returnedRequest.eventDraft.event.imageUrl).toBeNull();
+    expect(response.body).not.toContain('localhost');
+    await server.close();
+  });
+
+  it('preserves a valid public HTTPS poster unchanged in slot-request responses', async () => {
+    const server = await buildSlotRequestServer();
+    const posterUrl =
+      'https://storage.googleapis.com/c1rcle-v2.firebasestorage.app/posters/test.jpg';
+    const fixture = await createHostSlotRequestFixture(server, false, (venueId) => ({
+      event: {
+        venueId,
+        title: 'Valid poster compatibility',
+        imageUrl: posterUrl,
+        startAt: '2030-11-04T12:30:00.000Z',
+        endAt: '2030-11-04T16:30:00.000Z',
+      },
+      tiers: [],
+      promotions: [],
+      promoters: [],
+    }));
+
+    expect(fixture.request.eventDraft.event.imageUrl).toBe(posterUrl);
+    const response = await server.inject({
+      method: 'GET',
+      url: `/organizations/${fixture.hostOrganizationId}/slot-requests?limit=10`,
+      headers: { 'x-organization-id': fixture.hostOrganizationId },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().items[0].eventDraft.event.imageUrl).toBe(posterUrl);
+    await server.close();
+  });
+
+  it.each([
+    'http://localhost:3000/poster.jpg',
+    'https://192.168.1.20/poster.jpg',
+    'blob:https://staging.thec1rcle.com/poster-id',
+    'data:image/png;base64,AAAA',
+  ])('continues rejecting invalid new poster submissions: %s', async (imageUrl) => {
+    const server = await buildSlotRequestServer();
+    const fixture = await createHostSlotRequestFixture(server);
+    const slot = await server.inject({
+      method: 'POST',
+      url: `/venues/${fixture.venueId}/calendar/availability`,
+      headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
+      payload: {
+        label: 'Invalid poster submission',
+        startTime: '2030-11-05T12:30:00.000Z',
+        endTime: '2030-11-05T16:30:00.000Z',
+        timezone: 'Asia/Kolkata',
+        visibleToHostIds: [fixture.hostOrganizationId],
+      },
+    });
+    expect(slot.statusCode).toBe(201);
+    const response = await server.inject({
+      method: 'POST',
+      url: `/venues/${fixture.venueId}/slot-requests`,
+      headers: {
+        'x-organization-id': fixture.hostOrganizationId,
+        'idempotency-key': nextVenueKey(),
+      },
+      payload: {
+        slotId: slot.json().id,
+        eventDraft: {
+          event: {
+            venueId: fixture.venueId,
+            title: 'Invalid poster submission',
+            imageUrl,
+            startAt: '2030-11-05T12:30:00.000Z',
+            endAt: '2030-11-05T16:30:00.000Z',
+          },
+          tiers: [],
+          promotions: [],
+          promoters: [],
+        },
+      },
+    });
+    expect(response.statusCode).toBe(422);
+    await server.close();
+  });
+
   it('accepts a slot request as the venue org', async () => {
     const server = await buildSlotRequestServer();
     const fixture = await createHostSlotRequestFixture(server);
