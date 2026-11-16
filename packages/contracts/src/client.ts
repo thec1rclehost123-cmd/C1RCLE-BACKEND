@@ -174,6 +174,7 @@ export type { EventDraftRequest, EventDraftDto } from './contracts/event-draft.j
 export {
   eventStatusSchema,
   eventDtoSchema,
+  eventPosterUrlSchema,
   eventOperationsDtoSchema,
   organizationEventListResponseSchema,
   eventPreviewDtoSchema,

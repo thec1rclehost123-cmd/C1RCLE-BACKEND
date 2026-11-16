@@ -56,6 +56,55 @@ export const eventEntryRulesSchema = z
 export type EventEntryRulesDto = z.infer<typeof eventEntryRulesSchema>;
 
 const eventMediaHttpsUrl = z.url({ protocol: /^https$/, error: 'Use an HTTPS link' });
+
+function isNonPublicPosterHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/\.$/, '');
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) return true;
+
+  const octets = host.split('.').map(Number);
+  if (
+    octets.length !== 4 ||
+    octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)
+  ) {
+    return (
+      host.startsWith('[') &&
+      (host === '[::1]' ||
+        host.startsWith('[fc') ||
+        host.startsWith('[fd') ||
+        host.startsWith('[fe80:'))
+    );
+  }
+
+  const [first = 0, second = 0] = octets;
+  return (
+    first === 0 ||
+    first === 10 ||
+    first === 127 ||
+    first >= 224 ||
+    (first === 100 && second >= 64 && second <= 127) ||
+    (first === 169 && second === 254) ||
+    (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 168)
+  );
+}
+
+/** Poster URLs are consumed by Guests and must not point at a local/private host. */
+export const eventPosterUrlSchema = z
+  .url({ protocol: /^https$/, error: 'Use a public HTTPS poster URL.' })
+  .refine(
+    (value) => {
+      const authority = /^https:\/\/([^/?#]*)/i.exec(value)?.[1] ?? '';
+      const host = authority.slice(authority.lastIndexOf('@') + 1);
+      const hostname = host.startsWith('[')
+        ? host.slice(0, host.indexOf(']') + 1)
+        : (host.split(':')[0] ?? '');
+      return !isNonPublicPosterHostname(hostname);
+    },
+    {
+      message: 'Use a public HTTPS poster URL; local and private addresses are not allowed.',
+    },
+  );
+
 export const eventMediaSchema = z
   .object({
     titleFont: z
@@ -255,7 +304,7 @@ export const createEventBaseSchema = z.object({
   title: z.string().min(1).max(200),
   summary: z.string().max(1000).optional(),
   description: z.string().max(20_000).optional(),
-  imageUrl: z.url().nullable().optional(),
+  imageUrl: eventPosterUrlSchema.nullable().optional(),
   startAt: z.iso.datetime(),
   endAt: z.iso.datetime().nullable().optional(),
   tags: z.array(z.string().min(1).max(40)).max(50).default([]),
@@ -327,7 +376,7 @@ export const updateEventSchema = z
     title: z.string().min(1).max(200).optional(),
     summary: z.string().max(1000).optional(),
     description: z.string().max(20_000).optional(),
-    imageUrl: z.url().nullable().optional(),
+    imageUrl: eventPosterUrlSchema.nullable().optional(),
     startAt: z.iso.datetime().optional(),
     endAt: z.iso.datetime().nullable().optional(),
     tags: z.array(z.string().min(1).max(40)).max(50).optional(),

@@ -328,6 +328,23 @@ describe('V2 partners events slice — validation layers', () => {
     await server.close();
   });
 
+  it('rejects a localhost poster before event creation', async () => {
+    const server = await buildServer();
+    const response = await server.inject({
+      method: 'POST',
+      url: '/organizations/org_1/events',
+      headers: CREATE_HEADERS,
+      payload: {
+        ...CREATE_BODY,
+        imageUrl: 'http://localhost:3001/partner-v3/venue/poster.jpg',
+      },
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.json().fieldErrors).toHaveProperty('imageUrl');
+    await server.close();
+  });
+
   it('rejects unknown body keys with 422 (strict body)', async () => {
     const server = await buildServer();
     const response = await server.inject({

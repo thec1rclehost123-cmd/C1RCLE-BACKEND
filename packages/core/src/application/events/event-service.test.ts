@@ -70,6 +70,27 @@ describe('private event feature gate', () => {
   });
 });
 
+describe('Guest-reachable event poster URLs', () => {
+  it('rejects localhost posters before event persistence', async () => {
+    const save = vi.fn(async () => undefined);
+    const instance = new EventService({
+      config: { features: {}, clock: { now: () => NOW }, ids: () => 'poster-event' },
+      repositories: { events: { save } },
+      outbox: { append: async () => undefined },
+    } as never);
+
+    await expect(
+      instance.create(owner, {
+        venueId: 'venue',
+        title: 'Local poster event',
+        startAt: '2026-11-28T20:00:00.000Z',
+        imageUrl: 'http://localhost:3001/partner-v3/venue/poster.jpg',
+      }),
+    ).rejects.toThrow('Use a public HTTPS poster URL');
+    expect(save).not.toHaveBeenCalled();
+  });
+});
+
 describe('guest-facing copy before publication', () => {
   it('rejects publishing an event without a nonblank summary and description', async () => {
     const publicEvent = createEvent({
@@ -371,6 +392,21 @@ describe('private event poster privacy', () => {
     ).rejects.toThrow('managed storage so public access can be revoked');
 
     expect(revokePublicRead).toHaveBeenCalledWith(publicEvent.imageUrl, 'posters/host/');
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('rejects a localhost poster URL when updating an existing event', async () => {
+    const revokePublicRead = vi.fn(async () => null);
+    const { instance, save } = eventService(revokePublicRead);
+
+    await expect(
+      instance.update(owner, {
+        eventId: publicEvent.id,
+        expectedVersion: null,
+        changes: { imageUrl: 'http://localhost:3001/partner-v3/venue/poster.jpg' },
+      }),
+    ).rejects.toThrow('Use a public HTTPS poster URL');
+    expect(revokePublicRead).not.toHaveBeenCalled();
     expect(save).not.toHaveBeenCalled();
   });
 });
