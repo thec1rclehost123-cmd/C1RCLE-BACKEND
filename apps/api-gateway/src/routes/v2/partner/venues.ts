@@ -18,6 +18,7 @@ import {
   slotRequestListResponseSchema,
   slotRequestDetailDtoSchema,
   paginatedSchema,
+  eventPosterUrlSchema,
 } from '@c1rcle/contracts/client';
 import { z } from 'zod';
 
@@ -60,6 +61,49 @@ const venueHeaders = z.looseObject({
 
 const venueListSchema = paginatedSchema(venueDtoSchema);
 const slotRequestListSchema = paginatedSchema(slotRequestDtoSchema);
+
+interface SlotRequestWithDraft {
+  id: string;
+  eventDraft?: { event: { imageUrl?: string | null } };
+}
+
+/** Keep legacy stored poster values from poisoning slot-request read responses.
+ * Submission validation remains strict in `createSlotRequestSchema`.
+ */
+function normalizeLegacySlotRequestPoster<T extends SlotRequestWithDraft>(slotRequest: T): T {
+  const eventDraft = slotRequest.eventDraft;
+  const imageUrl = eventDraft?.event.imageUrl;
+  if (!eventDraft || imageUrl == null || eventPosterUrlSchema.safeParse(imageUrl).success) {
+    return slotRequest;
+  }
+
+  return {
+    ...slotRequest,
+    eventDraft: {
+      ...eventDraft,
+      event: { ...eventDraft.event, imageUrl: null },
+    },
+  };
+}
+
+function normalizeLegacySlotRequestPosters<T extends SlotRequestWithDraft>(
+  request: FastifyRequest,
+  slotRequests: T[],
+): T[] {
+  const normalized = slotRequests.map((slotRequest) =>
+    normalizeLegacySlotRequestPoster(slotRequest),
+  );
+  const normalizedIds = normalized
+    .filter((slotRequest, index) => slotRequest !== slotRequests[index])
+    .map((slotRequest) => slotRequest.id);
+  if (normalizedIds.length > 0) {
+    request.log.warn(
+      { count: normalizedIds.length, slotRequestIds: normalizedIds },
+      'Normalized non-public legacy slot-request poster URLs for read response',
+    );
+  }
+  return normalized;
+}
 
 const calendarQuery = z.object({
   from: z.iso.datetime(),
@@ -678,7 +722,7 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
         );
       if (page === undefined) return reply;
       const payload = {
-        items: page.items,
+        items: normalizeLegacySlotRequestPosters(request, page.items),
         pageInfo: {
           page: 1,
           pageSize: query.limit,
@@ -717,7 +761,7 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
         );
       if (page === undefined) return reply;
       const payload = {
-        items: page.items,
+        items: normalizeLegacySlotRequestPosters(request, page.items),
         pageInfo: {
           page: 1,
           pageSize: query.limit,
@@ -753,7 +797,7 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
         );
       if (detail === undefined) return reply;
       const payload = {
-        request: detail.request,
+        request: normalizeLegacySlotRequestPoster(detail.request),
         event: detail.event ? eventToDto(detail.event) : null,
         venue: detail.venue,
         host: detail.host,
@@ -801,7 +845,12 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
             message: body.message,
             eventDraft: body.eventDraft,
           });
-          const validated = validateV2Response(reply, request, slotRequestDtoSchema, slotRequest);
+          const validated = validateV2Response(
+            reply,
+            request,
+            slotRequestDtoSchema,
+            normalizeLegacySlotRequestPoster(slotRequest),
+          );
           if (validated === undefined) throw new Error('v2 response validation failed');
           return { statusCode: 201, body: validated };
         },
@@ -846,7 +895,12 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
           context: { path: { slotRequestId }, body: {} },
           run: async () => {
             const slotRequest = await services.venueSlotRequests[action](actor, slotRequestId);
-            const validated = validateV2Response(reply, request, slotRequestDtoSchema, slotRequest);
+            const validated = validateV2Response(
+              reply,
+              request,
+              slotRequestDtoSchema,
+              normalizeLegacySlotRequestPoster(slotRequest),
+            );
             if (validated === undefined) throw new Error('v2 response validation failed');
             return { statusCode: 200, body: validated };
           },
@@ -896,7 +950,12 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
             slotRequestId,
             body.reason,
           );
-          const validated = validateV2Response(reply, request, slotRequestDtoSchema, slotRequest);
+          const validated = validateV2Response(
+            reply,
+            request,
+            slotRequestDtoSchema,
+            normalizeLegacySlotRequestPoster(slotRequest),
+          );
           if (validated === undefined) throw new Error('v2 response validation failed');
           return { statusCode: 200, body: validated };
         },
@@ -940,7 +999,12 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
         context: { path: { slotRequestId }, body: {} },
         run: async () => {
           const slotRequest = await services.venueSlotRequests.cancel(actor, slotRequestId);
-          const validated = validateV2Response(reply, request, slotRequestDtoSchema, slotRequest);
+          const validated = validateV2Response(
+            reply,
+            request,
+            slotRequestDtoSchema,
+            normalizeLegacySlotRequestPoster(slotRequest),
+          );
           if (validated === undefined) throw new Error('v2 response validation failed');
           return { statusCode: 200, body: validated };
         },
