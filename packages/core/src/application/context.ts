@@ -265,11 +265,12 @@ export async function emit<TType extends DomainEventType>(
   aggregateId: EntityId,
   type: TType,
   payload: EventPayloads[TType],
+  eventId?: EntityId,
 ): Promise<void> {
   const occurredAt = deps.config.clock.now().getTime();
   await deps.outbox.append(
     domainEvent({
-      id: deps.config.ids(),
+      id: eventId ?? deps.config.ids(),
       type,
       aggregateId,
       organizationId: actor.organizationId,
