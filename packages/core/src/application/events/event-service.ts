@@ -87,6 +87,55 @@ const CONTENT_TYPE_EXTENSION: Record<string, string> = {
   'image/webp': 'webp',
 };
 
+function assertGuestReachablePosterUrl(imageUrl: string | null | undefined): void {
+  if (!imageUrl) return;
+
+  let url: URL;
+  try {
+    url = new URL(imageUrl);
+  } catch {
+    throw new InvalidOperationError(
+      'Use a public HTTPS poster URL; local addresses are not allowed.',
+    );
+  }
+
+  const host = url.hostname.toLowerCase().replace(/\.$/, '');
+  const ipv4 = host.split('.').map(Number);
+  const isIpv4 =
+    ipv4.length === 4 &&
+    ipv4.every((octet) => Number.isInteger(octet) && octet >= 0 && octet <= 255);
+  const [first = 0, second = 0] = ipv4;
+  const privateIpv4 =
+    isIpv4 &&
+    (first === 0 ||
+      first === 10 ||
+      first === 127 ||
+      first >= 224 ||
+      (first === 100 && second >= 64 && second <= 127) ||
+      (first === 169 && second === 254) ||
+      (first === 172 && second >= 16 && second <= 31) ||
+      (first === 192 && second === 168));
+  const privateIpv6 =
+    host.startsWith('[') &&
+    (host === '[::1]' ||
+      host.startsWith('[fc') ||
+      host.startsWith('[fd') ||
+      host.startsWith('[fe80:'));
+
+  if (
+    url.protocol !== 'https:' ||
+    host === 'localhost' ||
+    host.endsWith('.localhost') ||
+    host.endsWith('.local') ||
+    privateIpv4 ||
+    privateIpv6
+  ) {
+    throw new InvalidOperationError(
+      'Use a public HTTPS poster URL; local and private addresses are not allowed.',
+    );
+  }
+}
+
 export interface IssuePosterUploadUrlCommand {
   contentType: string;
 }
@@ -99,6 +148,7 @@ export class EventService {
   }
 
   async create(actor: ActorContext, command: CreateEventCommand): Promise<Event> {
+    assertGuestReachablePosterUrl(command.imageUrl);
     const visibilityMode = command.visibilityMode ?? 'public';
     if (
       (visibilityMode === 'code' || visibilityMode === 'invited') &&
@@ -474,6 +524,9 @@ export class EventService {
 
   async update(actor: ActorContext, command: UpdateEventCommand): Promise<Event> {
     const event = await this.fetchOwned(actor, command.eventId);
+    if (Object.hasOwn(command.changes, 'imageUrl')) {
+      assertGuestReachablePosterUrl(command.changes.imageUrl);
+    }
     const { slotRequestId, ...requestedChanges } = command.changes;
     const nextVisibilityMode = command.changes.visibilityMode ?? event.visibilityMode ?? 'public';
     const nextAddressDisclosure = command.changes.addressDisclosure ?? event.addressDisclosure;

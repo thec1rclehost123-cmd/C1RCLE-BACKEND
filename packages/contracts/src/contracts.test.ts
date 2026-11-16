@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   eventDtoSchema,
+  createEventSchema,
+  updateEventSchema,
+  createSlotRequestSchema,
   socialNotificationDtoSchema,
   guestProfileDtoSchema,
   idempotencyKeySchema,
@@ -171,6 +174,42 @@ describe('client schemas — canonical fixtures', () => {
 
   it('rejects an unknown event status', () => {
     expect(eventDtoSchema.safeParse({ status: 'live' }).success).toBe(false);
+  });
+
+  it('allows only HTTPS event posters on public hosts for create, update, and Host requests', () => {
+    const publicPoster = 'https://storage.googleapis.com/c1rcle-test/posters/event.webp';
+    const localPoster = 'http://localhost:3001/partner-v3/venue/poster.jpg';
+    const validEvent = {
+      venueId: 'ven_1',
+      title: 'Sky Night',
+      startAt: '2026-09-01T18:00:00.000Z',
+    };
+
+    expect(createEventSchema.safeParse({ ...validEvent, imageUrl: publicPoster }).success).toBe(
+      true,
+    );
+    expect(createEventSchema.safeParse({ ...validEvent, imageUrl: localPoster }).success).toBe(
+      false,
+    );
+    expect(
+      createEventSchema.safeParse({
+        ...validEvent,
+        imageUrl: 'https://192.168.1.12/poster.jpg',
+      }).success,
+    ).toBe(false);
+    expect(updateEventSchema.safeParse({ imageUrl: localPoster }).success).toBe(false);
+    expect(
+      createSlotRequestSchema.safeParse({
+        startTime: '2026-09-01T18:00:00.000Z',
+        endTime: '2026-09-01T22:00:00.000Z',
+        eventDraft: {
+          event: { ...validEvent, imageUrl: localPoster },
+          tiers: [],
+          promotions: [],
+          promoters: [],
+        },
+      }).success,
+    ).toBe(false);
   });
 
   it('parses a guest profile upsert and dto with the accepted one-interest minimum', () => {
