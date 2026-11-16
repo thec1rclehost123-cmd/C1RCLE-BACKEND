@@ -82,7 +82,7 @@ export class PublicService {
     idOrSlug: EntityId,
     userId?: EntityId,
     accessGrantId?: EntityId,
-  ): Promise<{ tier: TicketTier; availableQuantity: number }[]> {
+  ): Promise<{ tier: TicketTier; availableQuantity: number; priceInPaise: number }[]> {
     const { event } = await this.getEvent(idOrSlug, userId, accessGrantId);
     const eventGrant = Boolean(
       userId &&
@@ -95,7 +95,7 @@ export class PublicService {
       )),
     );
     const tiers = await this.deps.repositories.catalog.listTiers(event.id);
-    const rows: { tier: TicketTier; availableQuantity: number }[] = [];
+    const rows: { tier: TicketTier; availableQuantity: number; priceInPaise: number }[] = [];
     for (const tier of tiers) {
       if (
         tier.status !== 'active' ||
@@ -119,8 +119,25 @@ export class PublicService {
           continue;
       }
       const availableAdmissions = await this.deps.inventory.getAvailableQuantity(event.id, tier.id);
+      const now = (this.deps.config?.clock?.now?.() ?? new Date()).getTime();
+      const activePhase = (tier.pricingPhases ?? []).find(
+        (phase) => Date.parse(phase.startsAt) <= now && Date.parse(phase.endsAt) > now,
+      );
+      let priceInPaise = tier.priceInPaise;
+      if (activePhase) {
+        const phaseAvailable =
+          activePhase.quantity === null
+            ? 1
+            : await this.deps.inventory.getAvailablePricingPhaseQuantity(
+                event.id,
+                tier.id,
+                activePhase.id,
+              );
+        if (phaseAvailable > 0) priceInPaise = activePhase.priceInPaise;
+      }
       rows.push({
         tier,
+        priceInPaise,
         // Inventory is attendee capacity. The public sell surface presents
         // purchasable bundles, so per-person group tiers divide capacity by
         // the server-owned attendee count.

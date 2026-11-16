@@ -7,12 +7,14 @@ import {
   hostPublicDtoSchema,
   discoveryFeedDtoSchema,
   publicTicketTierListResponseSchema,
+  eventPosterUrlSchema,
+  eventMediaSchema,
   publicTicketAddonListResponseSchema,
   paginatedSchema,
   redeemTicketAccessCodeSchema,
   ticketAccessGrantDtoSchema,
 } from '@c1rcle/contracts/client';
-import { UnauthorizedError, effectiveTierPricePaise } from '@c1rcle/core/domain';
+import { UnauthorizedError } from '@c1rcle/core/domain';
 import { z } from 'zod';
 
 import type { Organization, TicketTier, Venue } from '@c1rcle/core/domain';
@@ -38,13 +40,36 @@ const services = createV2Services();
 
 function publicEventToDto(event: Parameters<typeof eventToDto>[0], revealAfterGrant = false) {
   const dto = eventToDto(event);
-  if (!event.externalLocation) return dto;
+  const imageUrl = publicArtworkUrl(event.imageUrl);
+  const youtubeUrl = dto.media?.youtubeUrl;
+  const safeYoutubeUrl =
+    youtubeUrl && eventMediaSchema.shape.youtubeUrl.safeParse(youtubeUrl).success
+      ? youtubeUrl
+      : null;
+  const media = dto.media
+    ? {
+        ...dto.media,
+        youtubeUrl: safeYoutubeUrl,
+        gallery: dto.media.gallery.filter((item) => publicArtworkUrl(item.url) !== null),
+        spotlights: dto.media.spotlights.map((item) => ({
+          ...item,
+          link: publicArtworkUrl(item.link),
+          imageUrl: publicArtworkUrl(item.imageUrl),
+        })),
+      }
+    : undefined;
+  const safeDto = {
+    ...dto,
+    imageUrl,
+    ...(media ? { media } : {}),
+  };
+  if (!event.externalLocation) return safeDto;
   const disclosure =
     event.addressDisclosure ??
     (event.visibilityMode === 'code' || event.visibilityMode === 'invited' ? 'hidden' : 'public');
   const reveal = disclosure === 'public' || (revealAfterGrant && disclosure === 'after_grant');
   return {
-    ...dto,
+    ...safeDto,
     externalLocation: {
       name: event.externalLocation.name,
       address: reveal ? event.externalLocation.address : null,
@@ -59,6 +84,11 @@ function publicEventToDto(event: Parameters<typeof eventToDto>[0], revealAfterGr
       ...(reveal && event.externalLocation.mapUrl ? { mapUrl: event.externalLocation.mapUrl } : {}),
     },
   };
+}
+
+/** Legacy public reads may contain URLs that newer writes correctly reject. */
+function publicArtworkUrl(value: string | null | undefined): string | null {
+  return value && eventPosterUrlSchema.safeParse(value).success ? value : null;
 }
 const publicTierHeadersSchema = z.looseObject({
   'x-ticket-access-grant-id': z.string().min(1).max(64).optional(),
@@ -285,7 +315,7 @@ export default async function publicDiscoveryRoutes(fastify: FastifyInstance) {
         ...publicEventToDto(detail.event, true),
         // PublicService emits only a short-lived signed URL for an event grant;
         // partner and anonymous projections always redact private poster URLs.
-        imageUrl: detail.event.imageUrl,
+        imageUrl: publicArtworkUrl(detail.event.imageUrl),
         venue:
           detail.venue === null
             ? null
@@ -473,7 +503,9 @@ export default async function publicDiscoveryRoutes(fastify: FastifyInstance) {
         reply.header('x-robots-tag', 'noindex, nofollow, noarchive');
       }
       const payload = {
-        items: rows.map(({ tier, availableQuantity }) => publicTierToDto(tier, availableQuantity)),
+        items: rows.map(({ tier, availableQuantity, priceInPaise }) =>
+          publicTierToDto(tier, availableQuantity, priceInPaise),
+        ),
       };
       const validated = validateV2Response(
         reply,
@@ -594,16 +626,17 @@ function publicVenueToDto(venue: Venue) {
  * availability. No purchase bounds, no sales windows, no version stamps.
  * Legacy tiers without `priceInPaise` price via `effectiveTierPricePaise`.
  */
-function publicTierToDto(tier: TicketTier, availableQuantity: number) {
+function publicTierToDto(tier: TicketTier, availableQuantity: number, priceInPaise: number) {
   return {
     id: tier.id,
     eventId: tier.eventId,
     name: tier.name,
     description: tier.description,
-    priceInPaise: effectiveTierPricePaise(tier),
+    priceInPaise,
     coverAmountPaise: tier.coverAmountPaise ?? 0,
     currency: tier.currency,
     availableQuantity,
+    maxPerOrder: tier.maxPerOrder,
     guestCount: tier.guestCount ?? 1,
     admissionMode: tier.admissionMode ?? 'bundle',
     audienceType: tier.audienceType ?? 'GENERAL',

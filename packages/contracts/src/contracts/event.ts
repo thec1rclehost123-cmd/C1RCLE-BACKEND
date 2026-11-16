@@ -801,6 +801,8 @@ export const publicTicketTierDtoSchema = z.object({
   coverAmountPaise: z.number().int().nonnegative().optional(),
   currency: z.string().length(3),
   availableQuantity: z.number().int().nonnegative(),
+  /** Public purchase limit used to keep Guest quantity controls within the server rule. */
+  maxPerOrder: z.number().int().positive().nullable().optional(),
   guestCount: z.number().int().positive().optional(),
   admissionMode: z.enum(['bundle', 'per_person']).optional(),
   audienceType: ticketAudienceTypeSchema.optional(),

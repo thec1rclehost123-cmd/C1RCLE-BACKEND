@@ -175,6 +175,7 @@ export {
   eventStatusSchema,
   eventDtoSchema,
   eventPosterUrlSchema,
+  eventMediaSchema,
   eventOperationsDtoSchema,
   organizationEventListResponseSchema,
   eventPreviewDtoSchema,

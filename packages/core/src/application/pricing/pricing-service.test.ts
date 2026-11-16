@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { InvalidOperationError } from '../../domain/errors.js';
 import { createTicketAddon } from '../../domain/models/ticket-addon.js';
@@ -40,6 +40,36 @@ function service(ticket: TicketTier): PricingService {
 }
 
 describe('PricingService ticket-tier pricing', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it.each([
+    ['before phase', '2026-11-15T18:29:59.999Z', 80_000],
+    ['exact India-time start', '2026-11-15T18:30:00.000Z', 65_000],
+    ['inside phase', '2026-11-19T12:00:00.000Z', 65_000],
+    ['exact India-time end', '2026-11-22T18:30:00.000Z', 80_000],
+    ['after phase', '2026-11-22T18:30:00.001Z', 80_000],
+  ])('uses the correct phase price %s', async (_label, now, expected) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(now));
+    const result = await service(
+      tier({
+        priceInPaise: 80_000,
+        pricingPhases: [
+          {
+            id: 'EARLY-BIRD',
+            name: 'Early Bird',
+            priceInPaise: 65_000,
+            startsAt: '2026-11-15T18:30:00.000Z',
+            endsAt: '2026-11-22T18:30:00.000Z',
+            quantity: null,
+          },
+        ],
+      }),
+    ).calculate({ eventId: 'EVT-1', lines: [{ tierId: 'TIER-1', quantity: 1 }] });
+
+    expect(result.lines[0]?.unitPricePaise).toBe(expected);
+  });
+
   it('resolves the currently active pricing phase', async () => {
     const result = await service(
       tier({
