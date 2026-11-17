@@ -40,6 +40,12 @@ export class EventNotFoundError extends DomainError {
   }
 }
 
+export class EventNotOnSaleError extends DomainError {
+  constructor(message = 'This event is not on sale') {
+    super(message, 'event_not_on_sale');
+  }
+}
+
 export class TicketTierNotFoundError extends DomainError {
   constructor(tierId: string) {
     super(`Ticket tier ${tierId} not found`, 'ticket_tier_not_found');

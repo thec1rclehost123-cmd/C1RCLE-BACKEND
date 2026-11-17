@@ -26,3 +26,11 @@ export const guestOnboardingStateSchema = z.object({
   interestOptions: z.array(z.string()),
 });
 export type GuestOnboardingState = z.infer<typeof guestOnboardingStateSchema>;
+
+export const guestOnboardingStatusSchema = z.object({
+  displayName: z.string(),
+  phoneVerified: z.boolean(),
+  maskedPhone: z.string().nullable(),
+  complete: z.boolean(),
+});
+export type GuestOnboardingStatus = z.infer<typeof guestOnboardingStatusSchema>;

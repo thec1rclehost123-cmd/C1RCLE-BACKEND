@@ -3,11 +3,13 @@ import { createHash, randomBytes } from 'node:crypto';
 import {
   EventNotFoundError,
   ForbiddenError,
+  EventNotOnSaleError,
   NotFoundError,
   TicketTierNotFoundError,
   UnauthorizedError,
 } from '../../domain/errors.js';
 import { deterministicDomainEventId, domainEvent } from '../../domain/events.js';
+import { eventSalesUnavailableReason } from '../../domain/models/event-policy.js';
 import { createTicketAccessCode } from '../../domain/models/ticket-access.js';
 import { requireOrgAccess } from '../context.js';
 
@@ -185,6 +187,10 @@ export class TicketAccessService {
       .digest('hex');
     const code = await this.deps.repositories.ticketAccess.getCodeById(codeHash);
     if (!code) throw new NotFoundError('Access code', 'unavailable');
+    const event = await this.deps.repositories.events.getById(code.eventId);
+    if (!event) throw new NotFoundError('Access code', 'unavailable');
+    const unavailable = eventSalesUnavailableReason(event, this.deps.config.clock.now());
+    if (unavailable) throw new EventNotOnSaleError(unavailable);
     const grantEvent = domainEvent({
       id: deterministicDomainEventId('ticket.access.granted', grantId),
       type: 'ticket.access.granted',

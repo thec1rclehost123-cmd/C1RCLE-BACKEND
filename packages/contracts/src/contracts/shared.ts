@@ -35,6 +35,7 @@ export type ApiErrorCode =
   | 'forbidden'
   | 'not_found'
   | 'conflict'
+  | 'event_not_on_sale'
   | 'rate_limited'
   | 'network'
   | 'timeout'

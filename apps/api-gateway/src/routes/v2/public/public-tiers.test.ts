@@ -3,7 +3,10 @@ import { describe, expect, it } from 'vitest';
 import type { TicketTier } from '@c1rcle/core/domain';
 
 import { createV2Services } from '../../../lib/v2-services.js';
-import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
+import {
+  buildPartnerTestServer,
+  futureTestEventStartAt,
+} from '../../../test-utils/partner-test-server.js';
 
 import publicDiscoveryRoutes from './discovery.js';
 
@@ -53,7 +56,7 @@ async function seedPublishedEventWithTiers(
     summary: '',
     description: '',
     imageUrl: null,
-    startAt: '2026-09-01T18:00:00.000Z',
+    startAt: futureTestEventStartAt(),
     endAt: null,
     status: 'published',
     isPublic: true,

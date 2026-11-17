@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   eventAdmissionClosesAt,
   eventAdmissionUnavailableReason,
+  eventSalesUnavailableReason,
   eventQrUnavailableReason,
   eventTransferUnavailableReason,
   isMaterialEventChange,
@@ -22,6 +23,29 @@ const base = {
 };
 
 describe('V1 event authority', () => {
+  it('allows published and started online sales strictly before the effective end', () => {
+    expect(eventSalesUnavailableReason(base, new Date('2026-11-10T19:59:00.000Z'))).toBeNull();
+    const started = { ...base, status: 'started' as const };
+    expect(eventSalesUnavailableReason(started, new Date('2026-11-11T01:59:59.999Z'))).toBeNull();
+    expect(eventSalesUnavailableReason(started, new Date('2026-11-11T02:00:00.000Z'))).toBe(
+      'Online sales have ended.',
+    );
+  });
+  it('uses start plus six hours when endAt is missing and closes at the cutoff instant', () => {
+    const noEnd = { ...base, endAt: null };
+    expect(eventSalesUnavailableReason(noEnd, new Date('2026-11-11T01:59:59.999Z'))).toBeNull();
+    expect(eventSalesUnavailableReason(noEnd, new Date('2026-11-11T02:00:00.000Z'))).toBe(
+      'Online sales have ended.',
+    );
+  });
+  it('rejects paused, cancelled, postponed, and invalid schedules for new sales', () => {
+    for (const status of ['sales_paused', 'cancelled', 'postponed', 'draft'] as const) {
+      expect(eventSalesUnavailableReason({ ...base, status }, new Date(startAt))).not.toBeNull();
+    }
+    expect(
+      eventSalesUnavailableReason({ ...base, endAt: 'invalid' }, new Date(startAt)),
+    ).not.toBeNull();
+  });
   it('opens QR exactly 24h before the current announced start', () => {
     expect(eventQrUnavailableReason(base, new Date('2026-11-09T19:59:59.999Z'))).not.toBeNull();
     expect(eventQrUnavailableReason(base, new Date('2026-11-09T20:00:00.000Z'))).toBeNull();

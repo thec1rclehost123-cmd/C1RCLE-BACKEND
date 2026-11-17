@@ -1,4 +1,10 @@
-import { ConflictError, InvalidOperationError, NotFoundError } from '../../domain/errors.js';
+import {
+  ConflictError,
+  EventNotOnSaleError,
+  InvalidOperationError,
+  NotFoundError,
+} from '../../domain/errors.js';
+import { eventSalesUnavailableReason } from '../../domain/models/event-policy.js';
 import { requireOrgAccess } from '../context.js';
 
 import type { EntityId } from '../../domain/identity.js';
@@ -111,6 +117,11 @@ export class WaitlistService {
     }
     if (!entry.offerReservationId)
       throw new ConflictError('Waitlist entry has no active inventory offer');
+    const event = await this.deps.repositories.events.getById(entry.eventId);
+    const unavailable = event
+      ? eventSalesUnavailableReason(event, this.deps.config.clock.now())
+      : 'This event is unavailable for sale.';
+    if (unavailable) throw new EventNotOnSaleError(unavailable);
     const hold = await this.deps.repositories.cartReservations.getById(entry.offerReservationId);
     if (
       !hold ||

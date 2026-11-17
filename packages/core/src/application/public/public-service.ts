@@ -2,7 +2,9 @@ import {
   EventNotFoundError,
   VenueNotFoundError,
   OrganizationNotFoundError,
+  EventNotOnSaleError,
 } from '../../domain/errors.js';
+import { eventSalesUnavailableReason } from '../../domain/models/event-policy.js';
 import { isPublicStatus } from '../../domain/models/event.js';
 import { TicketAccessService } from '../tickets/ticket-access-service.js';
 
@@ -70,7 +72,40 @@ export class PublicService {
   /** Published/discoverable events only — `listPublic` is already filtered by
    * the domain's `isPublic` flag, so a draft/cancelled event can never appear. */
   async listEvents(query: PaginationQuery): Promise<Page<Event>> {
-    return this.events.listPublic(query);
+    const page = await this.events.listPublic(query);
+    const now = this.deps.config.clock.now();
+    return {
+      ...page,
+      items: page.items.filter(
+        (event) =>
+          isPublicStatus(event.status) &&
+          event.isPublic &&
+          eventSalesUnavailableReason(event, now) !== 'Online sales have ended.',
+      ),
+    };
+  }
+
+  async getSalesStatus(
+    event: Event,
+  ): Promise<'on_sale' | 'sold_out' | 'sales_paused' | 'ended' | 'cancelled' | 'postponed'> {
+    if (event.status === 'cancelled') return 'cancelled';
+    if (event.status === 'postponed') return 'postponed';
+    if (event.status === 'sales_paused') return 'sales_paused';
+    const now = this.deps.config.clock.now();
+    const unavailable = eventSalesUnavailableReason(event, now);
+    if (unavailable) return 'ended';
+    const tiers = await this.deps.repositories.catalog.listTiers(event.id);
+    const sellableTiers = tiers.filter(
+      (tier) =>
+        tier.status === 'active' &&
+        tier.audienceType !== 'STUDENT' &&
+        tier.audienceType !== 'MEMBER' &&
+        (tier.accessMode ?? 'public') === 'public',
+    );
+    for (const tier of sellableTiers) {
+      if ((await this.deps.inventory.getAvailableQuantity(event.id, tier.id)) > 0) return 'on_sale';
+    }
+    return 'sold_out';
   }
 
   /**
@@ -84,6 +119,8 @@ export class PublicService {
     accessGrantId?: EntityId,
   ): Promise<{ tier: TicketTier; availableQuantity: number; priceInPaise: number }[]> {
     const { event } = await this.getEvent(idOrSlug, userId, accessGrantId);
+    const unavailable = eventSalesUnavailableReason(event, this.deps.config.clock.now());
+    if (unavailable) throw new EventNotOnSaleError(unavailable);
     const eventGrant = Boolean(
       userId &&
       accessGrantId &&
@@ -279,7 +316,10 @@ export class PublicService {
    * `DISCOVERY_LIMIT`. Revisit if/when curation becomes a real concept.
    */
   async discovery(): Promise<Event[]> {
-    return this.events.listUpcomingPublic(new Date().toISOString(), DISCOVERY_LIMIT);
+    return this.events.listUpcomingPublic(
+      this.deps.config.clock.now().toISOString(),
+      DISCOVERY_LIMIT,
+    );
   }
 
   /**
@@ -292,7 +332,13 @@ export class PublicService {
   async search(q: string, query: PaginationQuery): Promise<Page<Event>> {
     const needle = q.trim().toLowerCase();
     const page = await this.events.listPublic({ limit: SEARCH_SCAN_LIMIT });
-    const matches = page.items.filter((event) => matchesQuery(event, needle));
+    const now = this.deps.config.clock.now();
+    const matches = page.items.filter(
+      (event) =>
+        isPublicStatus(event.status) &&
+        eventSalesUnavailableReason(event, now) !== 'Online sales have ended.' &&
+        matchesQuery(event, needle),
+    );
     const start = query.cursor ? matches.findIndex((event) => event.id === query.cursor) + 1 : 0;
     const end = Math.min(start + query.limit, matches.length);
     const items = matches.slice(start, end);
