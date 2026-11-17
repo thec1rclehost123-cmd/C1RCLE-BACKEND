@@ -83,6 +83,12 @@ ${code}`,
     const passwordValidity = invitation.temporaryPasswordExpiresAt
       ? `This temporary password works for 2 days (until ${invitation.temporaryPasswordExpiresAt}). If it expires, ask your manager to resend the invite.`
       : 'This temporary password works for 2 days. If it expires, ask your manager to resend the invite.';
+    // Door roles work in the scanner app, not the dashboard: say how a shift
+    // starts, because the invite alone does not authorize any scanning.
+    const doorGuidance =
+      invitation.role === 'gate_staff' || invitation.role === 'door_supervisor'
+        ? 'At the door: sign in to the C1RCLE scanner app with the details above. Your manager gives you a door code for each event; enter it to start your shift.'
+        : null;
     const details = [
       `You've been invited to join ${invitation.orgName} as ${roleLabel}.`,
       ...invitation.capabilities.map((capability) => `Access: ${capability}.`),
@@ -95,6 +101,7 @@ ${code}`,
           ]
         : []),
       `This invite expires on ${invitation.expiresAt}.`,
+      ...(doorGuidance ? [doorGuidance] : []),
       ...(invitation.acceptUrl ? [] : ['Ask your manager for the invite link to accept.']),
     ];
     const capabilityHtml = invitation.capabilities.length
@@ -107,7 +114,7 @@ ${code}`,
       preheader: `An invitation to join ${invitation.orgName} on THE C1RCLE.`,
       eyebrow: 'STAFF INVITATION',
       heading: "You're invited.",
-      bodyHtml: `<p>You've been invited to join <strong>${escapeEmailHtml(invitation.orgName)}</strong> as <strong>${escapeEmailHtml(roleLabel)}</strong>.</p>${capabilityHtml}${credentialHtml}<p>This invite expires on ${escapeEmailHtml(invitation.expiresAt)}.</p>${invitation.acceptUrl ? '' : '<p>Ask your manager for the invite link to accept.</p>'}`,
+      bodyHtml: `<p>You've been invited to join <strong>${escapeEmailHtml(invitation.orgName)}</strong> as <strong>${escapeEmailHtml(roleLabel)}</strong>.</p>${capabilityHtml}${credentialHtml}${doorGuidance ? `<p>${escapeEmailHtml(doorGuidance)}</p>` : ''}<p>This invite expires on ${escapeEmailHtml(invitation.expiresAt)}.</p>${invitation.acceptUrl ? '' : '<p>Ask your manager for the invite link to accept.</p>'}`,
       bodyText: details.join('\n'),
       ...(invitation.acceptUrl
         ? { action: { url: invitation.acceptUrl, label: 'Accept invite' } }

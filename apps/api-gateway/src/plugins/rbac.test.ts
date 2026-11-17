@@ -72,9 +72,13 @@ describe('role → permission table', () => {
       for (const permission of denied) {
         expect(roleHasPermission(role, permission), `${role} ${permission}`).toBe(false);
       }
-      expect(roleHasPermission(role, 'venue.read')).toBe(true);
+      expect(roleHasPermission(role, 'door.floor')).toBe(true);
       expect(roleHasPermission(role, 'event.read')).toBe(true);
     }
+    // The attendance report and cover-wallet records need venue.read, which
+    // only the supervisor holds; the gate person sees the floor, not the books.
+    expect(roleHasPermission('door_supervisor', 'venue.read')).toBe(true);
+    expect(roleHasPermission('gate_staff', 'venue.read')).toBe(false);
     // Only the supervisor can override a scan and manage door codes/devices.
     expect(roleHasPermission('door_supervisor', 'ticket.override')).toBe(true);
     expect(roleHasPermission('door_supervisor', 'door.manage')).toBe(true);
@@ -89,6 +93,7 @@ describe('role → permission table', () => {
       'organization.create',
       'staff.manage',
       'venue.read',
+      'door.floor',
       'venue.create',
       'venue.manage',
       'venue.schedule',

@@ -280,6 +280,55 @@ describe('V2 partners organizations slice — invitations', () => {
     await server.close();
   });
 
+  it('resends a pending door-staff invitation, and refuses once it is revoked', async () => {
+    const server = await buildServer();
+    const { id } = await createOrg(server);
+    const created = await server.inject({
+      method: 'POST',
+      url: `/organizations/${id}/invitations`,
+      headers: { 'x-organization-id': id, 'idempotency-key': nextOrgKey() },
+      payload: { email: 'gate.one@acme.test', role: 'gate_staff' },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({ role: 'gate_staff', status: 'pending' });
+    const invitationId = created.json().id as string;
+
+    const resent = await server.inject({
+      method: 'POST',
+      url: `/invitations/${invitationId}/resend`,
+      headers: { 'x-organization-id': id, 'idempotency-key': nextOrgKey() },
+    });
+    expect(resent.statusCode).toBe(200);
+    expect(resent.json()).toMatchObject({ id: invitationId, status: 'pending' });
+
+    await server.inject({
+      method: 'POST',
+      url: `/invitations/${invitationId}/revoke`,
+      headers: { 'x-organization-id': id, 'idempotency-key': nextOrgKey() },
+    });
+    const afterRevoke = await server.inject({
+      method: 'POST',
+      url: `/invitations/${invitationId}/resend`,
+      headers: { 'x-organization-id': id, 'idempotency-key': nextOrgKey() },
+    });
+    expect(afterRevoke.statusCode).toBeGreaterThanOrEqual(400);
+    expect(afterRevoke.statusCode).toBeLessThan(500);
+    await server.close();
+  });
+
+  it('never accepts the owner role on an invitation', async () => {
+    const server = await buildServer();
+    const { id } = await createOrg(server);
+    const created = await server.inject({
+      method: 'POST',
+      url: `/organizations/${id}/invitations`,
+      headers: { 'x-organization-id': id, 'idempotency-key': nextOrgKey() },
+      payload: { email: 'boss@acme.test', role: 'owner' },
+    });
+    expect(created.statusCode).toBe(422);
+    await server.close();
+  });
+
   it('accepts an invitation as the invitee and joins the org', async () => {
     const server = await buildServer();
     const { id } = await createOrg(server);

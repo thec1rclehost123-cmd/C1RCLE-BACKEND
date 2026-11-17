@@ -861,19 +861,38 @@ describe('production-shaped ids survive the round trip', () => {
 });
 
 describe('V2 door-ops RBAC', () => {
-  it('denies a read-only member device binding (door.manage) with 403', async () => {
-    currentActor = { ...currentActor, role: 'member' };
-    const response = await server.inject({
+  it('lets gate staff register their own handset (door.floor) but not list the venue devices', async () => {
+    // Pairing is the first thing the scanner app does; binding grants nothing
+    // by itself (a device still needs a door code and a session), and
+    // re-authorizing an unbound one stays a door.manage act.
+    currentActor = { ...currentActor, role: 'gate_staff' };
+    const bind = await server.inject({
       method: 'POST',
       url: '/door/devices',
       headers: { 'x-organization-id': ORG_ID },
-      payload: { deviceId: DEVICE_ID, deviceName: 'Blocked iPad' },
+      payload: { deviceId: DEVICE_ID, deviceName: 'Gate iPad' },
     });
-    expect(response.statusCode).toBe(403);
-    expect(response.json()).toMatchObject({ code: 'forbidden', status: 403 });
+    expect(bind.statusCode).toBe(201);
+    const list = await server.inject({
+      method: 'GET',
+      url: '/door/devices',
+      headers: { 'x-organization-id': ORG_ID },
+    });
+    expect(list.statusCode).toBe(403);
+    expect(list.json()).toMatchObject({ code: 'forbidden', status: 403 });
   });
 
-  it("still lets a read-only member list tonight's events (venue.read)", async () => {
+  it('keeps the attendance report for supervisors and above', async () => {
+    currentActor = { ...currentActor, role: 'gate_staff' };
+    const gate = await server.inject({
+      method: 'GET',
+      url: `/door/attendance-report?eventId=${EVENT_ID}`,
+      headers: { 'x-organization-id': ORG_ID },
+    });
+    expect(gate.statusCode).toBe(403);
+  });
+
+  it("still lets a read-only member list tonight's events (door.floor)", async () => {
     currentActor = { ...currentActor, role: 'member' };
     const response = await server.inject({
       method: 'GET',
