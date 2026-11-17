@@ -30,7 +30,13 @@ function setup(event: Event = initial) {
   });
   const service = new EventService({
     config: { clock: { now: () => NOW }, features: {} },
-    repositories: { events: { getById: async () => stored, save } },
+    repositories: {
+      events: { getById: async () => stored, save },
+      slotRequests: {
+        listByHost: async () => ({ items: [], nextCursor: null }),
+        transitionForSlot: async () => undefined,
+      },
+    },
     outbox: { append },
   } as never);
   return { service, append, save, read: () => stored };

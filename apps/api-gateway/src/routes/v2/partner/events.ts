@@ -7,6 +7,10 @@ import {
   eventDtoSchema,
   eventOperationsDtoSchema,
   organizationEventListResponseSchema,
+  venueOperationalEventDtoSchema,
+  venueOperationalEventListResponseSchema,
+  venueOperationalOverviewDtoSchema,
+  venueOperationalAnalyticsDtoSchema,
   promoterAssignedEventDtoSchema,
   promoterAssignmentDtoSchema,
   updateEventSchema,
@@ -86,6 +90,11 @@ const createEventHeaders = z.looseObject({
 const readHeaders = z.looseObject({
   'x-organization-id': opaqueIdSchema,
 });
+const venueOperationalAnalyticsQuerySchema = z
+  .object({ from: z.iso.date(), to: z.iso.date() })
+  .refine(({ from, to }) => Date.parse(to) - Date.parse(from) <= 365 * 86_400_000, {
+    message: 'Venue analytics range cannot exceed 366 days',
+  });
 
 const eventListSchema = organizationEventListResponseSchema;
 const assignedEventListSchema = z.array(promoterAssignedEventDtoSchema);
@@ -361,6 +370,72 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
     },
   );
 
+  fastify.get(
+    '/organizations/:organizationId/venue-overview',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({ params: orgIdParam, headers: readHeaders }),
+        fastify.requirePermission('venue.read'),
+      ],
+    },
+    async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
+      const { organizationId } = request.params as z.infer<typeof orgIdParam>;
+      const actor = services.actor(request);
+      if (requirePathOrg(reply, request, actor, organizationId) === undefined) return reply;
+      const result = await services.events
+        .getVenueOperationalOverview(actor)
+        .catch((error: unknown) => mapDomainError(reply, request, organizationId, error));
+      if (result === undefined) return reply;
+      const payload = {
+        ...result,
+        upcomingEvents: result.upcomingEvents.map(venueOperationalEventToDto),
+      };
+      const validated = validateV2Response(
+        reply,
+        request,
+        venueOperationalOverviewDtoSchema,
+        payload,
+      );
+      return validated === undefined ? reply : reply.send(validated);
+    },
+  );
+
+  fastify.get(
+    '/organizations/:organizationId/venue-analytics',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({
+          params: orgIdParam,
+          querystring: venueOperationalAnalyticsQuerySchema,
+          headers: readHeaders,
+        }),
+        fastify.requirePermission('venue.read'),
+      ],
+    },
+    async (request, reply) => {
+      reply.header('cache-control', 'private, no-store');
+      const { organizationId } = request.params as z.infer<typeof orgIdParam>;
+      const { from, to } = request.query as z.infer<typeof venueOperationalAnalyticsQuerySchema>;
+      const actor = services.actor(request);
+      if (requirePathOrg(reply, request, actor, organizationId) === undefined) return reply;
+      const result = await services.events
+        .getVenueOperationalAnalytics(actor, from, to)
+        .catch((error: unknown) => mapDomainError(reply, request, organizationId, error));
+      if (result === undefined) return reply;
+      const payload = { ...result, events: result.events.map(venueOperationalEventToDto) };
+      const validated = validateV2Response(
+        reply,
+        request,
+        venueOperationalAnalyticsDtoSchema,
+        payload,
+      );
+      return validated === undefined ? reply : reply.send(validated);
+    },
+  );
+
   // Venue read model: events remain Host-owned, but the Venue can read events
   // linked to Venue records owned by its authenticated organization.
   fastify.get(
@@ -391,10 +466,7 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
       } catch (error) {
         return mapDomainError(reply, request, organizationId, error);
       }
-      const items = page.items.map(({ event, ...operations }) => ({
-        ...eventToDto(event),
-        ...operations,
-      }));
+      const items = page.items.map(venueOperationalEventToDto);
       const payload = {
         items,
         pageInfo: {
@@ -404,8 +476,14 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
           hasNextPage: page.nextCursor !== null,
           nextCursor: page.nextCursor,
         },
+        complete: page.complete,
       };
-      const validated = validateV2Response(reply, request, eventListSchema, payload);
+      const validated = validateV2Response(
+        reply,
+        request,
+        venueOperationalEventListResponseSchema,
+        payload,
+      );
       if (validated === undefined) return reply;
       return reply.send(validated);
     },
@@ -435,7 +513,7 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
         .catch((error: unknown) => mapDomainError(reply, request, eventId, error));
       if (result === undefined) return reply;
       const validated = validateV2Response(reply, request, venueEventDetailResponseSchema, {
-        event: eventToDto(result.event),
+        event: venueOperationalEventToDto(result),
         tiers: result.tiers,
       });
       if (validated === undefined) return reply;
@@ -517,6 +595,7 @@ export default async function partnerEventRoutes(fastify: FastifyInstance) {
         venueName: event.venueName ?? event.event.externalLocation?.name ?? null,
         ticketsSold: event.ticketsSold,
         salesCountComplete: event.salesCountComplete,
+        currentStartingPricePaise: event.currentStartingPricePaise,
       });
       if (validated === undefined) return reply;
       return reply.send(validated);
@@ -968,6 +1047,47 @@ export function eventToDto(event: Event) {
     createdAt: event.createdAt,
     updatedAt: event.updatedAt,
   };
+}
+
+interface VenueOperationalRow {
+  event: Event;
+  ownerType: 'host' | 'venue';
+  hostName: string | null;
+  venueName: string;
+  venueCapacity: number | null;
+  ticketUnitsIssued: number;
+  rsvpUnitsIssued: number;
+  expectedGuests: number;
+  checkedInGuests: number;
+  operationalCountsComplete: boolean;
+  currentStartingPricePaise: number | null;
+}
+
+function venueOperationalEventToDto(row: VenueOperationalRow) {
+  const { event } = row;
+  const restricted = event.visibilityMode === 'code' || event.visibilityMode === 'invited';
+  return venueOperationalEventDtoSchema.parse({
+    id: event.id,
+    ownerType: row.ownerType,
+    title: event.title,
+    imageUrl: restricted ? null : event.imageUrl,
+    hostName: row.hostName,
+    venueId: event.venueId,
+    venueName: row.venueName,
+    status: event.status,
+    startAt: event.startAt,
+    endAt: event.endAt,
+    eventCapacity: event.capacity,
+    venueCapacity: row.venueCapacity,
+    ticketUnitsIssued: row.ticketUnitsIssued,
+    rsvpUnitsIssued: row.rsvpUnitsIssued,
+    expectedGuests: row.expectedGuests,
+    checkedInGuests: row.checkedInGuests,
+    operationalCountsComplete: row.operationalCountsComplete,
+    baseStartingPricePaise: event.startingPricePaise,
+    currentStartingPricePaise: row.currentStartingPricePaise,
+    isFree: event.isFree,
+  });
 }
 
 /** Maps core domain errors to the V2 error envelope; returns `undefined` after sending. */

@@ -495,6 +495,20 @@ export interface EventAnalytics {
   noShowRate: number | null;
   repeatGuests: number;
   conversionRate: number;
+  /** Operational counters are safe to expose to the Venue when allowlisted. */
+  ticketUnitsIssued?: number;
+  rsvpUnitsIssued?: number;
+  expectedGuests?: number;
+  checkedInGuests?: number;
+  operationalCountsComplete?: boolean;
+  operationalTierCounts?: {
+    tierId: EntityId;
+    name: string;
+    unitKind: 'ticket' | 'rsvp';
+    unitsIssued: number;
+    expectedGuests: number;
+    checkedInGuests: number;
+  }[];
 }
 
 /** Bucket width for a trends series. */
@@ -628,6 +642,8 @@ export interface CalendarDay {
 export interface AnalyticsReadModelRepository {
   getOrganizationOverview(organizationId: EntityId): Promise<OrganizationOverview | null>;
   getEventAnalytics(eventId: EntityId): Promise<EventAnalytics | null>;
+  /** Bounded batch read for operational list views. Missing rows are omitted. */
+  getEventAnalyticsByIds(eventIds: EntityId[]): Promise<EventAnalytics[]>;
   saveOrganizationOverview(overview: OrganizationOverview): Promise<void>;
   saveEventAnalytics(analytics: EventAnalytics): Promise<void>;
 }

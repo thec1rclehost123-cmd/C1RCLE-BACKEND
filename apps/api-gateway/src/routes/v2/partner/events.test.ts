@@ -1,4 +1,4 @@
-import { createEvent as makeEvent, createVenue } from '@c1rcle/core/domain';
+import { createEvent as makeEvent, createTicketTier, createVenue } from '@c1rcle/core/domain';
 import { describe, expect, it } from 'vitest';
 
 import { createV2Services } from '../../../lib/v2-services.js';
@@ -35,8 +35,8 @@ describe('restricted event projection privacy', () => {
   });
 });
 
-describe('Venue-owned event read route authorization', () => {
-  it('returns a Host-owned event only through its own Venue association', async () => {
+describe('Venue operational event read authorization', () => {
+  it('returns a safe operational projection only through its own Venue association', async () => {
     const server = await buildPartnerTestServer({
       routes: [partnerEventRoutes],
       actorRole: 'owner',
@@ -78,7 +78,34 @@ describe('Venue-owned event read route authorization', () => {
       title: 'Other Venue event',
       startAt: '2030-08-01T18:00:00.000Z',
     });
-    await repos.events.save({ ...owned, status: 'published', isPublic: true });
+    await repos.events.save({
+      ...owned,
+      status: 'published',
+      isPublic: true,
+      startingPricePaise: 8_000,
+      isFree: false,
+    });
+    await repos.catalog.saveTier(
+      createTicketTier({
+        id: 'host_owned_venue_event_early_bird',
+        eventId: owned.id,
+        organizationId: owned.organizationId,
+        name: 'Early Bird',
+        priceInPaise: 8_000,
+        quantity: 20,
+        pricingPhases: [
+          {
+            id: 'early-bird',
+            name: 'Early Bird',
+            priceInPaise: 5_000,
+            quantity: null,
+            startsAt: new Date(now.getTime() - 86400000).toISOString(),
+            endsAt: new Date(now.getTime() + 86400000).toISOString(),
+          },
+        ],
+        now,
+      }),
+    );
     await repos.events.save(other);
     await repos.events.save(
       makeEvent({
@@ -87,6 +114,15 @@ describe('Venue-owned event read route authorization', () => {
         venueId: 'venue_detail_owned',
         title: 'Host draft event',
         startAt: '2030-08-01T18:00:00.000Z',
+      }),
+    );
+    await repos.events.save(
+      makeEvent({
+        id: 'venue_owned_draft_event',
+        organizationId: 'org_1',
+        venueId: 'venue_detail_owned',
+        title: 'Venue owned draft',
+        startAt: '2030-08-02T18:00:00.000Z',
       }),
     );
 
@@ -98,10 +134,42 @@ describe('Venue-owned event read route authorization', () => {
     expect(response.statusCode, response.body).toBe(200);
     expect(response.json().event).toMatchObject({
       id: owned.id,
-      organizationId: 'host_org_detail',
+      ownerType: 'host',
+      hostName: null,
       venueId: 'venue_detail_owned',
+      title: 'Host owned event',
+      baseStartingPricePaise: 8_000,
+      currentStartingPricePaise: 5_000,
     });
+    expect(response.json().event).not.toHaveProperty('organizationId');
+    expect(response.json().event).not.toHaveProperty('compensation');
+    expect(response.json().event).not.toHaveProperty('startingPricePaise');
     expect(response.json().tiers).toEqual([]);
+
+    const list = await server.inject({
+      method: 'GET',
+      url: '/organizations/org_1/venue-events',
+      headers: VALID_HEADERS,
+    });
+    expect(list.statusCode, list.body).toBe(200);
+    expect(list.json().items.map((item: { id: string }) => item.id)).toEqual([
+      owned.id,
+      'venue_owned_draft_event',
+    ]);
+    expect(list.json().items[0]).not.toHaveProperty('organizationId');
+    expect(list.json().items[0]).not.toHaveProperty('compensation');
+
+    const ownDraft = await server.inject({
+      method: 'GET',
+      url: '/organizations/org_1/venue-events/venue_owned_draft_event',
+      headers: VALID_HEADERS,
+    });
+    expect(ownDraft.statusCode, ownDraft.body).toBe(200);
+    expect(ownDraft.json().event).toMatchObject({
+      id: 'venue_owned_draft_event',
+      ownerType: 'venue',
+      status: 'draft',
+    });
 
     const denied = await server.inject({
       method: 'GET',
@@ -131,6 +199,107 @@ describe('Venue-owned event read route authorization', () => {
       headers: VALID_HEADERS,
     });
     expect(response.statusCode, response.body).toBe(403);
+    await server.close();
+  });
+
+  it('aggregates Venue operations over Host events using physical Venue capacity only', async () => {
+    const server = await buildPartnerTestServer({
+      routes: [partnerEventRoutes],
+      actorRole: 'owner',
+      actorCapabilities: ['venue'],
+    });
+    const repos = createV2Services().repos();
+    const now = new Date();
+    await repos.venues.save(
+      createVenue({
+        id: 'venue_ops_owned',
+        organizationId: 'org_venue_ops',
+        ownerId: 'user_1',
+        name: 'Operations venue',
+        slug: 'operations-venue',
+        capacity: 500,
+        now,
+      }),
+    );
+    const event = makeEvent({
+      id: 'host_ops_event',
+      organizationId: 'host_org_ops',
+      venueId: 'venue_ops_owned',
+      title: 'Operational Host event',
+      startAt: '2030-08-01T18:00:00.000Z',
+      now,
+    });
+    await repos.events.save({ ...event, status: 'published' });
+    await repos.analytics.saveEventAnalytics({
+      eventId: event.id,
+      totalRevenuePaise: 999_999,
+      ticketsSold: 8,
+      totalCheckIns: 2,
+      totalTicketInventory: 100,
+      capacity: 80,
+      views: 0,
+      guestlistSignups: 0,
+      avgTicketPricePaise: 0,
+      occupancyRate: 0,
+      sellThroughRate: 0,
+      refundAmountPaise: 0,
+      refundRate: 0,
+      noShowRate: null,
+      repeatGuests: 0,
+      conversionRate: 0,
+      ticketUnitsIssued: 8,
+      rsvpUnitsIssued: 4,
+      expectedGuests: 12,
+      checkedInGuests: 2,
+      operationalCountsComplete: true,
+      operationalTierCounts: [],
+    });
+
+    const overview = await server.inject({
+      method: 'GET',
+      url: '/organizations/org_venue_ops/venue-overview',
+      headers: { 'x-organization-id': 'org_venue_ops' },
+    });
+    expect(overview.statusCode, overview.body).toBe(200);
+    expect(overview.json().summary).toMatchObject({
+      upcomingEvents: 1,
+      ticketUnitsIssued: 8,
+      rsvpUnitsIssued: 4,
+      expectedGuests: 12,
+      checkedInGuests: 2,
+      physicalVenueCapacity: 500,
+      expectedOccupancyPercent: 2.4,
+      complete: true,
+    });
+    expect(overview.body).not.toContain('totalRevenuePaise');
+    expect(overview.body).not.toContain('999999');
+    expect(overview.json().upcomingEvents[0]).toMatchObject({
+      ownerType: 'host',
+      eventCapacity: event.capacity,
+      venueCapacity: 500,
+    });
+
+    const analytics = await server.inject({
+      method: 'GET',
+      url: '/organizations/org_venue_ops/venue-analytics?from=2030-08-01&to=2030-08-01',
+      headers: { 'x-organization-id': 'org_venue_ops' },
+    });
+    expect(analytics.statusCode, analytics.body).toBe(200);
+    expect(analytics.json().summary).toMatchObject({
+      eventCount: 1,
+      ticketUnitsIssued: 8,
+      rsvpUnitsIssued: 4,
+      expectedGuests: 12,
+      checkedInGuests: 2,
+      physicalVenueCapacity: 500,
+      expectedOccupancyPercent: 2.4,
+    });
+    expect(analytics.json().days[0]).toMatchObject({
+      date: '2030-08-01',
+      eventCount: 1,
+      physicalVenueCapacity: 500,
+    });
+    expect(analytics.body).not.toContain('totalRevenuePaise');
     await server.close();
   });
 

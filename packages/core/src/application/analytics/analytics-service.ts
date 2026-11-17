@@ -908,11 +908,13 @@ export class AnalyticsService {
   private async computeEventAnalytics(event: Event): Promise<EventAnalytics> {
     const { orders, entitlements } = this.deps.repositories;
 
-    const [orderList, entitlementList, tiers] = await Promise.all([
-      this.scanAll<Order>((q) => orders.listByEvent(event.id, q)),
-      this.scanAll<Entitlement>((q) => entitlements.listByEvent(event.id, q)),
+    const [orderScan, entitlementScan, tiers] = await Promise.all([
+      this.scanAllWithCompleteness<Order>((q) => orders.listByEvent(event.id, q)),
+      this.scanAllWithCompleteness<Entitlement>((q) => entitlements.listByEvent(event.id, q)),
       this.deps.repositories.catalog.listTiers(event.id),
     ]);
+    const orderList = orderScan.items;
+    const entitlementList = entitlementScan.items;
 
     let totalRevenuePaise = 0;
     let refundAmountPaise = 0;
@@ -925,6 +927,48 @@ export class AnalyticsService {
     }
 
     const totalCheckIns = entitlementList.reduce((sum, entry) => sum + entry.scanCount, 0);
+
+    const operationalByTier = new Map<
+      EntityId,
+      {
+        tierId: EntityId;
+        name: string;
+        unitKind: 'ticket' | 'rsvp';
+        unitsIssued: number;
+        expectedGuests: number;
+        checkedInGuests: number;
+      }
+    >();
+    let ticketUnitsIssued = 0;
+    let rsvpUnitsIssued = 0;
+    let expectedGuests = 0;
+    let checkedInGuests = 0;
+    for (const entitlement of entitlementList) {
+      const kind =
+        (entitlement.unitKind ??
+          (entitlement.orderId.startsWith('RSVP-') ? 'free_rsvp' : 'paid')) === 'free_rsvp'
+          ? 'rsvp'
+          : 'ticket';
+      checkedInGuests += entitlement.scanCount;
+      const tier = operationalByTier.get(entitlement.tierId) ?? {
+        tierId: entitlement.tierId,
+        name: entitlement.tierName,
+        unitKind: kind,
+        unitsIssued: 0,
+        expectedGuests: 0,
+        checkedInGuests: 0,
+      };
+      tier.checkedInGuests += entitlement.scanCount;
+      if (entitlement.status !== 'void') {
+        const guests = entitlement.scanCountAllowed;
+        expectedGuests += guests;
+        if (kind === 'rsvp') rsvpUnitsIssued += 1;
+        else ticketUnitsIssued += 1;
+        tier.unitsIssued += 1;
+        tier.expectedGuests += guests;
+      }
+      operationalByTier.set(entitlement.tierId, tier);
+    }
 
     // Event operations and door occupancy use the event's explicitly declared
     // legal room capacity. Ticket-tier quantities are inventory, and the
@@ -961,7 +1005,28 @@ export class AnalyticsService {
           : null,
       repeatGuests: repeatGuests.size,
       conversionRate: 0,
+      ticketUnitsIssued,
+      rsvpUnitsIssued,
+      expectedGuests,
+      checkedInGuests,
+      operationalCountsComplete: entitlementScan.complete,
+      operationalTierCounts: [...operationalByTier.values()].sort((a, b) =>
+        a.name.localeCompare(b.name),
+      ),
     };
+  }
+
+  private async scanAllWithCompleteness<T>(
+    query: (page: PaginationQuery) => Promise<Page<T>>,
+  ): Promise<{ items: T[]; complete: boolean }> {
+    const items: T[] = [];
+    let cursor: string | null = null;
+    do {
+      const page = await query({ limit: COMPUTE_SCAN_LIMIT, cursor });
+      items.push(...page.items);
+      cursor = page.nextCursor;
+    } while (cursor !== null && items.length < COMPUTE_SCAN_LIMIT);
+    return { items, complete: cursor === null };
   }
 }
 

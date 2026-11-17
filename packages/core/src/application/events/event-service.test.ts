@@ -4,6 +4,8 @@ import { createEvent, transitionEvent } from '../../domain/models/event.js';
 
 import { EventService } from './event-service.js';
 
+import type { SlotRequest } from '../../domain/models/venue.js';
+
 const NOW = new Date('2026-10-28T12:00:00.000Z');
 const event = createEvent({
   id: 'private-event',
@@ -109,30 +111,60 @@ describe('guest-facing copy before publication', () => {
 });
 
 describe('Venue event read model', () => {
-  it('returns Host-owned events only for Venues belonging to the active Venue organization', async () => {
-    const ownVenueEvent = createEvent({
-      id: 'host-event-at-owned-venue',
+  it('returns operational Host events and Venue-owned drafts only for the active Venue organization', async () => {
+    const ownVenueEvent = {
+      ...createEvent({
+        id: 'host-event-at-owned-venue',
+        organizationId: 'host-org',
+        venueId: 'owned-venue',
+        title: 'Owned Venue Event',
+        startAt: '2026-11-28T20:00:00.000Z',
+        now: NOW,
+      }),
+      status: 'published' as const,
+    };
+    const otherVenueEvent = {
+      ...createEvent({
+        id: 'event-at-unrelated-venue',
+        organizationId: 'other-host-org',
+        venueId: 'unrelated-venue',
+        title: 'Unrelated Venue Event',
+        startAt: '2026-11-29T20:00:00.000Z',
+        now: NOW,
+      }),
+      status: 'published' as const,
+    };
+    const draftVenueEvent = createEvent({
+      id: 'host-private-draft',
       organizationId: 'host-org',
       venueId: 'owned-venue',
-      title: 'Owned Venue Event',
-      startAt: '2026-11-28T20:00:00.000Z',
+      title: 'Private draft',
+      startAt: '2026-11-30T20:00:00.000Z',
       now: NOW,
     });
-    const otherVenueEvent = createEvent({
-      id: 'event-at-unrelated-venue',
-      organizationId: 'other-host-org',
-      venueId: 'unrelated-venue',
-      title: 'Unrelated Venue Event',
-      startAt: '2026-11-29T20:00:00.000Z',
+    const ownVenueDraft = createEvent({
+      id: 'venue-owned-draft',
+      organizationId: 'venue-org',
+      venueId: 'owned-venue',
+      title: 'Venue-owned draft',
+      startAt: '2026-12-01T20:00:00.000Z',
       now: NOW,
     });
+    const orders = {
+      listByOrganization: vi.fn(async () => ({ items: [], total: 0, nextCursor: null })),
+    };
     const service = new EventService({
       config: { features: {}, clock: { now: () => NOW } },
       repositories: {
         venues: {
           listByOrganization: vi.fn(async () => ({
             items: [
-              { id: 'owned-venue', organizationId: 'venue-org', public: { name: 'Owned venue' } },
+              {
+                id: 'owned-venue',
+                organizationId: 'venue-org',
+                status: 'active',
+                public: { name: 'Owned venue', capacity: 250 },
+              },
             ],
             total: 1,
             nextCursor: null,
@@ -142,13 +174,26 @@ describe('Venue event read model', () => {
           listByVenue: vi.fn(async (venueId: string) => ({
             // A faulty/stale repository response must not expose another Venue's
             // event merely because it appears in this page.
-            items: venueId === 'owned-venue' ? [ownVenueEvent, otherVenueEvent] : [],
+            items:
+              venueId === 'owned-venue'
+                ? [ownVenueEvent, otherVenueEvent, draftVenueEvent, ownVenueDraft]
+                : [],
             total: 1,
             nextCursor: null,
           })),
         },
-        orders: {
-          listByOrganization: vi.fn(async () => ({ items: [], total: 0, nextCursor: null })),
+        orders,
+        analytics: {
+          getEventAnalyticsByIds: vi.fn(async () => [
+            {
+              eventId: 'host-event-at-owned-venue',
+              ticketUnitsIssued: 8,
+              rsvpUnitsIssued: 3,
+              expectedGuests: 13,
+              checkedInGuests: 2,
+              operationalCountsComplete: true,
+            },
+          ]),
         },
       },
     } as never);
@@ -158,9 +203,28 @@ describe('Venue event read model', () => {
       { cursor: null, limit: 50 },
     );
 
-    expect(page.items.map(({ event }) => event.id)).toEqual(['host-event-at-owned-venue']);
+    expect(page.items.map(({ event }) => event.id)).toEqual([
+      'host-event-at-owned-venue',
+      'venue-owned-draft',
+    ]);
     expect(page.items[0]?.event.organizationId).toBe('host-org');
     expect(page.items[0]?.venueName).toBe('Owned venue');
+    expect(page.items[0]).toMatchObject({
+      ownerType: 'host',
+      venueCapacity: 250,
+      ticketsSold: 8,
+      rsvpUnitsIssued: 3,
+      expectedGuests: 13,
+      checkedInGuests: 2,
+      operationalCountsComplete: true,
+    });
+    expect(page.items[1]).toMatchObject({
+      ownerType: 'venue',
+      event: { status: 'draft' },
+      expectedGuests: 0,
+      operationalCountsComplete: true,
+    });
+    expect(orders.listByOrganization).not.toHaveBeenCalled();
   });
 
   it('requires authenticated Venue capability for the Venue event read model', async () => {
@@ -339,7 +403,7 @@ describe('private event poster privacy', () => {
   function eventService(
     revokePublicRead: (url: string, expectedKeyPrefix: string) => Promise<string | null>,
   ) {
-    const save = vi.fn(async () => undefined);
+    const save = vi.fn(async (_updated: typeof publicEvent) => undefined);
     const objectStorage = {
       name: 'test-storage',
       revokePublicRead,
@@ -449,19 +513,26 @@ describe('Host event rescheduling', () => {
       slot?: typeof slot | null;
       requests?: (typeof acceptedRequest)[];
       slots?: (typeof slot)[];
+      event?: typeof hostEvent;
     } = {},
   ) {
-    const save = vi.fn(async () => undefined);
-    const transitionForSlot = vi.fn(async () => undefined);
-    const requests =
+    let storedEvent = input.event ?? hostEvent;
+    const save = vi.fn(async (updated: typeof hostEvent) => {
+      storedEvent = updated;
+    });
+    const requests: SlotRequest[] =
       input.requests ?? (input.request === null ? [] : [input.request ?? acceptedRequest]);
+    const transitionForSlot = vi.fn(async (previous: SlotRequest, updated: SlotRequest) => {
+      const index = requests.findIndex((request) => request.id === previous.id);
+      if (index >= 0) requests[index] = updated;
+    });
     const slots =
       input.slots ?? [input.slot === null ? null : (input.slot ?? slot)].filter(Boolean);
     const instance = new EventService({
       config: { ids: () => 'test-event-outbox-id', clock: { now: () => NOW } },
       outbox: { append: async () => undefined },
       repositories: {
-        events: { getById: async () => hostEvent, save },
+        events: { getById: async () => storedEvent, save },
         slotRequests: {
           listByHost: async () => ({
             items: requests,
@@ -476,7 +547,7 @@ describe('Host event rescheduling', () => {
         venues: { getById: async (id: string) => ({ id, status: 'active' }) },
       },
     } as never);
-    return { instance, save, transitionForSlot };
+    return { instance, save, transitionForSlot, requests };
   }
 
   it('allows a schedule adjustment that remains inside the accepted Venue slot', async () => {
@@ -592,5 +663,53 @@ describe('Host event rescheduling', () => {
       }),
     ).rejects.toThrow('Only a Host can apply a Venue-approved slot request');
     expect(save).not.toHaveBeenCalled();
+  });
+
+  it('releases accepted reservations after cancellation and converges after a partial failure', async () => {
+    const secondRequest = {
+      ...acceptedRequest,
+      id: 'accepted-slot-request-duplicate',
+    };
+    const requestList = [acceptedRequest, secondRequest];
+    const { instance, transitionForSlot, requests } = hostEventService({
+      requests: requestList,
+      slots: [slot, { ...slot, id: 'approved-slot-duplicate', slotRequestId: secondRequest.id }],
+    });
+    let shouldFail = true;
+    transitionForSlot.mockImplementation(async (previous, updated) => {
+      if (previous.id === secondRequest.id && shouldFail) {
+        shouldFail = false;
+        throw new Error('injected slot release failure');
+      }
+      const index = requests.findIndex((request) => request.id === previous.id);
+      if (index >= 0) requests[index] = updated;
+    });
+
+    await expect(instance.cancel(hostActor, hostEvent.id, 'Cancelled')).rejects.toThrow(
+      'injected slot release failure',
+    );
+    await expect(instance.cancel(hostActor, hostEvent.id, 'Cancelled')).resolves.toMatchObject({
+      status: 'cancelled',
+    });
+    expect(requests.map((request) => request.status)).toEqual(['cancelled', 'cancelled']);
+    expect(transitionForSlot).toHaveBeenCalledTimes(3);
+  });
+
+  it('releases an accepted Venue reservation when a Host postpones an event', async () => {
+    const scheduledEvent = transitionEvent(
+      transitionEvent(hostEvent, 'review', NOW),
+      'scheduled',
+      NOW,
+    );
+    const { instance, transitionForSlot } = hostEventService({ event: scheduledEvent });
+    await expect(
+      instance.postpone(hostActor, hostEvent.id, 'Date to be announced'),
+    ).resolves.toMatchObject({
+      status: 'postponed',
+    });
+    expect(transitionForSlot).toHaveBeenCalledWith(
+      acceptedRequest,
+      expect.objectContaining({ status: 'cancelled' }),
+    );
   });
 });

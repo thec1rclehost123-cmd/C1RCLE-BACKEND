@@ -208,9 +208,12 @@ export const eventDtoSchema = z.object({
   addressDisclosure: eventAddressDisclosureSchema.default('public'),
   isPublic: z.boolean(),
   tags: z.array(z.string().min(1)).max(50).default([]),
+  /** Base tier price retained for editor/admin semantics. */
   startingPricePaise: z.number().int().nonnegative().nullable(),
   /** Lowest currently purchasable public tier price; distinct from the base starting price. */
   activeStartingPricePaise: z.number().int().nonnegative().nullable().optional(),
+  /** Lowest currently purchasable tier price; may differ from the base price. */
+  currentStartingPricePaise: z.number().int().nonnegative().nullable().optional(),
   isFree: z.boolean(),
   cancellationReason: z.string().max(1000).nullable(),
   postponement: z
@@ -511,9 +514,73 @@ export const ticketTierDtoSchema = z.object({
 });
 export type TicketTierDto = z.infer<typeof ticketTierDtoSchema>;
 
-/** Authorized Venue read model for one Host-owned event at its Venue. */
+/** Operational ticket category summary; intentionally excludes pricing, owner and finance data. */
+export const venueOperationalTierSummarySchema = z
+  .object({
+    tierId: opaqueIdSchema,
+    name: z.string().min(1).max(120),
+    unitKind: z.enum(['ticket', 'rsvp']),
+    unitsIssued: z.number().int().nonnegative(),
+    expectedGuests: z.number().int().nonnegative(),
+    checkedInGuests: z.number().int().nonnegative(),
+  })
+  .strict();
+export type VenueOperationalTierSummaryDto = z.infer<typeof venueOperationalTierSummarySchema>;
+
+const venueOperationalEventStatusSchema = z.enum([
+  'draft',
+  'review',
+  'scheduled',
+  'published',
+  'sales_paused',
+  'started',
+  'ended',
+  'postponed',
+  'cancelled',
+]);
+
+/** Safe Venue operational projection. Never extend this by spreading EventDto. */
+export const venueOperationalEventDtoSchema = z
+  .object({
+    id: opaqueIdSchema,
+    ownerType: z.enum(['host', 'venue']),
+    title: z.string().min(1).max(200),
+    imageUrl: z.url().nullable(),
+    hostName: z.string().min(1).max(160).nullable(),
+    venueId: opaqueIdSchema,
+    venueName: z.string().min(1).max(200),
+    status: venueOperationalEventStatusSchema,
+    startAt: z.iso.datetime(),
+    endAt: z.iso.datetime().nullable(),
+    eventCapacity: z.number().int().positive().nullable(),
+    venueCapacity: z.number().int().positive().nullable(),
+    ticketUnitsIssued: z.number().int().nonnegative(),
+    rsvpUnitsIssued: z.number().int().nonnegative(),
+    expectedGuests: z.number().int().nonnegative(),
+    checkedInGuests: z.number().int().nonnegative(),
+    operationalCountsComplete: z.boolean(),
+    baseStartingPricePaise: z.number().int().nonnegative().nullable(),
+    currentStartingPricePaise: z.number().int().nonnegative().nullable(),
+    isFree: z.boolean(),
+  })
+  .strict();
+export type VenueOperationalEventDto = z.infer<typeof venueOperationalEventDtoSchema>;
+
+export const venueOperationalEventListResponseSchema = z.object({
+  items: z.array(venueOperationalEventDtoSchema),
+  pageInfo: pageInfoSchema.extend({ nextCursor: opaqueIdSchema.nullable() }),
+  complete: z.boolean(),
+});
+export type VenueOperationalEventListResponse = z.infer<
+  typeof venueOperationalEventListResponseSchema
+>;
+
+/** Authorized Venue read model for one operational event at its Venue. */
 export const venueEventDetailResponseSchema = z
-  .object({ event: eventDtoSchema, tiers: z.array(ticketTierDtoSchema) })
+  .object({
+    event: venueOperationalEventDtoSchema,
+    tiers: z.array(venueOperationalTierSummarySchema),
+  })
   .strict();
 export type VenueEventDetailResponse = z.infer<typeof venueEventDetailResponseSchema>;
 

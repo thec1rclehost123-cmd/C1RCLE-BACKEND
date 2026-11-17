@@ -1,5 +1,7 @@
+import { createEvent, createVenue } from '@c1rcle/core/domain';
 import { describe, expect, it } from 'vitest';
 
+import { createV2Services } from '../../../lib/v2-services.js';
 import { seedApprovedPartnerOrganization } from '../../../test-utils/approved-partner-organization.js';
 import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
 
@@ -91,6 +93,83 @@ describe('partner global search', () => {
       headers: { 'x-organization-id': org.id },
     });
     expect(response.statusCode).toBe(422);
+    await server.close();
+  });
+
+  it('searches Venue operations for accepted Host events without widening Host search', async () => {
+    const server = await buildPartnerTestServer({
+      routes: [
+        partnerOrganizationRoutes,
+        partnerVenueRoutes,
+        partnerEventRoutes,
+        partnerPartnershipRoutes,
+        partnerDiscoveryRoutes,
+        promoterConnectionRoutes,
+        partnerSearchRoutes,
+      ],
+      actorRole: 'owner',
+      actorCapabilities: ['venue'],
+    });
+    await seedApprovedPartnerOrganization({
+      id: 'org_venue_search',
+      name: 'Venue Search Org',
+      slug: `venue-search-${Date.now()}`,
+    });
+    await seedApprovedPartnerOrganization({
+      id: 'org_host_search_a',
+      name: 'Host A Private Org',
+      slug: `host-a-search-${Date.now()}`,
+    });
+    await seedApprovedPartnerOrganization({
+      id: 'org_host_search_b',
+      name: 'Host B Private Org',
+      slug: `host-b-search-${Date.now()}`,
+    });
+    const repos = createV2Services().repos();
+    const now = new Date();
+    await repos.venues.save(
+      createVenue({
+        id: 'venue_search_owned',
+        organizationId: 'org_venue_search',
+        ownerId: 'user_1',
+        name: 'Venue Search',
+        slug: 'venue-search',
+        now,
+      }),
+    );
+    const event = createEvent({
+      id: 'host_a_private_search_event',
+      organizationId: 'org_host_search_a',
+      venueId: 'venue_search_owned',
+      title: 'Confidential Northern Lights Event',
+      startAt: '2030-08-01T18:00:00.000Z',
+      now,
+    });
+    await repos.events.save({ ...event, status: 'published' });
+
+    const venueSearch = await server.inject({
+      method: 'GET',
+      url: '/organizations/org_venue_search/search?q=Northern&studio=venue',
+      headers: { 'x-organization-id': 'org_venue_search' },
+    });
+    expect(venueSearch.statusCode, venueSearch.body).toBe(200);
+    expect(venueSearch.json().results).toContainEqual({
+      id: event.id,
+      type: 'event',
+      title: event.title,
+      subtitle: 'Hosted by Host A Private Org',
+    });
+
+    const hostSearch = await server.inject({
+      method: 'GET',
+      url: '/organizations/org_host_search_b/search?q=Northern&studio=host',
+      headers: { 'x-organization-id': 'org_host_search_b' },
+    });
+    expect(hostSearch.statusCode, hostSearch.body).toBe(200);
+    expect(hostSearch.json().results).not.toContainEqual(
+      expect.objectContaining({ id: event.id, title: event.title }),
+    );
+    expect(hostSearch.body).not.toContain(event.title);
     await server.close();
   });
 });

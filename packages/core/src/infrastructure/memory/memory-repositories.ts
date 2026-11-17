@@ -815,6 +815,12 @@ export class MemoryAnalyticsReadModelRepository implements AnalyticsReadModelRep
     return this.eventAnalytics.get(eventId) ?? null;
   }
 
+  async getEventAnalyticsByIds(eventIds: EntityId[]): Promise<EventAnalytics[]> {
+    return [...new Set(eventIds)]
+      .map((eventId) => this.eventAnalytics.get(eventId))
+      .filter((row): row is EventAnalytics => row !== undefined);
+  }
+
   async saveOrganizationOverview(overview: OrganizationOverview): Promise<void> {
     this.overviews.set(overview.organizationId, { ...overview });
   }

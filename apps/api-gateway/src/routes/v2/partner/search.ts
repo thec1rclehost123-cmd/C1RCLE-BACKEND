@@ -30,9 +30,9 @@ export default async function partnerSearchRoutes(fastify: FastifyInstance) {
     async (request, reply) => {
       reply.header('cache-control', 'private, no-store');
       const { organizationId } = request.params as z.infer<typeof params>;
-      const { q } = request.query as z.infer<typeof partnerGlobalSearchQuerySchema>;
+      const { q, studio } = request.query as z.infer<typeof partnerGlobalSearchQuerySchema>;
       const actor = services.actor(request);
-      const result = await search(actor, organizationId, q).catch((error: unknown) =>
+      const result = await search(actor, organizationId, q, studio).catch((error: unknown) =>
         mapDomainError(reply, request, organizationId, error),
       );
       if (!result) return reply;
@@ -51,6 +51,7 @@ async function search(
   actor: ReturnType<typeof services.actor>,
   organizationId: string,
   query: string,
+  studio?: 'host' | 'venue',
 ) {
   await services.organizations.get(actor, organizationId);
   const needle = query.trim().toLocaleLowerCase();
@@ -59,14 +60,30 @@ async function search(
     services.promoterConnections.listWithNames(actor, organizationId, { limit: 100, cursor: null }),
     services.discovery.discover(actor, organizationId, { q: query, limit: 12, cursor: null }),
   ]);
-  const events = [];
-  let eventCursor: string | null = null;
-  // Search a bounded 1,000 most recently listed tenant events without building an index.
-  for (let pageNumber = 0; pageNumber < 10; pageNumber += 1) {
-    const page = await services.events.list(actor, { limit: 100, cursor: eventCursor });
-    events.push(...page.items);
-    eventCursor = page.nextCursor;
-    if (!eventCursor) break;
+  const events: { id: string; title: string; subtitle: string }[] = [];
+  if (studio === 'venue') {
+    const operational = await services.events.getVenueOperationalEvents(actor);
+    for (const item of operational.items) {
+      events.push({
+        id: item.event.id,
+        title: item.event.title,
+        subtitle:
+          item.ownerType === 'host' && item.hostName
+            ? `Hosted by ${item.hostName}`
+            : 'Event at your Venue',
+      });
+    }
+  } else {
+    let eventCursor: string | null = null;
+    // Host scope remains limited to the active tenant's own events.
+    for (let pageNumber = 0; pageNumber < 10; pageNumber += 1) {
+      const page = await services.events.list(actor, { limit: 100, cursor: eventCursor });
+      events.push(
+        ...page.items.map((event) => ({ id: event.id, title: event.title, subtitle: 'Event' })),
+      );
+      eventCursor = page.nextCursor;
+      if (!eventCursor) break;
+    }
   }
   const results = new Map<
     string,
@@ -78,7 +95,7 @@ async function search(
         id: event.id,
         type: 'event',
         title: event.title,
-        subtitle: 'Event',
+        subtitle: event.subtitle,
       });
     }
   }
