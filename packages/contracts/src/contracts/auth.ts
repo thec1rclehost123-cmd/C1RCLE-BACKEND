@@ -56,7 +56,8 @@ export type LoginRequest = z.infer<typeof loginRequestSchema>;
 /** `POST /auth/{signup,login,refresh}` response — task.md §0 frontend bridge shape. */
 export const authBridgeResponseSchema = z.object({
   user: userSchema,
-  accessToken: z.string().min(1),
+  /** Same-origin app BFFs may keep the Gateway token server-side. */
+  accessToken: z.string().min(1).optional(),
   expiresAt: z.number().int().positive(),
 });
 export type AuthBridgeResponse = z.infer<typeof authBridgeResponseSchema>;

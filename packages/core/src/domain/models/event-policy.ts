@@ -3,6 +3,7 @@ import type { Event } from './event.js';
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
 const ACTIVE_ADMISSION_STATUSES = new Set(['published', 'sales_paused', 'started']);
+const ACTIVE_SALE_STATUSES = new Set(['published', 'started']);
 
 /** Retained dates on a postponed event are historical, never an announced replacement date. */
 export function eventEffectiveEndAt(event: Pick<Event, 'startAt' | 'endAt'>): number {
@@ -11,6 +12,27 @@ export function eventEffectiveEndAt(event: Pick<Event, 'startAt' | 'endAt'>): nu
 
 export function eventAdmissionClosesAt(event: Pick<Event, 'startAt' | 'endAt'>): number {
   return eventEffectiveEndAt(event) - 5 * MINUTE_MS;
+}
+
+/** Returns a reason when a new online sale or entitlement must be rejected. */
+export function eventSalesUnavailableReason(event: Event, now: Date): string | null {
+  if (!ACTIVE_SALE_STATUSES.has(event.status)) {
+    return event.status === 'postponed'
+      ? 'This event is postponed. A new date has not been announced.'
+      : 'This event is not on sale';
+  }
+  const start = Date.parse(event.startAt);
+  const end = eventEffectiveEndAt(event);
+  if (
+    !Number.isFinite(now.getTime()) ||
+    !Number.isFinite(start) ||
+    !Number.isFinite(end) ||
+    end <= start
+  ) {
+    return 'The event schedule is unavailable.';
+  }
+  if (now.getTime() >= end) return 'Online sales have ended.';
+  return null;
 }
 
 function eventUnavailableReason(event: Event, now: Date): string | null {

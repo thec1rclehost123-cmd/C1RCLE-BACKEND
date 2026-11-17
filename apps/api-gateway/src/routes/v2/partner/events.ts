@@ -1002,6 +1002,17 @@ export function mapDomainError(
     // IMPLEMENTATION-STATUS-2026-08-31.md §2 named this gotcha already).
     'not_found',
   ]);
+  if (known?.code === 'event_not_on_sale') {
+    reply.status(409).send(
+      buildV2ErrorResponse({
+        status: 409,
+        message: known.message ?? 'This event is not on sale',
+        code: 'event_not_on_sale',
+        requestId: request.id,
+      }),
+    );
+    return undefined;
+  }
   if (known?.code && notFoundCodes.has(known.code)) {
     reply.status(404).send(
       buildV2ErrorResponse({

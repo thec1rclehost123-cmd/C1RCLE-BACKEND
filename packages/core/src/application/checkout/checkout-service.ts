@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import {
   EventNotFoundError,
+  EventNotOnSaleError,
   ForbiddenError,
   InvalidOperationError,
   NotFoundError,
@@ -26,6 +27,10 @@ import {
   createEventCoverAccount,
   isEventCoverPolicyAccepted,
 } from '../../domain/models/event-cover.js';
+import {
+  eventEffectiveEndAt,
+  eventSalesUnavailableReason,
+} from '../../domain/models/event-policy.js';
 import { M4_ACCOUNTING_POLICY } from '../../domain/models/financial-journal.js';
 import {
   orderReceiptFacts,
@@ -597,16 +602,17 @@ export class CheckoutService {
     return { pricing, attribution, upgrade };
   }
 
-  /**
-   * Online sales take money only for a published event. A draft, paused,
-   * cancelled or finished event is not on sale, whatever its tiers say.
-   */
-  private async assertOnSale(eventId: EntityId): Promise<void> {
+  /** One authoritative lifecycle and cutoff check for every new sale. */
+  private async assertOnSale(
+    eventId: EntityId,
+    preexistingAttemptAt?: string | null,
+  ): Promise<void> {
     const event = await this.deps.repositories.events.getById(eventId);
     if (!event) throw new EventNotFoundError(eventId);
-    if (event.status !== 'published') {
-      throw new InvalidOperationError('This event is not on sale');
-    }
+    const attemptAt = Date.parse(preexistingAttemptAt ?? '');
+    if (Number.isFinite(attemptAt) && attemptAt < eventEffectiveEndAt(event)) return;
+    const unavailable = eventSalesUnavailableReason(event, this.deps.config.clock.now());
+    if (unavailable) throw new EventNotOnSaleError(unavailable);
   }
 
   /**
@@ -688,7 +694,7 @@ export class CheckoutService {
       reservationTtlMs,
     } = input;
 
-    const now = new Date();
+    const now = this.deps.config.clock.now();
     const buyerId = userId ?? input.actor.userId;
     if (!buyerId || (!isSystemActor(input.actor) && buyerId !== input.actor.userId))
       throw new UnauthorizedError('A verified account is required to book tickets');
@@ -727,6 +733,9 @@ export class CheckoutService {
       : idempotencyKey;
     const existing = await this.deps.repositories.cartReservations.getByIdempotencyKey(scopedKey);
     if (existing) return existing;
+
+    const unavailable = eventSalesUnavailableReason(event, now);
+    if (unavailable) throw new EventNotOnSaleError(unavailable);
 
     if (
       lines.some((line) => line.ticketAddons?.length) &&
@@ -923,6 +932,9 @@ export class CheckoutService {
 
     const holdId = `HOLD-${scopedKey}`;
     const ttl = reservationTtlMs ?? DEFAULT_HOLD_TTL_MS;
+    // Inventory reads use wall-clock expiry today, so persist the hold against
+    // the same clock while keeping lifecycle/pricing decisions injectable.
+    const holdCreatedAt = new Date();
 
     const hold: CartReservation = {
       id: holdId,
@@ -940,14 +952,14 @@ export class CheckoutService {
       appliedPromoCode,
       attribution: attribution ?? null,
       status: 'active',
-      expiresAt: new Date(now.getTime() + ttl).toISOString(),
+      expiresAt: new Date(holdCreatedAt.getTime() + ttl).toISOString(),
       convertedOrderId: null,
       attendee: attendee ?? null,
       ...(upgrade ? { upgrade: { ...upgrade } } : {}),
       idempotencyKey: scopedKey,
       version: 1,
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString(),
+      createdAt: holdCreatedAt.toISOString(),
+      updatedAt: holdCreatedAt.toISOString(),
     };
 
     const stored = await this.deps.repositories.cartReservations.create(hold);
@@ -1040,9 +1052,8 @@ export class CheckoutService {
       (await this.deps.repositories.events.getById(eventId)) ??
       (await this.deps.repositories.events.getBySlug(eventId));
     if (!event) throw new EventNotFoundError(eventId);
-    if (event.status !== 'published') {
-      throw new InvalidOperationError(`Event is ${event.status}, RSVP is unavailable`);
-    }
+    const unavailable = eventSalesUnavailableReason(event, this.deps.config.clock.now());
+    if (unavailable) throw new EventNotOnSaleError(unavailable);
     if (
       (event.visibilityMode === 'code' || event.visibilityMode === 'invited') &&
       !(await new TicketAccessService(this.deps).hasGrantForEvent(
@@ -1375,7 +1386,11 @@ export class CheckoutService {
     }
     if (hold.status !== 'active')
       throw new InvalidOperationError(`Hold is ${hold.status}, cannot proceed to payment`);
-    if (new Date().getTime() > Date.parse(hold.expiresAt)) {
+    // Reservation TTLs are persisted using wall-clock timestamps, so validate
+    // and claim them against the same clock. Event lifecycle uses the injected
+    // clock independently in assertOnSale below.
+    const now = new Date();
+    if (now.getTime() >= Date.parse(hold.expiresAt)) {
       await this.deps.repositories.cartReservations.release(holdId);
       throw new InvalidOperationError('Hold has expired');
     }
@@ -1383,7 +1398,7 @@ export class CheckoutService {
     // A hold made while the event was on sale does not oblige us to take money
     // after the host has cancelled or paused it. (A payment already in flight is
     // a different case: confirmPayment still honours or refunds it.)
-    await this.assertOnSale(hold.eventId);
+    await this.assertOnSale(hold.eventId, hold.providerOrderCreation?.claimedAt);
 
     const event = await this.deps.repositories.events.getById(hold.eventId);
     if (!event) throw new EventNotFoundError(hold.eventId);
@@ -1447,7 +1462,7 @@ export class CheckoutService {
     const claim = await this.deps.repositories.cartReservations.claimProviderOrderCreation(
       holdId,
       receipt,
-      new Date(),
+      now,
     );
     if (!claim) throw new InvalidOperationError('Hold not found');
     if (claim.hold.providerOrderId)
@@ -1521,7 +1536,7 @@ export class CheckoutService {
     return candidate;
   }
 
-  /** Re-check after provider I/O: binding identity is durable, payability is current. */
+  /** Re-check hold identity after I/O. A durable pre-cutoff attempt may finish. */
   private async payableBoundIntent(holdId: string, providerOrderId: string) {
     const current = await this.deps.repositories.cartReservations.getById(holdId);
     if (
@@ -1533,7 +1548,6 @@ export class CheckoutService {
       throw new InvalidOperationError(
         'The payment hold expired or changed before checkout could open',
       );
-    await this.assertOnSale(current.eventId);
     return {
       paymentIntentId: providerOrderId,
       amountPaise: current.providerOrderCreation?.amountPaise ?? current.pricing.grandTotalPaise,
