@@ -961,6 +961,59 @@ describe('V2 public/discovery routes', () => {
     await server.close();
   });
 
+  it('serves the public detail and search result for a historical event without reopening sales', async () => {
+    const server = await buildServer();
+    try {
+      const eventId = 'evt_historical_public';
+      const slug = 'historical-public-night';
+      await seedPublishedEvent({
+        eventId,
+        slug,
+        title: 'Historical Public Night',
+        organizationId: 'org_historical_public',
+        venueId: 'ven_historical_public',
+      });
+      const events = createV2Services().repos().events;
+      const event = await events.getById(eventId);
+      if (!event) throw new Error('Missing historical test event');
+      await events.save({
+        ...event,
+        status: 'ended',
+        isPublic: false,
+        startAt: '2026-01-01T18:00:00.000Z',
+        endAt: '2026-01-01T22:00:00.000Z',
+        imageUrl: 'https://images.example.test/historical.webp',
+        version: event.version + 1,
+      });
+
+      const detail = await server.inject({ method: 'GET', url: '/events/' + slug });
+      expect(detail.statusCode).toBe(200);
+      expect(detail.json()).toMatchObject({
+        id: eventId,
+        status: 'ended',
+        salesStatus: 'ended',
+        imageUrl: 'https://images.example.test/historical.webp',
+        currentStartingPricePaise: null,
+      });
+      const tiers = await server.inject({ method: 'GET', url: '/events/' + slug + '/tiers' });
+      expect(tiers.statusCode).toBe(409);
+      expect(tiers.json()).toMatchObject({ code: 'event_not_on_sale' });
+      const search = await server.inject({
+        method: 'GET',
+        url: '/search?q=Historical%20Public%20Night',
+      });
+      expect(search.statusCode).toBe(200);
+      expect(search.json().items).toEqual([
+        expect.objectContaining({ id: eventId, salesStatus: 'ended' }),
+      ]);
+      const discovery = await server.inject({ method: 'GET', url: '/discovery' });
+      expect(discovery.statusCode).toBe(200);
+      expect(discovery.json().items).not.toContainEqual(expect.objectContaining({ id: eventId }));
+    } finally {
+      await server.close();
+    }
+  });
+
   it('search returns an empty page for no matches', async () => {
     const server = await buildServer();
     const response = await server.inject({ method: 'GET', url: '/search?q=zzz-no-match-zzz' });

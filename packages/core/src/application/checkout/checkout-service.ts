@@ -102,9 +102,12 @@ export interface CheckoutAttribution {
  * so the result always fits the 64-char opaque-id cap regardless of id
  * lengths — same reason `entitlementId` hashes rather than concatenates.
  */
-export function rsvpOrderId(eventId: EntityId, userId: EntityId): EntityId {
+export function rsvpOrderId(eventId: EntityId, userId: EntityId, attempt = 0): EntityId {
+  if (!Number.isInteger(attempt) || attempt < 0) {
+    throw new InvalidOperationError('RSVP attempt must be a non-negative integer');
+  }
   const digest = createHash('sha256').update(`rsvp:${eventId}:${userId}`).digest('hex');
-  return `RSVP-${digest.slice(0, 32)}`;
+  return `RSVP-${digest.slice(0, 32)}${attempt === 0 ? '' : `-${attempt}`}`;
 }
 
 /**
@@ -1100,7 +1103,15 @@ export class CheckoutService {
     // slug — both must converge on one RSVP): one RSVP per user per event.
     // Same rationale as entitlement ids — a retried RSVP collides with itself
     // at the storage layer instead of minting a second ticket.
-    const orderId = rsvpOrderId(event.id, actor.userId);
+    let rsvpAttempt = 0;
+    while (true) {
+      const existing = await this.deps.repositories.orders.getById(
+        rsvpOrderId(event.id, actor.userId, rsvpAttempt),
+      );
+      if (existing?.status !== 'cancelled') break;
+      rsvpAttempt += 1;
+    }
+    const orderId = rsvpOrderId(event.id, actor.userId, rsvpAttempt);
 
     // The authenticated Guest profile is the authoritative attendee identity.
     // Keep contact email/phone blank for RSVP; they are not needed to issue the

@@ -123,6 +123,7 @@ export class PublicService {
       items: page.items.filter(
         (event) =>
           isPublicStatus(event.status) &&
+          event.status !== 'ended' &&
           event.isPublic &&
           eventSalesUnavailableReason(event, now) !== 'Online sales have ended.',
       ),
@@ -150,6 +151,9 @@ export class PublicService {
     }
     if (rows.length > 0 && rows.every((row) => row.availabilityStatus === 'sales_paused')) {
       return { salesStatus: 'sales_paused', activeStartingPricePaise: null };
+    }
+    if (rows.length > 0 && rows.every((row) => row.availabilityStatus === 'sales_ended')) {
+      return { salesStatus: 'ended', activeStartingPricePaise: null };
     }
     if (rows.length > 0 && rows.every((row) => row.availabilityStatus === 'not_yet_available')) {
       return { salesStatus: 'not_yet_available', activeStartingPricePaise: null };
@@ -371,8 +375,9 @@ export class PublicService {
     );
     if (
       !event ||
-      !isPublicStatus(event.status) ||
-      (!event.isPublic && !unlistedDirectLink && !authorizedPrivate)
+      (!isHistoricalPublicEvent(event) &&
+        (!isPublicStatus(event.status) ||
+          (privateVisibility ? !authorizedPrivate : !event.isPublic && !unlistedDirectLink)))
     ) {
       throw new EventNotFoundError(idOrSlug);
     }
@@ -382,7 +387,9 @@ export class PublicService {
       this.organizations.getById(event.organizationId),
     ]);
 
-    let publicProjectionEvent = event;
+    let publicProjectionEvent = isHistoricalPublicEvent(event)
+      ? { ...event, isPublic: true }
+      : event;
     if (authorizedPrivate) {
       let imageUrl: string | null = null;
       const privatePath = event.privateImageStoragePath;
@@ -456,9 +463,12 @@ export class PublicService {
    * `DISCOVERY_LIMIT`. Revisit if/when curation becomes a real concept.
    */
   async discovery(): Promise<Event[]> {
-    return this.events.listUpcomingPublic(
-      this.deps.config.clock.now().toISOString(),
-      DISCOVERY_LIMIT,
+    const now = this.deps.config.clock.now();
+    const events = await this.events.listUpcomingPublic(now.toISOString(), DISCOVERY_LIMIT);
+    return events.filter(
+      (event) =>
+        event.status !== 'ended' &&
+        eventSalesUnavailableReason(event, now) !== 'Online sales have ended.',
     );
   }
 
@@ -471,12 +481,13 @@ export class PublicService {
    */
   async search(q: string, query: PaginationQuery): Promise<Page<Event>> {
     const needle = q.trim().toLowerCase();
-    const page = await this.events.listPublic({ limit: SEARCH_SCAN_LIMIT });
-    const now = this.deps.config.clock.now();
+    const page = await this.events.listPublic({ limit: SEARCH_SCAN_LIMIT }, true);
     const matches = page.items.filter(
       (event) =>
-        isPublicStatus(event.status) &&
-        eventSalesUnavailableReason(event, now) !== 'Online sales have ended.' &&
+        (isHistoricalPublicEvent(event) ||
+          (isPublicStatus(event.status) &&
+            (event.visibilityMode ?? 'public') === 'public' &&
+            event.isPublic)) &&
         matchesQuery(event, needle),
     );
     const start = query.cursor ? matches.findIndex((event) => event.id === query.cursor) + 1 : 0;
@@ -495,6 +506,11 @@ export function availableTicketQuantity(tier: TicketTier, availableAdmissions: n
   if (tier.admissionMode !== 'per_person') return availableAdmissions;
   const guestCount = tier.guestCount ?? 1;
   return guestCount > 0 ? Math.floor(availableAdmissions / guestCount) : 0;
+}
+
+// Older natural lifecycle transitions clear isPublic when a public event ends.
+function isHistoricalPublicEvent(event: Event): boolean {
+  return event.status === 'ended' && event.visibilityMode === 'public' && !event.adminOverride;
 }
 
 function matchesQuery(event: Event, needle: string): boolean {

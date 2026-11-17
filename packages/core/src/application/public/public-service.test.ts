@@ -370,6 +370,133 @@ describe('public Guest price and availability projection', () => {
       activeStartingPricePaise: null,
     });
   });
+
+  it('reports all public tiers past their sales window as ended instead of sold out', async () => {
+    const now = new Date('2026-11-19T12:00:00.000Z');
+    const catalog = new MemoryEventCatalogRepository();
+    const { event, service } = await makePublishedEvent(now, catalog);
+    await catalog.saveTier(
+      createTicketTier({
+        id: 'ended-tier',
+        eventId: event.id,
+        organizationId: event.organizationId,
+        name: 'Ended tier',
+        priceInPaise: 80_000,
+        quantity: 10,
+        salesEndAt: '2026-11-18T00:00:00.000Z',
+        now,
+      }),
+    );
+
+    await expect(
+      service({ soldQuantity: 0, heldQuantity: 0, availableQuantity: 10 }).getPublicPricingSummary(
+        event,
+      ),
+    ).resolves.toMatchObject({ salesStatus: 'ended', activeStartingPricePaise: null });
+  });
+});
+
+describe('historical public events', () => {
+  async function seedEndedEvent(
+    events: MemoryEventRepository,
+    overrides: { id: string; slug: string; visibilityMode?: 'public' | 'code' },
+    now: Date,
+    legacyHidden = false,
+  ) {
+    let event = createEvent({
+      id: overrides.id,
+      organizationId: 'host',
+      venueId: 'venue',
+      title: overrides.slug,
+      startAt: '2026-12-01T18:00:00.000Z',
+      visibilityMode: overrides.visibilityMode ?? 'public',
+      now,
+    });
+    event = transitionEvent(event, 'review', now);
+    event = transitionEvent(event, 'scheduled', now);
+    event = transitionEvent(event, 'published', now);
+    event = transitionEvent(event, 'started', now);
+    event = { ...transitionEvent(event, 'ended', now), isPublic: !legacyHidden, version: 1 };
+    await events.save(event);
+    return event;
+  }
+
+  it('serves public ended details and search while keeping them out of upcoming discovery', async () => {
+    const events = new MemoryEventRepository();
+    const now = new Date('2026-11-19T12:00:00.000Z');
+    const ended = await seedEndedEvent(
+      events,
+      { id: 'ended-public', slug: 'ended-public-night' },
+      now,
+    );
+    const legacyEnded = await seedEndedEvent(
+      events,
+      { id: 'ended-legacy', slug: 'ended-legacy-night' },
+      now,
+      true,
+    );
+    await seedEndedEvent(
+      events,
+      { id: 'ended-private', slug: 'ended-private-night', visibilityMode: 'code' },
+      now,
+      true,
+    );
+    const service = new PublicService({
+      config: { clock: { now: () => now } },
+      repositories: {
+        events,
+        venues: { getById: async () => null },
+        organizations: { getById: async () => null },
+      },
+    } as never);
+
+    await expect(service.getEvent(ended.id)).resolves.toMatchObject({
+      event: { id: ended.id, status: 'ended', isPublic: true },
+    });
+    await expect(service.getEvent(legacyEnded.id)).resolves.toMatchObject({
+      event: { id: legacyEnded.id, status: 'ended', isPublic: true },
+    });
+    await expect(service.search('ended-', { limit: 20, cursor: null })).resolves.toMatchObject({
+      total: 2,
+      items: expect.arrayContaining([
+        expect.objectContaining({ id: ended.id }),
+        expect.objectContaining({ id: legacyEnded.id }),
+      ]),
+    });
+    await expect(service.listEvents({ limit: 20, cursor: null })).resolves.toMatchObject({
+      items: [],
+    });
+    await expect(service.discovery()).resolves.toEqual([]);
+    await expect(service.getEvent('ended-private')).rejects.toThrow();
+  });
+
+  it('does not make archived events searchable or directly available', async () => {
+    const events = new MemoryEventRepository();
+    const now = new Date('2026-11-19T12:00:00.000Z');
+    let archived = await seedEndedEvent(
+      events,
+      { id: 'archived-event', slug: 'archived-night' },
+      now,
+    );
+    archived = transitionEvent(archived, 'archived', now);
+    await events.save(archived);
+    const service = new PublicService({
+      config: { clock: { now: () => now } },
+      repositories: {
+        events,
+        venues: { getById: async () => null },
+        organizations: { getById: async () => null },
+      },
+    } as never);
+
+    await expect(service.getEvent(archived.id)).rejects.toThrow();
+    await expect(
+      service.search('archived-night', { limit: 20, cursor: null }),
+    ).resolves.toMatchObject({
+      total: 0,
+      items: [],
+    });
+  });
 });
 
 describe('unlisted event visibility', () => {
