@@ -500,6 +500,26 @@ const validatedEnvSchema = envSchema.superRefine((value, ctx) => {
     }
   }
 
+  if (value.FIREBASE_AUTH_EMULATOR_HOST !== undefined) {
+    const emulator = value.FIREBASE_AUTH_EMULATOR_HOST;
+    const loopback = /^(?:127\.0\.0\.1|localhost|\[::1\]):([0-9]{1,5})$/.exec(emulator);
+    const port = Number(loopback?.[1]);
+    if (!loopback || port < 1 || port > 65535) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['FIREBASE_AUTH_EMULATOR_HOST'],
+        message: 'Firebase Auth Emulator must use an explicit loopback host and valid port',
+      });
+    }
+    if (value.NODE_ENV === 'production') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['FIREBASE_AUTH_EMULATOR_HOST'],
+        message: 'Firebase Auth Emulator is not allowed in production',
+      });
+    }
+  }
+
   if (value.NODE_ENV !== 'production') return;
 
   if (value.STORAGE_DRIVER !== 'firestore' && !value.ALLOW_MEMORY_STORAGE_IN_PRODUCTION) {
