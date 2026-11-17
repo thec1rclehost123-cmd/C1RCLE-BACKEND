@@ -143,7 +143,11 @@ export class NotificationService {
       case 'slot_request': {
         const slotRequests = new VenueSlotRequestService(this.deps);
         if (decision === 'approve') await slotRequests.accept(actor, resourceId);
-        else await slotRequests.reject(actor, resourceId);
+        else {
+          throw new InvalidOperationError(
+            'Open the slot request to provide a decline reason before rejecting it',
+          );
+        }
         break;
       }
       default:

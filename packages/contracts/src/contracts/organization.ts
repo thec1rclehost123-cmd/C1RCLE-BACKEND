@@ -293,6 +293,7 @@ export const slotRequestDtoSchema = z.object({
   hostId: opaqueIdSchema,
   status: z.enum(['pending', 'accepted', 'rejected', 'cancelled']),
   message: z.string().max(2000).optional(),
+  rejectionReason: z.string().max(1000).nullable().optional(),
   eventDraft: slotRequestEventDraftSchema.optional(),
   version: z.number().int().positive(),
   createdAt: z.iso.datetime(),
@@ -302,27 +303,18 @@ export type SlotRequestDto = z.infer<typeof slotRequestDtoSchema>;
 
 export const createSlotRequestSchema = z
   .object({
-    slotId: opaqueIdSchema.optional(),
-    startTime: z.iso.datetime().optional(),
-    endTime: z.iso.datetime().optional(),
+    slotId: opaqueIdSchema,
     eventId: opaqueIdSchema.nullable().optional(),
     message: z.string().max(2000).optional(),
     eventDraft: slotRequestEventDraftSchema.optional(),
   })
-  .strict()
-  .refine(
-    (input) => Boolean(input.slotId) !== (Boolean(input.startTime) || Boolean(input.endTime)),
-    'Choose a slot or a time interval.',
-  )
-  .refine(
-    (input) =>
-      Boolean(input.slotId) ||
-      Boolean(
-        input.startTime && input.endTime && Date.parse(input.endTime) > Date.parse(input.startTime),
-      ),
-    'Enter a valid start and end time.',
-  );
+  .strict();
 export type CreateSlotRequestInput = z.infer<typeof createSlotRequestSchema>;
+
+export const rejectSlotRequestSchema = z
+  .object({ reason: z.string().trim().min(1).max(1000) })
+  .strict();
+export type RejectSlotRequestInput = z.infer<typeof rejectSlotRequestSchema>;
 
 /** `GET /venues/:venueId/slot-requests` and `GET /organizations/:organizationId/slot-requests`. */
 export const slotRequestListResponseSchema = paginatedSchema(slotRequestDtoSchema);
