@@ -336,6 +336,18 @@ export interface SlotRequestRepository {
     hostId: EntityId,
     eventId: EntityId,
   ): Promise<SlotRequest>;
+  /** Atomically accepts a request and publishes its complete event bundle. */
+  commitAcceptedEventBundle?(bundle: AcceptedEventBundle): Promise<SlotRequest>;
+}
+
+export interface AcceptedEventBundle {
+  previousRequest: SlotRequest;
+  acceptedRequest: SlotRequest;
+  bookedSlot: VenueSlot;
+  event: Event;
+  tiers: TicketTier[];
+  promos: PromoCode[];
+  assignments: PromoterAssignment[];
 }
 
 export interface VenueSlotRepository {
@@ -362,6 +374,8 @@ export interface VenueSlotRepository {
   createBlockIfFree(block: VenueSlot): Promise<VenueSlot>;
   /** Atomic overlap-checked insertion for explicit Venue availability offers. */
   createOpenSlotIfFree(slot: VenueSlot): Promise<VenueSlot>;
+  /** Atomically soft-removes an unused open offer using its observed version. */
+  unpublishOpenSlot(slot: VenueSlot, cancelled: VenueSlot): Promise<VenueSlot>;
 }
 
 // ─── Events ──────────────────────────────────────────────────────────────────

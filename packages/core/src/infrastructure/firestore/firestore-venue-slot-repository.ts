@@ -1,3 +1,4 @@
+import { InvalidOperationError } from '../../domain/errors.js';
 import { assertSlotRangeFree, doSlotRangesOverlap } from '../../domain/models/venue.js';
 
 import type { EntityId } from '../../domain/identity.js';
@@ -87,6 +88,24 @@ export class FirestoreVenueSlotRepository implements VenueSlotRepository {
       tx.set(this.collection.doc(slot.id), toDoc(slot));
     });
     return slot;
+  }
+
+  async unpublishOpenSlot(slot: VenueSlot, cancelled: VenueSlot): Promise<VenueSlot> {
+    const ref = this.collection.doc(slot.id);
+    await this.db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      const current = snap.data();
+      if (
+        !current ||
+        current.venueId !== slot.venueId ||
+        current.status !== 'open' ||
+        Number(current.version) !== slot.version
+      ) {
+        throw new InvalidOperationError('Only unused open availability can be unpublished');
+      }
+      tx.set(ref, toDoc(cancelled));
+    });
+    return cancelled;
   }
 }
 
