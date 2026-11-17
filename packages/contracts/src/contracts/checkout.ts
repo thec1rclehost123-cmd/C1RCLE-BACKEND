@@ -26,6 +26,9 @@ export const ticketAddonSelectionSchema = z.object({
 });
 export type TicketAddonSelectionDto = z.infer<typeof ticketAddonSelectionSchema>;
 
+/** Maximum line quantity accepted by checkout when a tier has no smaller configured limit. */
+export const MAX_CHECKOUT_TICKETS_PER_LINE = 100;
+
 /**
  * ─── Checkout + Orders + Payments Contracts ──────────────────────────────────
  */
@@ -35,7 +38,7 @@ export type TicketAddonSelectionDto = z.infer<typeof ticketAddonSelectionSchema>
  */
 const checkoutLineRequestSchema = z.object({
   tierId: opaqueIdSchema,
-  quantity: z.number().int().positive().max(100),
+  quantity: z.number().int().positive().max(MAX_CHECKOUT_TICKETS_PER_LINE),
   /** Server-issued, account-bound grant; never an authorization boolean. */
   accessGrantId: opaqueIdSchema.optional(),
   /** Confirms the buyer and all attendees meet the ticket's displayed policy. */
@@ -55,6 +58,8 @@ const checkoutLineRequestSchema = z.object({
 /** One priced line, as `CheckoutService.quote`/`createHold` actually return it. */
 export const pricingLineDtoSchema = z.object({
   pricingPhaseId: z.string().nullable().optional(),
+  pricingPhaseName: z.string().nullable().optional(),
+  baseAdmissionUnitPricePaise: z.number().int().nonnegative().optional(),
   tierId: opaqueIdSchema,
   tierName: z.string(),
   quantity: z.number().int().positive(),

@@ -1,5 +1,5 @@
 import { InvalidOperationError } from '../../domain/errors.js';
-import { assertPromoUsable } from '../../domain/models/event-catalog.js';
+import { activeTicketPricingPhase, assertPromoUsable } from '../../domain/models/event-catalog.js';
 import { calculatePricing } from '../../domain/models/pricing.js';
 
 import type { EntityId } from '../../domain/identity.js';
@@ -22,6 +22,8 @@ export class PricingService {
       eventCatalog: EventCatalogRepository;
       inventory?: Pick<InventoryService, 'getAvailablePricingPhaseQuantity'>;
       bookingFeePolicy?: () => Promise<BookingFeePolicy>;
+      /** One injected server clock shared by tier, phase and promo decisions. */
+      clock?: () => Date;
     },
   ) {}
 
@@ -46,7 +48,7 @@ export class PricingService {
     const addonCatalog = await this.deps.eventCatalog.listTicketAddons(eventId);
     const addonMap = new Map(addonCatalog.map((addon) => [addon.id, addon]));
 
-    const now = Date.now();
+    const now = this.deps.clock?.() ?? new Date();
     const seenTiers = new Set<EntityId>();
     const pricingLines = await Promise.all(
       lines.map(async (l) => {
@@ -60,9 +62,9 @@ export class PricingService {
           throw new InvalidOperationError('This ticket category is not available in V1');
         if (tier.status !== 'active')
           throw new InvalidOperationError(`Tier ${tier.name} is not available`);
-        if (tier.salesStartAt && Date.parse(tier.salesStartAt) > now)
+        if (tier.salesStartAt && Date.parse(tier.salesStartAt) > now.getTime())
           throw new InvalidOperationError(`${tier.name} sales have not started`);
-        if (tier.salesEndAt && Date.parse(tier.salesEndAt) <= now)
+        if (tier.salesEndAt && Date.parse(tier.salesEndAt) <= now.getTime())
           throw new InvalidOperationError(`${tier.name} sales have ended`);
         if (
           tier.minPerOrder !== null &&
@@ -82,10 +84,7 @@ export class PricingService {
             `${tier.name} allows at most ${tier.maxPerUser} ticket(s) per user`,
           );
         }
-        let phase = (tier.pricingPhases ?? []).find(
-          (candidate) =>
-            Date.parse(candidate.startsAt) <= now && Date.parse(candidate.endsAt) > now,
-        );
+        let phase = activeTicketPricingPhase(tier.pricingPhases, now);
         if (phase?.quantity != null) {
           if (!this.deps.inventory)
             throw new InvalidOperationError('Quantity-priced availability is unavailable');
@@ -93,10 +92,11 @@ export class PricingService {
             eventId,
             tier.id,
             phase.id,
+            now,
           );
           const units =
             l.quantity * (tier.admissionMode === 'per_person' ? (tier.guestCount ?? 1) : 1);
-          if (available < units) phase = undefined;
+          if (available < units) phase = null;
         }
         const resolvedTier = phase ? { ...tier, priceInPaise: phase.priceInPaise } : tier;
         const seenAddons = new Set<EntityId>();
@@ -113,8 +113,8 @@ export class PricingService {
             throw new InvalidOperationError(`${addon.name} is not available`);
           }
           if (
-            (addon.salesStartAt && Date.parse(addon.salesStartAt) > now) ||
-            (addon.salesEndAt && Date.parse(addon.salesEndAt) <= now)
+            (addon.salesStartAt && Date.parse(addon.salesStartAt) > now.getTime()) ||
+            (addon.salesEndAt && Date.parse(addon.salesEndAt) <= now.getTime())
           ) {
             throw new InvalidOperationError(`${addon.name} is outside its sales window`);
           }
@@ -138,6 +138,8 @@ export class PricingService {
         return {
           tier: resolvedTier,
           quantity: l.quantity,
+          baseAdmissionUnitPricePaise: tier.priceInPaise,
+          pricingPhaseName: phase?.name ?? null,
           ticketAddons,
           pricingPhaseId: phase?.id ?? null,
         };
@@ -145,10 +147,11 @@ export class PricingService {
     );
 
     let promo: PromoCode | null = null;
-    if (promoCode) {
-      promo = await this.deps.eventCatalog.getPromoByCode(promoCode, eventId);
-      if (!promo) throw new InvalidOperationError(`Promo code ${promoCode} not found`);
-      assertPromoUsable(promo, new Date());
+    const normalizedPromoCode = promoCode?.trim().toUpperCase();
+    if (normalizedPromoCode) {
+      promo = await this.deps.eventCatalog.getPromoByCode(normalizedPromoCode, eventId);
+      if (!promo) throw new InvalidOperationError(`Promo code ${normalizedPromoCode} not found`);
+      assertPromoUsable(promo, now);
     }
 
     const pricing = calculatePricing({
