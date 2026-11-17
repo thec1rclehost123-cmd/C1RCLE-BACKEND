@@ -65,6 +65,18 @@ export class BetterAuthStaffCredentialProvisioner implements StaffCredentialProv
     return { userId, created: true, temporaryPassword };
   }
 
+  async reissueTemporaryPassword(userId: string): Promise<string> {
+    const temporaryPassword = generateTemporaryPassword();
+    // Same two calls Better Auth's own admin `setUserPassword` makes: hash with
+    // the instance's configured hasher, write the credential row, and drop any
+    // session opened with the previous temporary password.
+    const context = await this.auth.$context;
+    const hashed = await context.password.hash(temporaryPassword);
+    await context.internalAdapter.updatePassword(userId, hashed);
+    await context.internalAdapter.deleteUserSessions(userId);
+    return temporaryPassword;
+  }
+
   private async findUserId(normalizedEmail: string): Promise<string | null> {
     return this.directory.findUserIdByEmail(normalizedEmail).catch((error: unknown) => {
       this.logger.warn('staff credential user lookup failed', {

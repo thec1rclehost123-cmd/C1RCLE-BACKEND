@@ -19,7 +19,11 @@ import type { StaffRotationStore } from '@c1rcle/core/domain';
 
 import { getBetterAuthTrustedOrigins, getGatewayConfig } from '../../../config/index.js';
 import { validateV2Response } from '../../../lib/v2-response-validation.js';
-import { toWebHeaders, type BetterAuthInstance } from '../../../plugins/auth.js';
+import {
+  TEMPORARY_PASSWORD_EXPIRED_MESSAGE,
+  toWebHeaders,
+  type BetterAuthInstance,
+} from '../../../plugins/auth.js';
 import { invitationToDto } from '../partner/organizations.js';
 
 import { registerNativeCallbacks } from './native-callbacks.js';
@@ -522,6 +526,22 @@ async function forwardAuthErrorResponse(
     errorBody = (await response.json()) as { message?: string; code?: string };
   } catch {
     // Non-JSON error body — keep the generic message.
+  }
+  // A lapsed temporary password is only ever reported AFTER the password itself
+  // was verified (Better Auth creates the session last), so naming it here
+  // tells the caller nothing they did not already prove they know, and it is
+  // the only way a new hire learns to ask for a resend instead of retrying.
+  if (errorBody.message === TEMPORARY_PASSWORD_EXPIRED_MESSAGE) {
+    reply.status(403).send(
+      buildV2ErrorResponse({
+        status: 403,
+        code: 'forbidden',
+        message: TEMPORARY_PASSWORD_EXPIRED_MESSAGE,
+        requestId: request.id,
+        details: { temporaryPasswordExpired: true },
+      }),
+    );
+    return undefined;
   }
   const duplicateEmail = errorBody.code === 'USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL';
   const status = duplicateEmail

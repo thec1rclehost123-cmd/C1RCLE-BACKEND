@@ -198,7 +198,7 @@ export default async function phase5DoorSaleRoutes(fastify: FastifyInstance) {
       preHandler: [
         fastify.rateLimit('AUTH_READ'),
         fastify.validateV2({ querystring: doorSalesQuerySchema, headers: doorHeaders }),
-        fastify.requirePermission('venue.read'),
+        fastify.requirePermission('door.floor'),
       ],
     },
     async (request, reply) => {

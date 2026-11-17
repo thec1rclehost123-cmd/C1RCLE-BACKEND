@@ -302,4 +302,66 @@ describe('ResendEmailSender transactional delivery', () => {
     );
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it('names the real role, the 2-day password validity and how a door shift starts', async () => {
+    const fetchMock = vi.fn(
+      async (_input: string | URL | Request, _init?: RequestInit) =>
+        new Response(JSON.stringify({ id: 'email_invite' }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const sender = new ResendEmailSender(
+      'test-key',
+      'test',
+      noopLogger,
+      'THE C1RCLE <test@example.test>',
+      'gate@example.test',
+    );
+    await sender.sendStaffInvitationEmail({
+      to: 'gate@example.test',
+      orgName: 'Skyline',
+      role: 'gate_staff',
+      capabilities: [],
+      expiresAt: '2026-12-01T00:00:00.000Z',
+      acceptUrl: 'https://partners.example.test/invitations/inv-1/accept',
+      temporaryPassword: 'Ab3dEf7h',
+      temporaryPasswordExpiresAt: '2026-11-20T10:00:00.000Z',
+    });
+    const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string) as {
+      html: string;
+      text: string;
+    };
+    for (const part of [body.html, body.text]) {
+      expect(part).toContain('Gate staff');
+      expect(part).not.toContain('gate_staff');
+      expect(part).toContain('Ab3dEf7h');
+      expect(part).toContain('2 days');
+      expect(part).toContain('door code');
+    }
+    expect(body.html).toContain('https://partners.example.test/invitations/inv-1/accept');
+  });
+
+  it('does not add door guidance for dashboard roles', async () => {
+    const fetchMock = vi.fn(
+      async (_input: string | URL | Request, _init?: RequestInit) =>
+        new Response(JSON.stringify({ id: 'email_invite2' }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const sender = new ResendEmailSender(
+      'test-key',
+      'test',
+      noopLogger,
+      'THE C1RCLE <test@example.test>',
+      'mgr@example.test',
+    );
+    await sender.sendStaffInvitationEmail({
+      to: 'mgr@example.test',
+      orgName: 'Skyline',
+      role: 'manager',
+      capabilities: [],
+      expiresAt: '2026-12-01T00:00:00.000Z',
+    });
+    const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string) as { text: string };
+    expect(body.text).toContain('Venue manager');
+    expect(body.text).not.toContain('door code');
+  });
 });

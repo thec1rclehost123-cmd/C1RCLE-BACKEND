@@ -7,6 +7,7 @@ import { MemoryInvitationRepository } from '@c1rcle/core/infrastructure';
 import Fastify from 'fastify';
 import { describe, expect, it, vi } from 'vitest';
 
+import { TEMPORARY_PASSWORD_EXPIRED_MESSAGE } from '../../../plugins/auth.js';
 import rateLimitPlugin from '../../../plugins/rate-limit.js';
 import validateV2Plugin from '../../../plugins/validate-v2.js';
 
@@ -211,6 +212,31 @@ describe('signup classification is controlled by the server', () => {
         (await app.inject({ method: 'POST', url: '/api/v2/auth/partner/signup', payload: body }))
           .statusCode,
       ).toBe(429);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe('auth routes — lapsed temporary password', () => {
+  it('tells a verified-but-expired new hire to ask for a resend, with a 403 the app can recognise', async () => {
+    const app = await buildTestApp(
+      fakeAuth({
+        signInEmail: () =>
+          Promise.resolve(jsonResponse(403, { message: TEMPORARY_PASSWORD_EXPIRED_MESSAGE })),
+      }),
+    );
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v2/auth/login',
+        payload: { email: 'gate@example.com', password: 'Temp1234' },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).toMatchObject({
+        message: TEMPORARY_PASSWORD_EXPIRED_MESSAGE,
+        details: { temporaryPasswordExpired: true },
+      });
     } finally {
       await app.close();
     }

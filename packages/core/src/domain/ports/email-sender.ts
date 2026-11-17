@@ -15,7 +15,7 @@ export interface StaffInvitationEmail {
   to: string;
   /** Inviting organization display name. */
   orgName: string;
-  /** Role the invitee gets on accept (`admin`|`manager`|`member`). */
+  /** Role the invitee gets on accept (an `OrganizationRole` id, e.g. `gate_staff`). */
   role: string;
   /** Capabilities the invite grants (may be empty). */
   capabilities: readonly string[];
@@ -30,6 +30,11 @@ export interface StaffInvitationEmail {
    * and receive no credentials — the template omits the credentials box.
    */
   temporaryPassword?: string | undefined;
+  /**
+   * When the temporary password stops working (ISO datetime). Set together
+   * with `temporaryPassword`; after it the manager must resend the invite.
+   */
+  temporaryPasswordExpiresAt?: string | undefined;
 }
 
 export interface OnboardingChangesRequestedEmailParams {

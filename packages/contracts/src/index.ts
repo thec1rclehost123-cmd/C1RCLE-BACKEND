@@ -20,6 +20,7 @@ export {
 export type { ApiErrorCode, FieldErrors, RequestId } from './contracts/shared.js';
 export type {
   OrganizationRoleDto,
+  AssignableRoleDto,
   OrganizationStatusDto,
   OrganizationDto,
   CreateOrganizationInput,
@@ -44,6 +45,10 @@ export type {
 
 export {
   organizationRoleSchema,
+  assignableRoleSchema,
+  assignableRolesFor,
+  canManageRoleDto,
+  ROLE_LABELS_DTO,
   organizationStatusSchema,
   organizationDtoSchema,
   createOrganizationSchema,

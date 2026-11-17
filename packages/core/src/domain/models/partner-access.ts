@@ -19,6 +19,8 @@
  *    dashboards.
  */
 
+import type { OrganizationRole } from './organization.js';
+
 /** Which business capability the member is acting under. */
 export type PartnerType = 'venue' | 'host' | 'promoter';
 
@@ -183,15 +185,17 @@ export function normalizePartnerType(partnerType: string): PartnerType {
  * operational MANAGER; `member` drops to the least-privileged STAFF matrix.
  * Missing membership (`undefined`) is treated as `member` → STAFF.
  */
-export function tenancyRoleToPartnerRole(
-  role: 'owner' | 'admin' | 'manager' | 'member' | undefined,
-): PartnerRole {
+export function tenancyRoleToPartnerRole(role: OrganizationRole | undefined): PartnerRole {
   switch (role) {
     case 'owner':
     case 'admin':
       return 'OWNER';
     case 'manager':
       return 'MANAGER';
+    // Door roles work in the scanner app; on the dashboard they get the
+    // least-privileged matrix, never more than a plain member.
+    case 'door_supervisor':
+    case 'gate_staff':
     case 'member':
     case undefined:
       return 'STAFF';

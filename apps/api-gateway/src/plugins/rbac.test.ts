@@ -43,10 +43,47 @@ describe('role → permission table', () => {
     expect(roleHasPermission('member', 'finance.orders.read')).toBe(false);
   });
 
-  it('withholds staff.manage from a manager — inviting people is an owner/admin act', () => {
-    expect(roleHasPermission('manager', 'staff.manage')).toBe(false);
+  it('grants staff.manage from venue manager up, never to door roles or members', () => {
+    // The permission only opens the route; the service lets a holder act on
+    // roles strictly below their own (see organization-service role hierarchy).
+    expect(roleHasPermission('manager', 'staff.manage')).toBe(true);
     expect(roleHasPermission('admin', 'staff.manage')).toBe(true);
     expect(roleHasPermission('owner', 'staff.manage')).toBe(true);
+    expect(roleHasPermission('door_supervisor', 'staff.manage')).toBe(false);
+    expect(roleHasPermission('gate_staff', 'staff.manage')).toBe(false);
+    expect(roleHasPermission('member', 'staff.manage')).toBe(false);
+  });
+
+  it('keeps door roles to the door: no finance, no event authoring, no organization settings', () => {
+    const denied: Permission[] = [
+      'organization.read',
+      'organization.update',
+      'event.create',
+      'event.update',
+      'event.publish',
+      'event.cancel',
+      'venue.manage',
+      'finance.read',
+      'finance.payouts.read',
+      'finance.refunds.request',
+      'staff.manage',
+    ];
+    for (const role of ['gate_staff', 'door_supervisor'] as const) {
+      for (const permission of denied) {
+        expect(roleHasPermission(role, permission), `${role} ${permission}`).toBe(false);
+      }
+      expect(roleHasPermission(role, 'door.floor')).toBe(true);
+      expect(roleHasPermission(role, 'event.read')).toBe(true);
+    }
+    // The attendance report and cover-wallet records need venue.read, which
+    // only the supervisor holds; the gate person sees the floor, not the books.
+    expect(roleHasPermission('door_supervisor', 'venue.read')).toBe(true);
+    expect(roleHasPermission('gate_staff', 'venue.read')).toBe(false);
+    // Only the supervisor can override a scan and manage door codes/devices.
+    expect(roleHasPermission('door_supervisor', 'ticket.override')).toBe(true);
+    expect(roleHasPermission('door_supervisor', 'door.manage')).toBe(true);
+    expect(roleHasPermission('gate_staff', 'ticket.override')).toBe(false);
+    expect(roleHasPermission('gate_staff', 'door.manage')).toBe(false);
   });
 
   it('covers every permission the union declares — no unreachable permission', () => {
@@ -56,6 +93,7 @@ describe('role → permission table', () => {
       'organization.create',
       'staff.manage',
       'venue.read',
+      'door.floor',
       'venue.create',
       'venue.manage',
       'venue.schedule',
