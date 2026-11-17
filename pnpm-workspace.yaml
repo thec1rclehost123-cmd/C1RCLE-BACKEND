@@ -79,3 +79,15 @@ overrides:
   # Better Auth before 1.7.7 has critical and high-severity authentication
   # advisories. Keep all transitive consumers on the patched release line.
   better-auth: '>=1.7.7'
+
+# Audit exceptions. Each entry MUST name one advisory, say why it is safe, and say
+# when to remove it. Do not add blanket or severity-level ignores.
+auditConfig:
+  ignoreGhsas:
+    # picomatch <= 4.0.7 — ReDoS through single-branch repeated extglobs
+    # (GHSA-fc5q-39xc-vjpf, high). No patched release exists (npm latest is
+    # 4.0.7, itself affected). Reached ONLY through dev tooling (vitest/vite ->
+    # tinyglobby/fdir, eslint, etc.); `pnpm why picomatch --prod` is empty, so it
+    # is not in the runtime image. REMOVE this entry as soon as a fixed picomatch
+    # is published and the lockfile resolves it.
+    - GHSA-fc5q-39xc-vjpf
