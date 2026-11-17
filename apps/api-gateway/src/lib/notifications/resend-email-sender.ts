@@ -5,11 +5,12 @@ import {
   renderC1rcleEmailShell,
   renderC1rclePrimaryCta,
 } from '@c1rcle/core/application';
-import { PermanentEmailDeliveryError } from '@c1rcle/core/domain';
+import { PermanentEmailDeliveryError, ROLE_LABELS } from '@c1rcle/core/domain';
 
 import type { Logger } from '@c1rcle/core';
 import type {
   EmailSender,
+  OrganizationRole,
   StaffInvitationEmail,
   OnboardingChangesRequestedEmailParams,
   TransactionalEmail,
@@ -76,7 +77,12 @@ ${code}`,
   async sendStaffInvitationEmail(invitation: StaffInvitationEmail): Promise<void> {
     this.assertAuthDeliveryAllowed(invitation.to);
 
-    const roleLabel = invitation.role.charAt(0).toUpperCase() + invitation.role.slice(1);
+    const roleLabel =
+      ROLE_LABELS[invitation.role as OrganizationRole] ??
+      invitation.role.charAt(0).toUpperCase() + invitation.role.slice(1);
+    const passwordValidity = invitation.temporaryPasswordExpiresAt
+      ? `This temporary password works for 2 days (until ${invitation.temporaryPasswordExpiresAt}). If it expires, ask your manager to resend the invite.`
+      : 'This temporary password works for 2 days. If it expires, ask your manager to resend the invite.';
     const details = [
       `You've been invited to join ${invitation.orgName} as ${roleLabel}.`,
       ...invitation.capabilities.map((capability) => `Access: ${capability}.`),
@@ -84,7 +90,8 @@ ${code}`,
         ? [
             `Email: ${invitation.to}`,
             `Temporary password: ${invitation.temporaryPassword}`,
-            `You'll set your own password the first time you sign in.`,
+            `You'll be asked to choose your own password the first time you sign in, in the scanner app or on the dashboard.`,
+            passwordValidity,
           ]
         : []),
       `This invite expires on ${invitation.expiresAt}.`,
@@ -94,7 +101,7 @@ ${code}`,
       ? `<p style="color:#a0a0a0;">Access: ${invitation.capabilities.map(escapeEmailHtml).join(', ')}.</p>`
       : '';
     const credentialHtml = invitation.temporaryPassword
-      ? `<p>Email: <strong>${escapeEmailHtml(invitation.to)}</strong><br />Temporary password: <strong>${escapeEmailHtml(invitation.temporaryPassword)}</strong></p><p>You'll set your own password the first time you sign in.</p>`
+      ? `<p>Email: <strong>${escapeEmailHtml(invitation.to)}</strong><br />Temporary password: <strong>${escapeEmailHtml(invitation.temporaryPassword)}</strong></p><p>You'll be asked to choose your own password the first time you sign in, in the scanner app or on the dashboard.</p><p style="color:#a0a0a0;">${escapeEmailHtml(passwordValidity)}</p>`
       : '';
     const rendered = renderBrandedEmail({
       preheader: `An invitation to join ${invitation.orgName} on THE C1RCLE.`,

@@ -91,8 +91,21 @@ const READ_ONLY: readonly Permission[] = [
 ];
 
 /**
- * Role → permissions. Owner and admin run the tenant; manager operates it;
- * member can look but not touch.
+ * What a person standing at the door needs, and nothing else: today's events,
+ * the guest list and door sales read routes. Admission, door sales and wallet
+ * charges are authorized by the scanner session (door code), not by this role,
+ * so one gate person can scan AND sell without holding any management right.
+ * Deliberately no `organization.read`, no finance, no event authoring.
+ */
+const DOOR_FLOOR: readonly Permission[] = ['venue.read', 'event.read'];
+
+/**
+ * Role → permissions. Owner and admin (ops lead) run the tenant; manager
+ * (venue manager) operates the venue and its door team; door_supervisor
+ * oversees a night at the door; gate_staff works the gate; member can look
+ * but not touch. `staff.manage` is held down to manager, but the service layer
+ * only lets a holder assign or change roles strictly BELOW their own
+ * (`assignableRoles` in the organization domain model).
  */
 export const ROLE_PERMISSIONS: Readonly<Record<OrganizationRole, readonly Permission[]>> = {
   owner: [
@@ -150,8 +163,13 @@ export const ROLE_PERMISSIONS: Readonly<Record<OrganizationRole, readonly Permis
     'slot-request.list',
     'ticket.override',
     'door.manage',
+    'staff.manage',
     ...FINANCE_MANAGER,
   ],
+  // Watches the door: sees the floor, can override a denied scan, mints door
+  // codes, binds and unbinds devices. Cannot manage people, events or money.
+  door_supervisor: [...DOOR_FLOOR, 'ticket.override', 'door.manage'],
+  gate_staff: DOOR_FLOOR,
   member: READ_ONLY,
 };
 

@@ -13,7 +13,10 @@
  * actually enforced.
  */
 import { buildV2ErrorResponse } from '@c1rcle/contracts';
-import { FirestoreUserBanRepository } from '@c1rcle/core/infrastructure/firestore';
+import {
+  FirestoreStaffRotationStore,
+  FirestoreUserBanRepository,
+} from '@c1rcle/core/infrastructure/firestore';
 import { betterAuth } from 'better-auth';
 import { APIError } from 'better-auth/api';
 import { bearer } from 'better-auth/plugins';
@@ -65,6 +68,7 @@ export type BetterAuthInstance = ReturnType<typeof buildBetterAuth>;
  */
 export function buildBetterAuth(gw: GatewayConfig, db: Firestore, emailSender: EmailSender) {
   const userBans = new FirestoreUserBanRepository(db);
+  const staffRotation = new FirestoreStaffRotationStore(db);
   const google = getGoogleAuthConfig();
   if (google && !getBetterAuthTrustedOrigins(gw).includes(new URL(google.redirectURI).origin))
     throw new Error('Google callback origin must be a configured trusted frontend origin.');
@@ -97,6 +101,15 @@ export function buildBetterAuth(gw: GatewayConfig, db: Firestore, emailSender: E
             });
             if (ban?.isBanned)
               throw new APIError('FORBIDDEN', { message: 'Account access denied' });
+            // A temporary password is only good for two days. Refusing to
+            // create the session means no login or refresh can use a lapsed
+            // credential; the manager resends the invite to issue a new one.
+            const lapsed = await staffRotation.isExpired(session.userId, new Date()).catch(() => {
+              throw new APIError('SERVICE_UNAVAILABLE', { message: 'Account access unavailable' });
+            });
+            if (lapsed) {
+              throw new APIError('FORBIDDEN', { message: TEMPORARY_PASSWORD_EXPIRED_MESSAGE });
+            }
           },
         },
       },
@@ -166,6 +179,9 @@ const PASSWORD_ROTATION_ALLOWLIST = [
   '/api/v2/auth/otp/send',
   '/api/v2/auth/otp/verify',
 ];
+
+export const TEMPORARY_PASSWORD_EXPIRED_MESSAGE =
+  'Your temporary password has expired. Ask your manager to resend the invitation.';
 
 function isPasswordRotationExempt(url: string): boolean {
   const path = url.split('?')[0] ?? url;
@@ -241,6 +257,32 @@ export default fp(async (fastify: FastifyInstance, options: AuthContextPluginOpt
           }),
         );
       }
+    }
+    // A session that was opened before the temporary password lapsed must not
+    // keep working past it. Logging out stays allowed.
+    if (mustChangePassword) {
+      let lapsed: boolean;
+      try {
+        lapsed = await rotationStore.isExpired(user.id, new Date());
+      } catch {
+        return reply.status(503).send(
+          buildV2ErrorResponse({
+            status: 503,
+            message: 'Account access unavailable',
+            requestId: request.id,
+          }),
+        );
+      }
+      if (lapsed)
+        return reply.status(403).send(
+          buildV2ErrorResponse({
+            status: 403,
+            code: 'forbidden',
+            message: TEMPORARY_PASSWORD_EXPIRED_MESSAGE,
+            requestId: request.id,
+            details: { temporaryPasswordExpired: true },
+          }),
+        );
     }
     request.user = { uid: user.id };
     // Also populated for plugins/rbac.ts + plugins/rate-limit.ts + plugins/cache.ts

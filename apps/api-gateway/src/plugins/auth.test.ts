@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { OrganizationRepository } from '@c1rcle/core/domain';
 
-import authContextPlugin from './auth.js';
+import authContextPlugin, { TEMPORARY_PASSWORD_EXPIRED_MESSAGE } from './auth.js';
 import rbacPlugin from './rbac.js';
 
 import type { BetterAuthInstance } from './auth.js';
@@ -133,6 +133,7 @@ describe('auth plugin — first-login rotation enforcement', () => {
           throw new Error('private rotation failure');
         },
         setRequired: async () => {},
+        isExpired: async () => false,
       },
     });
     app.get('/probe', () => ({ reached: true }));
@@ -166,6 +167,53 @@ describe('auth plugin — first-login rotation enforcement', () => {
     expect(res.statusCode).toBe(403);
     expect(res.json().message).toBe('Change your temporary password before continuing.');
     expect(res.json().details).toMatchObject({ passwordChangeRequired: true });
+    await app.close();
+  });
+
+  it('403s every route once the temporary password has expired, but still allows sign-out', async () => {
+    const rotationStore = new MemoryStaffRotationStore();
+    // Issued with an expiry that has already passed.
+    await rotationStore.setRequired('u1', true, { expiresAt: new Date(Date.now() - 1_000) });
+    const app = Fastify({ logger: false });
+    await app.register(authContextPlugin, {
+      auth: fakeAuth({ id: 'u1' }),
+      organizations: fakeOrgRepo(null),
+      rotationStore,
+      userBans: new MemoryUserBanRepository(),
+    });
+    app.get('/probe', () => ({ reached: true }));
+    app.post('/api/v2/auth/change-password', () => ({ reached: true }));
+    app.post('/api/v2/auth/logout', () => ({ reached: true }));
+
+    const probe = await app.inject({ method: 'GET', url: '/probe' });
+    expect(probe.statusCode).toBe(403);
+    expect(probe.json().message).toBe(TEMPORARY_PASSWORD_EXPIRED_MESSAGE);
+    expect(probe.json().details).toMatchObject({ temporaryPasswordExpired: true });
+    // Even the rotation route is closed: a lapsed credential cannot be rotated.
+    expect(
+      (await app.inject({ method: 'POST', url: '/api/v2/auth/change-password' })).statusCode,
+    ).toBe(403);
+    expect((await app.inject({ method: 'POST', url: '/api/v2/auth/logout' })).statusCode).toBe(200);
+    await app.close();
+  });
+
+  it('still asks for rotation (not expiry) while the temporary password is within its window', async () => {
+    const rotationStore = new MemoryStaffRotationStore();
+    await rotationStore.setRequired('u1', true, { expiresAt: new Date(Date.now() + 3_600_000) });
+    const app = Fastify({ logger: false });
+    await app.register(authContextPlugin, {
+      auth: fakeAuth({ id: 'u1' }),
+      organizations: fakeOrgRepo(null),
+      rotationStore,
+      userBans: new MemoryUserBanRepository(),
+    });
+    app.get('/probe', () => ({ reached: true }));
+    app.post('/api/v2/auth/change-password', () => ({ reached: true }));
+    const probe = await app.inject({ method: 'GET', url: '/probe' });
+    expect(probe.json().details).toMatchObject({ passwordChangeRequired: true });
+    expect(
+      (await app.inject({ method: 'POST', url: '/api/v2/auth/change-password' })).statusCode,
+    ).toBe(200);
     await app.close();
   });
 

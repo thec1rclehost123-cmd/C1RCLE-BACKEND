@@ -13,8 +13,73 @@ import { opaqueIdSchema, paginatedSchema } from './shared.js';
  * ─── Organization + Venue + Member Contracts ─────────────────────────────────
  */
 
-export const organizationRoleSchema = z.enum(['owner', 'admin', 'manager', 'member']);
+/**
+ * Roles, highest first. Display names (what the Pune door teams say):
+ * owner = Owner, admin = Ops lead, manager = Venue manager,
+ * door_supervisor = Door supervisor, gate_staff = Gate staff (scans AND sells),
+ * member = legacy read-only.
+ */
+export const organizationRoleSchema = z.enum([
+  'owner',
+  'admin',
+  'manager',
+  'door_supervisor',
+  'gate_staff',
+  'member',
+]);
 export type OrganizationRoleDto = z.infer<typeof organizationRoleSchema>;
+
+/** Roles a person can be given. `owner` is set at creation, never granted. */
+export const assignableRoleSchema = z.enum([
+  'admin',
+  'manager',
+  'door_supervisor',
+  'gate_staff',
+  'member',
+]);
+export type AssignableRoleDto = z.infer<typeof assignableRoleSchema>;
+
+const ROLE_RANK_DTO: Readonly<Record<OrganizationRoleDto, number>> = {
+  owner: 50,
+  admin: 40,
+  manager: 30,
+  door_supervisor: 20,
+  gate_staff: 10,
+  member: 0,
+};
+
+export const ROLE_LABELS_DTO: Readonly<Record<OrganizationRoleDto, string>> = {
+  owner: 'Owner',
+  admin: 'Ops lead',
+  manager: 'Venue manager',
+  door_supervisor: 'Door supervisor',
+  gate_staff: 'Gate staff',
+  member: 'Member',
+};
+
+/**
+ * The roles `actorRole` may assign or change people to: strictly below its own
+ * rank and never `owner`. The server enforces the same rule; clients use this
+ * only to avoid offering choices that would be refused.
+ */
+export function assignableRolesFor(actorRole: OrganizationRoleDto): AssignableRoleDto[] {
+  // Managing people is a venue-manager-and-above duty (door roles manage no one).
+  if (ROLE_RANK_DTO[actorRole] < ROLE_RANK_DTO.manager) return [];
+  return assignableRoleSchema.options.filter(
+    (role) => ROLE_RANK_DTO[role] < ROLE_RANK_DTO[actorRole],
+  );
+}
+
+/** May `actorRole` change, remove, revoke or resend for someone holding `targetRole`? */
+export function canManageRoleDto(
+  actorRole: OrganizationRoleDto,
+  targetRole: OrganizationRoleDto,
+): boolean {
+  return (
+    ROLE_RANK_DTO[actorRole] >= ROLE_RANK_DTO.manager &&
+    ROLE_RANK_DTO[actorRole] > ROLE_RANK_DTO[targetRole]
+  );
+}
 
 export const organizationStatusSchema = z.enum(['active', 'suspended', 'archived']);
 export type OrganizationStatusDto = z.infer<typeof organizationStatusSchema>;
@@ -95,7 +160,7 @@ export type OrganizationMemberDto = z.infer<typeof organizationMemberDtoSchema>;
 
 export const updateMemberRoleSchema = z
   .object({
-    role: z.enum(['admin', 'manager', 'member']),
+    role: assignableRoleSchema,
   })
   .strict();
 export type UpdateMemberRoleRequest = z.infer<typeof updateMemberRoleSchema>;
@@ -103,7 +168,7 @@ export type UpdateMemberRoleRequest = z.infer<typeof updateMemberRoleSchema>;
 export const inviteMemberSchema = z
   .object({
     userId: opaqueIdSchema,
-    role: organizationRoleSchema,
+    role: assignableRoleSchema,
     capabilities: z.array(z.enum(['host', 'venue', 'promoter'])).optional(),
   })
   .strict();
@@ -311,7 +376,7 @@ export type InvitationDto = z.infer<typeof invitationDtoSchema>;
 export const createInvitationSchema = z
   .object({
     email: z.email(),
-    role: z.enum(['admin', 'manager', 'member']),
+    role: assignableRoleSchema,
     capabilities: z.array(z.enum(['host', 'venue', 'promoter'])).optional(),
   })
   .strict();

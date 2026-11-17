@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { createCoreConfig, type CoreConfig } from '../../config/index.js';
+import { ForbiddenError, InvalidOperationError } from '../../domain/errors.js';
 import { createInvitation } from '../../domain/models/organization.js';
 import { EchoObjectStorage } from '../../domain/ports/object-storage.js';
 import { MemoryPaymentProvider } from '../../domain/ports/payment-provider.js';
@@ -8,6 +9,8 @@ import {
   MemoryStaffCredentialProvisioner,
   MemoryStaffRotationStore,
   MemoryStaffUserDirectory,
+  TEMPORARY_PASSWORD_TTL_MS,
+  generateTemporaryPassword,
 } from '../../domain/ports/staff-credentials.js';
 import { FormatCheckVerificationProvider } from '../../domain/ports/verification.js';
 import { MemoryAdminAuditRepository } from '../../infrastructure/memory/memory-audit-repository.js';
@@ -176,7 +179,11 @@ describe('OrganizationService.createInvitation emails', () => {
     });
 
     const email = sender.sent[0];
-    expect(email?.temporaryPassword).toMatch(/^[A-Za-z2-9]{16}$/);
+    expect(email?.temporaryPassword).toMatch(/^[A-Za-z2-9]{8}$/);
+    // Valid for exactly two days, recorded with the rotation flag.
+    const issuedAt =
+      Date.parse(email?.temporaryPasswordExpiresAt ?? '') - TEMPORARY_PASSWORD_TTL_MS;
+    expect(Math.abs(issuedAt - Date.now())).toBeLessThan(5_000);
     expect(email?.acceptUrl).toContain(`?email=${encodeURIComponent('newbie@example.com')}`);
     const provision = await provisioner.provisionLogin('newbie@example.com');
     expect(provision.created).toBe(false);
@@ -507,6 +514,299 @@ describe('invitation recipient binding and atomic acceptance', () => {
     ).rejects.toThrow('accepted');
     expect((await f.deps.repositories.organizations.getMember(f.orgId, actor.userId))?.role).toBe(
       'owner',
+    );
+  });
+});
+
+/**
+ * ─── Temporary password: 8 characters, valid two days ───────────────────────
+ */
+describe('temporary staff password', () => {
+  it('is 8 characters from the unambiguous alphabet', () => {
+    for (let i = 0; i < 200; i += 1) {
+      expect(generateTemporaryPassword()).toMatch(/^[A-HJ-NP-Za-km-z2-9]{8}$/);
+    }
+  });
+
+  it('stops working after two days and works right up to then', async () => {
+    const sender = new CapturingEmailSender();
+    const rotationStore = new MemoryStaffRotationStore();
+    const provisioner = new MemoryStaffCredentialProvisioner();
+    const service = new OrganizationService(
+      makeDeps(sender, 'https://partners.example.com', provisioner, rotationStore),
+    );
+    const { orgId, owner } = await seedOrg(service);
+    await service.createInvitation(owner, {
+      organizationId: orgId,
+      email: 'gate1@example.com',
+      role: 'gate_staff',
+    });
+    const userId = (await provisioner.directory.findUserIdByEmail('gate1@example.com')) ?? '';
+    const hours = (h: number) => new Date(Date.now() + h * 3_600_000);
+    expect(await rotationStore.isExpired(userId, hours(47))).toBe(false);
+    expect(await rotationStore.isExpired(userId, hours(49))).toBe(true);
+    // Rotating the password clears both the flag and the expiry.
+    await rotationStore.setRequired(userId, false);
+    expect(await rotationStore.isExpired(userId, hours(500))).toBe(false);
+  });
+
+  it('never expires an account that was not issued an expiry (legacy flags)', async () => {
+    const rotationStore = new MemoryStaffRotationStore();
+    await rotationStore.setRequired('legacy', true);
+    expect(await rotationStore.isExpired('legacy', new Date(Date.now() + 900 * 86_400_000))).toBe(
+      false,
+    );
+  });
+});
+
+/**
+ * ─── Role ladder: authority only flows downward ─────────────────────────────
+ * owner > admin (ops lead) > manager (venue manager) > door_supervisor >
+ * gate_staff. You can grant, change, remove, revoke and resend only for roles
+ * strictly below your own.
+ */
+describe('role hierarchy', () => {
+  async function setup() {
+    const sender = new CapturingEmailSender();
+    const rotationStore = new MemoryStaffRotationStore();
+    const provisioner = new MemoryStaffCredentialProvisioner();
+    const service = new OrganizationService(
+      makeDeps(sender, 'https://partners.example.com', provisioner, rotationStore),
+    );
+    const { orgId, owner } = await seedOrg(service);
+    const as = (userId: string, role: ActorContext['role']): ActorContext => ({
+      userId,
+      organizationId: orgId,
+      role,
+      capabilities: [],
+    });
+    for (const [userId, role] of [
+      ['u_ops', 'admin'],
+      ['u_mgr', 'manager'],
+      ['u_mgr2', 'manager'],
+      ['u_sup', 'door_supervisor'],
+      ['u_gate', 'gate_staff'],
+    ] as const) {
+      await service.inviteMember(owner, { organizationId: orgId, userId, role });
+    }
+    return { service, orgId, owner, as, sender, rotationStore, provisioner };
+  }
+
+  it('lets a venue manager invite gate staff and door supervisors only', async () => {
+    const { service, orgId, as } = await setup();
+    const manager = as('u_mgr', 'manager');
+    for (const role of ['gate_staff', 'door_supervisor'] as const) {
+      await expect(
+        service.createInvitation(manager, {
+          organizationId: orgId,
+          email: `${role}@example.com`,
+          role,
+        }),
+      ).resolves.toMatchObject({ role });
+    }
+    for (const role of ['manager', 'admin'] as const) {
+      await expect(
+        service.createInvitation(manager, {
+          organizationId: orgId,
+          email: `${role}@example.com`,
+          role,
+        }),
+      ).rejects.toBeInstanceOf(ForbiddenError);
+    }
+  });
+
+  it('gives the ops lead authority over managers but not over another ops lead or the owner', async () => {
+    const { service, orgId, as } = await setup();
+    const ops = as('u_ops', 'admin');
+    await expect(
+      service.createInvitation(ops, {
+        organizationId: orgId,
+        email: 'm@example.com',
+        role: 'manager',
+      }),
+    ).resolves.toMatchObject({ role: 'manager' });
+    await expect(
+      service.createInvitation(ops, {
+        organizationId: orgId,
+        email: 'a@example.com',
+        role: 'admin',
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(service.removeMember(ops, orgId, 'user_owner')).rejects.toBeInstanceOf(
+      ForbiddenError,
+    );
+  });
+
+  it('gives door supervisors and gate staff no power over anyone', async () => {
+    const { service, orgId, as } = await setup();
+    for (const actor of [as('u_sup', 'door_supervisor'), as('u_gate', 'gate_staff')]) {
+      await expect(
+        service.createInvitation(actor, {
+          organizationId: orgId,
+          email: 'x@example.com',
+          role: 'gate_staff',
+        }),
+      ).rejects.toBeInstanceOf(ForbiddenError);
+      await expect(service.changeRole(actor, orgId, 'u_gate', 'member')).rejects.toBeInstanceOf(
+        ForbiddenError,
+      );
+    }
+  });
+
+  it('only changes roles strictly below the actor, and only to roles below the actor', async () => {
+    const { service, orgId, as } = await setup();
+    const manager = as('u_mgr', 'manager');
+    // Down the ladder is fine.
+    await expect(
+      service.changeRole(manager, orgId, 'u_gate', 'door_supervisor'),
+    ).resolves.toBeDefined();
+    await expect(service.changeRole(manager, orgId, 'u_sup', 'gate_staff')).resolves.toBeDefined();
+    // Cannot promote anyone to your own level or above.
+    await expect(service.changeRole(manager, orgId, 'u_sup', 'manager')).rejects.toBeInstanceOf(
+      ForbiddenError,
+    );
+    await expect(service.changeRole(manager, orgId, 'u_sup', 'admin')).rejects.toBeInstanceOf(
+      ForbiddenError,
+    );
+    // Cannot touch a peer or a superior.
+    await expect(service.changeRole(manager, orgId, 'u_mgr2', 'gate_staff')).rejects.toBeInstanceOf(
+      ForbiddenError,
+    );
+    await expect(service.changeRole(manager, orgId, 'u_ops', 'gate_staff')).rejects.toBeInstanceOf(
+      ForbiddenError,
+    );
+    // Nobody changes their own role.
+    await expect(service.changeRole(manager, orgId, 'u_mgr', 'gate_staff')).rejects.toBeInstanceOf(
+      ForbiddenError,
+    );
+  });
+
+  it('only removes people strictly below the actor; anyone may leave themselves', async () => {
+    const { service, orgId, as } = await setup();
+    const manager = as('u_mgr', 'manager');
+    await expect(service.removeMember(manager, orgId, 'u_mgr2')).rejects.toBeInstanceOf(
+      ForbiddenError,
+    );
+    await expect(service.removeMember(manager, orgId, 'u_ops')).rejects.toBeInstanceOf(
+      ForbiddenError,
+    );
+    await expect(service.removeMember(manager, orgId, 'u_gate')).resolves.toBeDefined();
+    const supervisor = as('u_sup', 'door_supervisor');
+    await expect(service.removeMember(supervisor, orgId, 'u_sup')).resolves.toBeDefined();
+  });
+
+  it('only revokes invitations for roles below the actor', async () => {
+    const { service, orgId, owner, as } = await setup();
+    const manager = as('u_mgr', 'manager');
+    const managerInvite = await service.createInvitation(owner, {
+      organizationId: orgId,
+      email: 'newmgr@example.com',
+      role: 'manager',
+    });
+    const gateInvite = await service.createInvitation(manager, {
+      organizationId: orgId,
+      email: 'newgate@example.com',
+      role: 'gate_staff',
+    });
+    await expect(service.revokeInvitation(manager, managerInvite.id)).rejects.toBeInstanceOf(
+      ForbiddenError,
+    );
+    await expect(service.revokeInvitation(manager, gateInvite.id)).resolves.toMatchObject({
+      status: 'revoked',
+    });
+  });
+});
+
+/**
+ * ─── Resend: a lapsed temporary password is replaced, never a live one ──────
+ */
+describe('resendInvitation', () => {
+  async function setup() {
+    const sender = new CapturingEmailSender();
+    const rotationStore = new MemoryStaffRotationStore();
+    const provisioner = new MemoryStaffCredentialProvisioner();
+    const service = new OrganizationService(
+      makeDeps(
+        sender,
+        'https://partners.example.com',
+        provisioner,
+        rotationStore,
+        provisioner.directory,
+      ),
+    );
+    const { orgId, owner } = await seedOrg(service);
+    const manager: ActorContext = {
+      userId: 'u_mgr',
+      organizationId: orgId,
+      role: 'manager',
+      capabilities: [],
+    };
+    await service.inviteMember(owner, { organizationId: orgId, userId: 'u_mgr', role: 'manager' });
+    return { service, orgId, owner, manager, sender, rotationStore, provisioner };
+  }
+
+  it('issues a new 2-day password when the first one was never rotated', async () => {
+    const { service, orgId, manager, sender, rotationStore, provisioner } = await setup();
+    const invitation = await service.createInvitation(manager, {
+      organizationId: orgId,
+      email: 'cashier@example.com',
+      role: 'gate_staff',
+    });
+    const first = sender.sent[0]?.temporaryPassword;
+    const userId = (await provisioner.directory.findUserIdByEmail('cashier@example.com')) ?? '';
+    expect(provisioner.getPassword(userId)).toBe(first);
+
+    await service.resendInvitation(manager, invitation.id);
+
+    const second = sender.sent[1]?.temporaryPassword;
+    expect(second).toMatch(/^[A-Za-z2-9]{8}$/);
+    expect(second).not.toBe(first);
+    expect(provisioner.getPassword(userId)).toBe(second);
+    expect(sender.sent[1]?.acceptUrl).toContain(invitation.id);
+    expect(sender.sent[1]?.temporaryPasswordExpiresAt).toBeDefined();
+    expect(await rotationStore.isRequired(userId)).toBe(true);
+    expect(await rotationStore.isExpired(userId, new Date(Date.now() + 47 * 3_600_000))).toBe(
+      false,
+    );
+  });
+
+  it('never replaces the password of someone who already chose their own', async () => {
+    const { service, orgId, manager, sender, rotationStore, provisioner } = await setup();
+    const invitation = await service.createInvitation(manager, {
+      organizationId: orgId,
+      email: 'active@example.com',
+      role: 'gate_staff',
+    });
+    const userId = (await provisioner.directory.findUserIdByEmail('active@example.com')) ?? '';
+    const chosen = provisioner.getPassword(userId);
+    await rotationStore.setRequired(userId, false); // they rotated
+
+    await service.resendInvitation(manager, invitation.id);
+
+    expect(sender.sent[1]?.temporaryPassword).toBeUndefined();
+    expect(sender.sent[1]?.acceptUrl).toBeDefined();
+    expect(provisioner.getPassword(userId)).toBe(chosen);
+  });
+
+  it('refuses non-pending invitations and invitations for equal or higher roles', async () => {
+    const { service, orgId, owner, manager } = await setup();
+    const higher = await service.createInvitation(owner, {
+      organizationId: orgId,
+      email: 'boss@example.com',
+      role: 'admin',
+    });
+    await expect(service.resendInvitation(manager, higher.id)).rejects.toBeInstanceOf(
+      ForbiddenError,
+    );
+
+    const gate = await service.createInvitation(manager, {
+      organizationId: orgId,
+      email: 'gate@example.com',
+      role: 'gate_staff',
+    });
+    await service.revokeInvitation(manager, gate.id);
+    await expect(service.resendInvitation(manager, gate.id)).rejects.toBeInstanceOf(
+      InvalidOperationError,
     );
   });
 });

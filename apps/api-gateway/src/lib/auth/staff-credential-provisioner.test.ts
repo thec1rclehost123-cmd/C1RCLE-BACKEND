@@ -66,3 +66,14 @@ describe('staff credentials preserve existing accounts', () => {
     expect(f.change).not.toHaveBeenCalled();
   });
 });
+
+describe('reissuing a temporary password', () => {
+  it('writes a new 8-character credential and ends sessions opened with the old one', async () => {
+    const f = fixture([]);
+    const password = await f.service.reissueTemporaryPassword('staff-1');
+    expect(password).toMatch(/^[A-HJ-NP-Za-km-z2-9]{8}$/);
+    expect(f.change).toHaveBeenCalledWith('staff-1', 'synthetic-hash');
+    expect(f.change).toHaveBeenCalledWith('staff-1');
+    expect(f.signUpEmail).not.toHaveBeenCalled();
+  });
+});

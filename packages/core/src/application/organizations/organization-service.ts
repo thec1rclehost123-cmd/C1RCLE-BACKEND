@@ -15,8 +15,13 @@ import {
   effectiveInvitationStatus,
   normalizeEmail,
   revokeInvitation,
+  assertCanGrantRole,
+  assertCanManageRole,
 } from '../../domain/models/organization.js';
-import { displayNameForInviteEmail } from '../../domain/ports/staff-credentials.js';
+import {
+  displayNameForInviteEmail,
+  TEMPORARY_PASSWORD_TTL_MS,
+} from '../../domain/ports/staff-credentials.js';
 import { requireOrgAccess, emit } from '../context.js';
 
 import type { EntityId } from '../../domain/identity.js';
@@ -128,6 +133,7 @@ export class OrganizationService {
   async inviteMember(actor: ActorContext, command: InviteMemberCommand): Promise<Organization> {
     const { organizationId, userId, role, capabilities } = command;
     requireOrgAccess(actor, organizationId);
+    assertCanGrantRole(actor.role, role);
     const org = await this.repo.getById(organizationId);
     if (!org) throw new OrganizationNotFoundError(organizationId);
 
@@ -166,6 +172,19 @@ export class OrganizationService {
     requireOrgAccess(actor, organizationId);
     const org = await this.repo.getById(organizationId);
     if (!org) throw new OrganizationNotFoundError(organizationId);
+    // Authority only flows downward: you may change someone strictly below you,
+    // and only to a role strictly below you. Nobody changes their own role.
+    const target = org.members.find((m) => m.userId === userId);
+    // The owner is a fixed point of the tenancy: reported as the domain rule it
+    // always was, ahead of the rank checks.
+    if (target?.role === 'owner') {
+      throw new InvalidOperationError('The owner role cannot be changed');
+    }
+    if (userId === actor.userId) {
+      throw new ForbiddenError('You cannot change your own role');
+    }
+    if (target) assertCanManageRole(actor.role, target.role);
+    assertCanGrantRole(actor.role, role);
     const updated = updateMemberRole(org, userId, role, this.deps.config.clock.now());
     await this.repo.save(updated);
     return updated;
@@ -180,6 +199,11 @@ export class OrganizationService {
     const org = await this.repo.getById(organizationId);
     if (!org) throw new OrganizationNotFoundError(organizationId);
     const memberToRemove = org.members.find((m) => m.userId === userId);
+    // Leaving yourself is always allowed (the owner guard in the domain still
+    // applies); removing anyone else needs outranking them.
+    if (memberToRemove && userId !== actor.userId) {
+      assertCanManageRole(actor.role, memberToRemove.role);
+    }
     const now = this.deps.config.clock.now();
     const updated = removeMember(org, userId, now);
     await this.repo.save(updated);
@@ -270,6 +294,7 @@ export class OrganizationService {
     command: CreateInvitationCommand,
   ): Promise<OrganizationInvitation> {
     requireOrgAccess(actor, command.organizationId);
+    assertCanGrantRole(actor.role, command.role);
     const org = await this.repo.getById(command.organizationId);
     if (!org) throw new OrganizationNotFoundError(command.organizationId);
 
@@ -322,13 +347,19 @@ export class OrganizationService {
     // the manager still sees it as pending and the invitee can accept from
     // the dashboard.
     let temporaryPassword: string | null = null;
+    let temporaryPasswordExpiresAt: Date | null = null;
     try {
       const provision = await this.deps.credentialProvisioner.provisionLogin(
         email,
         displayNameForInviteEmail(email),
       );
       if (provision.created && provision.temporaryPassword && provision.userId) {
-        await this.deps.rotationStore.setRequired(provision.userId, true);
+        temporaryPasswordExpiresAt = new Date(
+          this.deps.config.clock.now().getTime() + TEMPORARY_PASSWORD_TTL_MS,
+        );
+        await this.deps.rotationStore.setRequired(provision.userId, true, {
+          expiresAt: temporaryPasswordExpiresAt,
+        });
         temporaryPassword = provision.temporaryPassword;
       }
     } catch (error) {
@@ -338,23 +369,38 @@ export class OrganizationService {
         error: error instanceof Error ? error.message : String(error),
       });
     }
-    // The invitation is real whether or not the email leaves the building: a
-    // mail outage must not roll back (or block) the invite — the manager still
-    // sees it as pending and the invitee can accept from the dashboard.
+    await this.sendInvitationEmail(org, invitation, temporaryPassword, temporaryPasswordExpiresAt);
+    return invitation;
+  }
+
+  /**
+   * The invitation is real whether or not the email leaves the building: a
+   * mail outage must not roll back (or block) the invite — the manager still
+   * sees it as pending and can resend.
+   */
+  private async sendInvitationEmail(
+    org: Organization,
+    invitation: OrganizationInvitation,
+    temporaryPassword: string | null,
+    temporaryPasswordExpiresAt: Date | null,
+  ): Promise<void> {
     try {
       const dashboardUrl = this.deps.config.partnerDashboardUrl?.replace(/\/$/, '');
       // The accept page is the flow's front door: it signs the invitee in
       // (email prefilled from `?email=`, a login-form hint only) and finishes
       // the accept itself once the first-login rotation is done.
-      const acceptPath = `/invitations/${invitation.id}/accept?email=${encodeURIComponent(email)}`;
+      const acceptPath = `/invitations/${invitation.id}/accept?email=${encodeURIComponent(invitation.email)}`;
       await this.deps.emailSender.sendStaffInvitationEmail({
-        to: email,
+        to: invitation.email,
         orgName: org.name,
         role: invitation.role,
         capabilities: [...invitation.capabilities],
         expiresAt: invitation.expiresAt,
         ...(dashboardUrl ? { acceptUrl: `${dashboardUrl}${acceptPath}` } : {}),
         ...(temporaryPassword ? { temporaryPassword } : {}),
+        ...(temporaryPassword && temporaryPasswordExpiresAt
+          ? { temporaryPasswordExpiresAt: temporaryPasswordExpiresAt.toISOString() }
+          : {}),
       });
     } catch (error) {
       this.deps.logger.warn('organization.invitation_email_failed', {
@@ -363,6 +409,63 @@ export class OrganizationService {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  /**
+   * Sends a pending invitation again. When the invited person has an account
+   * that has never taken ownership of its credentials (the first-login
+   * rotation is still owed, e.g. the 2-day temporary password lapsed), a new
+   * temporary password is issued and the old one dies with it. An account
+   * whose owner already chose a password is never touched: they just get the
+   * link again.
+   */
+  async resendInvitation(
+    actor: ActorContext,
+    invitationId: EntityId,
+  ): Promise<OrganizationInvitation> {
+    const invitation = await this.fetchOwnedInvitation(actor, invitationId);
+    assertCanManageRole(actor.role, invitation.role);
+    if (effectiveInvitationStatus(invitation) !== 'pending') {
+      throw new InvalidOperationError('Only a pending invitation can be resent');
+    }
+    const org = await this.repo.getById(invitation.organizationId);
+    if (!org) throw new OrganizationNotFoundError(invitation.organizationId);
+
+    let temporaryPassword: string | null = null;
+    let temporaryPasswordExpiresAt: Date | null = null;
+    try {
+      const userId = await this.deps.userDirectory.findUserIdByEmail(invitation.email);
+      if (userId === null) {
+        const provision = await this.deps.credentialProvisioner.provisionLogin(
+          invitation.email,
+          displayNameForInviteEmail(invitation.email),
+        );
+        if (provision.created && provision.temporaryPassword && provision.userId) {
+          temporaryPassword = provision.temporaryPassword;
+          temporaryPasswordExpiresAt = new Date(
+            this.deps.config.clock.now().getTime() + TEMPORARY_PASSWORD_TTL_MS,
+          );
+          await this.deps.rotationStore.setRequired(provision.userId, true, {
+            expiresAt: temporaryPasswordExpiresAt,
+          });
+        }
+      } else if (await this.deps.rotationStore.isRequired(userId)) {
+        temporaryPassword = await this.deps.credentialProvisioner.reissueTemporaryPassword(userId);
+        temporaryPasswordExpiresAt = new Date(
+          this.deps.config.clock.now().getTime() + TEMPORARY_PASSWORD_TTL_MS,
+        );
+        await this.deps.rotationStore.setRequired(userId, true, {
+          expiresAt: temporaryPasswordExpiresAt,
+        });
+      }
+    } catch (error) {
+      this.deps.logger.warn('organization.invitation_credential_failed', {
+        organizationId: org.id,
+        invitationId: invitation.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    await this.sendInvitationEmail(org, invitation, temporaryPassword, temporaryPasswordExpiresAt);
     return invitation;
   }
 
@@ -371,6 +474,7 @@ export class OrganizationService {
     invitationId: EntityId,
   ): Promise<OrganizationInvitation> {
     const invitation = await this.fetchOwnedInvitation(actor, invitationId);
+    assertCanManageRole(actor.role, invitation.role);
     const revoked = revokeInvitation(invitation, this.deps.config.clock.now());
     await this.deps.repositories.invitations.save(revoked);
 

@@ -45,6 +45,12 @@ export interface StaffCredentialProvisioner {
    * without touching anything.
    */
   provisionLogin(email: string, displayName: string): Promise<StaffCredentialProvision>;
+  /**
+   * Issues a fresh temporary password for an account that has NEVER taken
+   * ownership of its credentials (rotation still owed). The caller must have
+   * checked that: this never runs for an account whose owner chose a password.
+   */
+  reissueTemporaryPassword(userId: string): Promise<string>;
 }
 
 export interface StaffUserDirectory {
@@ -55,18 +61,39 @@ export interface StaffUserDirectory {
 }
 
 export interface StaffRotationStore {
-  /** Marks the account as required to rotate its password on next login. */
-  setRequired(userId: string, required: boolean): Promise<void>;
+  /**
+   * Marks the account as required to rotate its password on next login.
+   * `expiresAt` is when the temporary credential stops working; clearing the
+   * flag (`required: false`) also clears the expiry.
+   */
+  setRequired(userId: string, required: boolean, options?: { expiresAt?: Date }): Promise<void>;
   /** True when the account still owes its first-login rotation. */
   isRequired(userId: string): Promise<boolean>;
+  /**
+   * True when a temporary credential was issued with an expiry that has passed
+   * and was never rotated. An account with no expiry recorded is never expired
+   * (flags written before expiry existed keep working).
+   */
+  isExpired(userId: string, now: Date): Promise<boolean>;
 }
 
-/** 16 chars from an unambiguous alphabet (~95 bits) — emailed once, rotated on first login. */
+/** How long a temporary password works: two days from issue. */
+export const TEMPORARY_PASSWORD_TTL_MS = 2 * 24 * 60 * 60 * 1000;
+
+/** Temporary passwords are 8 characters (also Better Auth's minimum). */
+export const TEMPORARY_PASSWORD_LENGTH = 8;
+
+/**
+ * 8 chars from an unambiguous 56-symbol alphabet (~46 bits). Deliberately
+ * short so it can be read off a phone at a venue door; that is safe only
+ * because it is single-use, valid for {@link TEMPORARY_PASSWORD_TTL_MS},
+ * behind the login rate limit, and must be rotated on first sign-in.
+ */
 const TEMPORARY_PASSWORD_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
 
 export function generateTemporaryPassword(): string {
   let password = '';
-  for (let index = 0; index < 16; index += 1) {
+  for (let index = 0; index < TEMPORARY_PASSWORD_LENGTH; index += 1) {
     const charIndex = randomInt(TEMPORARY_PASSWORD_ALPHABET.length);
     password += TEMPORARY_PASSWORD_ALPHABET.charAt(charIndex);
   }
@@ -139,6 +166,12 @@ export class MemoryStaffCredentialProvisioner implements StaffCredentialProvisio
     return { userId, created: true, temporaryPassword };
   }
 
+  async reissueTemporaryPassword(userId: string): Promise<string> {
+    const temporaryPassword = generateTemporaryPassword();
+    this.passwords.set(userId, temporaryPassword);
+    return temporaryPassword;
+  }
+
   getPassword(userId: string): string | null {
     return this.passwords.get(userId) ?? null;
   }
@@ -146,10 +179,27 @@ export class MemoryStaffCredentialProvisioner implements StaffCredentialProvisio
 
 export class MemoryStaffRotationStore implements StaffRotationStore {
   private readonly required = new Set<string>();
+  private readonly expiries = new Map<string, number>();
 
-  async setRequired(userId: string, required: boolean): Promise<void> {
-    if (required) this.required.add(userId);
-    else this.required.delete(userId);
+  async setRequired(
+    userId: string,
+    required: boolean,
+    options?: { expiresAt?: Date },
+  ): Promise<void> {
+    if (required) {
+      this.required.add(userId);
+      if (options?.expiresAt) this.expiries.set(userId, options.expiresAt.getTime());
+      else this.expiries.delete(userId);
+    } else {
+      this.required.delete(userId);
+      this.expiries.delete(userId);
+    }
+  }
+
+  async isExpired(userId: string, now: Date): Promise<boolean> {
+    if (!this.required.has(userId)) return false;
+    const expiresAt = this.expiries.get(userId);
+    return expiresAt !== undefined && now.getTime() >= expiresAt;
   }
 
   async isRequired(userId: string): Promise<boolean> {

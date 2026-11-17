@@ -619,6 +619,41 @@ export default async function partnerOrganizationRoutes(fastify: FastifyInstance
     },
   );
 
+  // Resending re-emails a pending invitation and, when the invitee has never
+  // taken ownership of their account, issues a fresh 2-day temporary password
+  // (the old one stops working). Same authority as revoking: you can only act
+  // on invitations for roles below your own.
+  fastify.post(
+    '/invitations/:invitationId/resend',
+    {
+      preHandler: [
+        fastify.rateLimit('SENSITIVE_COMMAND'),
+        fastify.validateV2({
+          params: invitationIdParam,
+          headers: orgHeaders.extend({ 'idempotency-key': idempotencyKeySchema }),
+        }),
+        fastify.requirePermission('staff.manage'),
+      ],
+    },
+    async (request, reply) => {
+      const { invitationId } = request.params as z.infer<typeof invitationIdParam>;
+      const actor = services.actor(request);
+      const invitation = await services.organizations
+        .resendInvitation(actor, invitationId)
+        .catch((error: unknown) => mapDomainError(reply, request, invitationId, error));
+      if (invitation === undefined) return reply;
+
+      const validated = validateV2Response(
+        reply,
+        request,
+        invitationDtoSchema,
+        invitationToDto(invitation),
+      );
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
   // Accepting is the invitee's own act: it needs a session but NOT membership
   // of the target org (that is exactly what is being granted), so it carries no
   // `requirePermission` and no `X-Organization-Id`.
