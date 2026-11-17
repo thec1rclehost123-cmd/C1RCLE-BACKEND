@@ -15,6 +15,7 @@ import {
   updateVenueMenuSchema,
   slotRequestDtoSchema,
   createSlotRequestSchema,
+  rejectSlotRequestSchema,
   slotRequestListResponseSchema,
   slotRequestDetailDtoSchema,
   paginatedSchema,
@@ -45,7 +46,24 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 const services = createV2Services();
 
 const venueIdParam = z.object({ venueId: opaqueIdSchema });
+const repairDryRunQuery = z.object({ limit: z.coerce.number().int().min(1).max(100).optional() });
+const repairCandidateSchema = z.object({
+  requestId: opaqueIdSchema,
+  eventId: opaqueIdSchema,
+  requestStatus: z.enum(['accepted', 'pending', 'rejected']),
+  eventStatus: z.string().nullable(),
+  kind: z.enum(['accepted_without_published_event', 'event_without_accepted_request']),
+  proposedAction: z.enum([
+    'review_and_replay_acceptance',
+    'review_and_rebuild_event',
+    'inspect_and_authorize_cleanup',
+  ]),
+});
 const venueBlockParam = z.object({ venueId: opaqueIdSchema, blockId: opaqueIdSchema });
+const venueAvailabilityParam = z.object({
+  venueId: opaqueIdSchema,
+  availabilityId: opaqueIdSchema,
+});
 const orgIdParam = z.object({ organizationId: opaqueIdSchema });
 const slotRequestDetailParam = z.object({
   venueId: opaqueIdSchema,
@@ -537,6 +555,51 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
     },
   );
 
+  fastify.delete(
+    '/venues/:venueId/calendar/availability/:availabilityId',
+    {
+      preHandler: [
+        fastify.rateLimit('STANDARD_COMMAND'),
+        fastify.validateV2({
+          params: venueAvailabilityParam,
+          headers: venueHeaders.extend({ 'idempotency-key': idempotencyKeySchema }),
+        }),
+        fastify.requirePermission('venue.manage'),
+      ],
+    },
+    async (request, reply) => {
+      const { venueId, availabilityId } = request.params as z.infer<typeof venueAvailabilityParam>;
+      const actor = services.actor(request);
+      const headers = request.v2Headers ?? {};
+      const result = await runIdempotent({
+        idempotency: services.idempotency,
+        request,
+        actorId: actor.userId,
+        commandName: 'venue-calendar.unpublish-availability',
+        idempotencyKey: headers['idempotency-key'],
+        context: { path: { venueId, availabilityId }, body: {} },
+        run: async () => {
+          const slot = await services.venueCalendar.unpublishAvailability(
+            actor,
+            venueId,
+            availabilityId,
+          );
+          const validated = validateV2Response(reply, request, venueSlotDtoSchema, slot);
+          if (validated === undefined) throw new Error('v2 response validation failed');
+          return { statusCode: 200, body: validated };
+        },
+      }).catch((error: unknown) =>
+        isIdempotencyConflict(error)
+          ? mapDomainError(reply, request, availabilityId, error, {
+              conflictId: headers['idempotency-key'],
+            })
+          : mapDomainError(reply, request, availabilityId, error),
+      );
+      if (result === undefined) return reply;
+      return reply.status(result.statusCode).send(result.body);
+    },
+  );
+
   // ── UNBLOCK (soft-cancel a blocked slot) ─────────────────────────────────
   fastify.delete(
     '/venues/:venueId/calendar/blocks/:blockId',
@@ -736,6 +799,48 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
     },
   );
 
+  fastify.get(
+    '/venues/:venueId/slot-requests/repair-dry-run',
+    {
+      preHandler: [
+        fastify.rateLimit('AUTH_READ'),
+        fastify.validateV2({
+          params: venueIdParam,
+          querystring: repairDryRunQuery,
+          headers: venueHeaders,
+        }),
+        fastify.requirePermission('venue.read'),
+      ],
+    },
+    async (request, reply) => {
+      const { venueId } = request.params as z.infer<typeof venueIdParam>;
+      const { limit } = request.query as z.infer<typeof repairDryRunQuery>;
+      const result = await services.venueSlotRequests
+        .dryRunRepairCandidates(services.actor(request), venueId, limit)
+        .catch((error: unknown) =>
+          mapDomainError(reply, request, venueId, error, { hideForbidden: true }),
+        );
+      if (result === undefined) return reply;
+      const payload = {
+        ...result,
+        candidates: result.candidates.map((candidate) => repairCandidateSchema.parse(candidate)),
+      };
+      const validated = validateV2Response(
+        reply,
+        request,
+        z.object({
+          dryRun: z.literal(true),
+          scanned: z.number().int(),
+          truncated: z.boolean(),
+          candidates: z.array(repairCandidateSchema),
+        }),
+        payload,
+      );
+      if (validated === undefined) return reply;
+      return reply.send(validated);
+    },
+  );
+
   // ── SLOT REQUESTS (host-side outgoing list; venue-owner detail) ──
   fastify.get(
     '/organizations/:organizationId/slot-requests',
@@ -839,8 +944,6 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
           const slotRequest = await services.venueSlotRequests.create(actor, {
             venueId,
             slotId: body.slotId,
-            startTime: body.startTime,
-            endTime: body.endTime,
             eventId: body.eventId ?? null,
             message: body.message,
             eventDraft: body.eventDraft,
@@ -877,6 +980,7 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
           fastify.rateLimit('STANDARD_COMMAND'),
           fastify.validateV2({
             params: slotRequestIdParam,
+            ...(action === 'reject' ? { body: rejectSlotRequestSchema } : {}),
             headers: venueHeaders.extend({ 'idempotency-key': idempotencyKeySchema }),
           }),
           fastify.requirePermission('venue.schedule'),
@@ -892,9 +996,19 @@ export default async function partnerVenueRoutes(fastify: FastifyInstance) {
           actorId: actor.userId,
           commandName: `venue.slotRequest.${action}`,
           idempotencyKey: v2Headers['idempotency-key'],
-          context: { path: { slotRequestId }, body: {} },
+          context: {
+            path: { slotRequestId },
+            body: action === 'reject' ? request.body : {},
+          },
           run: async () => {
-            const slotRequest = await services.venueSlotRequests[action](actor, slotRequestId);
+            const slotRequest =
+              action === 'reject'
+                ? await services.venueSlotRequests.reject(
+                    actor,
+                    slotRequestId,
+                    (request.body as z.infer<typeof rejectSlotRequestSchema>).reason,
+                  )
+                : await services.venueSlotRequests.accept(actor, slotRequestId);
             const validated = validateV2Response(
               reply,
               request,
