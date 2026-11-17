@@ -31,6 +31,34 @@ export interface TicketPricingPhase {
   quantity: number | null;
 }
 
+/**
+ * Resolves the one server-active price phase at a single authoritative instant.
+ * Invalid date windows are ignored for legacy compatibility; overlapping valid
+ * phases fail closed because choosing one by array order would expose a
+ * non-deterministic price to Guests.
+ */
+export function activeTicketPricingPhase(
+  phases: readonly TicketPricingPhase[] | null | undefined,
+  now: Date,
+): TicketPricingPhase | null {
+  const instant = now.getTime();
+  const active = (phases ?? []).filter((phase) => {
+    const startsAt = Date.parse(phase.startsAt);
+    const endsAt = Date.parse(phase.endsAt);
+    return (
+      Number.isFinite(startsAt) &&
+      Number.isFinite(endsAt) &&
+      endsAt > startsAt &&
+      startsAt <= instant &&
+      endsAt > instant
+    );
+  });
+  if (active.length > 1) {
+    throw new InvalidOperationError('Overlapping ticket price phases are unavailable');
+  }
+  return active[0] ?? null;
+}
+
 export interface PartialDateTicketPricingPhaseInput {
   id: string;
   name: string;

@@ -40,6 +40,7 @@ const services = createV2Services();
 
 async function publicEventToDto(event: Parameters<typeof eventToDto>[0], revealAfterGrant = false) {
   const dto = eventToDto(event);
+  const pricingSummary = await services.public.getPublicPricingSummary(event);
   const imageUrl = publicArtworkUrl(event.imageUrl);
   const youtubeUrl = dto.media?.youtubeUrl;
   const safeYoutubeUrl =
@@ -61,7 +62,8 @@ async function publicEventToDto(event: Parameters<typeof eventToDto>[0], revealA
   const safeDto = {
     ...dto,
     imageUrl,
-    salesStatus: await services.public.getSalesStatus(event),
+    salesStatus: pricingSummary.salesStatus,
+    activeStartingPricePaise: pricingSummary.activeStartingPricePaise,
     ...(media ? { media } : {}),
   };
   if (!event.externalLocation) return safeDto;
@@ -504,8 +506,15 @@ export default async function publicDiscoveryRoutes(fastify: FastifyInstance) {
         reply.header('x-robots-tag', 'noindex, nofollow, noarchive');
       }
       const payload = {
-        items: rows.map(({ tier, availableQuantity, priceInPaise }) =>
-          publicTierToDto(tier, availableQuantity, priceInPaise),
+        items: rows.map((row) =>
+          publicTierToDto(
+            row.tier,
+            row.availableQuantity,
+            row.priceInPaise,
+            row.basePriceInPaise,
+            row.availabilityStatus,
+            row.pricingPhase,
+          ),
         ),
       };
       const validated = validateV2Response(
@@ -627,13 +636,28 @@ function publicVenueToDto(venue: Venue) {
  * availability. No purchase bounds, no sales windows, no version stamps.
  * Legacy tiers without `priceInPaise` price via `effectiveTierPricePaise`.
  */
-function publicTierToDto(tier: TicketTier, availableQuantity: number, priceInPaise: number) {
+function publicTierToDto(
+  tier: TicketTier,
+  availableQuantity: number,
+  priceInPaise: number,
+  basePriceInPaise: number,
+  availabilityStatus: string,
+  pricingPhase: {
+    name: string;
+    startsAt: string;
+    endsAt: string;
+    availableQuantity: number | null;
+  } | null,
+) {
   return {
     id: tier.id,
     eventId: tier.eventId,
     name: tier.name,
     description: tier.description,
     priceInPaise,
+    basePriceInPaise,
+    availabilityStatus,
+    pricingPhase,
     coverAmountPaise: tier.coverAmountPaise ?? 0,
     currency: tier.currency,
     availableQuantity,

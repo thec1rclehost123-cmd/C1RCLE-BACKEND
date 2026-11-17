@@ -434,6 +434,7 @@ export type {
 export {
   ticketAddonSelectionSchema,
   ticketAddonEntitlementSchema,
+  MAX_CHECKOUT_TICKETS_PER_LINE,
   pricingLineDtoSchema,
   pricingBreakdownDtoSchema,
   checkoutQuoteRequestSchema,

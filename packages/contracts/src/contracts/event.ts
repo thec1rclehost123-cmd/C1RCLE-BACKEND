@@ -193,13 +193,24 @@ export const eventDtoSchema = z.object({
   status: eventStatusSchema,
   /** Present on public Guest event reads; omitted by unrelated partner projections. */
   salesStatus: z
-    .enum(['on_sale', 'sold_out', 'sales_paused', 'ended', 'cancelled', 'postponed'])
+    .enum([
+      'on_sale',
+      'sold_out',
+      'sales_paused',
+      'ended',
+      'cancelled',
+      'postponed',
+      'not_yet_available',
+      'temporarily_held',
+    ])
     .optional(),
   visibilityMode: eventVisibilityModeSchema,
   addressDisclosure: eventAddressDisclosureSchema.default('public'),
   isPublic: z.boolean(),
   tags: z.array(z.string().min(1)).max(50).default([]),
   startingPricePaise: z.number().int().nonnegative().nullable(),
+  /** Lowest currently purchasable public tier price; distinct from the base starting price. */
+  activeStartingPricePaise: z.number().int().nonnegative().nullable().optional(),
   isFree: z.boolean(),
   cancellationReason: z.string().max(1000).nullable(),
   postponement: z
@@ -808,6 +819,29 @@ export const publicTicketTierDtoSchema = z.object({
   name: z.string(),
   description: z.string(),
   priceInPaise: z.number().int().nonnegative(),
+  /** Regular tier face price before an active pricing phase. */
+  basePriceInPaise: z.number().int().nonnegative().optional(),
+  availabilityStatus: z
+    .enum([
+      'available',
+      'sold_out',
+      'temporarily_held',
+      'not_yet_available',
+      'sales_ended',
+      'sales_paused',
+      'pricing_unavailable',
+    ])
+    .optional(),
+  pricingPhase: z
+    .object({
+      name: z.string().min(1).max(80),
+      startsAt: z.iso.datetime(),
+      endsAt: z.iso.datetime(),
+      availableQuantity: z.number().int().nonnegative().nullable(),
+    })
+    .strict()
+    .nullable()
+    .optional(),
   coverAmountPaise: z.number().int().nonnegative().optional(),
   currency: z.string().length(3),
   availableQuantity: z.number().int().nonnegative(),

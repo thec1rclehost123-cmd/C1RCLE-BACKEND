@@ -334,6 +334,7 @@ export type {
 } from './contracts/checkout.js';
 
 export {
+  MAX_CHECKOUT_TICKETS_PER_LINE,
   pricingLineDtoSchema,
   pricingBreakdownDtoSchema,
   checkoutQuoteRequestSchema,

@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { InvalidOperationError } from '../../domain/errors.js';
+import { createPromoCode } from '../../domain/models/event-catalog.js';
 import { createTicketAddon } from '../../domain/models/ticket-addon.js';
 
 import { PricingService } from './pricing-service.js';
 
-import type { TicketTier } from '../../domain/models/event-catalog.js';
+import type { PromoCode, TicketTier } from '../../domain/models/event-catalog.js';
 import type { EventCatalogRepository } from '../../domain/ports/repositories.js';
 
 function tier(overrides: Partial<TicketTier> = {}): TicketTier {
@@ -30,13 +31,19 @@ function tier(overrides: Partial<TicketTier> = {}): TicketTier {
   };
 }
 
-function service(ticket: TicketTier): PricingService {
+function service(
+  ticket: TicketTier,
+  options: { promo?: PromoCode; clock?: () => Date } = {},
+): PricingService {
   const catalog = {
     listTiers: async () => [ticket],
     listTicketAddons: async () => [],
-    getPromoByCode: async () => null,
+    getPromoByCode: async (code: string) => (options.promo?.code === code ? options.promo : null),
   } as unknown as EventCatalogRepository;
-  return new PricingService({ eventCatalog: catalog });
+  return new PricingService({
+    eventCatalog: catalog,
+    ...(options.clock ? { clock: options.clock } : {}),
+  });
 }
 
 describe('PricingService ticket-tier pricing', () => {
@@ -90,6 +97,77 @@ describe('PricingService ticket-tier pricing', () => {
     expect(result.lines[0]?.unitPricePaise).toBe(149_900);
   });
 
+  it('fails closed on overlapping active phases and ignores malformed legacy windows', async () => {
+    const first = {
+      id: 'PHASE-1',
+      name: 'Early Bird',
+      priceInPaise: 65_000,
+      startsAt: '2000-01-01T00:00:00.000Z',
+      endsAt: '2099-01-01T00:00:00.000Z',
+      quantity: null,
+    };
+    const second = { ...first, id: 'PHASE-2', name: 'Weekend' };
+    await expect(
+      service(tier({ pricingPhases: [first, second] }), {
+        clock: () => new Date('2026-11-19T12:00:00.000Z'),
+      }).calculate({ eventId: 'EVT-1', lines: [{ tierId: 'TIER-1', quantity: 1 }] }),
+    ).rejects.toThrow(/Overlapping ticket price phases/);
+
+    const malformed = { ...first, startsAt: 'not-a-date' };
+    const result = await service(tier({ priceInPaise: 80_000, pricingPhases: [malformed] }), {
+      clock: () => new Date('2026-11-19T12:00:00.000Z'),
+    }).calculate({ eventId: 'EVT-1', lines: [{ tierId: 'TIER-1', quantity: 1 }] });
+    expect(result.lines[0]).toMatchObject({
+      unitPricePaise: 80_000,
+      baseAdmissionUnitPricePaise: 80_000,
+      pricingPhaseName: null,
+    });
+  });
+
+  it('applies a normalized promo to the active phase price and returns that phase truth', async () => {
+    const promo = createPromoCode({
+      id: 'PROMO-STAGE001',
+      eventId: 'EVT-1',
+      organizationId: 'ORG-1',
+      code: 'STAGE001',
+      discountType: 'percent',
+      discountValue: 10,
+      discountFundingOwner: 'host',
+      startsAt: '2026-11-01T00:00:00.000Z',
+      endsAt: '2026-12-01T00:00:00.000Z',
+      now: new Date('2026-11-17T00:00:00.000Z'),
+    });
+    const clock = vi.fn(() => new Date('2026-11-19T12:00:00.000Z'));
+    const result = await service(
+      tier({
+        priceInPaise: 80_000,
+        pricingPhases: [
+          {
+            id: 'EARLY-BIRD',
+            name: 'Early Bird',
+            priceInPaise: 65_000,
+            startsAt: '2026-11-15T00:00:00.000Z',
+            endsAt: '2026-11-22T00:00:00.000Z',
+            quantity: null,
+          },
+        ],
+      }),
+      { promo, clock },
+    ).calculate({
+      eventId: 'EVT-1',
+      lines: [{ tierId: 'TIER-1', quantity: 1 }],
+      promoCode: ' stage001 ',
+    });
+
+    expect(clock).toHaveBeenCalledTimes(1);
+    expect(result.lines[0]).toMatchObject({
+      unitPricePaise: 65_000,
+      baseAdmissionUnitPricePaise: 80_000,
+      pricingPhaseName: 'Early Bird',
+    });
+    expect(result).toMatchObject({ subtotalPaise: 65_000, discountPaise: 6_500 });
+  });
+
   it('rejects paused tiers before calculating a price', async () => {
     await expect(
       service(tier({ status: 'paused' })).calculate({
@@ -106,6 +184,15 @@ describe('PricingService ticket-tier pricing', () => {
         lines: [{ tierId: 'TIER-1', quantity: 1 }],
       }),
     ).rejects.toThrow(/at least 2/);
+  });
+
+  it('rejects a server quote above the tier maximum per order', async () => {
+    await expect(
+      service(tier({ maxPerOrder: 4 })).calculate({
+        eventId: 'EVT-1',
+        lines: [{ tierId: 'TIER-1', quantity: 5 }],
+      }),
+    ).rejects.toThrow(/maximum of 4 per order/);
   });
 
   it('rejects sales outside the ticket sales window', async () => {

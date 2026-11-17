@@ -52,13 +52,35 @@ export const GST_PERCENT = 18;
  * Half-up at exactly .5, matching v1's `Math.round`.
  */
 export function applyPercent(paise: number, percent: number): number {
-  const scaledPercent = Math.round(percent * 10);
-  return Math.round((paise * scaledPercent) / 1000);
+  if (
+    !Number.isSafeInteger(paise) ||
+    paise < 0 ||
+    !Number.isFinite(percent) ||
+    percent < 0 ||
+    percent > 100
+  ) {
+    throw new InvalidOperationError('Invalid amount or percentage');
+  }
+  const [mantissa = '0', exponentText] = percent.toString().toLowerCase().split('e');
+  const exponent = exponentText === undefined ? 0 : Number(exponentText);
+  const [whole = '0', fraction = ''] = mantissa.split('.');
+  let percentageNumerator = BigInt(`${whole}${fraction}`);
+  let decimalScale = 10n ** BigInt(fraction.length);
+  if (exponent > 0) percentageNumerator *= 10n ** BigInt(exponent);
+  else if (exponent < 0) decimalScale *= 10n ** BigInt(-exponent);
+  const denominator = decimalScale * 100n;
+  const result = (BigInt(paise) * percentageNumerator + denominator / 2n) / denominator;
+  if (result > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new InvalidOperationError('Discount exceeds supported monetary range');
+  }
+  return Number(result);
 }
 
 /** One line of the order: a tier and how many of it. */
 export interface PricingLineInput {
   pricingPhaseId?: string | null;
+  pricingPhaseName?: string | null;
+  baseAdmissionUnitPricePaise?: number;
   tier: TicketTier;
   quantity: number;
   ticketAddons?: TicketAddonSelection[];
@@ -67,6 +89,10 @@ export interface PricingLineInput {
 export interface PricingLine {
   /** Authoritative quantity-priced allocation captured at quote time. */
   pricingPhaseId?: string | null;
+  /** Guest-safe display metadata for the phase used by this quote. */
+  pricingPhaseName?: string | null;
+  /** Tier face price before the active pricing phase was applied. */
+  baseAdmissionUnitPricePaise?: number;
   tierId: EntityId;
   tierName: string;
   quantity: number;
@@ -125,7 +151,14 @@ export function calculatePricing(input: CalculatePricingInput): PricingBreakdown
 
   const currency = input.currency ?? input.lines[0]?.tier.currency ?? 'INR';
   const lines: PricingLine[] = input.lines.map(
-    ({ tier, quantity, ticketAddons = [], pricingPhaseId }) => {
+    ({
+      tier,
+      quantity,
+      ticketAddons = [],
+      pricingPhaseId,
+      pricingPhaseName,
+      baseAdmissionUnitPricePaise,
+    }) => {
       if (!Number.isInteger(quantity) || quantity < 1) {
         throw new InvalidOperationError(
           `Quantity for ${tier.name} must be a positive whole number`,
@@ -153,6 +186,8 @@ export function calculatePricing(input: CalculatePricingInput): PricingBreakdown
       return {
         tierId: tier.id,
         ...(pricingPhaseId === undefined ? {} : { pricingPhaseId }),
+        ...(pricingPhaseName === undefined ? {} : { pricingPhaseName }),
+        ...(baseAdmissionUnitPricePaise === undefined ? {} : { baseAdmissionUnitPricePaise }),
         tierName: tier.name,
         quantity,
         unitPricePaise:
