@@ -150,3 +150,81 @@ describe('AnalyticsService event booking heatmap', () => {
     expect(listByEvent).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('AnalyticsService Venue-safe operational counts', () => {
+  it('counts ticket units, RSVPs, group admissions and check-ins without using order values', async () => {
+    const entitlements = [
+      {
+        id: 'ticket_group',
+        eventId: 'event_1',
+        tierId: 'tier_group',
+        tierName: 'Group entry',
+        unitKind: 'paid',
+        status: 'valid',
+        scanCountAllowed: 2,
+        scanCount: 1,
+      },
+      {
+        id: 'rsvp_unit',
+        eventId: 'event_1',
+        tierId: 'tier_rsvp',
+        tierName: 'RSVP',
+        unitKind: 'free_rsvp',
+        status: 'valid',
+        scanCountAllowed: 1,
+        scanCount: 0,
+      },
+      {
+        id: 'void_scanned',
+        eventId: 'event_1',
+        tierId: 'tier_group',
+        tierName: 'Group entry',
+        unitKind: 'paid',
+        status: 'void',
+        scanCountAllowed: 1,
+        scanCount: 1,
+      },
+    ];
+    const saveEventAnalytics = vi.fn(async () => undefined);
+    const svc = new AnalyticsService({
+      repositories: {
+        events: { getById: vi.fn(async () => event('public')) },
+        orders: { listByEvent: paged([]) },
+        entitlements: {
+          listByEvent: paged(entitlements),
+        },
+        catalog: { listTiers: vi.fn(async () => []) },
+        analytics: { saveEventAnalytics },
+      },
+    } as unknown as ServiceDeps);
+
+    const result = await svc.projectEventAnalytics('event_1');
+
+    expect(result).toMatchObject({
+      ticketUnitsIssued: 1,
+      rsvpUnitsIssued: 1,
+      expectedGuests: 3,
+      checkedInGuests: 2,
+      operationalCountsComplete: true,
+    });
+    expect(result?.operationalTierCounts).toEqual([
+      {
+        tierId: 'tier_group',
+        name: 'Group entry',
+        unitKind: 'ticket',
+        unitsIssued: 1,
+        expectedGuests: 2,
+        checkedInGuests: 2,
+      },
+      {
+        tierId: 'tier_rsvp',
+        name: 'RSVP',
+        unitKind: 'rsvp',
+        unitsIssued: 1,
+        expectedGuests: 1,
+        checkedInGuests: 0,
+      },
+    ]);
+    expect(saveEventAnalytics).toHaveBeenCalledWith(result);
+  });
+});

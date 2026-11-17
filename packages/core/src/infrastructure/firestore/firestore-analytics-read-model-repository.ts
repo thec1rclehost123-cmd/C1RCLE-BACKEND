@@ -32,6 +32,25 @@ export class FirestoreAnalyticsReadModelRepository implements AnalyticsReadModel
     return snap.exists ? (snap.data() as unknown as EventAnalytics) : null;
   }
 
+  async getEventAnalyticsByIds(eventIds: EntityId[]): Promise<EventAnalytics[]> {
+    const uniqueIds = [...new Set(eventIds)];
+    const rows: EventAnalytics[] = [];
+    // Firestore getAll is limited to 100 documents. Chunking keeps list and
+    // analytics reads bounded without one request per event.
+    for (let index = 0; index < uniqueIds.length; index += 100) {
+      const refs = uniqueIds
+        .slice(index, index + 100)
+        .map((eventId) => this.db.collection(COLLECTION).doc(`event_${eventId}`));
+      const snapshots = await this.db.getAll(...refs);
+      rows.push(
+        ...snapshots
+          .filter((snapshot) => snapshot.exists)
+          .map((snapshot) => snapshot.data() as unknown as EventAnalytics),
+      );
+    }
+    return rows;
+  }
+
   async saveOrganizationOverview(overview: OrganizationOverview): Promise<void> {
     await this.db
       .collection(COLLECTION)

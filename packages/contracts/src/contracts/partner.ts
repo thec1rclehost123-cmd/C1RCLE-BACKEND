@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { orderStatusSchema } from './checkout.js';
+import { venueOperationalEventDtoSchema } from './event.js';
 import { cursorSchema, opaqueIdSchema, pageInfoSchema, paginatedSchema } from './shared.js';
 
 /**
@@ -348,6 +349,67 @@ export const eventAnalyticsDtoSchema = z.object({
 });
 export type EventAnalyticsDto = z.infer<typeof eventAnalyticsDtoSchema>;
 
+const venueOperationalCountSchema = z.number().int().nonnegative();
+const venueCapacityUtilizationSchema = z.number().nonnegative().nullable();
+
+export const venueOperationalOverviewDtoSchema = z
+  .object({
+    summary: z
+      .object({
+        eventsTonight: venueOperationalCountSchema,
+        upcomingEvents: venueOperationalCountSchema,
+        ticketUnitsIssued: venueOperationalCountSchema,
+        rsvpUnitsIssued: venueOperationalCountSchema,
+        expectedGuests: venueOperationalCountSchema,
+        checkedInGuests: venueOperationalCountSchema,
+        physicalVenueCapacity: venueOperationalCountSchema,
+        expectedOccupancyPercent: venueCapacityUtilizationSchema,
+        complete: z.boolean(),
+      })
+      .strict(),
+    upcomingEvents: z.array(venueOperationalEventDtoSchema).max(5),
+  })
+  .strict();
+export type VenueOperationalOverviewDto = z.infer<typeof venueOperationalOverviewDtoSchema>;
+
+export const venueOperationalAnalyticsDtoSchema = z
+  .object({
+    from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    timeZone: z.literal('Asia/Kolkata'),
+    summary: z
+      .object({
+        eventCount: venueOperationalCountSchema,
+        ticketUnitsIssued: venueOperationalCountSchema,
+        rsvpUnitsIssued: venueOperationalCountSchema,
+        expectedGuests: venueOperationalCountSchema,
+        checkedInGuests: venueOperationalCountSchema,
+        physicalVenueCapacity: venueOperationalCountSchema,
+        expectedOccupancyPercent: venueCapacityUtilizationSchema,
+        complete: z.boolean(),
+      })
+      .strict(),
+    days: z
+      .array(
+        z
+          .object({
+            date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+            eventCount: venueOperationalCountSchema,
+            ticketUnitsIssued: venueOperationalCountSchema,
+            rsvpUnitsIssued: venueOperationalCountSchema,
+            expectedGuests: venueOperationalCountSchema,
+            checkedInGuests: venueOperationalCountSchema,
+            physicalVenueCapacity: venueOperationalCountSchema,
+            expectedOccupancyPercent: venueCapacityUtilizationSchema,
+          })
+          .strict(),
+      )
+      .max(366),
+    events: z.array(venueOperationalEventDtoSchema).max(10_000),
+  })
+  .strict();
+export type VenueOperationalAnalyticsDto = z.infer<typeof venueOperationalAnalyticsDtoSchema>;
+
 /** Historical successful bookings by weekday/hour in product time. */
 export const eventBookingHeatmapDtoSchema = z
   .object({
@@ -608,7 +670,10 @@ export const discoverPartnersQuerySchema = z.object({
 export type DiscoverPartnersQuery = z.infer<typeof discoverPartnersQuerySchema>;
 
 /** Tenant-scoped global search results. Guest and order identities are excluded by design. */
-export const partnerGlobalSearchQuerySchema = z.object({ q: z.string().trim().min(2).max(120) });
+export const partnerGlobalSearchQuerySchema = z.object({
+  q: z.string().trim().min(2).max(120),
+  studio: z.enum(['host', 'venue']).optional(),
+});
 export const partnerGlobalSearchResultSchema = z.object({
   id: opaqueIdSchema,
   type: z.enum(['event', 'partner']),

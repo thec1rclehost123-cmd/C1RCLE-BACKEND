@@ -38,7 +38,12 @@ import type { FastifyInstance } from 'fastify';
 
 const services = createV2Services();
 
-async function publicEventToDto(event: Parameters<typeof eventToDto>[0], revealAfterGrant = false) {
+async function publicEventToDto(
+  event: Parameters<typeof eventToDto>[0],
+  revealAfterGrant = false,
+  userId?: string,
+  accessGrantId?: string,
+) {
   const dto = eventToDto(event);
   const pricingSummary = await services.public.getPublicPricingSummary(event);
   const imageUrl = publicArtworkUrl(event.imageUrl);
@@ -64,6 +69,11 @@ async function publicEventToDto(event: Parameters<typeof eventToDto>[0], revealA
     imageUrl,
     salesStatus: pricingSummary.salesStatus,
     activeStartingPricePaise: pricingSummary.activeStartingPricePaise,
+    currentStartingPricePaise: await services.public.getCurrentStartingPricePaise(
+      event.id,
+      userId,
+      accessGrantId,
+    ),
     ...(media ? { media } : {}),
   };
   if (!event.externalLocation) return safeDto;
@@ -315,7 +325,7 @@ export default async function publicDiscoveryRoutes(fastify: FastifyInstance) {
       const privateEvent =
         detail.event.visibilityMode === 'code' || detail.event.visibilityMode === 'invited';
       const payload = {
-        ...(await publicEventToDto(detail.event, true)),
+        ...(await publicEventToDto(detail.event, true, userId, accessGrantId)),
         // PublicService emits only a short-lived signed URL for an event grant;
         // partner and anonymous projections always redact private poster URLs.
         imageUrl: publicArtworkUrl(detail.event.imageUrl),

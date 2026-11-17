@@ -25,8 +25,11 @@ import {
 import { transitionSlotRequest } from '../../domain/models/venue.js';
 import { requireOrgAccess, emit } from '../context.js';
 
+import { currentStartingPricePaise } from './current-price.js';
+
 import type { EntityId } from '../../domain/identity.js';
 import type { TicketTier } from '../../domain/models/event-catalog.js';
+import type { Organization } from '../../domain/models/organization.js';
 import type { SlotRequest } from '../../domain/models/venue.js';
 import type { EventRepository, PaginationQuery } from '../../domain/ports/repositories.js';
 import type { ActorContext, ServiceDeps } from '../context.js';
@@ -82,11 +85,71 @@ const MAX_POSTER_BYTES = 5 * 1024 * 1024;
 /** Signed upload URL time-to-live — the client PUT must happen soon after mint. */
 const POSTER_UPLOAD_URL_TTL_MS = 15 * 60 * 1000;
 const ALLOWED_POSTER_CONTENT_TYPES: readonly string[] = ['image/jpeg', 'image/png', 'image/webp'];
+const VENUE_OPERATIONAL_EVENT_STATUSES: ReadonlySet<EventStatus> = new Set([
+  'published',
+  'sales_paused',
+  'started',
+  'ended',
+  'postponed',
+  'cancelled',
+]);
+const VENUE_OWN_EVENT_STATUSES: ReadonlySet<EventStatus> = new Set([
+  ...VENUE_OPERATIONAL_EVENT_STATUSES,
+  'draft',
+  'review',
+  'scheduled',
+]);
+const VENUE_COUNTABLE_EVENT_STATUSES: ReadonlySet<EventStatus> = new Set([
+  'published',
+  'sales_paused',
+  'started',
+  'ended',
+]);
+const MAX_VENUE_OPERATIONAL_EVENTS = 10_000;
 const CONTENT_TYPE_EXTENSION: Record<string, string> = {
   'image/jpeg': 'jpg',
   'image/png': 'png',
   'image/webp': 'webp',
 };
+
+function organizationDisplayName(organization: Organization | undefined | null): string | null {
+  const displayName = organization?.settings.partnerProfile?.displayName?.trim();
+  if (displayName) return displayName;
+
+  const settingsName = organization?.settings.name?.trim();
+  if (settingsName) return settingsName;
+
+  const name = organization?.name?.trim();
+  if (name === '') return null;
+  return name ?? null;
+}
+
+function positiveCapacity(value: number | null | undefined): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function isVenueAssociatedEventEligible(event: Event, venueOrganizationId: EntityId): boolean {
+  return event.organizationId === venueOrganizationId
+    ? VENUE_OWN_EVENT_STATUSES.has(event.status)
+    : VENUE_OPERATIONAL_EVENT_STATUSES.has(event.status);
+}
+
+function productDateKey(instant: string | Date): string {
+  const date = instant instanceof Date ? instant : new Date(instant);
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((value) => value.type === type)?.value ?? '';
+  return `${part('year')}-${part('month')}-${part('day')}`;
+}
+
+function expectedOccupancyPercent(expectedGuests: number, physicalCapacity: number): number | null {
+  return physicalCapacity > 0 ? Math.round((expectedGuests / physicalCapacity) * 1000) / 10 : null;
+}
 
 function assertGuestReachablePosterUrl(imageUrl: string | null | undefined): void {
   if (!imageUrl) return;
@@ -400,7 +463,7 @@ export class EventService {
   async listWithOperations(actor: ActorContext, query: PaginationQuery) {
     requireOrgAccess(actor, actor.organizationId);
     const page = await this.repo.listByOrganization(actor.organizationId, query);
-    const [orders, venues] = await Promise.all([
+    const [orders, venues, currentPrices] = await Promise.all([
       this.deps.repositories.orders.listByOrganization(actor.organizationId, {
         cursor: null,
         limit: 1000,
@@ -408,6 +471,11 @@ export class EventService {
       this.deps.repositories.venues.getByIds([
         ...new Set(page.items.flatMap((event) => (event.venueId ? [event.venueId] : []))),
       ]),
+      Promise.all(
+        page.items.map(
+          async (event) => [event.id, await this.currentPriceForEvent(event)] as const,
+        ),
+      ),
     ]);
     const soldByEvent = new Map<EntityId, number>();
     for (const order of orders.items) {
@@ -419,6 +487,7 @@ export class EventService {
       );
     }
     const venueNames = new Map(venues.map((venue) => [venue.id, venue.public.name]));
+    const currentPriceByEvent = new Map(currentPrices);
     const salesCountComplete = orders.nextCursor === null;
     return {
       ...page,
@@ -428,13 +497,13 @@ export class EventService {
         venueName: event.venueId ? (venueNames.get(event.venueId) ?? null) : null,
         ticketsSold: soldByEvent.get(event.id) ?? 0,
         salesCountComplete,
+        currentStartingPricePaise: currentPriceByEvent.get(event.id) ?? null,
       })),
     };
   }
 
-  /** Venue view: list events assigned to the Venue's own records, while
-   * preserving the Host as the event owner. */
-  async listForVenueOrganization(actor: ActorContext, query: PaginationQuery) {
+  /** One Venue-scoped operational event definition for every read surface. */
+  async getVenueOperationalEvents(actor: ActorContext) {
     requireOrgAccess(actor, actor.organizationId);
     if (!actor.capabilities.includes('venue')) {
       throw new ForbiddenError('Venue access is required to list Venue events');
@@ -443,93 +512,301 @@ export class EventService {
       cursor: null,
       limit: 100,
     });
-    const venueIds = new Set(venuePage.items.map((venue) => venue.id));
+    const ownedVenues = venuePage.items.filter(
+      (venue) => venue.organizationId === actor.organizationId && venue.status === 'active',
+    );
+    const venueById = new Map(ownedVenues.map((venue) => [venue.id, venue]));
+    const venueIds = new Set(venueById.keys());
     const allEvents: Event[] = [];
+    let complete = venuePage.nextCursor === null;
     for (const venueId of venueIds) {
       let cursor: string | null = null;
       let pages = 0;
       do {
-        const page = await this.repo.listByVenue(venueId, { cursor, limit: 100 });
+        const remaining = MAX_VENUE_OPERATIONAL_EVENTS - allEvents.length;
+        if (remaining <= 0) {
+          complete = false;
+          break;
+        }
+        const page = await this.repo.listByVenue(venueId, {
+          cursor,
+          limit: Math.min(100, remaining),
+        });
         allEvents.push(...page.items);
         cursor = page.nextCursor;
         pages += 1;
-      } while (cursor && pages < 10);
+      } while (cursor && pages < 10 && allEvents.length < MAX_VENUE_OPERATIONAL_EVENTS);
+      if (cursor !== null) complete = false;
     }
     const uniqueEvents = [...new Map(allEvents.map((event) => [event.id, event])).values()]
-      .filter((event) => event.venueId !== null && venueIds.has(event.venueId))
+      .filter(
+        (event) =>
+          event.venueId !== null &&
+          venueIds.has(event.venueId) &&
+          isVenueAssociatedEventEligible(event, actor.organizationId),
+      )
       .sort(
         (left, right) =>
           left.startAt.localeCompare(right.startAt) || left.id.localeCompare(right.id),
       );
+    const ownerIds = [...new Set(uniqueEvents.map((event) => event.organizationId))];
+    const [organizations, analyticsRows, currentPrices] = await Promise.all([
+      this.deps.repositories.organizations?.getByIds(ownerIds) ?? Promise.resolve([]),
+      this.deps.repositories.analytics?.getEventAnalyticsByIds(
+        uniqueEvents.map((event) => event.id),
+      ) ?? Promise.resolve([]),
+      Promise.all(
+        uniqueEvents.map(
+          async (event) =>
+            [
+              event.id,
+              VENUE_OPERATIONAL_EVENT_STATUSES.has(event.status)
+                ? await this.currentPriceForEvent(event)
+                : null,
+            ] as const,
+        ),
+      ),
+    ]);
+    const organizationById = new Map(
+      organizations.map((organization) => [organization.id, organization]),
+    );
+    const analyticsByEventId = new Map(analyticsRows.map((row) => [row.eventId, row]));
+    const currentPriceByEventId = new Map(currentPrices);
+    const items = uniqueEvents.flatMap((event) => {
+      const venue = event.venueId ? venueById.get(event.venueId) : undefined;
+      if (!venue) return [];
+      const isOperational = VENUE_OPERATIONAL_EVENT_STATUSES.has(event.status);
+      const analytics = isOperational ? analyticsByEventId.get(event.id) : undefined;
+      const item = {
+        event,
+        ownerType:
+          event.organizationId === actor.organizationId ? ('venue' as const) : ('host' as const),
+        hostName:
+          event.organizationId === actor.organizationId
+            ? null
+            : organizationDisplayName(organizationById.get(event.organizationId)),
+        venueId: venue.id,
+        venueName: venue.public.name,
+        venueCapacity: positiveCapacity(venue.public.capacity),
+        ticketUnitsIssued: analytics?.ticketUnitsIssued ?? 0,
+        rsvpUnitsIssued: analytics?.rsvpUnitsIssued ?? 0,
+        expectedGuests: analytics?.expectedGuests ?? 0,
+        checkedInGuests: analytics?.checkedInGuests ?? 0,
+        operationalCountsComplete: isOperational
+          ? (analytics?.operationalCountsComplete ?? false)
+          : true,
+        operationalTierCounts: analytics?.operationalTierCounts ?? [],
+        currentStartingPricePaise: currentPriceByEventId.get(event.id) ?? null,
+      };
+      if (!item.operationalCountsComplete) complete = false;
+      return [item];
+    });
+    return { items, complete };
+  }
+
+  /** Venue list pagination over the shared operational read model. */
+  async listForVenueOrganization(actor: ActorContext, query: PaginationQuery) {
+    const readModel = await this.getVenueOperationalEvents(actor);
     const limit = Math.min(Math.max(query.limit, 1), 100);
     const offset = query.cursor ? Number.parseInt(query.cursor, 10) || 0 : 0;
-    const events = uniqueEvents.slice(offset, offset + limit);
-    const ownerIds = [...new Set(events.map((event) => event.organizationId))];
-    const ownerOrders = await Promise.all(
-      ownerIds.map(async (ownerId) => ({
-        ownerId,
-        page: await this.deps.repositories.orders.listByOrganization(ownerId, {
-          cursor: null,
-          limit: 1000,
-        }),
-      })),
-    );
-    const soldByEvent = new Map<EntityId, number>();
-    for (const { page } of ownerOrders) {
-      for (const order of page.items) {
-        if (!['paid', 'refund_requested', 'refunded'].includes(order.status)) continue;
-        soldByEvent.set(
-          order.eventId,
-          (soldByEvent.get(order.eventId) ?? 0) +
-            order.lines.reduce((sum, line) => sum + line.quantity, 0),
-        );
-      }
-    }
-    const venuePageById = new Map(venuePage.items.map((venue) => [venue.id, venue]));
+    const items = readModel.items.slice(offset, offset + limit);
     return {
-      total: uniqueEvents.length,
+      total: readModel.items.length,
+      complete: readModel.complete,
       nextCursor:
-        offset + events.length < uniqueEvents.length ? String(offset + events.length) : null,
-      items: events.map((event) => ({
-        event,
-        capacity: event.capacity,
-        venueName: event.venueId ? (venuePageById.get(event.venueId)?.public.name ?? null) : null,
-        ticketsSold: soldByEvent.get(event.id) ?? 0,
-        salesCountComplete: ownerOrders.every(({ page }) => page.nextCursor === null),
+        offset + items.length < readModel.items.length ? String(offset + items.length) : null,
+      items: items.map((item) => ({
+        ...item,
+        capacity: item.event.capacity,
+        ticketsSold: item.ticketUnitsIssued,
+        salesCountComplete: item.operationalCountsComplete,
       })),
     };
   }
 
-  /** Read a Host-owned event only when it is associated with this Venue org. */
+  /** Read only operational events associated with a Venue owned by this org. */
   async getForVenueOrganization(actor: ActorContext, eventId: EntityId) {
     requireOrgAccess(actor, actor.organizationId);
     if (!actor.capabilities.includes('venue')) {
       throw new ForbiddenError('Venue access is required to read Venue events');
     }
     const event = await this.repo.getById(eventId);
-    if (!event?.venueId) throw new EventNotFoundError(eventId);
-    if (event.status === 'draft' || event.status === 'review' || event.status === 'scheduled') {
+    if (!event?.venueId || !isVenueAssociatedEventEligible(event, actor.organizationId)) {
       throw new EventNotFoundError(eventId);
     }
     const venue = await this.deps.repositories.venues.getById(event.venueId);
-    if (!venue || venue.organizationId !== actor.organizationId) {
+    if (!venue || venue.organizationId !== actor.organizationId || venue.status !== 'active') {
       throw new EventNotFoundError(eventId);
     }
+    const isOperational = VENUE_OPERATIONAL_EVENT_STATUSES.has(event.status);
+    const [owner, analytics, currentStartingPricePaise] = await Promise.all([
+      this.deps.repositories.organizations?.getById(event.organizationId) ?? Promise.resolve(null),
+      isOperational
+        ? (this.deps.repositories.analytics?.getEventAnalytics(event.id) ?? Promise.resolve(null))
+        : Promise.resolve(null),
+      isOperational ? this.currentPriceForEvent(event) : Promise.resolve(null),
+    ]);
     return {
       event,
-      tiers: await this.deps.repositories.catalog.listTiers(event.id),
+      ownerType:
+        event.organizationId === actor.organizationId ? ('venue' as const) : ('host' as const),
+      hostName:
+        event.organizationId === actor.organizationId ? null : organizationDisplayName(owner),
+      venueId: venue.id,
+      venueName: venue.public.name,
+      venueCapacity: positiveCapacity(venue.public.capacity),
+      ticketUnitsIssued: analytics?.ticketUnitsIssued ?? 0,
+      rsvpUnitsIssued: analytics?.rsvpUnitsIssued ?? 0,
+      expectedGuests: analytics?.expectedGuests ?? 0,
+      checkedInGuests: analytics?.checkedInGuests ?? 0,
+      operationalCountsComplete: isOperational
+        ? (analytics?.operationalCountsComplete ?? false)
+        : true,
+      tiers: analytics?.operationalTierCounts ?? [],
+      currentStartingPricePaise,
     };
+  }
+
+  async getVenueOperationalOverview(actor: ActorContext) {
+    const readModel = await this.getVenueOperationalEvents(actor);
+    const now = this.deps.config.clock.now();
+    const today = productDateKey(now);
+    const countable = readModel.items.filter((item) =>
+      VENUE_COUNTABLE_EVENT_STATUSES.has(item.event.status),
+    );
+    const tonight = countable.filter((item) => productDateKey(item.event.startAt) === today);
+    const upcoming = countable
+      .filter(
+        (item) =>
+          (item.event.status === 'published' || item.event.status === 'sales_paused') &&
+          Date.parse(item.event.startAt) >= now.getTime(),
+      )
+      .sort((left, right) => left.event.startAt.localeCompare(right.event.startAt));
+    const operatingSoon = countable.filter((item) => productDateKey(item.event.startAt) >= today);
+    const physicalCapacity = operatingSoon.reduce(
+      (sum, item) => sum + (item.venueCapacity ?? 0),
+      0,
+    );
+    const expectedGuests = operatingSoon.reduce((sum, item) => sum + item.expectedGuests, 0);
+    return {
+      summary: {
+        eventsTonight: tonight.length,
+        upcomingEvents: upcoming.length,
+        ticketUnitsIssued: operatingSoon.reduce((sum, item) => sum + item.ticketUnitsIssued, 0),
+        rsvpUnitsIssued: operatingSoon.reduce((sum, item) => sum + item.rsvpUnitsIssued, 0),
+        expectedGuests,
+        checkedInGuests: operatingSoon.reduce((sum, item) => sum + item.checkedInGuests, 0),
+        physicalVenueCapacity: physicalCapacity,
+        expectedOccupancyPercent: expectedOccupancyPercent(expectedGuests, physicalCapacity),
+        complete:
+          readModel.complete && operatingSoon.every((item) => item.operationalCountsComplete),
+      },
+      upcomingEvents: upcoming.slice(0, 5),
+    };
+  }
+
+  async getVenueOperationalAnalytics(actor: ActorContext, from: string, to: string) {
+    const readModel = await this.getVenueOperationalEvents(actor);
+    const firstDay = from <= to ? from : to;
+    const lastDay = from <= to ? to : from;
+    const events = readModel.items.filter((item) => {
+      if (!VENUE_COUNTABLE_EVENT_STATUSES.has(item.event.status)) return false;
+      const date = productDateKey(item.event.startAt);
+      return date >= firstDay && date <= lastDay;
+    });
+    const days: {
+      date: string;
+      eventCount: number;
+      ticketUnitsIssued: number;
+      rsvpUnitsIssued: number;
+      expectedGuests: number;
+      checkedInGuests: number;
+      physicalVenueCapacity: number;
+      expectedOccupancyPercent: number | null;
+    }[] = [];
+    const dayByKey = new Map<string, (typeof days)[number]>();
+    const cursor = new Date(`${firstDay}T00:00:00.000Z`);
+    const end = new Date(`${lastDay}T00:00:00.000Z`);
+    while (cursor <= end && days.length < 366) {
+      const date = cursor.toISOString().slice(0, 10);
+      const day = {
+        date,
+        eventCount: 0,
+        ticketUnitsIssued: 0,
+        rsvpUnitsIssued: 0,
+        expectedGuests: 0,
+        checkedInGuests: 0,
+        physicalVenueCapacity: 0,
+        expectedOccupancyPercent: null,
+      };
+      days.push(day);
+      dayByKey.set(date, day);
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+    for (const item of events) {
+      const date = productDateKey(item.event.startAt);
+      const day = dayByKey.get(date);
+      if (!day) continue;
+      day.eventCount += 1;
+      day.ticketUnitsIssued += item.ticketUnitsIssued;
+      day.rsvpUnitsIssued += item.rsvpUnitsIssued;
+      day.expectedGuests += item.expectedGuests;
+      day.checkedInGuests += item.checkedInGuests;
+      day.physicalVenueCapacity += item.venueCapacity ?? 0;
+    }
+    for (const day of days) {
+      day.expectedOccupancyPercent = expectedOccupancyPercent(
+        day.expectedGuests,
+        day.physicalVenueCapacity,
+      );
+    }
+    const ticketUnitsIssued = events.reduce((sum, item) => sum + item.ticketUnitsIssued, 0);
+    const rsvpUnitsIssued = events.reduce((sum, item) => sum + item.rsvpUnitsIssued, 0);
+    const expectedGuests = events.reduce((sum, item) => sum + item.expectedGuests, 0);
+    const checkedInGuests = events.reduce((sum, item) => sum + item.checkedInGuests, 0);
+    const physicalVenueCapacity = events.reduce((sum, item) => sum + (item.venueCapacity ?? 0), 0);
+    return {
+      from: firstDay,
+      to: lastDay,
+      timeZone: 'Asia/Kolkata' as const,
+      summary: {
+        eventCount: events.length,
+        ticketUnitsIssued,
+        rsvpUnitsIssued,
+        expectedGuests,
+        checkedInGuests,
+        physicalVenueCapacity,
+        expectedOccupancyPercent: expectedOccupancyPercent(expectedGuests, physicalVenueCapacity),
+        complete: readModel.complete && events.every((item) => item.operationalCountsComplete),
+      },
+      days,
+      events,
+    };
+  }
+
+  private async currentPriceForEvent(event: Event): Promise<number | null> {
+    const catalog = this.deps.repositories.catalog;
+    const inventory = this.deps.inventory;
+    if (!catalog || !inventory) return null;
+    const tiers = await catalog.listTiers(event.id);
+    return currentStartingPricePaise({
+      event,
+      tiers,
+      inventory,
+      now: this.deps.config.clock.now(),
+    });
   }
 
   /** Tenant-scoped event detail with the same bounded sales evidence as the list. */
   async getWithOperations(actor: ActorContext, eventId: EntityId) {
     const event = await this.fetchOwned(actor, eventId);
-    const [orders, venues] = await Promise.all([
+    const [orders, venues, currentPrice] = await Promise.all([
       this.deps.repositories.orders.listByOrganization(actor.organizationId, {
         cursor: null,
         limit: 1000,
       }),
       event.venueId ? this.deps.repositories.venues.getByIds([event.venueId]) : Promise.resolve([]),
+      this.currentPriceForEvent(event),
     ]);
     const ticketsSold = orders.items
       .filter(
@@ -547,6 +824,7 @@ export class EventService {
       venueName: venues[0]?.public.name ?? null,
       ticketsSold,
       salesCountComplete: orders.nextCursor === null,
+      currentStartingPricePaise: currentPrice,
     };
   }
 
@@ -900,6 +1178,7 @@ export class EventService {
     });
     if (updated !== event) await this.repo.save(updated, null, outboxEvent);
     await this.deps.outbox.append(outboxEvent);
+    await this.releaseEventSlotRequests(actor.organizationId, updated.id);
     return updated;
   }
 
@@ -921,7 +1200,30 @@ export class EventService {
     });
     if (updated !== event) await this.repo.save(updated, null, outboxEvent);
     await this.deps.outbox.append(outboxEvent);
+    await this.releaseEventSlotRequests(actor.organizationId, updated.id);
     return updated;
+  }
+
+  /** Release accepted Venue reservations after a Host cancels or postpones an event.
+   * The event write and slot transition are separate stores; filtering to accepted
+   * requests makes a retry converge after a partial failure without repeating a
+   * terminal transition. */
+  private async releaseEventSlotRequests(hostId: EntityId, eventId: EntityId): Promise<void> {
+    let cursor: string | null = null;
+    do {
+      const page = await this.deps.repositories.slotRequests.listByHost(hostId, {
+        cursor,
+        limit: 100,
+      });
+      for (const request of page.items) {
+        if (request.eventId !== eventId || request.status !== 'accepted' || !request.slotId) {
+          continue;
+        }
+        const cancelled = transitionSlotRequest(request, 'cancelled', this.deps.config.clock.now());
+        await this.deps.repositories.slotRequests.transitionForSlot(request, cancelled);
+      }
+      cursor = page.nextCursor;
+    } while (cursor !== null);
   }
 
   private assertPrivateAccessEnabled(event: Event): void {

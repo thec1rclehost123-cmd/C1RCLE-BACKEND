@@ -93,6 +93,79 @@ describe('public purchase quantities', () => {
     ]);
   });
 
+  it('reports the lowest currently purchasable public phase price', async () => {
+    const events = new MemoryEventRepository();
+    const catalog = new MemoryEventCatalogRepository();
+    const now = new Date('2026-11-17T12:00:00.000Z');
+    let event = createEvent({
+      id: 'public-current-price',
+      organizationId: 'host',
+      venueId: 'venue',
+      title: 'Current price',
+      startAt: '2026-12-01T20:00:00.000Z',
+      now,
+    });
+    event = transitionEvent(transitionEvent(event, 'review', now), 'scheduled', now);
+    event = transitionEvent(event, 'published', now);
+    await events.save({ ...event, startingPricePaise: 9_000, version: 1 });
+
+    await catalog.saveTier(
+      createTicketTier({
+        id: 'public-current-price-tier',
+        eventId: event.id,
+        organizationId: event.organizationId,
+        name: 'Public early bird',
+        priceInPaise: 9_000,
+        quantity: 10,
+        pricingPhases: [
+          {
+            id: 'early-bird',
+            name: 'Early bird',
+            priceInPaise: 5_000,
+            quantity: 2,
+            startsAt: '2026-11-01T00:00:00.000Z',
+            endsAt: '2026-11-20T00:00:00.000Z',
+          },
+        ],
+        now,
+      }),
+    );
+    await catalog.saveTier(
+      createTicketTier({
+        id: 'private-lower-price-tier',
+        eventId: event.id,
+        organizationId: event.organizationId,
+        name: 'Private allocation',
+        priceInPaise: 1_000,
+        quantity: 10,
+        accessMode: 'code',
+        now,
+      }),
+    );
+
+    const inventory = {
+      getTierInventory: vi.fn(async () => ({
+        soldQuantity: 0,
+        heldQuantity: 0,
+        availableQuantity: 10,
+      })),
+      getAvailableQuantity: vi.fn(async () => 10),
+      getAvailablePricingPhaseQuantity: vi.fn(async () => 1),
+    };
+    const service = new PublicService({
+      config: { clock: { now: () => now } },
+      repositories: {
+        events,
+        catalog,
+        venues: { getById: async () => null },
+        organizations: { getById: async () => null },
+      },
+      inventory,
+    } as never);
+
+    await expect(service.getCurrentStartingPricePaise(event.id)).resolves.toBe(5_000);
+  });
+
   it('hides add-ons from the public sell projection while sales approval is disabled', async () => {
     const events = new MemoryEventRepository();
     const catalog = new MemoryEventCatalogRepository();

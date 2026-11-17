@@ -254,6 +254,23 @@ export class PublicService {
     return rows;
   }
 
+  async getCurrentStartingPricePaise(
+    idOrSlug: EntityId,
+    userId?: EntityId,
+    accessGrantId?: EntityId,
+  ): Promise<number | null> {
+    try {
+      const tiers = await this.listEventTiers(idOrSlug, userId, accessGrantId);
+      const prices = tiers
+        .filter((tier) => tier.availableQuantity > 0)
+        .map((tier) => tier.priceInPaise);
+      return prices.length ? Math.min(...prices) : null;
+    } catch (cause) {
+      if (cause instanceof EventNotOnSaleError) return null;
+      throw cause;
+    }
+  }
+
   /**
    * Active sellable tiers for a public event, each with live availability
    * (`quantity - sold - activeHolds`). Non-public events 404 via `getEvent`

@@ -1,5 +1,6 @@
 import {
   createEvent as makeEvent,
+  createTicketTier,
   createTicketAccessCode,
   createTicketAddon,
   UnauthorizedError,
@@ -138,6 +139,61 @@ describe('V2 public/discovery routes', () => {
     const body = response.json();
     expect(body.items).toEqual([]);
     expect(body.pageInfo.total).toBe(0);
+    await server.close();
+  });
+
+  it('exposes the active public price separately from the preserved event base price', async () => {
+    const eventId = 'evt_active_current_price';
+    await seedPublishedEvent({
+      eventId,
+      slug: 'active-current-price',
+      title: 'Active Current Price',
+      organizationId: 'org_active_current_price',
+      venueId: 'ven_active_current_price',
+    });
+    const services = createV2Services();
+    const event = await services.repos().events.getById(eventId);
+    if (!event) throw new Error('seeded price event should exist');
+    const now = new Date();
+    await services.repos().events.save({
+      ...event,
+      startingPricePaise: 8_000,
+      version: event.version + 1,
+      updatedAt: now.toISOString(),
+    });
+    await services.repos().catalog.saveTier(
+      createTicketTier({
+        id: 'evt_active_current_price_tier',
+        eventId,
+        organizationId: event.organizationId,
+        name: 'Early Bird',
+        priceInPaise: 8_000,
+        quantity: 20,
+        pricingPhases: [
+          {
+            id: 'early-bird',
+            name: 'Early Bird',
+            priceInPaise: 5_000,
+            quantity: null,
+            startsAt: new Date(now.getTime() - 86400000).toISOString(),
+            endsAt: new Date(now.getTime() + 86400000).toISOString(),
+          },
+        ],
+        now,
+      }),
+    );
+    const server = await buildServer();
+
+    const listing = await server.inject({ method: 'GET', url: '/events?limit=20' });
+    const listed = listing.json().items.find((item: { id: string }) => item.id === eventId);
+    expect(listed).toMatchObject({ startingPricePaise: 8_000, currentStartingPricePaise: 5_000 });
+
+    const detail = await server.inject({ method: 'GET', url: '/events/active-current-price' });
+    expect(detail.statusCode, detail.body).toBe(200);
+    expect(detail.json()).toMatchObject({
+      startingPricePaise: 8_000,
+      currentStartingPricePaise: 5_000,
+    });
     await server.close();
   });
 
