@@ -71,6 +71,12 @@ describe('applyPercent', () => {
     expect(applyPercent(1050, 5)).toBe(53);
   });
 
+  it('uses the exact decimal percentage at basis-point precision', () => {
+    expect(applyPercent(10_000, 7.25)).toBe(725);
+    expect(applyPercent(20, 2.5)).toBe(1);
+    expect(applyPercent(10_000, 0.29)).toBe(29);
+  });
+
   it('never returns a fraction', () => {
     for (const amount of [1, 7, 33, 99, 12_345, 999_999]) {
       for (const percent of [2.5, 5, 18]) {

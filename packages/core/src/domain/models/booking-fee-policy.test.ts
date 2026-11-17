@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
+import { ServiceUnavailableError } from '../errors.js';
+
+import {
+  NON_PRODUCTION_BOOKING_FEE_POLICY,
+  resolveGuestBookingFeePolicy,
+} from './booking-fee-policy.js';
 import { createTicketTier } from './event-catalog.js';
 import { calculatePricing } from './pricing.js';
 
@@ -24,6 +30,11 @@ const policy = () => ({
 });
 
 describe('authoritative booking fee policy', () => {
+  it('keeps the fallback policy explicitly non-production and rejects production without policy', () => {
+    expect(resolveGuestBookingFeePolicy('staging')).toEqual(NON_PRODUCTION_BOOKING_FEE_POLICY);
+    expect(() => resolveGuestBookingFeePolicy('production')).toThrow(ServiceUnavailableError);
+  });
+
   it('prices from the selected server policy and returns its complete audit snapshot', () => {
     const input = { lines: [{ tier, quantity: 1 }], feePolicy: policy() };
     expect(calculatePricing(input)).toMatchObject({

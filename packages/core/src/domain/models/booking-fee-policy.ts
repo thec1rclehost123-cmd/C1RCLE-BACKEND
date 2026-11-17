@@ -1,4 +1,4 @@
-import { InvalidOperationError } from '../errors.js';
+import { InvalidOperationError, ServiceUnavailableError } from '../errors.js';
 
 /** Server-owned commercial terms. These rates are authorized for tests only. */
 export interface BookingFeePolicy {
@@ -24,6 +24,20 @@ export const NON_PRODUCTION_BOOKING_FEE_POLICY: BookingFeePolicy = Object.freeze
   guestRefund: 'admission_only',
   organizerRefund: 'full_paid',
 });
+
+/**
+ * Current fee terms are explicitly test-only. Production checkout must stay
+ * unavailable until an owner-approved production policy has its own contract.
+ */
+export function resolveGuestBookingFeePolicy(
+  environment: 'local' | 'staging' | 'production',
+  configuredPolicy?: BookingFeePolicy | null,
+): BookingFeePolicy {
+  if (environment === 'production') {
+    throw new ServiceUnavailableError('Production guest checkout pricing is not configured.');
+  }
+  return snapshotBookingFeePolicy(configuredPolicy ?? NON_PRODUCTION_BOOKING_FEE_POLICY);
+}
 
 export function snapshotBookingFeePolicy(policy: BookingFeePolicy): BookingFeePolicy {
   if (

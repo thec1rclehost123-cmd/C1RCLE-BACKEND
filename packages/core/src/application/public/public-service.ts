@@ -1,9 +1,14 @@
 import {
+  InvalidOperationError,
   EventNotFoundError,
   VenueNotFoundError,
   OrganizationNotFoundError,
   EventNotOnSaleError,
 } from '../../domain/errors.js';
+import {
+  activeTicketPricingPhase,
+  effectiveTierPricePaise,
+} from '../../domain/models/event-catalog.js';
 import { eventSalesUnavailableReason } from '../../domain/models/event-policy.js';
 import { isPublicStatus } from '../../domain/models/event.js';
 import { TicketAccessService } from '../tickets/ticket-access-service.js';
@@ -27,6 +32,45 @@ export interface PublicEventDetail {
   event: Event;
   venue: Venue | null;
   organizer: Organization | null;
+}
+
+export type PublicTierAvailabilityStatus =
+  | 'available'
+  | 'sold_out'
+  | 'temporarily_held'
+  | 'not_yet_available'
+  | 'sales_ended'
+  | 'sales_paused'
+  | 'pricing_unavailable';
+
+export interface PublicPricingPhaseSummary {
+  name: string;
+  startsAt: string;
+  endsAt: string;
+  /** Number of ticket units still eligible for this phase; null means unlimited. */
+  availableQuantity: number | null;
+}
+
+export interface PublicTicketTierRow {
+  tier: TicketTier;
+  availableQuantity: number;
+  basePriceInPaise: number;
+  priceInPaise: number;
+  availabilityStatus: PublicTierAvailabilityStatus;
+  pricingPhase: PublicPricingPhaseSummary | null;
+}
+
+export interface PublicPricingSummary {
+  salesStatus:
+    | 'on_sale'
+    | 'sold_out'
+    | 'sales_paused'
+    | 'ended'
+    | 'cancelled'
+    | 'postponed'
+    | 'not_yet_available'
+    | 'temporarily_held';
+  activeStartingPricePaise: number | null;
 }
 
 function isManagedPosterKeyForOrganization(key: string, organizationId: EntityId): boolean {
@@ -85,27 +129,129 @@ export class PublicService {
     };
   }
 
-  async getSalesStatus(
-    event: Event,
-  ): Promise<'on_sale' | 'sold_out' | 'sales_paused' | 'ended' | 'cancelled' | 'postponed'> {
-    if (event.status === 'cancelled') return 'cancelled';
-    if (event.status === 'postponed') return 'postponed';
-    if (event.status === 'sales_paused') return 'sales_paused';
+  async getPublicPricingSummary(event: Event): Promise<PublicPricingSummary> {
     const now = this.deps.config.clock.now();
-    const unavailable = eventSalesUnavailableReason(event, now);
-    if (unavailable) return 'ended';
-    const tiers = await this.deps.repositories.catalog.listTiers(event.id);
-    const sellableTiers = tiers.filter(
-      (tier) =>
-        tier.status === 'active' &&
-        tier.audienceType !== 'STUDENT' &&
-        tier.audienceType !== 'MEMBER' &&
-        (tier.accessMode ?? 'public') === 'public',
-    );
-    for (const tier of sellableTiers) {
-      if ((await this.deps.inventory.getAvailableQuantity(event.id, tier.id)) > 0) return 'on_sale';
+    if (event.status === 'cancelled')
+      return { salesStatus: 'cancelled', activeStartingPricePaise: null };
+    if (event.status === 'postponed')
+      return { salesStatus: 'postponed', activeStartingPricePaise: null };
+    if (event.status === 'sales_paused')
+      return { salesStatus: 'sales_paused', activeStartingPricePaise: null };
+    if (eventSalesUnavailableReason(event, now))
+      return { salesStatus: 'ended', activeStartingPricePaise: null };
+
+    const rows = await this.listPublicTierRows(event, now);
+    const available = rows.filter((row) => row.availabilityStatus === 'available');
+    if (available.length > 0) {
+      return {
+        salesStatus: 'on_sale',
+        activeStartingPricePaise: Math.min(...available.map((row) => row.priceInPaise)),
+      };
     }
-    return 'sold_out';
+    if (rows.length > 0 && rows.every((row) => row.availabilityStatus === 'sales_paused')) {
+      return { salesStatus: 'sales_paused', activeStartingPricePaise: null };
+    }
+    if (rows.length > 0 && rows.every((row) => row.availabilityStatus === 'not_yet_available')) {
+      return { salesStatus: 'not_yet_available', activeStartingPricePaise: null };
+    }
+    if (rows.length > 0 && rows.every((row) => row.availabilityStatus === 'temporarily_held')) {
+      return { salesStatus: 'temporarily_held', activeStartingPricePaise: null };
+    }
+    return { salesStatus: 'sold_out', activeStartingPricePaise: null };
+  }
+
+  async getSalesStatus(event: Event): Promise<PublicPricingSummary['salesStatus']> {
+    return (await this.getPublicPricingSummary(event)).salesStatus;
+  }
+
+  private async projectTier(
+    event: Event,
+    tier: TicketTier,
+    now: Date,
+  ): Promise<PublicTicketTierRow> {
+    const inventory = await this.deps.inventory.getTierInventory(event.id, tier.id, now);
+    const basePriceInPaise = effectiveTierPricePaise(tier);
+    let availabilityStatus: PublicTierAvailabilityStatus = 'available';
+    const tierStart = tier.salesStartAt ? Date.parse(tier.salesStartAt) : null;
+    const tierEnd = tier.salesEndAt ? Date.parse(tier.salesEndAt) : null;
+    if (
+      (tierStart !== null && !Number.isFinite(tierStart)) ||
+      (tierEnd !== null && !Number.isFinite(tierEnd)) ||
+      (tierStart !== null && tierEnd !== null && tierEnd <= tierStart)
+    ) {
+      availabilityStatus = 'pricing_unavailable';
+    } else if (tierStart !== null && tierStart > now.getTime()) {
+      availabilityStatus = 'not_yet_available';
+    } else if (tierEnd !== null && tierEnd <= now.getTime()) {
+      availabilityStatus = 'sales_ended';
+    } else if (tier.status === 'paused') {
+      availabilityStatus = 'sales_paused';
+    } else if (tier.status === 'sold_out') {
+      availabilityStatus = 'sold_out';
+    }
+
+    let phase: ReturnType<typeof activeTicketPricingPhase> = null;
+    let phaseAvailableQuantity: number | null = null;
+    try {
+      phase = activeTicketPricingPhase(tier.pricingPhases, now);
+      if (phase?.quantity !== undefined && phase?.quantity !== null) {
+        const phaseAdmissions = await this.deps.inventory.getAvailablePricingPhaseQuantity(
+          event.id,
+          tier.id,
+          phase.id,
+          now,
+        );
+        phaseAvailableQuantity = availableTicketQuantity(tier, phaseAdmissions);
+      }
+    } catch (error) {
+      if (!(error instanceof InvalidOperationError)) throw error;
+      availabilityStatus = 'pricing_unavailable';
+      phase = null;
+      phaseAvailableQuantity = 0;
+    }
+
+    const availableAdmissions = Math.max(0, inventory.availableQuantity);
+    const availableQuantity = availableTicketQuantity(tier, availableAdmissions);
+    if (availabilityStatus === 'available' && availableQuantity === 0) {
+      availabilityStatus =
+        inventory.heldQuantity > 0 && inventory.soldQuantity < (tier.quantity ?? 0)
+          ? 'temporarily_held'
+          : 'sold_out';
+    }
+    const priceInPaise =
+      phase && (phaseAvailableQuantity === null || phaseAvailableQuantity > 0)
+        ? phase.priceInPaise
+        : basePriceInPaise;
+    return {
+      tier,
+      basePriceInPaise,
+      priceInPaise,
+      availableQuantity: availabilityStatus === 'available' ? availableQuantity : 0,
+      availabilityStatus,
+      pricingPhase: phase
+        ? {
+            name: phase.name,
+            startsAt: phase.startsAt,
+            endsAt: phase.endsAt,
+            availableQuantity: phaseAvailableQuantity,
+          }
+        : null,
+    };
+  }
+
+  private async listPublicTierRows(event: Event, now: Date): Promise<PublicTicketTierRow[]> {
+    const tiers = await this.deps.repositories.catalog.listTiers(event.id);
+    const rows: PublicTicketTierRow[] = [];
+    for (const tier of tiers) {
+      if (
+        tier.audienceType === 'STUDENT' ||
+        tier.audienceType === 'MEMBER' ||
+        (tier.accessMode ?? 'public') !== 'public'
+      )
+        continue;
+      rows.push(await this.projectTier(event, tier, now));
+    }
+    return rows;
   }
 
   /**
@@ -117,9 +263,10 @@ export class PublicService {
     idOrSlug: EntityId,
     userId?: EntityId,
     accessGrantId?: EntityId,
-  ): Promise<{ tier: TicketTier; availableQuantity: number; priceInPaise: number }[]> {
+  ): Promise<PublicTicketTierRow[]> {
     const { event } = await this.getEvent(idOrSlug, userId, accessGrantId);
-    const unavailable = eventSalesUnavailableReason(event, this.deps.config.clock.now());
+    const now = this.deps.config.clock.now();
+    const unavailable = eventSalesUnavailableReason(event, now);
     if (unavailable) throw new EventNotOnSaleError(unavailable);
     const eventGrant = Boolean(
       userId &&
@@ -132,10 +279,10 @@ export class PublicService {
       )),
     );
     const tiers = await this.deps.repositories.catalog.listTiers(event.id);
-    const rows: { tier: TicketTier; availableQuantity: number; priceInPaise: number }[] = [];
+    const rows: PublicTicketTierRow[] = [];
     for (const tier of tiers) {
       if (
-        tier.status !== 'active' ||
+        tier.status === 'paused' ||
         tier.audienceType === 'STUDENT' ||
         tier.audienceType === 'MEMBER'
       )
@@ -155,31 +302,7 @@ export class PublicService {
         )
           continue;
       }
-      const availableAdmissions = await this.deps.inventory.getAvailableQuantity(event.id, tier.id);
-      const now = (this.deps.config?.clock?.now?.() ?? new Date()).getTime();
-      const activePhase = (tier.pricingPhases ?? []).find(
-        (phase) => Date.parse(phase.startsAt) <= now && Date.parse(phase.endsAt) > now,
-      );
-      let priceInPaise = tier.priceInPaise;
-      if (activePhase) {
-        const phaseAvailable =
-          activePhase.quantity === null
-            ? 1
-            : await this.deps.inventory.getAvailablePricingPhaseQuantity(
-                event.id,
-                tier.id,
-                activePhase.id,
-              );
-        if (phaseAvailable > 0) priceInPaise = activePhase.priceInPaise;
-      }
-      rows.push({
-        tier,
-        priceInPaise,
-        // Inventory is attendee capacity. The public sell surface presents
-        // purchasable bundles, so per-person group tiers divide capacity by
-        // the server-owned attendee count.
-        availableQuantity: availableTicketQuantity(tier, availableAdmissions),
-      });
+      rows.push(await this.projectTier(event, tier, now));
     }
     return rows;
   }

@@ -83,7 +83,7 @@ import {
   FormatCheckVerificationProvider,
   CompositeVerificationProvider,
   MemoryPaymentProvider,
-  NON_PRODUCTION_BOOKING_FEE_POLICY,
+  resolveGuestBookingFeePolicy,
   MemoryStaffCredentialProvisioner,
   MemoryStaffRotationStore,
   MemoryStaffUserDirectory,
@@ -482,9 +482,13 @@ function buildV2Services(logger?: Logger): PartnerV2Services {
   const pricing = new PricingService({
     eventCatalog: repositories.catalog,
     inventory,
+    clock: () => coreConfig.clock.now(),
     bookingFeePolicy: async () => {
       const settings = await repositories.platformSettings.get();
-      return settings.bookingFeePolicy ?? NON_PRODUCTION_BOOKING_FEE_POLICY;
+      return resolveGuestBookingFeePolicy(
+        coreConfig.deploymentEnvironment,
+        settings.bookingFeePolicy,
+      );
     },
   });
 
