@@ -81,6 +81,17 @@ services:
         sync: false
       - key: PUBLIC_API_URL
         value: https://circle-v2-backend.onrender.com
+      # Public origin of the partner dashboard. The gateway builds every absolute
+      # link in partner emails from it: the staff-invitation "Accept invite" link,
+      # onboarding and application-decision links, and promoter links. If it is
+      # unset the gateway omits those links, so an invitee receives a mail with no
+      # way to accept. Use the stable domain, never a per-deployment *.vercel.app
+      # URL: for staging that is https://staging.thec1rcle.com. Bare origin only:
+      # no trailing slash, no path. Kept in the dashboard (not secret) because it
+      # changes with frontend domains, like ALLOWED_ORIGINS; the domain must also
+      # be listed in ALLOWED_ORIGINS and BETTER_AUTH_TRUSTED_ORIGINS.
+      - key: PARTNER_DASHBOARD_URL
+        sync: false
       # nginx (the sidecar's public edge) is the only trusted proxy hop.
       - key: TRUSTED_PROXY_CIDRS
         value: 127.0.0.1/32
