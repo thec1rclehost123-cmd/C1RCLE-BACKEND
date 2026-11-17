@@ -26,6 +26,7 @@ import { transitionSlotRequest } from '../../domain/models/venue.js';
 import { requireOrgAccess, emit } from '../context.js';
 
 import type { EntityId } from '../../domain/identity.js';
+import type { TicketTier } from '../../domain/models/event-catalog.js';
 import type { SlotRequest } from '../../domain/models/venue.js';
 import type { EventRepository, PaginationQuery } from '../../domain/ports/repositories.js';
 import type { ActorContext, ServiceDeps } from '../context.js';
@@ -273,7 +274,13 @@ export class EventService {
         command.endAt,
       );
       const conflictingSlot = overlappingSlots.find(
-        (slot) => slot.status !== 'cancelled' && slot.id !== acceptedRequest?.slotId,
+        (slot) =>
+          slot.status !== 'cancelled' &&
+          slot.id !== acceptedRequest?.slotId &&
+          // A Venue owner may schedule its own event inside its own open
+          // request window. Host bookings still collide with that event in
+          // the request path; pending/booked/block intervals remain guarded.
+          !(!isHost && slot.status === 'open'),
       );
       if (conflictingSlot) {
         throw new InvalidOperationError('The event conflicts with a Venue calendar slot');
@@ -767,6 +774,53 @@ export class EventService {
       title: updated.title,
     });
     return updated;
+  }
+
+  /** Builds the exact publish boundary value without persisting it, for the
+   * Venue acceptance transaction that writes the request/slot/event together. */
+  async prepareAcceptedEventPublication(
+    actor: ActorContext,
+    event: Event,
+    tiers: readonly TicketTier[],
+  ): Promise<Event> {
+    assertGuestReachablePosterUrl(event.imageUrl);
+    if (!event.summary.trim() || !event.description.trim()) {
+      throw new InvalidOperationError(
+        'Add a guest-facing summary and description before publishing',
+      );
+    }
+    this.assertPrivateAccessEnabled(event);
+    validateCompensationForPublish(
+      event.compensation ?? null,
+      tiers
+        .filter((tier) => tier.accessType !== 'RSVP' && tier.commissionEligible !== false)
+        .map((tier) => tier.id),
+    );
+    const isPrivate = event.visibilityMode === 'code' || event.visibilityMode === 'invited';
+    const privateImageStoragePath = isPrivate
+      ? ((await this.revokePrivatePoster(event.imageUrl, actor.organizationId)) ??
+        event.privateImageStoragePath ??
+        null)
+      : null;
+    const paidTiers = tiers.filter((tier) => tier.accessType !== 'RSVP');
+    const startingPricePaise = paidTiers.length
+      ? Math.min(...paidTiers.map((tier) => tier.priceInPaise))
+      : 0;
+    const isFree = paidTiers.length === 0 || paidTiers.every((tier) => tier.priceInPaise === 0);
+    const now = this.deps.config.clock.now();
+    const reviewed = transitionEvent(event, 'review', now);
+    return transitionEvent(
+      {
+        ...reviewed,
+        status: 'scheduled',
+        startingPricePaise,
+        isFree,
+        imageUrl: isPrivate ? null : event.imageUrl,
+        privateImageStoragePath,
+      },
+      'published',
+      now,
+    );
   }
 
   async resubmitExternalLocation(

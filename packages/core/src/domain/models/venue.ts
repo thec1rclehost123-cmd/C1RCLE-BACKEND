@@ -357,6 +357,14 @@ export function cancelVenueBlock(slot: VenueSlot, now?: Date): VenueSlot {
   return bumpVersion({ ...slot, status: 'cancelled' }, now ?? new Date());
 }
 
+/** Remove an unused published offer without affecting held or booked slots. */
+export function unpublishVenueAvailability(slot: VenueSlot, now?: Date): VenueSlot {
+  if (slot.status !== 'open') {
+    throw new InvalidOperationError('Only unused open availability can be unpublished');
+  }
+  return bumpVersion({ ...slot, status: 'cancelled' }, now ?? new Date());
+}
+
 /**
  * ─── Overlap guard ──────────────────────────────────────────────────────────
  * A venue's timeline is a single track: two live slots may never occupy the
@@ -422,6 +430,8 @@ export interface SlotRequest extends VersionedEntity {
   hostId: EntityId;
   status: SlotRequestStatus;
   message?: string;
+  /** Venue-provided explanation returned to the Host after a rejection. */
+  rejectionReason?: string | null;
   /** Validated event proposal, private to the Host and Venue until approved. */
   eventDraft?: {
     event: Record<string, unknown>;
@@ -435,7 +445,7 @@ export type SlotRequestStatus = 'pending' | 'accepted' | 'rejected' | 'cancelled
 
 const SLOT_REQUEST_TRANSITIONS: Readonly<Record<SlotRequestStatus, readonly SlotRequestStatus[]>> =
   {
-    pending: ['accepted', 'rejected'],
+    pending: ['accepted', 'rejected', 'cancelled'],
     accepted: ['cancelled'],
     rejected: [],
     cancelled: [],
@@ -455,9 +465,20 @@ export function transitionSlotRequest(
   request: SlotRequest,
   to: SlotRequestStatus,
   now?: Date,
+  reason?: string,
 ): SlotRequest {
+  if (to === 'rejected' && !reason?.trim()) {
+    throw new InvalidOperationError('A rejection reason is required');
+  }
   const next = transitionSlotRequestStatus(request.status, to);
-  return bumpVersion({ ...request, status: next }, now ?? new Date());
+  return bumpVersion(
+    {
+      ...request,
+      status: next,
+      ...(to === 'rejected' ? { rejectionReason: reason?.trim() ?? null } : {}),
+    },
+    now ?? new Date(),
+  );
 }
 
 export function createSlotRequest(input: {

@@ -161,6 +161,64 @@ describe('VenueService — auto-provisioning resilience', () => {
 });
 
 describe('VenueSlotRequestService — live event booking protection', () => {
+  it('allows a Venue-owned event on its open permission window while blocking Host requests against that event', async () => {
+    const deps = createTestDeps();
+    const venue = createVenue({
+      id: 'venue-owned-event-exemption',
+      organizationId: 'venue-owned-event-org',
+      ownerId: 'venue-owned-event-owner',
+      name: 'Owned event venue',
+      slug: 'owned-event-venue',
+      now: NOW,
+    });
+    await deps.repositories.venues.save(venue);
+    const venueActor: ActorContext = {
+      userId: 'venue-owned-event-owner',
+      organizationId: venue.organizationId,
+      role: 'owner',
+      capabilities: ['venue'],
+    };
+    const hostActor: ActorContext = {
+      userId: 'venue-owned-event-host-owner',
+      organizationId: 'venue-owned-event-host',
+      role: 'owner',
+      capabilities: ['host'],
+    };
+    const partnership = createPartnership({
+      id: 'venue-owned-event-partnership',
+      hostOrganizationId: hostActor.organizationId,
+      venueOrganizationId: venue.organizationId,
+      venueId: venue.id,
+      initiatedBy: 'host',
+      now: NOW,
+    });
+    await deps.repositories.partnerships.save(
+      approvePartnership(partnership, venue.organizationId, NOW),
+    );
+    const slot = await new VenueCalendarService(deps).publishAvailability(venueActor, {
+      venueId: venue.id,
+      label: 'Open permission window',
+      startTime: '2026-11-07T12:00:00.000Z',
+      endTime: '2026-11-07T16:00:00.000Z',
+      timezone: 'Asia/Kolkata',
+    });
+    await expect(
+      new EventService(deps).create(venueActor, {
+        venueId: venue.id,
+        title: 'Venue-owned event',
+        startAt: '2026-11-07T13:00:00.000Z',
+        endAt: '2026-11-07T15:00:00.000Z',
+      }),
+    ).resolves.toMatchObject({ organizationId: venue.organizationId, venueId: venue.id });
+    await expect(
+      new VenueSlotRequestService(deps).create(hostActor, {
+        venueId: venue.id,
+        slotId: slot.id,
+        eventId: null,
+      }),
+    ).rejects.toThrow('This Venue time conflicts with a scheduled event');
+  });
+
   it('keeps an accepted booking when its linked event is public', async () => {
     const deps = createTestDeps();
     const actor: ActorContext = {
@@ -276,6 +334,109 @@ describe('VenueSlotRequestService reschedule requests', () => {
 });
 
 describe('Venue availability and Host request lifecycle', () => {
+  it('blocks a second Host when a different Host event already occupies the requested interval', async () => {
+    const deps = createTestDeps();
+    const venue = createVenue({
+      id: 'venue_cross_host_conflict',
+      organizationId: 'venue_org_cross_host_conflict',
+      ownerId: 'venue_owner_cross_host_conflict',
+      name: 'Cross Host Venue',
+      slug: 'cross-host-venue',
+      now: NOW,
+    });
+    await deps.repositories.venues.save(venue);
+    const hostOne = {
+      userId: 'host_one_owner',
+      organizationId: 'host_one',
+      role: 'owner' as const,
+      capabilities: ['host'] as const,
+    };
+    const hostTwo = {
+      userId: 'host_two_owner',
+      organizationId: 'host_two',
+      role: 'owner' as const,
+      capabilities: ['host'] as const,
+    };
+    for (const [id, host] of [
+      ['partnership_host_one', hostOne],
+      ['partnership_host_two', hostTwo],
+    ] as const) {
+      const partnership = createPartnership({
+        id,
+        hostOrganizationId: host.organizationId,
+        venueOrganizationId: venue.organizationId,
+        venueId: venue.id,
+        initiatedBy: 'host',
+        now: NOW,
+      });
+      await deps.repositories.partnerships.save(
+        approvePartnership(partnership, venue.organizationId, NOW),
+      );
+    }
+    const venueActor: ActorContext = {
+      userId: 'venue_owner_cross_host_conflict',
+      organizationId: venue.organizationId,
+      role: 'owner',
+      capabilities: ['venue'],
+    };
+    const slot = await new VenueCalendarService(deps).publishAvailability(venueActor, {
+      venueId: venue.id,
+      label: 'Published permission window',
+      startTime: '2026-11-04T12:30:00.000Z',
+      endTime: '2026-11-04T16:30:00.000Z',
+      timezone: 'Asia/Kolkata',
+    });
+    await deps.repositories.events.save(
+      createEvent({
+        id: 'host_one_conflicting_event',
+        organizationId: hostOne.organizationId,
+        venueId: venue.id,
+        title: 'Private Host event',
+        startAt: '2026-11-04T13:30:00.000Z',
+        endAt: '2026-11-04T15:30:00.000Z',
+        now: NOW,
+      }),
+    );
+
+    const hostAvailability = await new VenueCalendarService(deps).getAvailability(
+      hostTwo,
+      venue.id,
+      '2026-11-04T00:00:00.000Z',
+      '2026-11-05T00:00:00.000Z',
+    );
+    expect(hostAvailability.slots).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'blocked-0',
+          label: 'Unavailable',
+          startTime: '2026-11-04T13:30:00.000Z',
+          endTime: '2026-11-04T15:30:00.000Z',
+          capacityFor: null,
+        }),
+      ]),
+    );
+    expect(JSON.stringify(hostAvailability)).not.toContain('host_one_conflicting_event');
+    expect(JSON.stringify(hostAvailability)).not.toContain('Private Host event');
+
+    await expect(
+      new VenueSlotRequestService(deps).create(hostTwo, {
+        venueId: venue.id,
+        slotId: slot.id,
+        eventId: null,
+        eventDraft: {
+          event: {
+            venueId: venue.id,
+            startAt: '2026-11-04T13:00:00.000Z',
+            endAt: '2026-11-04T15:00:00.000Z',
+          },
+          tiers: [],
+          promotions: [],
+          promoters: [],
+        },
+      }),
+    ).rejects.toThrow('This Venue time conflicts with a scheduled event');
+  });
+
   it('makes accepted-request recovery idempotent for publication entities and acceptance outbox events', async () => {
     const deps = createTestDeps();
     const venue = createVenue({
@@ -350,6 +511,26 @@ describe('Venue availability and Host request lifecycle', () => {
       },
     });
     const requestService = new VenueSlotRequestService(deps);
+    vi.spyOn(deps.repositories.slotRequests, 'commitAcceptedEventBundle').mockRejectedValueOnce(
+      new Error('injected transaction failure'),
+    );
+    await expect(requestService.accept(venueActor, request.id)).rejects.toThrow(
+      'injected transaction failure',
+    );
+    expect(await deps.repositories.slotRequests.getById(request.id)).toMatchObject({
+      status: 'pending',
+    });
+    expect(await deps.repositories.venueSlots.getSlotById(slot.id)).toMatchObject({
+      status: 'pending',
+    });
+    expect(
+      (
+        await deps.repositories.events.listByOrganization(hostActor.organizationId, {
+          limit: 10,
+          cursor: null,
+        })
+      ).items,
+    ).toHaveLength(0);
 
     await requestService.accept(venueActor, request.id);
     const firstOutbox = (deps.outbox as MemoryOutboxStore)
@@ -385,6 +566,62 @@ describe('Venue availability and Host request lifecycle', () => {
         .all()
         .filter((row) => row.type === 'venue.slot_request.accepted'),
     ).toHaveLength(1);
+
+    // Replaying a legacy fully-published accept repairs a stale slot state
+    // instead of treating the event/catalog documents alone as convergence.
+    const bookedBeforeRepair = await deps.repositories.venueSlots.getSlotById(slot.id);
+    if (!bookedBeforeRepair) throw new Error('Expected the accepted slot');
+    await deps.repositories.venueSlots.saveSlots([{ ...bookedBeforeRepair, status: 'pending' }]);
+    await requestService.accept(venueActor, request.id);
+    expect(await deps.repositories.venueSlots.getSlotById(slot.id)).toMatchObject({
+      status: 'booked',
+    });
+
+    const legacySlot = await new VenueCalendarService(deps).publishAvailability(venueActor, {
+      venueId: venue.id,
+      label: 'Legacy repair candidate',
+      startTime: '2026-11-08T12:30:00.000Z',
+      endTime: '2026-11-08T16:30:00.000Z',
+      timezone: 'Asia/Kolkata',
+    });
+    const legacy = await requestService.create(hostActor, {
+      venueId: venue.id,
+      slotId: legacySlot.id,
+      eventId: null,
+      eventDraft: {
+        event: {
+          venueId: venue.id,
+          title: 'Legacy partial candidate',
+          summary: 'A valid legacy proposal.',
+          description: 'Candidate for the read-only repair dry run.',
+          startAt: '2026-11-08T13:00:00.000Z',
+          endAt: '2026-11-08T15:00:00.000Z',
+        },
+        tiers: [],
+        promotions: [],
+        promoters: [],
+      },
+    });
+    await deps.repositories.slotRequests.transitionForSlot(
+      legacy,
+      transitionSlotRequest(legacy, 'accepted', NOW),
+    );
+    const bookedBeforeDryRun = await deps.repositories.venueSlots.getSlotById(legacySlot.id);
+    const dryRun = await requestService.dryRunRepairCandidates(venueActor, venue.id);
+    expect(dryRun.candidates).toContainEqual(
+      expect.objectContaining({
+        requestId: legacy.id,
+        eventId: legacy.eventId,
+        kind: 'accepted_without_published_event',
+        eventStatus: null,
+      }),
+    );
+    expect(await deps.repositories.slotRequests.getById(legacy.id)).toMatchObject({
+      status: 'accepted',
+    });
+    expect(await deps.repositories.venueSlots.getSlotById(legacySlot.id)).toEqual(
+      bookedBeforeDryRun,
+    );
   });
 
   it('stores server-resolved commission-eligible tier ids in a Host proposal', async () => {
@@ -437,7 +674,11 @@ describe('Venue availability and Host request lifecycle', () => {
       slotId: slot.id,
       eventId: null,
       eventDraft: {
-        event: { venueId: venue.id },
+        event: {
+          venueId: venue.id,
+          startAt: '2026-11-20T13:00:00.000Z',
+          endAt: '2026-11-20T16:00:00.000Z',
+        },
         tiers: [
           {
             localId: 'paid-tier',
@@ -600,7 +841,7 @@ describe('Venue availability and Host request lifecycle', () => {
         slotId: offered.id,
         eventId: null,
       }),
-    ).rejects.toThrow(/already has a request|no longer open/);
+    ).rejects.toThrow(/published open availability window/);
 
     const accepted = await requestService.accept(venueActor, requested.value.id);
     expect(accepted.status).toBe('accepted');
@@ -657,11 +898,47 @@ describe('Venue availability and Host request lifecycle', () => {
       slotId: offered.id,
       eventId: null,
     });
-    await requests.reject(venueActor, created.id);
+    const rejected = await requests.reject(
+      venueActor,
+      created.id,
+      'The date is no longer available.',
+    );
+    expect(rejected.rejectionReason).toBe('The date is no longer available.');
     expect(await deps.repositories.venueSlots.getSlotById(offered.id)).toMatchObject({
       status: 'open',
       slotRequestId: null,
       requestingHostId: null,
+    });
+    const resubmitted = await requests.create(hostActor, {
+      venueId: venue.id,
+      slotId: offered.id,
+      eventId: null,
+      eventDraft: {
+        event: {
+          venueId: venue.id,
+          title: 'Edited proposal after rejection',
+          summary: 'Updated summary',
+          description: 'Updated after reading the Venue reason.',
+          startAt: '2026-11-05T13:00:00.000Z',
+          endAt: '2026-11-05T15:00:00.000Z',
+        },
+        tiers: [],
+        promotions: [],
+        promoters: [],
+      },
+    });
+    expect(resubmitted.id).not.toBe(created.id);
+    expect(resubmitted).toMatchObject({
+      status: 'pending',
+      eventDraft: { event: { title: 'Edited proposal after rejection' } },
+    });
+    expect(await deps.repositories.slotRequests.getById(created.id)).toMatchObject({
+      status: 'rejected',
+      rejectionReason: 'The date is no longer available.',
+    });
+    expect(await deps.repositories.venueSlots.getSlotById(offered.id)).toMatchObject({
+      status: 'pending',
+      slotRequestId: resubmitted.id,
     });
   });
 
@@ -707,14 +984,6 @@ describe('Venue availability and Host request lifecycle', () => {
       timezone: 'Asia/Kolkata',
       visibleToHostIds: [hostActor.organizationId],
     });
-    await expect(
-      new EventService(deps).create(venueActor, {
-        venueId: venue.id,
-        title: 'Conflicting Venue event',
-        startAt: '2026-11-06T13:00:00.000Z',
-        endAt: '2026-11-06T15:00:00.000Z',
-      }),
-    ).rejects.toThrow(/conflicts with a Venue calendar slot/);
     const slotRequests = new VenueSlotRequestService(deps);
     const request = await slotRequests.create(hostActor, {
       venueId: venue.id,

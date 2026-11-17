@@ -276,7 +276,7 @@ describe('slot request — status machine', () => {
   });
 
   it('refuses to revive a rejected request', () => {
-    const rejected = transitionSlotRequest(request, 'rejected', LATER);
+    const rejected = transitionSlotRequest(request, 'rejected', LATER, 'The date is unavailable.');
     expect(() => transitionSlotRequest(rejected, 'accepted', LATER)).toThrow(StateTransitionError);
   });
 });
