@@ -81,7 +81,11 @@ describe('public purchase quantities', () => {
         venues: { getById: async () => null },
         organizations: { getById: async () => null },
       },
-      inventory: { getAvailableQuantity: async () => 10 },
+      inventory: {
+        getAvailableQuantity: async () => 10,
+        getTierInventory: async () => ({ soldQuantity: 0, heldQuantity: 0, availableQuantity: 10 }),
+        getAvailablePricingPhaseQuantity: async () => 10,
+      },
     } as never);
 
     await expect(service.listEventTiers(event.id)).resolves.toMatchObject([
@@ -129,6 +133,169 @@ describe('public purchase quantities', () => {
     } as never);
 
     await expect(service.listEventTicketAddons(event.id)).resolves.toEqual([]);
+  });
+});
+
+describe('public Guest price and availability projection', () => {
+  async function makePublishedEvent(now: Date, catalog: MemoryEventCatalogRepository) {
+    const events = new MemoryEventRepository();
+    let event = createEvent({
+      id: 'public-pricing-event',
+      organizationId: 'host',
+      venueId: 'venue',
+      title: 'Public pricing event',
+      startAt: new Date(now.getTime() + 86_400_000).toISOString(),
+      now,
+    });
+    event = transitionEvent(event, 'review', now);
+    event = transitionEvent(event, 'scheduled', now);
+    event = transitionEvent(event, 'published', now);
+    await events.save({ ...event, version: 1 });
+    const service = (inventory: {
+      soldQuantity: number;
+      heldQuantity: number;
+      availableQuantity: number;
+      phaseAvailable?: number;
+    }) =>
+      new PublicService({
+        config: { clock: { now: () => now } },
+        repositories: {
+          events,
+          catalog,
+          venues: { getById: async () => null },
+          organizations: { getById: async () => null },
+        },
+        inventory: {
+          getTierInventory: async () => ({
+            soldQuantity: inventory.soldQuantity,
+            heldQuantity: inventory.heldQuantity,
+            availableQuantity: inventory.availableQuantity,
+          }),
+          getAvailableQuantity: async () => inventory.availableQuantity,
+          getAvailablePricingPhaseQuantity: async () => inventory.phaseAvailable ?? 0,
+          getAvailableTicketAddonQuantity: async () => 0,
+        },
+      } as never);
+    return { event, events, service };
+  }
+
+  it('returns the active phase price separately from the base price', async () => {
+    const now = new Date('2026-11-19T12:00:00.000Z');
+    const catalog = new MemoryEventCatalogRepository();
+    const { event, service } = await makePublishedEvent(now, catalog);
+    const publicService = service({ soldQuantity: 0, heldQuantity: 0, availableQuantity: 10 });
+    await catalog.saveTier(
+      createTicketTier({
+        id: 'general',
+        eventId: event.id,
+        organizationId: event.organizationId,
+        name: 'General Entry',
+        priceInPaise: 80_000,
+        quantity: 10,
+        pricingPhases: [
+          {
+            id: 'early-bird',
+            name: 'Early Bird',
+            priceInPaise: 65_000,
+            startsAt: '2026-11-15T00:00:00.000Z',
+            endsAt: '2026-11-22T00:00:00.000Z',
+            quantity: null,
+          },
+        ],
+        now,
+      }),
+    );
+
+    await expect(publicService.getPublicPricingSummary(event)).resolves.toMatchObject({
+      salesStatus: 'on_sale',
+      activeStartingPricePaise: 65_000,
+    });
+    await expect(publicService.listEventTiers(event.id)).resolves.toMatchObject([
+      {
+        priceInPaise: 65_000,
+        basePriceInPaise: 80_000,
+        pricingPhase: { name: 'Early Bird', availableQuantity: null },
+        availabilityStatus: 'available',
+      },
+    ]);
+  });
+
+  it('does not present a tier before its sales window starts', async () => {
+    const now = new Date('2026-11-19T12:00:00.000Z');
+    const catalog = new MemoryEventCatalogRepository();
+    const { event, service } = await makePublishedEvent(now, catalog);
+    const publicService = service({ soldQuantity: 0, heldQuantity: 0, availableQuantity: 10 });
+    await catalog.saveTier(
+      createTicketTier({
+        id: 'future-tier',
+        eventId: event.id,
+        organizationId: event.organizationId,
+        name: 'Future tier',
+        priceInPaise: 80_000,
+        quantity: 10,
+        salesStartAt: '2026-11-20T00:00:00.000Z',
+        now,
+      }),
+    );
+
+    await expect(publicService.getPublicPricingSummary(event)).resolves.toMatchObject({
+      salesStatus: 'not_yet_available',
+      activeStartingPricePaise: null,
+    });
+    await expect(publicService.listEventTiers(event.id)).resolves.toMatchObject([
+      { availableQuantity: 0, availabilityStatus: 'not_yet_available' },
+    ]);
+  });
+
+  it('distinguishes capacity temporarily held from sold out', async () => {
+    const now = new Date('2026-11-19T12:00:00.000Z');
+    const catalog = new MemoryEventCatalogRepository();
+    const { event, service } = await makePublishedEvent(now, catalog);
+    await catalog.saveTier(
+      createTicketTier({
+        id: 'held-tier',
+        eventId: event.id,
+        organizationId: event.organizationId,
+        name: 'Held tier',
+        priceInPaise: 80_000,
+        quantity: 10,
+        now,
+      }),
+    );
+    const heldService = service({ soldQuantity: 0, heldQuantity: 10, availableQuantity: 0 });
+
+    await expect(heldService.getPublicPricingSummary(event)).resolves.toMatchObject({
+      salesStatus: 'temporarily_held',
+      activeStartingPricePaise: null,
+    });
+    await expect(heldService.listEventTiers(event.id)).resolves.toMatchObject([
+      { availableQuantity: 0, availabilityStatus: 'temporarily_held' },
+    ]);
+  });
+
+  it('reports all paused public tiers as paused instead of sold out', async () => {
+    const now = new Date('2026-11-19T12:00:00.000Z');
+    const catalog = new MemoryEventCatalogRepository();
+    const { event, service } = await makePublishedEvent(now, catalog);
+    const tier = createTicketTier({
+      id: 'paused-tier',
+      eventId: event.id,
+      organizationId: event.organizationId,
+      name: 'Paused tier',
+      priceInPaise: 80_000,
+      quantity: 10,
+      now,
+    });
+    await catalog.saveTier({ ...tier, status: 'paused' });
+
+    await expect(
+      service({ soldQuantity: 0, heldQuantity: 0, availableQuantity: 10 }).getPublicPricingSummary(
+        event,
+      ),
+    ).resolves.toMatchObject({
+      salesStatus: 'sales_paused',
+      activeStartingPricePaise: null,
+    });
   });
 });
 
@@ -289,7 +456,11 @@ describe('private event visibility', () => {
           getCodeById: async (id: string) => (id === code.id ? code : null),
         },
       },
-      inventory: { getAvailableQuantity: async () => 10 },
+      inventory: {
+        getAvailableQuantity: async () => 10,
+        getTierInventory: async () => ({ soldQuantity: 0, heldQuantity: 0, availableQuantity: 10 }),
+        getAvailablePricingPhaseQuantity: async () => 10,
+      },
     } as never);
 
     await expect(service.getEvent(event.id)).rejects.toThrow();
@@ -367,7 +538,11 @@ describe('V1 active tier exposure', () => {
         venues: { getById: async () => null },
         organizations: { getById: async () => null },
       },
-      inventory: { getAvailableQuantity: async () => 10 },
+      inventory: {
+        getAvailableQuantity: async () => 10,
+        getTierInventory: async () => ({ soldQuantity: 0, heldQuantity: 0, availableQuantity: 10 }),
+        getAvailablePricingPhaseQuantity: async () => 10,
+      },
     } as never);
     expect((await service.listEventTiers(event.id)).map((row) => row.tier.audienceType)).toEqual([
       'GENERAL',

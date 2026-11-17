@@ -626,7 +626,8 @@ export class CheckoutService {
     promoCode: string,
     userId: EntityId | null,
   ): Promise<void> {
-    const promo = await this.deps.repositories.catalog.getPromoByCode(promoCode, eventId);
+    const normalizedPromoCode = promoCode.trim().toUpperCase();
+    const promo = await this.deps.repositories.catalog.getPromoByCode(normalizedPromoCode, eventId);
     if (!promo) return;
     const redemptions = this.deps.repositories.promoRedemptions;
     if (promo.maxRedemptions !== null) {

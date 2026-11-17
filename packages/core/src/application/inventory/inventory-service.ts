@@ -56,12 +56,13 @@ export class InventoryService {
   async getTierInventory(
     eventId: string,
     tierId: EntityId,
+    now = new Date(),
   ): Promise<{ soldQuantity: number; heldQuantity: number; availableQuantity: number }> {
     const tier = await this.deps.eventCatalog.getTierById(tierId);
     if (!tier || tier.eventId !== eventId) throw new InvalidOperationError('Ticket tier not found');
     const [soldQuantity, heldQuantity] = await Promise.all([
-      this.getSoldCount(eventId, tierId),
-      this.getActiveHoldsCount(eventId, tierId),
+      this.getSoldCount(eventId, tierId, now),
+      this.getActiveHoldsCount(eventId, tierId, now),
     ]);
     return {
       soldQuantity,
@@ -70,15 +71,15 @@ export class InventoryService {
     };
   }
 
-  async getAvailableQuantity(eventId: string, tierId: EntityId): Promise<number> {
+  async getAvailableQuantity(eventId: string, tierId: EntityId, now = new Date()): Promise<number> {
     const tier = await this.deps.eventCatalog.getTierById(tierId);
     if (!tier) throw new InvalidOperationError(`Tier ${tierId} not found`);
 
     const totalQuantity = tier.quantity ?? 0;
     if (totalQuantity <= 0) return 0;
 
-    const sold = await this.getSoldCount(eventId, tierId);
-    const activeHolds = await this.getActiveHoldsCount(eventId, tierId);
+    const sold = await this.getSoldCount(eventId, tierId, now);
+    const activeHolds = await this.getActiveHoldsCount(eventId, tierId, now);
 
     const effective = totalQuantity - sold - activeHolds;
     return Math.max(0, effective);
@@ -89,12 +90,12 @@ export class InventoryService {
     eventId: string,
     tierId: EntityId,
     phaseId: string,
+    now = new Date(),
   ): Promise<number> {
     const tier = await this.deps.eventCatalog.getTierById(tierId);
     const phase = tier?.pricingPhases?.find((candidate) => candidate.id === phaseId);
     if (!phase) throw new InvalidOperationError('Pricing phase is unavailable');
     if (phase.quantity === null) return Number.MAX_SAFE_INTEGER;
-    const now = new Date();
     const [orders, holds] = await Promise.all([
       this.deps.order.listSeatClaims(eventId),
       this.deps.cartReservation.listActiveByEvent(eventId, now),
@@ -130,8 +131,8 @@ export class InventoryService {
    * check anything sold. Pages through every order for the event rather
    * than trusting a single page, since a popular event can exceed one page.
    */
-  private async getSoldCount(eventId: string, tierId: EntityId): Promise<number> {
-    return (await this.getSoldByTier(eventId)).get(tierId) ?? 0;
+  private async getSoldCount(eventId: string, tierId: EntityId, now: Date): Promise<number> {
+    return (await this.getSoldByTier(eventId, now)).get(tierId) ?? 0;
   }
 
   /**
@@ -139,16 +140,16 @@ export class InventoryService {
    * and lines. `refund_requested` still holds a valid ticket until the refund
    * actually settles, so its seat stays taken; only `refunded` gives it back.
    */
-  private async getSoldByTier(eventId: string): Promise<Map<EntityId, number>> {
+  private async getSoldByTier(eventId: string, now: Date): Promise<Map<EntityId, number>> {
     const orders = await this.deps.order.listSeatClaims(eventId);
     const tierIds = new Set(orders.flatMap((order) => order.lines.map((line) => line.tierId)));
     return new Map(
-      [...tierIds].map((tierId) => [tierId, committedTierQuantity(tierId, orders, [], new Date())]),
+      [...tierIds].map((tierId) => [tierId, committedTierQuantity(tierId, orders, [], now)]),
     );
   }
 
-  private async getActiveHoldsCount(eventId: string, tierId: EntityId): Promise<number> {
-    const holds = await this.deps.cartReservation.listActiveByEvent(eventId, new Date());
+  private async getActiveHoldsCount(eventId: string, tierId: EntityId, now: Date): Promise<number> {
+    const holds = await this.deps.cartReservation.listActiveByEvent(eventId, now);
     let count = 0;
     for (const hold of holds) {
       for (const line of hold.lines) {
@@ -174,8 +175,9 @@ export class InventoryService {
    */
   async firstOverbookedTier(hold: CartReservation): Promise<EntityId | null> {
     const myPosition = hold.sequence ?? Number.MAX_SAFE_INTEGER;
-    const live = await this.deps.cartReservation.listActiveByEvent(hold.eventId, new Date());
-    const soldByTier = await this.getSoldByTier(hold.eventId);
+    const now = new Date();
+    const live = await this.deps.cartReservation.listActiveByEvent(hold.eventId, now);
+    const soldByTier = await this.getSoldByTier(hold.eventId, now);
     for (const line of hold.lines) {
       const tier = await this.deps.eventCatalog.getTierById(line.tierId);
       if (!tier) throw new InvalidOperationError(`Tier ${line.tierId} not found`);
@@ -199,7 +201,7 @@ export class InventoryService {
             (other) => other.id === hold.id || (other.sequence ?? 0) <= myPosition,
           );
           const orders = await this.deps.order.listSeatClaims(hold.eventId);
-          if (committedTierQuantity(tier.id, orders, ahead, new Date(), phase.id) > phase.quantity)
+          if (committedTierQuantity(tier.id, orders, ahead, now, phase.id) > phase.quantity)
             return line.tierId;
         }
       }
