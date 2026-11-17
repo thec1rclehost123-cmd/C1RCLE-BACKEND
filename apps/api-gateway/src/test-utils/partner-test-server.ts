@@ -40,6 +40,11 @@ export interface PartnerTestServerOptions {
   actorCapabilities?: Capability[];
 }
 
+/** A stable test event fixture that is sellable regardless of the calendar date. */
+export function futureTestEventStartAt(): string {
+  return new Date(Date.now() + 24 * 60 * 60 * 1_000).toISOString();
+}
+
 export async function buildPartnerTestServer(
   options: PartnerTestServerOptions,
 ): Promise<FastifyInstance> {

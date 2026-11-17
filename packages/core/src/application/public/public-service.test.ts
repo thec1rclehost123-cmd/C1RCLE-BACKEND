@@ -74,6 +74,7 @@ describe('public purchase quantities', () => {
     }
 
     const service = new PublicService({
+      config: { clock: { now: () => now } },
       repositories: {
         events,
         catalog,
@@ -117,7 +118,7 @@ describe('public purchase quantities', () => {
       }),
     );
     const service = new PublicService({
-      config: { features: { m5TicketAddonsEnabled: false } },
+      config: { features: { m5TicketAddonsEnabled: false }, clock: { now: () => now } },
       repositories: {
         events,
         catalog,
@@ -132,6 +133,34 @@ describe('public purchase quantities', () => {
 });
 
 describe('unlisted event visibility', () => {
+  it('excludes an event at its effective end from the public list and reports it ended', async () => {
+    const events = new MemoryEventRepository();
+    const catalog = new MemoryEventCatalogRepository();
+    const now = new Date('2026-10-28T12:00:00.000Z');
+    let event = createEvent({
+      id: 'finished-public-event',
+      organizationId: 'host',
+      venueId: 'venue',
+      title: 'Finished Public Event',
+      startAt: new Date(now.getTime() - 7 * 60 * 60_000).toISOString(),
+      endAt: now.toISOString(),
+      now,
+    });
+    event = transitionEvent(event, 'review', now);
+    event = transitionEvent(event, 'scheduled', now);
+    event = transitionEvent(event, 'published', now);
+    await events.save({ ...event, version: 1 });
+    const service = new PublicService({
+      config: { clock: { now: () => now } },
+      repositories: { events, catalog },
+    } as never);
+
+    await expect(service.listEvents({ cursor: null, limit: 20 })).resolves.toMatchObject({
+      items: [],
+    });
+    await expect(service.getSalesStatus(event)).resolves.toBe('ended');
+  });
+
   it('omits an unlisted event from discovery while allowing direct-link detail', async () => {
     const events = new MemoryEventRepository();
     const now = new Date('2026-10-28T12:00:00.000Z');
@@ -154,6 +183,7 @@ describe('unlisted event visibility', () => {
       version: 1,
     });
     const service = new PublicService({
+      config: { clock: { now: () => now } },
       repositories: {
         events,
         venues: { getById: async () => null },
@@ -330,6 +360,7 @@ describe('V1 active tier exposure', () => {
         }),
       );
     const service = new PublicService({
+      config: { clock: { now: () => now } },
       repositories: {
         events,
         catalog,

@@ -17,7 +17,10 @@ import type { AdminRole } from '@c1rcle/core/domain';
 import { RazorpayPaymentProvider } from '../../../lib/payments/razorpay-adapter.js';
 import { createV2Services } from '../../../lib/v2-services.js';
 import { seedApprovedPartnerOrganization } from '../../../test-utils/approved-partner-organization.js';
-import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
+import {
+  buildPartnerTestServer,
+  futureTestEventStartAt,
+} from '../../../test-utils/partner-test-server.js';
 import { publishEventForTest } from '../../../test-utils/publish-event.js';
 import checkoutRoutes from '../checkout/checkout-routes.js';
 import paymentRoutes from '../checkout/payment-routes.js';
@@ -117,7 +120,7 @@ async function seedPaidOrder(
     method: 'POST',
     url: `/organizations/${org}/events`,
     headers: write(org),
-    payload: { title: 'Sky Night', venueId, startAt: '2026-09-01T18:00:00Z' },
+    payload: { title: 'Sky Night', venueId, startAt: futureTestEventStartAt() },
   });
   const eventId: string = event.json().id;
   await publishEventForTest(eventId);

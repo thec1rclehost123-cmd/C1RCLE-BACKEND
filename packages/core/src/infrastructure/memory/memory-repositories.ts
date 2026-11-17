@@ -75,6 +75,7 @@ import type {
   OrganizationRepository,
   VenueRepository,
   SlotRequestRepository,
+  AcceptedEventBundle,
   VenueSlotRepository,
   EventCatalogRepository,
   AnalyticsReadModelRepository,
@@ -307,7 +308,11 @@ export class MemoryVenueRepository implements VenueRepository {
 export class MemorySlotRequestRepository implements SlotRequestRepository {
   requests = new Map<EntityId, SlotRequest>();
 
-  constructor(private readonly venueSlots?: MemoryVenueSlotRepository) {}
+  constructor(
+    private readonly venueSlots?: MemoryVenueSlotRepository,
+    private readonly events?: MemoryEventRepository,
+    private readonly catalog?: MemoryEventCatalogRepository,
+  ) {}
 
   async getById(slotRequestId: EntityId): Promise<SlotRequest | null> {
     return this.requests.get(slotRequestId) ?? null;
@@ -435,6 +440,129 @@ export class MemorySlotRequestRepository implements SlotRequestRepository {
     this.requests.set(slotRequestId, updated);
     return updated;
   }
+
+  async commitAcceptedEventBundle(bundle: AcceptedEventBundle): Promise<SlotRequest> {
+    const { previousRequest, acceptedRequest, bookedSlot, event, tiers, promos, assignments } =
+      bundle;
+    const stored = this.requests.get(previousRequest.id);
+    const slotRepo = this.venueSlots;
+    const eventRepo = this.events;
+    const catalog = this.catalog;
+    if (!stored || !slotRepo || !eventRepo || !catalog)
+      throw new Error('Acceptance repositories missing');
+    const slots = slotRepo.slots.get(previousRequest.venueId) ?? [];
+    const slotIndex = slots.findIndex((candidate) => candidate.id === bookedSlot.id);
+    const currentSlot = slots[slotIndex];
+    const replay = stored.status === 'accepted' && stored.eventId === event.id;
+    if (!replay && (stored.version !== previousRequest.version || stored.status !== 'pending')) {
+      throw new VersionConflictError(previousRequest.version, stored.version);
+    }
+    if (
+      !currentSlot ||
+      stored.hostId !== previousRequest.hostId ||
+      stored.venueId !== previousRequest.venueId ||
+      stored.slotId !== bookedSlot.id ||
+      currentSlot.venueId !== stored.venueId ||
+      currentSlot.slotRequestId !== stored.id ||
+      currentSlot.requestingHostId !== stored.hostId ||
+      (currentSlot.status !== 'pending' && !(replay && currentSlot.status === 'booked'))
+    ) {
+      throw new InvalidOperationError('The Venue slot is no longer held by this request');
+    }
+    const start = Date.parse(event.startAt);
+    const end = Date.parse(event.endAt ?? '');
+    if (
+      !Number.isFinite(start) ||
+      !Number.isFinite(end) ||
+      end <= start ||
+      start < Date.parse(currentSlot.startTime) ||
+      end > Date.parse(currentSlot.endTime)
+    )
+      throw new InvalidOperationError(
+        'Event date and time must fit within the accepted Venue slot',
+      );
+    if (
+      [...eventRepo.events.values()].some(
+        (existing) =>
+          existing.id !== event.id &&
+          existing.venueId === event.venueId &&
+          existing.status !== 'cancelled' &&
+          existing.status !== 'archived' &&
+          Date.parse(existing.startAt) < end &&
+          Date.parse(existing.endAt ?? existing.startAt) > start,
+      )
+    )
+      throw new InvalidOperationError('The accepted Venue slot conflicts with another event');
+    if (
+      slots.some(
+        (existing) =>
+          existing.id !== currentSlot.id &&
+          existing.status !== 'open' &&
+          existing.status !== 'cancelled' &&
+          Date.parse(existing.startTime) < end &&
+          Date.parse(existing.endTime) > start,
+      )
+    )
+      throw new InvalidOperationError('The accepted event conflicts with a Venue calendar slot');
+    const existingEvent = eventRepo.events.get(event.id);
+    const existingTiers = tiers.map((tier) => catalog.tiers.get(tier.id));
+    const existingPromos = promos.map((promo) => catalog.promos.get(promo.id));
+    const existingAssignments = assignments.map((item) => catalog.assignments.get(item.id));
+    if (existingEvent && !replay)
+      throw new InvalidOperationError('The proposed event identifier is already in use');
+    if (
+      existingEvent &&
+      (existingEvent.organizationId !== stored.hostId || existingEvent.venueId !== stored.venueId)
+    )
+      throw new InvalidOperationError('The accepted event identifier belongs to another record');
+    if (
+      replay &&
+      [...existingTiers, ...existingPromos, ...existingAssignments].some(
+        (item) => item && item.eventId !== event.id,
+      )
+    )
+      throw new InvalidOperationError(
+        'An accepted event catalog identifier belongs to another event',
+      );
+    if ([...existingTiers, ...existingPromos, ...existingAssignments].some(Boolean) && !replay) {
+      throw new InvalidOperationError('A proposed event catalog identifier is already in use');
+    }
+    if (
+      replay &&
+      currentSlot.status === 'booked' &&
+      existingEvent?.status === 'published' &&
+      [...existingTiers, ...existingPromos, ...existingAssignments].every(Boolean)
+    )
+      return stored;
+
+    // Validate every optimistic create before changing any in-memory map. No
+    // awaited operation follows this point, mirroring a single atomic commit.
+    for (const candidate of [...tiers, ...promos, ...assignments]) {
+      const map = tiers.includes(candidate as (typeof tiers)[number])
+        ? catalog.tiers
+        : promos.includes(candidate as (typeof promos)[number])
+          ? catalog.promos
+          : catalog.assignments;
+      if (map.has(candidate.id) && !replay)
+        throw new InvalidOperationError('Catalog identifier in use');
+    }
+    this.requests.set(acceptedRequest.id, acceptedRequest);
+    const nextSlots = [...slots];
+    nextSlots[slotIndex] = bookedSlot;
+    slotRepo.slots.set(bookedSlot.venueId, nextSlots);
+    if (!existingEvent || (replay && existingEvent.status !== 'published'))
+      eventRepo.events.set(event.id, event);
+    tiers.forEach((item, index) => {
+      if (!existingTiers[index]) catalog.tiers.set(item.id, item);
+    });
+    promos.forEach((item, index) => {
+      if (!existingPromos[index]) catalog.promos.set(item.id, item);
+    });
+    assignments.forEach((item, index) => {
+      if (!existingAssignments[index]) catalog.assignments.set(item.id, item);
+    });
+    return acceptedRequest;
+  }
 }
 
 export class MemoryVenueSlotRepository implements VenueSlotRepository {
@@ -486,6 +614,22 @@ export class MemoryVenueSlotRepository implements VenueSlotRepository {
 
   async createOpenSlotIfFree(slot: VenueSlot): Promise<VenueSlot> {
     return this.createBlockIfFree(slot);
+  }
+
+  async unpublishOpenSlot(slot: VenueSlot, cancelled: VenueSlot): Promise<VenueSlot> {
+    const venueSlots = this.slots.get(slot.venueId) ?? [];
+    const current = venueSlots.find((candidate) => candidate.id === slot.id);
+    if (!current || current.venueId !== slot.venueId) {
+      throw new InvalidOperationError('The Venue availability is no longer available');
+    }
+    if (current.version !== slot.version || current.status !== 'open') {
+      throw new InvalidOperationError('Only unused open availability can be unpublished');
+    }
+    this.slots.set(
+      slot.venueId,
+      venueSlots.map((candidate) => (candidate.id === slot.id ? cancelled : candidate)),
+    );
+    return cancelled;
   }
 }
 

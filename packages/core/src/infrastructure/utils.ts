@@ -178,7 +178,7 @@ export function buildRepositories(gw: StorageDriverConfig): ServiceDeps['reposit
       referralLinks: new MemoryReferralLinkRepository(),
       promoterConnections: new MemoryPromoterConnectionRepository(),
       venues: new MemoryVenueRepository(),
-      slotRequests: new MemorySlotRequestRepository(venueSlots),
+      slotRequests: new MemorySlotRequestRepository(venueSlots, events, catalog),
       venueSlots,
       events,
       eventDrafts: new MemoryEventDraftRepository(),

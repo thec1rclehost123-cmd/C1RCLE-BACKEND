@@ -2,7 +2,10 @@ import { checkoutQuoteResponseSchema } from '@c1rcle/contracts';
 import { describe, expect, it } from 'vitest';
 
 import { seedApprovedPartnerOrganization } from '../../../test-utils/approved-partner-organization.js';
-import { buildPartnerTestServer } from '../../../test-utils/partner-test-server.js';
+import {
+  buildPartnerTestServer,
+  futureTestEventStartAt,
+} from '../../../test-utils/partner-test-server.js';
 import { publishEventForTest } from '../../../test-utils/publish-event.js';
 import { seedVerifiedCheckoutUsers } from '../../../test-utils/verified-test-users.js';
 import partnerEventCatalogRoutes from '../partner/event-catalog.js';
@@ -65,7 +68,7 @@ async function seed(
     method: 'POST',
     url: `/organizations/${org}/events`,
     headers: write(org),
-    payload: { title: 'Sky Night', venueId, startAt: '2026-09-01T18:00:00Z' },
+    payload: { title: 'Sky Night', venueId, startAt: futureTestEventStartAt() },
   });
   const eventId: string = event.json().id;
   await publishEventForTest(eventId);

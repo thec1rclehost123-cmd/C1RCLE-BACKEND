@@ -101,6 +101,36 @@ describe('private Guest onboarding endpoints', () => {
     await app.close();
   });
 
+  it('serves a minimized onboarding guard projection with a masked phone only', async () => {
+    const { app } = await build();
+    const headers = { 'x-test-user': 'guest-minimal' };
+    await app.inject({
+      method: 'PUT',
+      url: '/profile/onboarding',
+      headers,
+      payload: { displayName: 'Guest', dateOfBirth: '2000-01-01', tastes: ['House'] },
+    });
+    await app.inject({
+      method: 'POST',
+      url: '/profile/onboarding/phone',
+      headers,
+      payload: { phoneNumber: '+919876543210', proofToken: 'synthetic-valid' },
+    });
+
+    const response = await app.inject({ url: '/profile/onboarding/status', headers });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toBe('private, no-store');
+    expect(response.json()).toEqual({
+      displayName: 'Guest',
+      phoneVerified: true,
+      maskedPhone: '••••3210',
+      complete: true,
+    });
+    expect(response.json()).not.toHaveProperty('dateOfBirth');
+    expect(response.json()).not.toHaveProperty('phoneNumber');
+    await app.close();
+  });
+
   it('rate-limits repeated phone verification attempts before verification', async () => {
     const { app } = await build();
     const headers = { 'x-test-user': 'guest-rate-limited' };

@@ -224,9 +224,9 @@ export async function runParityCases({
   );
   agree(
     'authBridgeResponseSchema',
-    'rejects a missing accessToken',
+    'accepts tokenless response for same-origin Guest BFF sessions',
     { user: VALID_USER, expiresAt: 1_800_000_000_000 },
-    false,
+    true,
   );
   agree(
     'authBridgeResponseSchema',

@@ -289,7 +289,7 @@ describe('POST /rsvp', () => {
     await server.close();
   });
 
-  it('rejects an RSVP for an unpublished event with 400', async () => {
+  it('rejects an RSVP for an unpublished event as not on sale', async () => {
     seedVerifiedTestAccounts();
     const server = await buildServer();
     // Seed without publishing: org → venue → event (draft) → tier.
@@ -324,8 +324,8 @@ describe('POST /rsvp', () => {
     });
 
     const response = await rsvp(server, { eventId, tierId: tier.json().id });
-    expect(response.statusCode).toBe(400);
-    expect(response.json()).toMatchObject({ code: 'validation' });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({ code: 'event_not_on_sale' });
     await server.close();
   });
 

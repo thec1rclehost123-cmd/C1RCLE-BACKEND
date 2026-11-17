@@ -191,6 +191,10 @@ export const eventDtoSchema = z.object({
   startAt: z.iso.datetime(),
   endAt: z.iso.datetime().nullable(),
   status: eventStatusSchema,
+  /** Present on public Guest event reads; omitted by unrelated partner projections. */
+  salesStatus: z
+    .enum(['on_sale', 'sold_out', 'sales_paused', 'ended', 'cancelled', 'postponed'])
+    .optional(),
   visibilityMode: eventVisibilityModeSchema,
   addressDisclosure: eventAddressDisclosureSchema.default('public'),
   isPublic: z.boolean(),

@@ -1,5 +1,6 @@
 import {
   guestOnboardingPatchSchema,
+  guestOnboardingStatusSchema,
   guestOnboardingStateSchema,
   guestPhoneProofSchema,
 } from '@c1rcle/contracts/guest-onboarding';
@@ -38,6 +39,27 @@ export async function registerGuestOnboarding(
   service: GuestProfileService,
   phoneVerifier?: VerificationProvider,
 ) {
+  fastify.get(
+    '/profile/onboarding/status',
+    {
+      config: { rateLimit: { max: 240, timeWindow: '1 minute' } },
+      preHandler: [fastify.rateLimit('AUTH_READ'), requireAuthenticatedGuest],
+    },
+    async (request, reply) => {
+      const state = await service.getOnboarding(authenticatedUserId(request));
+      const phone = state.profile?.phoneNumber ?? null;
+      const digits = phone?.replace(/\D/gu, '') ?? '';
+      const body = {
+        displayName: state.profile?.displayName ?? '',
+        phoneVerified: Boolean(state.profile?.phoneVerifiedAt),
+        maskedPhone: digits.length > 0 ? `••••${digits.slice(-4)}` : null,
+        complete: state.complete,
+      };
+      const valid = validateV2Response(reply, request, guestOnboardingStatusSchema, body);
+      reply.header('cache-control', 'private, no-store');
+      return valid === undefined ? reply : reply.send(valid);
+    },
+  );
   fastify.get(
     '/profile/onboarding',
     {

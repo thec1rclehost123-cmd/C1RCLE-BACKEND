@@ -29,6 +29,27 @@ function productionEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.Proces
 }
 
 describe('gateway configuration', () => {
+  it('allows Firebase Auth Emulator only on loopback outside production', () => {
+    expect(
+      getGatewayConfig({
+        NODE_ENV: 'test',
+        FIREBASE_AUTH_EMULATOR_HOST: '127.0.0.1:9099',
+      }).FIREBASE_AUTH_EMULATOR_HOST,
+    ).toBe('127.0.0.1:9099');
+    expect(() =>
+      getGatewayConfig({
+        NODE_ENV: 'test',
+        FIREBASE_AUTH_EMULATOR_HOST: 'auth-emulator.internal:9099',
+      }),
+    ).toThrow(/FIREBASE_AUTH_EMULATOR_HOST/);
+    expect(() =>
+      getGatewayConfig({
+        ...productionEnvironment(),
+        FIREBASE_AUTH_EMULATOR_HOST: '127.0.0.1:9099',
+      }),
+    ).toThrow(/FIREBASE_AUTH_EMULATOR_HOST/);
+  });
+
   it('keeps process-wide workers off unless explicitly enabled', () => {
     expect(getGatewayConfig(productionEnvironment()).BACKGROUND_WORKERS_ENABLED).toBe(false);
     expect(

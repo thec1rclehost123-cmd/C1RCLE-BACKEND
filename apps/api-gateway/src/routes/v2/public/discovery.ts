@@ -38,7 +38,7 @@ import type { FastifyInstance } from 'fastify';
 
 const services = createV2Services();
 
-function publicEventToDto(event: Parameters<typeof eventToDto>[0], revealAfterGrant = false) {
+async function publicEventToDto(event: Parameters<typeof eventToDto>[0], revealAfterGrant = false) {
   const dto = eventToDto(event);
   const imageUrl = publicArtworkUrl(event.imageUrl);
   const youtubeUrl = dto.media?.youtubeUrl;
@@ -61,6 +61,7 @@ function publicEventToDto(event: Parameters<typeof eventToDto>[0], revealAfterGr
   const safeDto = {
     ...dto,
     imageUrl,
+    salesStatus: await services.public.getSalesStatus(event),
     ...(media ? { media } : {}),
   };
   if (!event.externalLocation) return safeDto;
@@ -276,7 +277,7 @@ export default async function publicDiscoveryRoutes(fastify: FastifyInstance) {
         cursor: query.cursor ?? null,
       });
       const payload = {
-        items: page.items.map((event) => publicEventToDto(event)),
+        items: await Promise.all(page.items.map((event) => publicEventToDto(event))),
         pageInfo: {
           page: 1,
           pageSize: query.limit,
@@ -312,7 +313,7 @@ export default async function publicDiscoveryRoutes(fastify: FastifyInstance) {
       const privateEvent =
         detail.event.visibilityMode === 'code' || detail.event.visibilityMode === 'invited';
       const payload = {
-        ...publicEventToDto(detail.event, true),
+        ...(await publicEventToDto(detail.event, true)),
         // PublicService emits only a short-lived signed URL for an event grant;
         // partner and anonymous projections always redact private poster URLs.
         imageUrl: publicArtworkUrl(detail.event.imageUrl),
@@ -433,7 +434,7 @@ export default async function publicDiscoveryRoutes(fastify: FastifyInstance) {
     async (request, reply) => {
       reply.header('cache-control', 'private, no-store');
       const events = await services.public.discovery();
-      const payload = { items: events.map((event) => publicEventToDto(event)) };
+      const payload = { items: await Promise.all(events.map((event) => publicEventToDto(event))) };
       const validated = validateV2Response(reply, request, discoveryFeedDtoSchema, payload);
       if (validated === undefined) return reply;
       return reply.send(validated);
@@ -457,7 +458,7 @@ export default async function publicDiscoveryRoutes(fastify: FastifyInstance) {
         cursor: query.cursor ?? null,
       });
       const payload = {
-        items: page.items.map((event) => publicEventToDto(event)),
+        items: await Promise.all(page.items.map((event) => publicEventToDto(event))),
         pageInfo: {
           page: 1,
           pageSize: query.limit,

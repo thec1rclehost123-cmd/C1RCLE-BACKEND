@@ -901,6 +901,47 @@ describe('V2 partners venues slice — profile, calendar, menu, availability', (
     await server.close();
   });
 
+  it('unpublishes only an unused open window and keeps calendar and availability in sync', async () => {
+    const server = await buildServer();
+    const { id } = await createVenue(server);
+    const published = await server.inject({
+      method: 'POST',
+      url: `/venues/${id}/calendar/availability`,
+      headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
+      payload: {
+        label: 'Unused offer',
+        startTime: '2030-11-04T12:30:00.000Z',
+        endTime: '2030-11-04T16:30:00.000Z',
+        timezone: 'Asia/Kolkata',
+      },
+    });
+    expect(published.statusCode).toBe(201);
+    const path = `/venues/${id}/calendar/availability/${published.json().id}`;
+    const removed = await server.inject({
+      method: 'DELETE',
+      url: path,
+      headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
+    });
+    expect(removed.statusCode).toBe(200);
+    expect(removed.json()).toMatchObject({ id: published.json().id, status: 'cancelled' });
+    const query = 'from=2030-11-01T00:00:00Z&to=2030-11-30T23:59:59Z';
+    const calendar = await server.inject({
+      method: 'GET',
+      url: `/venues/${id}/calendar?${query}`,
+      headers: READ_HEADERS,
+    });
+    const availability = await server.inject({
+      method: 'GET',
+      url: `/venues/${id}/availability?${query}`,
+      headers: READ_HEADERS,
+    });
+    expect(calendar.json()).not.toContainEqual(
+      expect.objectContaining({ id: published.json().id }),
+    );
+    expect(availability.json()).toMatchObject({ openSlots: 0, openMinutes: 0 });
+    await server.close();
+  });
+
   it('lets an active host partner read derived availability but not the raw calendar', async () => {
     const server = await buildServer();
     const { id } = await createVenue(server);
@@ -932,9 +973,17 @@ describe('V2 partners venues slice — profile, calendar, menu, availability', (
 
     expect(availability.statusCode).toBe(200);
     expect(availability.json()).toMatchObject({ venueId: id });
-    expect(availability.json().slots).toContainEqual(
-      expect.objectContaining({ id: blocked.json().id, label: 'Unavailable', status: 'blocked' }),
-    );
+    const blockedSlot = availability.json().slots[0];
+    expect(blockedSlot).toMatchObject({
+      label: 'Unavailable',
+      status: 'blocked',
+      startTime: '2026-09-17T19:00:00.000Z',
+      endTime: '2026-09-17T23:00:00.000Z',
+      capacityFor: null,
+      requestable: false,
+    });
+    expect(blockedSlot?.id).not.toBe(blocked.json().id);
+    expect(JSON.stringify(blockedSlot)).not.toContain('Confidential maintenance');
     expect(calendar.statusCode).toBe(404);
     await server.close();
   });
@@ -1031,6 +1080,47 @@ describe('V2 partners venues slice — slot requests', () => {
     const body = response.json();
     expect(body.items.map((item: { id: string }) => item.id)).toContain(fixture.request.id);
     expect(body.pageInfo).toMatchObject({ page: 1, pageSize: 10 });
+    await server.close();
+  });
+
+  it('exposes a bounded owner-only repair dry run without changing request or event data', async () => {
+    const server = await buildSlotRequestServer();
+    const fixture = await createHostSlotRequestFixture(server, false, (venueId) => ({
+      event: {
+        venueId,
+        title: 'Dry-run legacy candidate',
+        summary: 'A valid proposal.',
+        description: 'For repair candidate inspection.',
+        startAt: '2030-11-04T13:00:00.000Z',
+        endAt: '2030-11-04T15:00:00.000Z',
+      },
+      tiers: [],
+      promotions: [],
+      promoters: [],
+    }));
+    const beforeRequest = await services.venueSlotRequests.listForVenue(
+      { userId: 'venue_owner_test', organizationId: ORG, role: 'owner', capabilities: ['venue'] },
+      fixture.venueId,
+      { limit: 10, cursor: null },
+    );
+    const response = await server.inject({
+      method: 'GET',
+      url: `/venues/${fixture.venueId}/slot-requests/repair-dry-run?limit=1`,
+      headers: READ_HEADERS,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      dryRun: true,
+      scanned: 1,
+      truncated: false,
+      candidates: [],
+    });
+    const afterRequest = await services.venueSlotRequests.listForVenue(
+      { userId: 'venue_owner_test', organizationId: ORG, role: 'owner', capabilities: ['venue'] },
+      fixture.venueId,
+      { limit: 10, cursor: null },
+    );
+    expect(afterRequest.items).toEqual(beforeRequest.items);
     await server.close();
   });
 
@@ -1166,8 +1256,8 @@ describe('V2 partners venues slice — slot requests', () => {
 
   it('publishes the complete Host proposal after Venue approval and safely replays approval', async () => {
     const server = await buildSlotRequestServer();
-    const startAt = '2030-11-04T12:30:00.000Z';
-    const endAt = '2030-11-04T16:30:00.000Z';
+    const startAt = '2030-11-04T13:30:00.000Z';
+    const endAt = '2030-11-04T15:30:00.000Z';
     const fixture = await createHostSlotRequestFixture(server, false, (venueId) => ({
       event: {
         venueId,
@@ -1347,6 +1437,7 @@ describe('V2 partners venues slice — slot requests', () => {
       method: 'POST',
       url: `/venues/slot-requests/${fixture.request.id}/reject`,
       headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
+      payload: { reason: 'The venue has another confirmed booking.' },
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ id: fixture.request.id, status: 'rejected' });
@@ -1442,6 +1533,50 @@ describe('V2 partners venues slice — slot requests', () => {
     await server.close();
   });
 
+  it('withdraws a pending request with a preallocated event id and preserves its open window', async () => {
+    const server = await buildSlotRequestServer();
+    const fixture = await createHostSlotRequestFixture(server, false, (venueId) => ({
+      event: {
+        venueId,
+        title: 'Withdrawable proposal',
+        startAt: '2030-11-04T13:30:00.000Z',
+        endAt: '2030-11-04T15:30:00.000Z',
+      },
+      tiers: [],
+      promotions: [],
+      promoters: [],
+    }));
+    expect(fixture.request.eventId).toBeTruthy();
+    const response = await server.inject({
+      method: 'POST',
+      url: `/venues/slot-requests/${fixture.request.id}/cancel`,
+      headers: {
+        'x-organization-id': fixture.hostOrganizationId,
+        'idempotency-key': nextVenueKey(),
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      status: 'cancelled',
+      eventId: fixture.request.eventId,
+    });
+    const slots = await server.inject({
+      method: 'GET',
+      url: `/venues/${fixture.venueId}/calendar?from=2030-11-01T00:00:00Z&to=2030-11-30T23:59:59Z`,
+      headers: READ_HEADERS,
+    });
+    expect(slots.json()).toContainEqual(
+      expect.objectContaining({ id: fixture.slot.id, status: 'open' }),
+    );
+    const event = await server.inject({
+      method: 'GET',
+      url: `/events/${fixture.request.eventId}`,
+      headers: { 'x-organization-id': fixture.hostOrganizationId },
+    });
+    expect(event.statusCode).toBe(404);
+    await server.close();
+  });
+
   it('lets the host org cancel its own accepted request (domain: accepted → cancelled)', async () => {
     const server = await buildSlotRequestServer();
     const fixture = await createHostSlotRequestFixture(server);
@@ -1497,7 +1632,7 @@ describe('V2 partners venues slice — slot requests', () => {
     await server.close();
   });
 
-  it('rejects a cancel of a still-pending request (state machine: pending → cancelled is not legal)', async () => {
+  it('withdraws a pending request and returns its open availability window', async () => {
     const server = await buildSlotRequestServer();
     const fixture = await createHostSlotRequestFixture(server);
     const response = await server.inject({
@@ -1508,8 +1643,16 @@ describe('V2 partners venues slice — slot requests', () => {
         'idempotency-key': nextVenueKey(),
       },
     });
-    expect(response.statusCode).toBe(409);
-    expect(response.json()).toMatchObject({ code: 'conflict' });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ status: 'cancelled', slotId: fixture.slot.id });
+    const slot = await server.inject({
+      method: 'GET',
+      url: `/venues/${fixture.venueId}/calendar?from=2030-11-01T00:00:00Z&to=2030-11-30T23:59:59Z`,
+      headers: READ_HEADERS,
+    });
+    expect(slot.json()).toContainEqual(
+      expect.objectContaining({ id: fixture.slot.id, status: 'open' }),
+    );
     await server.close();
   });
 
@@ -1527,134 +1670,63 @@ describe('V2 partners venues slice — slot requests', () => {
   });
 });
 
-describe('Host requests for automatically available time', () => {
-  it('accepts an unpublished interval, replays it safely, and rejects an overlap', async () => {
+describe('Host requests require published availability', () => {
+  it('rejects an unpublished interval instead of synthesizing an availability window', async () => {
     const server = await buildSlotRequestServer();
     const fixture = await createHostSlotRequestFixture(server);
-    const key = nextVenueKey();
-    const options = {
+    const response = await server.inject({
       method: 'POST' as const,
       url: `/venues/${fixture.venueId}/slot-requests`,
-      headers: { 'x-organization-id': fixture.hostOrganizationId, 'idempotency-key': key },
+      headers: {
+        'x-organization-id': fixture.hostOrganizationId,
+        'idempotency-key': nextVenueKey(),
+      },
       payload: { startTime: '2031-04-12T13:30:00.000Z', endTime: '2031-04-12T17:30:00.000Z' },
-    };
-    const created = await server.inject(options);
-    expect(created.statusCode).toBe(201);
-    expect(created.json()).toMatchObject({
-      status: 'pending',
-      slotStartTime: options.payload.startTime,
-      slotEndTime: options.payload.endTime,
     });
-    const replay = await server.inject(options);
-    expect(replay.statusCode).toBe(201);
-    expect(replay.json().id).toBe(created.json().id);
-    const overlap = await server.inject({
-      ...options,
-      headers: { ...options.headers, 'idempotency-key': nextVenueKey() },
-      payload: { startTime: '2031-04-12T14:30:00.000Z', endTime: '2031-04-12T18:30:00.000Z' },
-    });
-    expect(overlap.statusCode).toBe(400);
-    const adjacent = await server.inject({
-      ...options,
-      headers: { ...options.headers, 'idempotency-key': nextVenueKey() },
-      payload: { startTime: '2031-04-12T17:30:00.000Z', endTime: '2031-04-12T18:30:00.000Z' },
-    });
-    expect(adjacent.statusCode).toBe(201);
+    expect(response.statusCode).toBe(422);
     await server.close();
   });
-  it('rejects intervals at a Venue without an active partnership', async () => {
-    const server = await buildSlotRequestServer();
-    const { id } = await createVenue(server);
-    const response = await server.inject({
-      method: 'POST',
-      url: `/venues/${id}/slot-requests`,
-      headers: { 'x-organization-id': 'unpartnered-host', 'idempotency-key': nextVenueKey() },
-      payload: { startTime: '2031-05-01T13:30:00.000Z', endTime: '2031-05-01T17:30:00.000Z' },
-    });
-    expect(response.statusCode).toBe(400);
-    await server.close();
-  });
-});
 
-describe('Automatic interval conflict protection', () => {
-  it('allows only one concurrent request and rejects blocked times', async () => {
+  it('rejects a request event whose interval extends outside the published window', async () => {
     const server = await buildSlotRequestServer();
     const fixture = await createHostSlotRequestFixture(server);
-    const request = () =>
-      server.inject({
-        method: 'POST',
-        url: `/venues/${fixture.venueId}/slot-requests`,
-        headers: {
-          'x-organization-id': fixture.hostOrganizationId,
-          'idempotency-key': nextVenueKey(),
-        },
-        payload: { startTime: '2032-04-12T13:30:00.000Z', endTime: '2032-04-12T17:30:00.000Z' },
-      });
-    const results = await Promise.all([request(), request()]);
-    expect(results.map((r) => r.statusCode).sort()).toEqual([201, 400]);
-    const block = await server.inject({
+    const secondWindow = await server.inject({
       method: 'POST',
-      url: `/venues/${fixture.venueId}/calendar/blocks`,
+      url: `/venues/${fixture.venueId}/calendar/availability`,
       headers: { ...READ_HEADERS, 'idempotency-key': nextVenueKey() },
       payload: {
-        label: 'Closed',
-        startTime: '2032-05-12T13:30:00.000Z',
-        endTime: '2032-05-12T17:30:00.000Z',
+        label: 'Second Host request window',
+        startTime: '2030-11-05T12:30:00.000Z',
+        endTime: '2030-11-05T16:30:00.000Z',
+        timezone: 'Asia/Kolkata',
+        visibleToHostIds: [fixture.hostOrganizationId],
       },
     });
-    expect(block.statusCode).toBe(201);
-    const blocked = await server.inject({
+    expect(secondWindow.statusCode).toBe(201);
+    const response = await server.inject({
       method: 'POST',
       url: `/venues/${fixture.venueId}/slot-requests`,
       headers: {
         'x-organization-id': fixture.hostOrganizationId,
         'idempotency-key': nextVenueKey(),
       },
-      payload: { startTime: '2032-05-12T14:30:00.000Z', endTime: '2032-05-12T16:30:00.000Z' },
-    });
-    expect(blocked.statusCode).toBe(400);
-    await server.close();
-  });
-});
-
-describe('Overnight automatic availability', () => {
-  it('persists an IST overnight interval and rejects a conflict after midnight', async () => {
-    const server = await buildSlotRequestServer();
-    const fixture = await createHostSlotRequestFixture(server);
-    const makeRequest = (startTime: string, endTime: string) =>
-      server.inject({
-        method: 'POST',
-        url: `/venues/${fixture.venueId}/slot-requests`,
-        headers: {
-          'x-organization-id': fixture.hostOrganizationId,
-          'idempotency-key': nextVenueKey(),
+      payload: {
+        slotId: secondWindow.json().id,
+        eventDraft: {
+          event: {
+            venueId: fixture.venueId,
+            title: 'Outside the published window',
+            startAt: '2030-11-05T11:30:00.000Z',
+            endAt: '2030-11-05T15:30:00.000Z',
+          },
+          tiers: [],
+          promotions: [],
+          promoters: [],
         },
-        payload: { startTime, endTime },
-      });
-    const overnight = await makeRequest('2033-04-12T17:30:00.000Z', '2033-04-12T20:30:00.000Z');
-    expect(overnight.statusCode).toBe(201);
-    expect(overnight.json()).toMatchObject({
-      slotStartTime: '2033-04-12T17:30:00.000Z',
-      slotEndTime: '2033-04-12T20:30:00.000Z',
-      timezone: 'Asia/Kolkata',
+      },
     });
-    const overlap = await makeRequest('2033-04-12T19:30:00.000Z', '2033-04-12T21:30:00.000Z');
-    expect(overlap.statusCode).toBe(400);
-    const nextDay = await server.inject({
-      method: 'GET',
-      url: `/venues/${fixture.venueId}/availability?from=2033-04-12T18:30:00.000Z&to=2033-04-13T18:29:59.999Z`,
-      headers: { 'x-organization-id': fixture.hostOrganizationId },
-    });
-    expect(nextDay.statusCode).toBe(200);
-    expect(nextDay.json().slots).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          startTime: '2033-04-12T17:30:00.000Z',
-          endTime: '2033-04-12T20:30:00.000Z',
-          status: 'pending',
-        }),
-      ]),
-    );
+    expect(response.statusCode).toBe(400);
+    expect(response.json().message).toContain('fit inside the Venue-published availability window');
     await server.close();
   });
 });

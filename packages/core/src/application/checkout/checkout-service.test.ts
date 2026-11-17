@@ -556,7 +556,7 @@ describe('CheckoutService.createRsvp', () => {
 
     await expect(
       service.createRsvp({ actor: actor('user_1'), eventId: 'evt_draft', tierId: 'tier_draft' }),
-    ).rejects.toBeInstanceOf(InvalidOperationError);
+    ).rejects.toMatchObject({ code: 'event_not_on_sale' });
   });
 });
 
@@ -712,7 +712,80 @@ describe('M3 RSVP authoritative sale windows', () => {
     seedTier(catalog);
     await expect(
       service.createRsvp({ actor: actor('user_1'), eventId: 'evt_1', tierId: 'tier_1' }),
-    ).rejects.toThrow(/sales are closed/);
+    ).rejects.toThrow(/Online sales have ended/);
+  });
+});
+
+describe('authoritative sale cutoff', () => {
+  it('keeps a started event sellable until the exclusive effective end', async () => {
+    const { events, catalog, service } = buildService();
+    await seedPublishedFreeEvent(events);
+    const event = events.events.get('evt_1');
+    if (!event) throw new Error('Published fixture event missing');
+    events.events.set(event.id, {
+      ...event,
+      status: 'started',
+      startAt: new Date(NOW.getTime() - 60_000).toISOString(),
+      endAt: new Date(NOW.getTime() + 60_000).toISOString(),
+    });
+    seedTier(catalog, { accessType: 'ENTRY', priceInPaise: 50000 });
+
+    await expect(
+      service.quote({
+        actor: actor('user_1'),
+        eventId: 'evt_1',
+        lines: [{ tierId: 'tier_1', quantity: 1 }],
+      }),
+    ).resolves.toMatchObject({ pricing: { lines: [{ tierId: 'tier_1' }] } });
+  });
+
+  it('rejects a new payment attempt for a pre-cutoff hold at the exact cutoff', async () => {
+    let now = NOW;
+    const serviceConfig = createCoreConfig({
+      redis: { url: 'redis://localhost:6379' },
+      firestore: { projectId: 'test-project' },
+      clock: { now: () => now },
+      features: { m5EligibilityRulesEnabled: true },
+    });
+    const { events, catalog, service, deps } = buildService(serviceConfig);
+    await seedPublishedFreeEvent(events);
+    const event = events.events.get('evt_1');
+    if (!event) throw new Error('Published fixture event missing');
+    const cutoff = new Date(NOW.getTime() + 60_000);
+    events.events.set(event.id, {
+      ...event,
+      startAt: new Date(NOW.getTime() - 60_000).toISOString(),
+      endAt: cutoff.toISOString(),
+    });
+    seedTier(catalog, { accessType: 'ENTRY', priceInPaise: 50000 });
+    const { pricing } = await service.quote({
+      actor: actor('user_1'),
+      eventId: 'evt_1',
+      lines: [{ tierId: 'tier_1', quantity: 1 }],
+    });
+    const hold = await service.createHold({
+      actor: actor('user_1'),
+      eventId: 'evt_1',
+      organizationId: 'org_1',
+      lines: pricing.lines,
+      pricing,
+      appliedPromoCode: null,
+      attribution: null,
+      idempotencyKey: 'before-sale-cutoff',
+    });
+
+    now = cutoff;
+    await expect(
+      service.createPaymentIntent({
+        actor: actor('user_1'),
+        holdId: hold.id,
+        idempotencyKey: 'after-sale-cutoff',
+      }),
+    ).rejects.toMatchObject({ code: 'event_not_on_sale' });
+    const unchangedHold = await deps.repositories.cartReservations.getById(hold.id);
+    expect(unchangedHold?.status).toBe('active');
+    expect(unchangedHold?.providerOrderId).toBeUndefined();
+    expect(unchangedHold?.providerOrderCreation).toBeUndefined();
   });
 });
 
