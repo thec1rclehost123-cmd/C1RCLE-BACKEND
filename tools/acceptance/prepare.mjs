@@ -9,6 +9,21 @@ const SURFACES_PATH = path.join(ROOT, 'tools/acceptance/surfaces.json');
 const FETCH_TIMEOUT_MS = 5_000;
 const SECRET_KEY = /password|otp|bypass|cookie|api.?key|token|secret|card|authorization/i;
 const FULL_SHA = /^[a-f0-9]{40}$/i;
+const API_TARGET = 'https://circle-v2-backend.onrender.com';
+const API_PROBES = Object.freeze({
+  health: '/api/v2/internal/health',
+  readiness: '/api/v2/internal/readiness',
+  version: '/api/v2/internal/version',
+});
+const SURFACE_TARGETS = Object.freeze({
+  guest: 'https://guest.thec1rcle.com',
+  host: 'https://staging.thec1rcle.com',
+  venue: 'https://staging.thec1rcle.com',
+  partner: 'https://staging.thec1rcle.com',
+  promoter: 'https://staging.thec1rcle.com',
+  scanner: null,
+  admin: 'https://admin.thec1rcle.com',
+});
 
 export async function readJson(file) {
   return JSON.parse(await readFile(file, 'utf8'));
@@ -22,6 +37,15 @@ export function safeUrl(raw) {
   } catch {
     return null;
   }
+}
+
+function approvedSurfaceTarget(surfaceKey, surface) {
+  const target = SURFACE_TARGETS[surfaceKey];
+  return target && surface?.app_url === target ? target : null;
+}
+
+function approvedApiTarget(config) {
+  return config.api_url === API_TARGET ? API_TARGET : null;
 }
 
 function safeLocator(locator = {}) {
@@ -167,7 +191,7 @@ async function appProbe(url, fetchImpl) {
 
 async function apiProbe(apiUrl, probePath, { fetchImpl, token } = {}) {
   const headers = token ? { 'x-readiness-token': token } : {};
-  const response = await request(`${safeUrl(apiUrl)}${probePath}`, { fetchImpl, headers });
+  const response = await request(`${apiUrl}${probePath}`, { fetchImpl, headers });
   if (!response) return { status: 'UNKNOWN', http_status: null };
   const body = await parseJson(response);
   if (response.status === 404 && !token) return { status: 'UNKNOWN', http_status: 404 };
@@ -182,17 +206,33 @@ async function apiProbe(apiUrl, probePath, { fetchImpl, token } = {}) {
 }
 
 export async function probeServices(config, { env = process.env, fetchImpl = fetch } = {}) {
-  const apiUrl = safeUrl(config.api_url);
+  const apiUrl = approvedApiTarget(config);
+  if (!apiUrl) {
+    return {
+      backend_liveness: { status: 'UNKNOWN', http_status: null, scope: 'process liveness only' },
+      backend_readiness: {
+        status: 'UNKNOWN',
+        http_status: null,
+        reason: 'configured backend URL is not an approved target',
+      },
+      backend_sha: 'UNKNOWN',
+      backend_sha_reason: 'configured backend URL is not an approved target',
+      frontend_sha: 'UNKNOWN',
+      frontend_sha_reason: config.frontend_sha_evidence
+        ? 'configured frontend evidence source could not be verified by this helper'
+        : 'no frontend runtime SHA endpoint or authorized deployment-metadata source is configured',
+    };
+  }
   const token = env.NGINX_READINESS_TOKEN || null;
-  const liveness = await apiProbe(apiUrl, config.health_path, { fetchImpl });
+  const liveness = await apiProbe(apiUrl, API_PROBES.health, { fetchImpl });
   const readinessResult = token
-    ? await apiProbe(apiUrl, config.readiness_path, { fetchImpl, token })
+    ? await apiProbe(apiUrl, API_PROBES.readiness, { fetchImpl, token })
     : { status: 'UNKNOWN', http_status: null, reason: 'NGINX_READINESS_TOKEN unavailable' };
 
   let backendSha = 'UNKNOWN';
   let backendShaReason = 'NGINX_READINESS_TOKEN unavailable';
   if (token) {
-    const response = await request(`${apiUrl}${config.version_path}`, {
+    const response = await request(`${apiUrl}${API_PROBES.version}`, {
       fetchImpl,
       headers: { 'x-readiness-token': token },
     });
@@ -230,7 +270,7 @@ export async function buildPreparation(surfaceKey, options = {}) {
   const fixture = fixtureId ? summarizeRecord(fixtureId, harness) : null;
   if (fixtureId && !fixture) throw new Error(`unknown fixture or requirement: ${fixtureId}`);
 
-  const appUrl = safeUrl(surface.app_url);
+  const appUrl = approvedSurfaceTarget(surfaceKey, surface);
   const [app, services] = await Promise.all([
     appProbe(appUrl, fetchImpl),
     probeServices(config, { env, fetchImpl }),
@@ -457,7 +497,9 @@ export async function execute(argv, dependencies = {}) {
           value: { error: `unknown surface: ${surfaceKey}` },
           output: `ERROR: unknown surface: ${surfaceKey}`,
         };
-      const app = surface ? await appProbe(safeUrl(surface.app_url), fetchImpl) : null;
+      const app = surface
+        ? await appProbe(approvedSurfaceTarget(surfaceKey, surface), fetchImpl)
+        : null;
       value =
         command === 'deployment'
           ? {
@@ -473,9 +515,9 @@ export async function execute(argv, dependencies = {}) {
               environment: config.environment,
               environment_provenance: config.environment_note,
               surface: surface?.label ?? surfaceKey,
-              app_url: surface ? safeUrl(surface.app_url) : null,
+              app_url: surface ? approvedSurfaceTarget(surfaceKey, surface) : null,
               app_reachability: app,
-              api_url: safeUrl(config.api_url),
+              api_url: approvedApiTarget(config),
               backend_liveness: services.backend_liveness,
               backend_readiness: services.backend_readiness,
             };

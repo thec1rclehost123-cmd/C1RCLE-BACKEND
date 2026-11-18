@@ -175,3 +175,54 @@ test('Guest preparation probes the canonical hosted URL without bypass headers',
   assert.ok(urls.some(({ url }) => url === 'https://guest.thec1rcle.com'));
   assert.ok(urls.every(({ init }) => !('x-vercel-protection-bypass' in init.headers)));
 });
+
+test('unapproved file-configured origins never reach outbound requests', async () => {
+  const calls = [];
+  const unapproved = {
+    ...config,
+    api_url: 'http://169.254.169.254/latest/meta-data',
+    surfaces: {
+      ...config.surfaces,
+      guest: { ...config.surfaces.guest, app_url: 'http://127.0.0.1:8080/admin' },
+    },
+  };
+  const result = await buildPreparation('guest', {
+    harness,
+    config: unapproved,
+    env: { NGINX_READINESS_TOKEN: 'x'.repeat(32) },
+    fetchImpl: async (url) => {
+      calls.push(url);
+      return response(200, { ok: true });
+    },
+  });
+
+  assert.deepEqual(calls, []);
+  assert.equal(result.app_url, null);
+  assert.equal(result.app_reachability.status, 'UNKNOWN');
+  assert.equal(result.backend_liveness.status, 'UNKNOWN');
+});
+
+test('probe paths come from fixed endpoints rather than file configuration', async () => {
+  const calls = [];
+  await probeServices(
+    {
+      ...config,
+      health_path: 'https://127.0.0.1/metadata',
+      readiness_path: '//169.254.169.254/latest/meta-data',
+      version_path: '/../../admin',
+    },
+    {
+      env: { NGINX_READINESS_TOKEN: 'x'.repeat(32) },
+      fetchImpl: async (url) => {
+        calls.push(url);
+        return response(200, { ok: true, commit: 'a'.repeat(40) });
+      },
+    },
+  );
+
+  assert.deepEqual(calls, [
+    'https://circle-v2-backend.onrender.com/api/v2/internal/health',
+    'https://circle-v2-backend.onrender.com/api/v2/internal/readiness',
+    'https://circle-v2-backend.onrender.com/api/v2/internal/version',
+  ]);
+});
