@@ -1,0 +1,62 @@
+{
+  "environment": "staging",
+  "environment_note": "Documented staging target; current hosting branch/deployment environment is not independently exposed by this helper.",
+  "api_url": "https://circle-v2-backend.onrender.com",
+  "api_evidence": "docs/operations/staging-environment-contract.md",
+  "health_path": "/api/v2/internal/health",
+  "readiness_path": "/api/v2/internal/readiness",
+  "version_path": "/api/v2/internal/version",
+  "frontend_sha_evidence": null,
+  "surfaces": {
+    "guest": {
+      "label": "Guest",
+      "app_url": "https://guest.thec1rcle.com",
+      "credential_fixture_id": "guest_complete_account",
+      "provider_mode": "EXPECTED: Razorpay Test Mode for paid checkout; not verified by preparation"
+    },
+    "host": {
+      "label": "Host",
+      "app_url": "https://staging.thec1rcle.com",
+      "credential_fixture_id": null,
+      "provider_mode": "Not applicable to preparation"
+    },
+    "venue": {
+      "label": "Venue",
+      "app_url": "https://staging.thec1rcle.com",
+      "credential_fixture_id": null,
+      "provider_mode": "Not applicable to preparation"
+    },
+    "partner": {
+      "label": "Partner",
+      "app_url": "https://staging.thec1rcle.com",
+      "credential_fixture_id": null,
+      "provider_mode": "Not applicable to preparation"
+    },
+    "promoter": {
+      "label": "Promoter",
+      "app_url": "https://staging.thec1rcle.com",
+      "credential_fixture_id": null,
+      "provider_mode": "Not applicable to preparation"
+    },
+    "scanner": {
+      "label": "Scanner",
+      "app_url": null,
+      "credential_fixture_id": null,
+      "provider_mode": "Not applicable to preparation"
+    },
+    "admin": {
+      "label": "Admin",
+      "app_url": "https://admin.thec1rcle.com",
+      "credential_fixture_id": null,
+      "provider_mode": "Not applicable to preparation"
+    }
+  },
+  "surface_evidence": {
+    "guest": "C1RCLE-PUBLISHING-HOSTED-VERIFICATION-20261116/HOSTED-VERIFICATION.md; observed deployed custom domain bound by Vercel Ready deployment view.",
+    "partner": "C1RCLE-PUBLISHING-HOSTED-VERIFICATION-20261116/HOSTED-VERIFICATION.md; observed deployed custom domain bound by Vercel Ready deployment view.",
+    "admin": "C1RCLE-HOSTED-ACCEPTANCE-20261111/ACCEPTANCE.md; latest local hosted evidence for the custom staging alias. Current anonymous probe is Vercel-protected.",
+    "scanner": "docs/operations/staging-environment-contract.md states no deployed Scanner web origin has been established.",
+    "backend_api": "docs/operations/staging-environment-contract.md and docs/operations/render-staging.md."
+  },
+  "scanner_note": "No deployed Scanner web origin is established in the current environment contract."
+}

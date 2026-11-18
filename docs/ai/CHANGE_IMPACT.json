@@ -1,0 +1,1057 @@
+{
+  "schema_version": 1,
+  "last_updated": "2026-11-17",
+  "summary": {
+    "change_areas": 35,
+    "by_risk": {
+      "LOW": 2,
+      "MEDIUM": 10,
+      "HIGH": 18,
+      "CRITICAL": 5
+    },
+    "by_default_retest": {
+      "NONE": 1,
+      "LOCAL_ONLY": 1,
+      "CI_ONLY": 2,
+      "TARGETED_STAGING": 4,
+      "TARGETED_HOSTED": 15,
+      "PROVIDER_REACCEPTANCE": 2,
+      "CROSS_ROLE_REACCEPTANCE": 8,
+      "CROSS_SYSTEM_REACCEPTANCE": 2,
+      "COMPREHENSIVE_AUDIT": 0
+    }
+  },
+  "metadata": {
+    "inputs": [
+      "C1RCLE_CONTEXT.md",
+      "ACCEPTANCE_STATE.json",
+      "FINDINGS.json",
+      "STAGING_FIXTURES.json"
+    ],
+    "repository_prefixes": {
+      "FE": "C1RCLE-FRONTEND",
+      "BE": "C1RCLE-BACKEND"
+    },
+    "locations_rule": "Paths are orientation anchors. Map by actual affected behavior and consumers. A broad directory match on its own does not establish impact.",
+    "risk_levels": {
+      "LOW": "Isolated presentation or documentation risk.",
+      "MEDIUM": "Bounded product-facing behavior or compatibility risk.",
+      "HIGH": "State, integration or financial risk with a material affected scope.",
+      "CRITICAL": "Trust boundary, money movement or significant integrity risk."
+    },
+    "retest_levels": {
+      "NONE": "Ordinary documentation-only change. No product re-acceptance.",
+      "LOCAL_ONLY": "Focused local unit, component, service or representative local-browser validation is sufficient.",
+      "CI_ONLY": "Relevant deterministic repository, parity, build or security gate is required.",
+      "TARGETED_STAGING": "Verify the affected behavior on the actual staged revision using direct API or runtime checks.",
+      "TARGETED_HOSTED": "Exercise the affected workflow in the deployed browser or product.",
+      "PROVIDER_REACCEPTANCE": "An authorized real staging provider participates in the affected journey.",
+      "CROSS_ROLE_REACCEPTANCE": "Multiple distinct C1RCLE actors verify the affected workflow and persisted state.",
+      "CROSS_SYSTEM_REACCEPTANCE": "Exercise the affected integration across distinct C1RCLE product surfaces.",
+      "COMPREHENSIVE_AUDIT": "Run the approved broad hosted audit or certification scope."
+    },
+    "level_rule": "A default is the baseline for the behavior named in its area. Staging, browser, provider and actor scopes can stack. Keep each applicable check when escalation adds a scope. Cross-system scope covers distinct C1RCLE product surfaces. An external provider alone does not establish cross-system acceptance. CI and local evidence do not replace scoped hosted requirements.",
+    "acceptance_reuse_rule": "Use the Acceptance State reuse_policy and each linked item's retest_if. Preserve unrelated PASS evidence. A candidate link means inspect applicability. Mark scoped evidence at risk only for relevant changes, contradiction, expiry or a deliberate certification gate. Keep historical evidence and record exact revisions and scope for new results.",
+    "fixture_rule": "Resolve fixture_refs in both fixtures and requirements. Apply the fixture library's selection and promotion rules. Use verified, appropriately mutable synthetic fixtures for changes in state. Keep historical fixtures read-only. Provider actions and deployment require task authorization. Record unavailable setup as a blocker.",
+    "ci_gate_rule": "Map the change to existing affected gates. Verify contract parity plus producer/consumer checks for wire changes, relevant security gates for auth changes, and emulator or repository gates for data changes. Batch independent checks and run the required comprehensive final CI gate once on the intended diff when applicable.",
+    "change_set_procedure": [
+      "Identify changed files, behavior, configuration and intended comparison baseline.",
+      "Map each change to relevant areas. Trace actual shared consumers when the changed path has multiple callers.",
+      "Union relevant acceptance, finding and fixture references. Keep open findings relevant to this diff.",
+      "Apply escalation conditions, acceptance invalidation and evidence reuse rules. Include mandatory milestone gates.",
+      "Deduplicate and remove unrelated checks. Keep each needed local, CI, staging/API, browser, provider and actor scope.",
+      "Write a short RETEST PLAN before broad checks. Record preserved evidence, required authority and missing fixture state."
+    ],
+    "retest_plan_format": [
+      "CHANGE AREAS — ...",
+      "RISK — ...",
+      "INVALIDATED/AT-RISK ACCEPTANCE — ...",
+      "PRESERVED PASS EVIDENCE — ...",
+      "RELATED OPEN FINDINGS — ...",
+      "FIXTURES — ...",
+      "FOCUSED LOCAL CHECKS — ...",
+      "CI GATES — ...",
+      "HOSTED REACCEPTANCE — ... (staging/API, browser, provider and actor scope)",
+      "PROVIDER ACTION REQUIRED — YES/NO",
+      "CROSS-ROLE ACTION REQUIRED — YES/NO",
+      "COMPREHENSIVE AUDIT REQUIRED — YES/NO"
+    ],
+    "comprehensive_audit_triggers": [
+      "The roadmap calls for comprehensive Guest/Partner hosted audits.",
+      "A major milestone group reaches its approved integration acceptance gate.",
+      "Access, Promoter and Scanner integration reaches its planned hosted audit.",
+      "Experience Quality fixes are complete and broad regression risk warrants the approved audit scope.",
+      "Final launch certification is underway.",
+      "An unusually broad architectural or security change makes targeted evidence insufficient."
+    ],
+    "final_certification_override": "Use past PASS evidence as context. The approved final launch plan can deliberately re-exercise critical workflows regardless of intervening changes."
+  },
+  "change_areas": [
+    {
+      "id": "guest.auth-session",
+      "description": "Guest login, tokenless session, logout and protected return.",
+      "default_risk": "HIGH",
+      "typical_code_locations": [
+        "FE:apps/guest-portal/src/app/api/auth",
+        "FE:apps/guest-portal/src/features/auth",
+        "BE:apps/api-gateway/src/routes/v2/auth"
+      ],
+      "acceptance_item_refs": ["guest.session", "guest.auth-return"],
+      "finding_refs": [],
+      "fixture_refs": ["guest_complete_account"],
+      "default_retest_level": "TARGETED_HOSTED",
+      "focused_local_checks": "Check cookie attributes, session caching, logout and safe return URLs.",
+      "hosted_retest_scope": "Verify protected return, login, refresh and cross-tab logout. Inspect storage and responses for browser-readable bearer tokens.",
+      "escalate_if": [
+        {
+          "condition": "Provider auth behavior changes",
+          "level": "PROVIDER_REACCEPTANCE",
+          "scope": "Exercise the affected authorized provider path. Google stays deferred unless reopened by the owner."
+        }
+      ],
+      "usually_preserve": "Pricing, inventory and other apps with unchanged session mechanisms."
+    },
+    {
+      "id": "guest.onboarding",
+      "description": "Profile and phone completion, gating and continuation.",
+      "default_risk": "MEDIUM",
+      "typical_code_locations": [
+        "FE:apps/guest-portal/src/features/onboarding",
+        "FE:apps/guest-portal/src/app/api/onboarding",
+        "BE:packages/core/src/application/onboarding"
+      ],
+      "acceptance_item_refs": ["guest.onboarding", "guest.auth-return"],
+      "finding_refs": [],
+      "fixture_refs": ["guest_incomplete_account", "guest_complete_account"],
+      "default_retest_level": "TARGETED_HOSTED",
+      "focused_local_checks": "Check completion states, route guards and safe destination restore.",
+      "hosted_retest_scope": "Use fresh Account C for incomplete gating, completion and return. Check the complete-account control.",
+      "escalate_if": [
+        {
+          "condition": "Firebase verification integration changes",
+          "level": "PROVIDER_REACCEPTANCE",
+          "scope": "Exercise approved provider verification."
+        }
+      ],
+      "usually_preserve": "Unchanged OAuth, payment and Partner KYC."
+    },
+    {
+      "id": "guest.discovery",
+      "description": "Explore and Search queries, loading and rendering.",
+      "default_risk": "MEDIUM",
+      "typical_code_locations": [
+        "FE:apps/guest-portal/src/features/explore",
+        "FE:apps/guest-portal/src/app",
+        "BE:apps/api-gateway/src/routes/v2/public",
+        "BE:packages/core/src/application/public"
+      ],
+      "acceptance_item_refs": ["guest.discovery"],
+      "finding_refs": ["GUEST-DISCOVERY-001"],
+      "fixture_refs": ["guest_mixed_free_paid", "guest_ended_event"],
+      "default_retest_level": "TARGETED_HOSTED",
+      "focused_local_checks": "Test filters, realistic data shapes, timeout and fallback states.",
+      "hosted_retest_scope": "Exercise Explore and Search on varied data and verify slow responses recover without the generic React error.",
+      "escalate_if": [
+        {
+          "condition": "Price or visibility projection changes",
+          "level": "TARGETED_HOSTED",
+          "scope": "Add affected CTA and allowed/denied visibility cases."
+        }
+      ],
+      "usually_preserve": "Session security, payment and Partner mutations."
+    },
+    {
+      "id": "guest.event-lifecycle",
+      "description": "Event detail, sale state and historical links.",
+      "default_risk": "MEDIUM",
+      "typical_code_locations": [
+        "FE:apps/guest-portal/src/features/event-detail",
+        "FE:apps/guest-portal/src/features/tickets",
+        "BE:apps/api-gateway/src/routes/v2/public",
+        "BE:packages/core/src/application/events"
+      ],
+      "acceptance_item_refs": ["guest.event-lifecycle"],
+      "finding_refs": ["GUEST-EVENT-001"],
+      "fixture_refs": ["guest_ended_event"],
+      "default_retest_level": "TARGETED_HOSTED",
+      "focused_local_checks": "Test lifecycle and error mapping, including ended event links.",
+      "hosted_retest_scope": "Check affected sale states and legitimate ended detail, Search and Wallet History visibility.",
+      "escalate_if": [
+        {
+          "condition": "Publication or common error behavior changes",
+          "level": "TARGETED_HOSTED",
+          "scope": "Follow partner.event-publication or shared.api-client as applicable."
+        }
+      ],
+      "usually_preserve": "Provider payment and onboarding."
+    },
+    {
+      "id": "guest.current-price",
+      "description": "Current-price display, tier eligibility and mixed admission CTA.",
+      "default_risk": "MEDIUM",
+      "typical_code_locations": [
+        "FE:apps/guest-portal/src/features/event-detail",
+        "FE:apps/guest-portal/src/features/explore",
+        "BE:packages/core/src/application/public",
+        "BE:packages/core/src/application/events"
+      ],
+      "acceptance_item_refs": ["guest.event-price-cta", "guest.discovery"],
+      "finding_refs": ["GUEST-PRICING-001"],
+      "fixture_refs": ["guest_mixed_free_paid", "guest_canonical_paid_event"],
+      "default_retest_level": "TARGETED_HOSTED",
+      "focused_local_checks": "Test free, paid, mixed, active-phase and unavailable tier mapping.",
+      "hosted_retest_scope": "Compare affected cards, Search and detail. Verify From Free and discoverable paid options.",
+      "escalate_if": [
+        {
+          "condition": "Backend price, quote, fee or tax computation changes",
+          "level": "TARGETED_STAGING",
+          "scope": "Add guest.quote-fees and reconcile ₹636.78 if the canonical anchor conditions still hold."
+        }
+      ],
+      "usually_preserve": "Razorpay payment for mapping-only changes. Auth and Partner slots."
+    },
+    {
+      "id": "guest.promo",
+      "description": "Promo eligibility, discount, feedback and recovery.",
+      "default_risk": "MEDIUM",
+      "typical_code_locations": [
+        "FE:apps/guest-portal/src/features/booking",
+        "BE:apps/api-gateway/src/routes/v2/checkout",
+        "BE:packages/core/src/application/checkout",
+        "BE:packages/core/src/application/event-catalog"
+      ],
+      "acceptance_item_refs": ["guest.promo", "guest.quote"],
+      "finding_refs": [],
+      "fixture_refs": ["guest_canonical_paid_event", "guest_disposable_paid_checkout"],
+      "default_retest_level": "TARGETED_HOSTED",
+      "focused_local_checks": "Check invalid, expired and capped promotions and exact discount arithmetic.",
+      "hosted_retest_scope": "Verify invalid feedback and valid recovery. Compare the quote without holding canonical inventory.",
+      "escalate_if": [
+        {
+          "condition": "Payment or refund changes promo redemption",
+          "level": "PROVIDER_REACCEPTANCE",
+          "scope": "Verify the affected write or reversal with authorized disposable state."
+        }
+      ],
+      "usually_preserve": "Provider purchase for validation-copy or quote-only changes."
+    },
+    {
+      "id": "guest.quote-fees",
+      "description": "Quote, fee/tax and Review Order conservation.",
+      "default_risk": "HIGH",
+      "typical_code_locations": [
+        "FE:apps/guest-portal/src/app/api/checkout",
+        "FE:apps/guest-portal/src/features/booking",
+        "BE:apps/api-gateway/src/routes/v2/checkout",
+        "BE:packages/core/src/application/pricing",
+        "BE:packages/core/src/application/checkout"
+      ],
+      "acceptance_item_refs": ["guest.quote", "guest.promo"],
+      "finding_refs": [],
+      "fixture_refs": ["guest_canonical_paid_event"],
+      "default_retest_level": "TARGETED_STAGING",
+      "focused_local_checks": "Check integer paise, rounding and quote/Review Order agreement.",
+      "hosted_retest_scope": "Compare the staging quote to ₹636.78 when the phase and promo match. Check the deployed Review Order if its mapping changed.",
+      "escalate_if": [
+        {
+          "condition": "Review Order interaction changes",
+          "level": "TARGETED_HOSTED",
+          "scope": "Verify the affected browser flow."
+        },
+        {
+          "condition": "Provider amount binding changes",
+          "level": "PROVIDER_REACCEPTANCE",
+          "scope": "Confirm affected amounts through authorized disposable Test Mode checkout."
+        }
+      ],
+      "usually_preserve": "Provider payment if binding is unchanged. Partner availability and auth."
+    },
+    {
+      "id": "guest.inventory-holds",
+      "description": "Quantity limits, reservation, expiry, release and retry.",
+      "default_risk": "HIGH",
+      "typical_code_locations": [
+        "FE:apps/guest-portal/src/app/api/checkout",
+        "BE:apps/api-gateway/src/routes/v2/checkout",
+        "BE:packages/core/src/application/inventory",
+        "BE:packages/core/src/application/checkout"
+      ],
+      "acceptance_item_refs": ["guest.quantity", "guest.payment-recovery"],
+      "finding_refs": [],
+      "fixture_refs": ["guest_disposable_paid_checkout"],
+      "default_retest_level": "TARGETED_STAGING",
+      "focused_local_checks": "Test caps, concurrent reservation, expiry/release and idempotent retries.",
+      "hosted_retest_scope": "Verify server rejection above cap and reconcile inventory before reserve, after reserve and after release on disposable state.",
+      "escalate_if": [
+        {
+          "condition": "Selector behavior changes",
+          "level": "TARGETED_HOSTED",
+          "scope": "Check browser quantity and hold UX."
+        },
+        {
+          "condition": "Capture binding or fulfillment inventory changes",
+          "level": "PROVIDER_REACCEPTANCE",
+          "scope": "Reconcile exactly-once inventory on an approved purchase."
+        }
+      ],
+      "usually_preserve": "Historical paid booking and unrelated Partner flows."
+    },
+    {
+      "id": "guest.payment-initiation",
+      "description": "Razorpay intent, order binding and checkout handoff.",
+      "default_risk": "HIGH",
+      "typical_code_locations": [
+        "FE:apps/guest-portal/src/app/api/payments",
+        "FE:apps/guest-portal/src/features/booking",
+        "BE:apps/api-gateway/src/routes/v2/checkout",
+        "BE:packages/core/src/application/checkout"
+      ],
+      "acceptance_item_refs": ["guest.paid-fulfillment", "guest.payment-recovery"],
+      "finding_refs": [],
+      "fixture_refs": ["guest_disposable_paid_checkout"],
+      "default_retest_level": "PROVIDER_REACCEPTANCE",
+      "focused_local_checks": "Test server amount, attempt identity, repeat initiation and recovery with provider test doubles.",
+      "hosted_retest_scope": "Use authorized disposable Test Mode state to verify handoff, amount, binding and safe repeat attempts.",
+      "escalate_if": [
+        {
+          "condition": "Verification, webhook or paid fulfillment also changes",
+          "level": "PROVIDER_REACCEPTANCE",
+          "scope": "Include guest.payment-confirmation."
+        }
+      ],
+      "usually_preserve": "Historical booking, signup and slot workflows."
+    },
+    {
+      "id": "guest.payment-confirmation",
+      "description": "Payment verification, webhook convergence and idempotent fulfillment.",
+      "default_risk": "CRITICAL",
+      "typical_code_locations": [
+        "BE:apps/api-gateway/src/routes/v2/checkout",
+        "BE:apps/api-gateway/src/lib/razorpay-webhook.ts",
+        "BE:packages/core/src/application/checkout",
+        "BE:packages/core/src/application/orders"
+      ],
+      "acceptance_item_refs": [
+        "guest.paid-fulfillment",
+        "guest.payment-recovery",
+        "guest.quantity"
+      ],
+      "finding_refs": [],
+      "fixture_refs": ["guest_disposable_paid_checkout", "guest_historical_paid_booking"],
+      "default_retest_level": "PROVIDER_REACCEPTANCE",
+      "focused_local_checks": "Test signature and binding, capture truth, duplicate/concurrent callbacks and exactly-once inventory and entitlement writes.",
+      "hosted_retest_scope": "Use authorized Razorpay Test Mode state to verify capture, booking and Wallet. Exercise affected retry and webhook/idempotency paths and record any gaps.",
+      "escalate_if": [
+        {
+          "condition": "Attributed splits or admission also change",
+          "level": "CROSS_SYSTEM_REACCEPTANCE",
+          "scope": "Exercise only affected downstream product boundaries and reconcile their state."
+        }
+      ],
+      "usually_preserve": "Historical booking and unrelated profile or studio results."
+    },
+    {
+      "id": "guest.rsvp",
+      "description": "Free RSVP, cancellation and rebooking.",
+      "default_risk": "HIGH",
+      "typical_code_locations": [
+        "FE:apps/guest-portal/src/app/api/rsvp",
+        "FE:apps/guest-portal/src/features/booking",
+        "FE:apps/guest-portal/src/features/tickets",
+        "BE:apps/api-gateway/src/routes/v2/rsvp",
+        "BE:packages/core/src/application/checkout"
+      ],
+      "acceptance_item_refs": ["guest.rsvp"],
+      "finding_refs": ["GUEST-RSVP-001"],
+      "fixture_refs": ["guest_rsvp_only_event", "guest_fresh_rsvp_lifecycle"],
+      "default_retest_level": "TARGETED_HOSTED",
+      "focused_local_checks": "Test cancelled identity handling, exact capacity release/re-consumption and idempotency.",
+      "hosted_retest_scope": "Use a fresh pairing for RSVP → cancel → re-RSVP. Verify one active entitlement, truthful Current/History, exact capacity and safe retries.",
+      "escalate_if": [
+        {
+          "condition": "Shared reservation changes",
+          "level": "TARGETED_STAGING",
+          "scope": "Check affected paid tier caps, hold and release."
+        },
+        {
+          "condition": "Shared paid fulfillment or entitlement creation changes",
+          "level": "PROVIDER_REACCEPTANCE",
+          "scope": "Verify affected paid checkout and Wallet on authorized disposable state."
+        }
+      ],
+      "usually_preserve": "Google Sign-In, paid checkout with unchanged fulfillment, Venue calendar, Admin KYC and Scanner pairing."
+    },
+    {
+      "id": "guest.wallet-entitlements",
+      "description": "Orders, issuance, transfers and Wallet reads.",
+      "default_risk": "HIGH",
+      "typical_code_locations": [
+        "FE:apps/guest-portal/src/features/tickets",
+        "FE:apps/guest-portal/src/app/api/wallet",
+        "BE:apps/api-gateway/src/routes/v2/orders",
+        "BE:apps/api-gateway/src/routes/v2/wallet",
+        "BE:apps/api-gateway/src/routes/v2/tickets",
+        "BE:packages/core/src/application/tickets"
+      ],
+      "acceptance_item_refs": [
+        "guest.rsvp",
+        "guest.paid-fulfillment",
+        "guest.privacy",
+        "guest.tickets-performance"
+      ],
+      "finding_refs": ["GUEST-WALLET-001"],
+      "fixture_refs": [
+        "guest_historical_paid_booking",
+        "guest_complete_account",
+        "guest_fresh_rsvp_lifecycle"
+      ],
+      "default_retest_level": "TARGETED_HOSTED",
+      "focused_local_checks": "Check entitlement state, ownership, Current/History, repeat reads and request fanout where affected.",
+      "hosted_retest_scope": "Verify affected confirmation/Wallet paths, reload deduplication, transfer scope or latency as relevant.",
+      "escalate_if": [
+        {
+          "condition": "Paid issuance changes",
+          "level": "PROVIDER_REACCEPTANCE",
+          "scope": "Verify the new paid entitlement and order binding."
+        },
+        {
+          "condition": "Redeemability changes",
+          "level": "CROSS_SYSTEM_REACCEPTANCE",
+          "scope": "Recheck issuance through Scanner on fresh approved state."
+        }
+      ],
+      "usually_preserve": "Provider handoff for read-only presentation. Partner calendars and onboarding."
+    },
+    {
+      "id": "guest.qr",
+      "description": "QR issuance, timing and eligibility.",
+      "default_risk": "HIGH",
+      "typical_code_locations": [
+        "FE:apps/guest-portal/src/features/tickets",
+        "FE:apps/guest-portal/src/app/api/tickets",
+        "BE:apps/api-gateway/src/routes/v2/tickets",
+        "BE:packages/core/src/application/tickets"
+      ],
+      "acceptance_item_refs": ["guest.qr", "guest.privacy"],
+      "finding_refs": [],
+      "fixture_refs": ["scanner_admission_kit", "guest_complete_account"],
+      "default_retest_level": "TARGETED_HOSTED",
+      "focused_local_checks": "Use controlled time for in/out-window and ineligible entitlement checks.",
+      "hosted_retest_scope": "Verify UI visibility and direct server denial where required.",
+      "escalate_if": [
+        {
+          "condition": "Credential format or Scanner consumption changes",
+          "level": "CROSS_SYSTEM_REACCEPTANCE",
+          "scope": "Verify issuance through Scanner admission."
+        }
+      ],
+      "usually_preserve": "Wallet pricing, refunds and Venue availability."
+    },
+    {
+      "id": "guest.privacy",
+      "description": "Order, ticket, transfer, Wallet and QR access boundaries.",
+      "default_risk": "CRITICAL",
+      "typical_code_locations": [
+        "FE:apps/guest-portal/src/app/api/orders",
+        "BE:apps/api-gateway/src/routes/v2/orders",
+        "BE:apps/api-gateway/src/routes/v2/tickets",
+        "BE:apps/api-gateway/src/routes/v2/wallet",
+        "BE:packages/core/src/application/tickets"
+      ],
+      "acceptance_item_refs": ["guest.privacy", "guest.qr", "guest.session"],
+      "finding_refs": [],
+      "fixture_refs": ["guest_complete_account"],
+      "default_retest_level": "CROSS_ROLE_REACCEPTANCE",
+      "focused_local_checks": "Test allowed/denied actors against the direct API and cache partitioning.",
+      "hosted_retest_scope": "Use distinct approved synthetic Guests to check allowed owner access and foreign denial through affected routes.",
+      "escalate_if": [
+        {
+          "condition": "Shared auth/session boundary changes",
+          "level": "TARGETED_HOSTED",
+          "scope": "Add affected consumer checks from shared.auth."
+        }
+      ],
+      "usually_preserve": "Provider and pricing if ownership policy is the only change."
+    },
+    {
+      "id": "guest.presentation",
+      "description": "Isolated copy, spacing or responsive layout.",
+      "default_risk": "LOW",
+      "typical_code_locations": [
+        "FE:apps/guest-portal/src/features/home",
+        "FE:apps/guest-portal/src/features/event-detail",
+        "FE:apps/guest-portal/src/features/booking",
+        "FE:packages/ui"
+      ],
+      "acceptance_item_refs": ["guest.mobile"],
+      "finding_refs": [],
+      "fixture_refs": ["guest_canonical_paid_event", "guest_ended_event"],
+      "default_retest_level": "LOCAL_ONLY",
+      "focused_local_checks": "Check affected component and representative local browser, including mobile viewport where relevant.",
+      "hosted_retest_scope": "For affected deployed interaction, verify visibility, layout and operability in the changed viewport.",
+      "escalate_if": [
+        {
+          "condition": "Interaction, data or state behavior changes",
+          "level": "TARGETED_HOSTED",
+          "scope": "Exercise the affected deployed browser interaction and map the changed behavior to its domain."
+        }
+      ],
+      "usually_preserve": "Provider payment, quote policy and other verified workflows."
+    },
+    {
+      "id": "partner.session-org",
+      "description": "Partner session, workspace switching and organization scope.",
+      "default_risk": "HIGH",
+      "typical_code_locations": [
+        "FE:apps/partner-dashboard/src/app/partner",
+        "FE:apps/partner-dashboard/src/app/api",
+        "BE:apps/api-gateway/src/routes/v2/auth",
+        "BE:apps/api-gateway/src/routes/v2/partner",
+        "BE:packages/core/src/application/organizations"
+      ],
+      "acceptance_item_refs": [
+        "partner.shared.session-performance",
+        "partner.shared.tenant-isolation"
+      ],
+      "finding_refs": [],
+      "fixture_refs": ["partner_host_a", "partner_host_b", "partner_venue_a", "partner_venue_b"],
+      "default_retest_level": "CROSS_ROLE_REACCEPTANCE",
+      "focused_local_checks": "Test membership, capabilities, workspace switching and session-cache isolation.",
+      "hosted_retest_scope": "Verify allowed and denied scopes and workspace switch across Host and Venue.",
+      "escalate_if": [
+        {
+          "condition": "Common session or auth middleware changes",
+          "level": "TARGETED_HOSTED",
+          "scope": "Apply shared.auth to affected consumers."
+        }
+      ],
+      "usually_preserve": "Guest and Scanner sessions when their mechanisms are unchanged."
+    },
+    {
+      "id": "partner.availability-calendar",
+      "description": "Venue availability, IST conversion and Host selection.",
+      "default_risk": "HIGH",
+      "typical_code_locations": [
+        "FE:apps/partner-dashboard/src/components/partner-v3/calendar",
+        "FE:apps/partner-dashboard/src/components/partner-v3/event-editor",
+        "BE:apps/api-gateway/src/routes/v2/partner",
+        "BE:packages/core/src/application/venues"
+      ],
+      "acceptance_item_refs": [
+        "partner.host.availability",
+        "partner.venue.manage-availability",
+        "partner.shared.timezone"
+      ],
+      "finding_refs": ["PARTNER-AVAILABILITY-001"],
+      "fixture_refs": ["partner_host_venue_relationship", "partner_available_slot"],
+      "default_retest_level": "CROSS_ROLE_REACCEPTANCE",
+      "focused_local_checks": "Test IST boundaries, overlaps, blocked/booked windows and partnership eligibility.",
+      "hosted_retest_scope": "Venue publishes a future IST window. Host sees and selects the same window and submits the request.",
+      "escalate_if": [
+        {
+          "condition": "Slot or publication state also changes",
+          "level": "CROSS_ROLE_REACCEPTANCE",
+          "scope": "Add the affected lifecycle or publication mapping."
+        }
+      ],
+      "usually_preserve": "Guest payments and Partner finance."
+    },
+    {
+      "id": "partner.host-create-event",
+      "description": "Host draft/editor validation and request submission.",
+      "default_risk": "MEDIUM",
+      "typical_code_locations": [
+        "FE:apps/partner-dashboard/src/components/partner-v3/event-editor",
+        "BE:apps/api-gateway/src/routes/v2/partner",
+        "BE:packages/core/src/application/events",
+        "BE:packages/core/src/application/venues"
+      ],
+      "acceptance_item_refs": ["partner.host.create-request", "partner.host.availability"],
+      "finding_refs": ["PARTNER-AVAILABILITY-001"],
+      "fixture_refs": ["partner_host_a", "partner_available_slot"],
+      "default_retest_level": "TARGETED_HOSTED",
+      "focused_local_checks": "Test draft persistence, inputs, validation and submit payload.",
+      "hosted_retest_scope": "Use a disposable Host draft to verify restore, affected fields, submit feedback and request state.",
+      "escalate_if": [
+        {
+          "condition": "Eligibility, calendar selection or Venue handoff changes",
+          "level": "CROSS_ROLE_REACCEPTANCE",
+          "scope": "Verify partnered availability or slot decision as applicable."
+        }
+      ],
+      "usually_preserve": "Attribution, Razorpay and unrelated views."
+    },
+    {
+      "id": "partner.slot-lifecycle",
+      "description": "Host request and withdrawal, Venue acceptance/decline, persistence.",
+      "default_risk": "HIGH",
+      "typical_code_locations": [
+        "FE:apps/partner-dashboard/src/components/partner-v3/slot-requests",
+        "BE:apps/api-gateway/src/routes/v2/partner",
+        "BE:packages/core/src/application/venues",
+        "BE:packages/core/src/application/events"
+      ],
+      "acceptance_item_refs": ["partner.host.create-request", "partner.venue.slot-decision"],
+      "finding_refs": ["PARTNER-SLOT-001", "PARTNER-AVAILABILITY-001"],
+      "fixture_refs": [
+        "partner_host_venue_relationship",
+        "partner_slot_accept",
+        "partner_slot_decline"
+      ],
+      "default_retest_level": "CROSS_ROLE_REACCEPTANCE",
+      "focused_local_checks": "Test authorization, transitions, conflicts, booking/release and retry.",
+      "hosted_retest_scope": "Use separate Accept and Decline requests. Verify persisted request, slot state, Host visibility, withdrawal and publication where applicable.",
+      "escalate_if": [
+        {
+          "condition": "Availability calculation or IST mapping changes",
+          "level": "CROSS_ROLE_REACCEPTANCE",
+          "scope": "Include partner.availability-calendar."
+        },
+        {
+          "condition": "Guest publication handoff changes",
+          "level": "CROSS_SYSTEM_REACCEPTANCE",
+          "scope": "Use partner.event-publication for the affected product boundary."
+        }
+      ],
+      "usually_preserve": "Payments and unrelated Studio read views."
+    },
+    {
+      "id": "partner.event-publication",
+      "description": "Event publication across Partner and Guest.",
+      "default_risk": "HIGH",
+      "typical_code_locations": [
+        "FE:apps/partner-dashboard/src/components/partner-v3/event-editor",
+        "BE:apps/api-gateway/src/routes/v2/partner",
+        "BE:packages/core/src/application/events",
+        "BE:apps/api-gateway/src/routes/v2/public"
+      ],
+      "acceptance_item_refs": ["cross-system.publication-handoff", "guest.event-lifecycle"],
+      "finding_refs": [],
+      "fixture_refs": ["publication_journey"],
+      "default_retest_level": "CROSS_SYSTEM_REACCEPTANCE",
+      "focused_local_checks": "Check publication policy, ownership, association and public visibility.",
+      "hosted_retest_scope": "Trace Host/Venue publication to Guest discoverability and detail. Verify event identity, visibility and sale state.",
+      "escalate_if": [
+        {
+          "condition": "Ownership or visibility policy also changes",
+          "level": "CROSS_SYSTEM_REACCEPTANCE",
+          "scope": "Include affected allowed and denied actors through the API."
+        }
+      ],
+      "usually_preserve": "Provider payment and Scanner if amounts and admission contracts are unchanged."
+    },
+    {
+      "id": "partner.venue-operational-reads",
+      "description": "Venue Overview, Events, Calendar, analytics and Partner search read models.",
+      "default_risk": "MEDIUM",
+      "typical_code_locations": [
+        "FE:apps/partner-dashboard/src/components/partner-v3",
+        "BE:apps/api-gateway/src/routes/v2/partner",
+        "BE:packages/core/src/application/analytics",
+        "BE:packages/core/src/application/events"
+      ],
+      "acceptance_item_refs": [
+        "partner.venue.operational-studio",
+        "partner.venue.host-event-privacy"
+      ],
+      "finding_refs": [],
+      "fixture_refs": ["partner_venue_a", "partner_venue_b", "publication_journey"],
+      "default_retest_level": "TARGETED_HOSTED",
+      "focused_local_checks": "Check owned/associated projections, query predicates and aggregation.",
+      "hosted_retest_scope": "Verify affected views for owned and associated events and reconcile the affected counts.",
+      "escalate_if": [
+        {
+          "condition": "Projection fields or scope change",
+          "level": "CROSS_ROLE_REACCEPTANCE",
+          "scope": "Verify Venue A allowed, Venue B denied and Host financial fields absent via API as well as UI."
+        }
+      ],
+      "usually_preserve": "Unrelated views, slot decisions and payment."
+    },
+    {
+      "id": "partner.authorization-finance",
+      "description": "Cross-Host/Venue access and event ownership and finance controls.",
+      "default_risk": "CRITICAL",
+      "typical_code_locations": [
+        "BE:apps/api-gateway/src/routes/v2/partner",
+        "BE:apps/api-gateway/src/routes/v2/finance",
+        "BE:packages/core/src/application/organizations",
+        "BE:packages/core/src/application/events",
+        "BE:packages/core/src/application/finance"
+      ],
+      "acceptance_item_refs": [
+        "partner.shared.tenant-isolation",
+        "partner.venue.host-event-privacy"
+      ],
+      "finding_refs": [],
+      "fixture_refs": ["partner_host_a", "partner_host_b", "partner_venue_a", "partner_venue_b"],
+      "default_retest_level": "CROSS_ROLE_REACCEPTANCE",
+      "focused_local_checks": "Test scoped data and mutations with allowed and denied actors. Check returned fields.",
+      "hosted_retest_scope": "Verify foreign Host/Venue denial, scoped allowed views and restricted owner and finance operations via the API.",
+      "escalate_if": [
+        {
+          "condition": "Resource or data policy spans multiple products",
+          "level": "CROSS_SYSTEM_REACCEPTANCE",
+          "scope": "Exercise affected product boundaries. Apply comprehensive-audit criteria if targeted coverage cannot establish safety."
+        }
+      ],
+      "usually_preserve": "Unchanged Guest account flows and payment."
+    },
+    {
+      "id": "promoter.relationship-assignment",
+      "description": "Promoter relationships, agreements, visibility and event assignment.",
+      "default_risk": "MEDIUM",
+      "typical_code_locations": [
+        "FE:apps/partner-dashboard/src/components/partner-v3/promoter",
+        "BE:apps/api-gateway/src/routes/v2/partner",
+        "BE:packages/core/src/application/partnerships",
+        "BE:packages/core/src/application/promoters"
+      ],
+      "acceptance_item_refs": ["promoter.network-assignment"],
+      "finding_refs": [],
+      "fixture_refs": ["promoter_synthetic", "promoter_attribution_setup"],
+      "default_retest_level": "CROSS_ROLE_REACCEPTANCE",
+      "focused_local_checks": "Check agreement eligibility, role scope and assignment state transitions.",
+      "hosted_retest_scope": "Use Host and Promoter actors to verify affected connection and assignment paths and denial for ineligible actors.",
+      "escalate_if": [
+        {
+          "condition": "Assignment changes checkout attribution",
+          "level": "CROSS_SYSTEM_REACCEPTANCE",
+          "scope": "Apply promoter.attribution-finance for the affected purchase boundary."
+        }
+      ],
+      "usually_preserve": "Unchanged referral/commission truth and Scanner."
+    },
+    {
+      "id": "promoter.attribution-finance",
+      "description": "Tracked links, attributed orders, commission and financial projections.",
+      "default_risk": "HIGH",
+      "typical_code_locations": [
+        "FE:apps/partner-dashboard/src/components/partner-v3/promoter",
+        "BE:packages/core/src/application/promoters",
+        "BE:packages/core/src/application/checkout",
+        "BE:packages/core/src/application/finance"
+      ],
+      "acceptance_item_refs": ["promoter.attribution-finance"],
+      "finding_refs": [],
+      "fixture_refs": ["promoter_attribution_setup", "attributed_purchase_journey"],
+      "default_retest_level": "CROSS_SYSTEM_REACCEPTANCE",
+      "focused_local_checks": "Check attribution persistence, split math, permitted projections and reversals as applicable.",
+      "hosted_retest_scope": "Compare tracked Guest checkout with scoped Promoter/organizer views and reconcile the recorded attribution and commission.",
+      "escalate_if": [
+        {
+          "condition": "Actual binding to payment, attribution on purchase or refund changes",
+          "level": "PROVIDER_REACCEPTANCE",
+          "scope": "Add authorized Razorpay Test Mode participation and verify the affected reconciliation."
+        }
+      ],
+      "usually_preserve": "Unattributed provider cases, unrelated Studio views and door pairing."
+    },
+    {
+      "id": "scanner.staff-session",
+      "description": "Staff scope, pairing and event/device session.",
+      "default_risk": "HIGH",
+      "typical_code_locations": [
+        "FE:apps/scanner-app/src",
+        "BE:apps/api-gateway/src/routes/v2/door",
+        "BE:packages/core/src/application/door"
+      ],
+      "acceptance_item_refs": ["scanner.pairing-admission"],
+      "finding_refs": [],
+      "fixture_refs": ["scanner_authorized_staff", "scanner_admission_kit"],
+      "default_retest_level": "CROSS_ROLE_REACCEPTANCE",
+      "focused_local_checks": "Check role allow/deny, event/device binding, expiry and session isolation.",
+      "hosted_retest_scope": "Pair authorized staff and verify denied staff/device cases for the affected event scope.",
+      "escalate_if": [
+        {
+          "condition": "Shared credential or token handling changes",
+          "level": "TARGETED_HOSTED",
+          "scope": "Verify affected consumers through shared.auth."
+        }
+      ],
+      "usually_preserve": "Checkout pricing and Admin approval flows."
+    },
+    {
+      "id": "scanner.admission-sync",
+      "description": "QR validation, check-in, duplicate admission, offline and reconciliation.",
+      "default_risk": "HIGH",
+      "typical_code_locations": [
+        "FE:apps/scanner-app/src",
+        "BE:apps/api-gateway/src/routes/v2/door",
+        "BE:packages/core/src/application/door",
+        "BE:packages/core/src/application/tickets"
+      ],
+      "acceptance_item_refs": ["scanner.pairing-admission", "scanner.offline-sync", "guest.qr"],
+      "finding_refs": [],
+      "fixture_refs": ["scanner_admission_kit", "scanner_authorized_staff", "guest_couple_ticket"],
+      "default_retest_level": "TARGETED_HOSTED",
+      "focused_local_checks": "Test valid/foreign/expired QR, duplicate requests and reconnect reconciliation where affected.",
+      "hosted_retest_scope": "Use scoped staging staff for valid check-in plus duplicate and invalid rejection. Include offline/reconnect and Couple only when affected.",
+      "escalate_if": [
+        {
+          "condition": "Guest issuance or downstream admission state contract changes",
+          "level": "CROSS_SYSTEM_REACCEPTANCE",
+          "scope": "Verify fresh issued ticket through Scanner and the affected downstream read surface."
+        }
+      ],
+      "usually_preserve": "Payment arithmetic and unrelated staff pairing."
+    },
+    {
+      "id": "admin.operator-policy",
+      "description": "Operator authorization, KYC/onboarding and sensitive approval/dual control.",
+      "default_risk": "CRITICAL",
+      "typical_code_locations": [
+        "FE:apps/admin-console/src/app/kyc-review",
+        "FE:apps/admin-console/src/app/proposals",
+        "BE:apps/api-gateway/src/routes/v2/admin",
+        "BE:packages/core/src/application/admin",
+        "BE:packages/core/src/application/onboarding"
+      ],
+      "acceptance_item_refs": ["admin.operator-workflows"],
+      "finding_refs": [],
+      "fixture_refs": ["partner_host_a", "partner_venue_a"],
+      "default_retest_level": "CROSS_ROLE_REACCEPTANCE",
+      "focused_local_checks": "Test allowed/denied scopes, proposal transitions, separation of duties and audit-event persistence.",
+      "hosted_retest_scope": "Use scoped synthetic operators and records for affected KYC or approval. Verify requester, approver and denied actor plus direct API policy.",
+      "escalate_if": [
+        {
+          "condition": "Provider notification contract changes",
+          "level": "PROVIDER_REACCEPTANCE",
+          "scope": "Verify only affected approved delivery path."
+        }
+      ],
+      "usually_preserve": "Guest pricing, public discovery and independent door workflows."
+    },
+    {
+      "id": "admin.orders-tickets",
+      "description": "Admin Orders and Tickets reads, operator actions and reconciliation.",
+      "default_risk": "HIGH",
+      "typical_code_locations": [
+        "FE:apps/admin-console/src/app/orders",
+        "FE:apps/admin-console/src/app/tickets",
+        "BE:apps/api-gateway/src/routes/v2/admin",
+        "BE:packages/core/src/application/orders",
+        "BE:packages/core/src/application/tickets"
+      ],
+      "acceptance_item_refs": ["admin.orders-tickets"],
+      "finding_refs": [],
+      "fixture_refs": ["admin_synthetic_order_read"],
+      "default_retest_level": "TARGETED_HOSTED",
+      "focused_local_checks": "Test scoped queries, state mapping and write policy for affected actions.",
+      "hosted_retest_scope": "Verify consistent order and entitlement across desks with synthetic records and verify denied access if policy changed.",
+      "escalate_if": [
+        {
+          "condition": "Operator approvals or provider refund path changes",
+          "level": "CROSS_ROLE_REACCEPTANCE",
+          "scope": "Add the affected dual-control scenario with disposable state."
+        },
+        {
+          "condition": "Provider refund execution changes",
+          "level": "PROVIDER_REACCEPTANCE",
+          "scope": "Use an authorized Test Mode refund candidate with approved disposable state."
+        }
+      ],
+      "usually_preserve": "Guest auth, event publishing and unrelated KYC cases."
+    },
+    {
+      "id": "shared.contracts",
+      "description": "Cross-repository wire schemas and generation.",
+      "default_risk": "MEDIUM",
+      "typical_code_locations": [
+        "FE:packages/contracts",
+        "BE:packages/contracts",
+        "BE:scripts/export-contracts.mjs",
+        "BE:scripts/contract-parity.mjs"
+      ],
+      "acceptance_item_refs": [],
+      "finding_refs": [],
+      "fixture_refs": [],
+      "default_retest_level": "CI_ONLY",
+      "focused_local_checks": "Run parity and the affected producer/consumer decoding and compatibility checks.",
+      "hosted_retest_scope": "Exercise only changed deployed behavior and affected consumers.",
+      "escalate_if": [
+        {
+          "condition": "Wire behavior, error shape or compatibility changes",
+          "level": "TARGETED_STAGING",
+          "scope": "Include impacted API consumers or browser journeys via their mapped area."
+        }
+      ],
+      "usually_preserve": "Unchanged consumers and their PASS evidence."
+    },
+    {
+      "id": "shared.auth",
+      "description": "Shared auth libraries, middleware, cookies and session/credential handling.",
+      "default_risk": "CRITICAL",
+      "typical_code_locations": [
+        "FE:packages/auth",
+        "BE:apps/api-gateway/src/plugins/auth.ts",
+        "BE:packages/core/src/application/auth"
+      ],
+      "acceptance_item_refs": [
+        "guest.session",
+        "partner.shared.session-performance",
+        "admin.operator-workflows",
+        "scanner.pairing-admission"
+      ],
+      "finding_refs": [],
+      "fixture_refs": ["guest_complete_account", "partner_host_a", "scanner_authorized_staff"],
+      "default_retest_level": "TARGETED_HOSTED",
+      "focused_local_checks": "Trace the real mechanism per consumer. Test allowed/denied, revocation, cookie/token boundaries and cache scope.",
+      "hosted_retest_scope": "Check only affected Guest, Partner or Admin session mechanisms. Include Scanner only if its credential or middleware path changed.",
+      "escalate_if": [
+        {
+          "condition": "Actor/resource policy changed",
+          "level": "CROSS_ROLE_REACCEPTANCE",
+          "scope": "Exercise affected allowed and denied actors directly and through the product."
+        },
+        {
+          "condition": "Actual provider verification changed",
+          "level": "PROVIDER_REACCEPTANCE",
+          "scope": "Verify only the affected provider with explicit authority."
+        }
+      ],
+      "usually_preserve": "Surfaces using an unchanged mechanism. Independent payment and pricing."
+    },
+    {
+      "id": "shared.api-client",
+      "description": "Shared client transport, status/error mapping and recovery.",
+      "default_risk": "MEDIUM",
+      "typical_code_locations": [
+        "FE:packages/api-client",
+        "FE:packages/contracts",
+        "BE:apps/api-gateway/src/plugins"
+      ],
+      "acceptance_item_refs": ["guest.event-lifecycle", "guest.discovery"],
+      "finding_refs": ["GUEST-EVENT-001"],
+      "fixture_refs": ["guest_ended_event", "guest_mixed_free_paid"],
+      "default_retest_level": "CI_ONLY",
+      "focused_local_checks": "Map changed error/status paths to actual consumers and exercise decoding and recovery locally.",
+      "hosted_retest_scope": "Check only affected Guest, Partner or Admin outcomes, especially if domain codes or retries change.",
+      "escalate_if": [
+        {
+          "condition": "User-visible errors, status mapping, retry behavior, domain error codes or response decoding used by deployed behavior change",
+          "level": "TARGETED_HOSTED",
+          "scope": "Verify the changed outcomes in each affected deployed consumer."
+        }
+      ],
+      "usually_preserve": "Consumers that do not use the changed paths."
+    },
+    {
+      "id": "shared.firestore",
+      "description": "Firestore transactions, query repositories, rules and indexes.",
+      "default_risk": "HIGH",
+      "typical_code_locations": [
+        "BE:packages/core/src/infrastructure/firestore",
+        "BE:firestore.rules",
+        "BE:firestore.indexes.json"
+      ],
+      "acceptance_item_refs": ["guest.privacy", "partner.shared.tenant-isolation"],
+      "finding_refs": [],
+      "fixture_refs": [],
+      "default_retest_level": "TARGETED_STAGING",
+      "focused_local_checks": "Use emulator cases for changed queries, transaction boundaries, indexes and access rules.",
+      "hosted_retest_scope": "Exercise affected deployed reads/writes and direct allowed/denied access where relevant.",
+      "escalate_if": [
+        {
+          "condition": "Org or resource authorization changes",
+          "level": "CROSS_ROLE_REACCEPTANCE",
+          "scope": "Verify allowed and denied actors across affected surfaces."
+        },
+        {
+          "condition": "Interdependent persisted states across products change",
+          "level": "CROSS_SYSTEM_REACCEPTANCE",
+          "scope": "Verify affected writes and downstream reconciliation."
+        }
+      ],
+      "usually_preserve": "Unaffected repositories, provider activity and unrelated views."
+    },
+    {
+      "id": "shared.event-pricing-domain",
+      "description": "Shared event lifecycle/read model and authoritative pricing used across Guest and Partner.",
+      "default_risk": "HIGH",
+      "typical_code_locations": [
+        "BE:packages/core/src/application/events",
+        "BE:packages/core/src/application/pricing",
+        "BE:packages/core/src/application/public",
+        "BE:apps/api-gateway/src/routes/v2/public"
+      ],
+      "acceptance_item_refs": [
+        "guest.event-lifecycle",
+        "guest.event-price-cta",
+        "guest.quote",
+        "partner.venue.operational-studio"
+      ],
+      "finding_refs": ["GUEST-PRICING-001", "GUEST-EVENT-001"],
+      "fixture_refs": ["guest_canonical_paid_event", "guest_mixed_free_paid", "guest_ended_event"],
+      "default_retest_level": "TARGETED_HOSTED",
+      "focused_local_checks": "Check changes to availability, time/visibility, current price and affected projection contracts.",
+      "hosted_retest_scope": "Verify changed Guest display and Partner price or lifecycle views where consumed. Preserve the canonical quote if calculation is touched.",
+      "escalate_if": [
+        {
+          "condition": "Publication handoff changes",
+          "level": "CROSS_SYSTEM_REACCEPTANCE",
+          "scope": "Trace impacted Partner → Guest publication."
+        },
+        {
+          "condition": "Provider amount or capture binding changes",
+          "level": "PROVIDER_REACCEPTANCE",
+          "scope": "Include authorized disposable checkout."
+        }
+      ],
+      "usually_preserve": "Unaffected Partner views, login and Scanner unless their own contract changed."
+    },
+    {
+      "id": "shared.runtime-provider-config",
+      "description": "Vercel/Render runtime, Firebase, Razorpay, Resend and protected configuration bindings.",
+      "default_risk": "HIGH",
+      "typical_code_locations": [
+        "FE:apps/guest-portal/vercel.json",
+        "FE:packages/config",
+        "BE:render.yaml",
+        "BE:firebase.json",
+        "BE:apps/api-gateway/src/config",
+        "BE:apps/api-gateway/src/lib/notifications",
+        "BE:apps/api-gateway/src/lib/payments"
+      ],
+      "acceptance_item_refs": ["cross-system.staging-smoke"],
+      "finding_refs": [],
+      "fixture_refs": [],
+      "default_retest_level": "TARGETED_STAGING",
+      "focused_local_checks": "Check configuration validation, deployment targets, env boundaries and affected integration wiring without exposing secrets.",
+      "hosted_retest_scope": "Verify actual staging revisions, readiness, runtime configuration and affected API or browser paths.",
+      "escalate_if": [
+        {
+          "condition": "Razorpay keys/mode/webhook, Firebase verification or Resend delivery binding changes",
+          "level": "PROVIDER_REACCEPTANCE",
+          "scope": "Use approved staging provider checks with explicit authorization. No runtime secrets in evidence."
+        },
+        {
+          "condition": "Auth secrets or session configuration change",
+          "level": "TARGETED_HOSTED",
+          "scope": "Verify affected consumers via shared.auth."
+        }
+      ],
+      "usually_preserve": "Provider flows with proven unchanged bindings. Independent feature acceptance."
+    },
+    {
+      "id": "shared.documentation",
+      "description": "Ordinary documentation or descriptive harness changes.",
+      "default_risk": "LOW",
+      "typical_code_locations": ["BE:docs", "FE:docs"],
+      "acceptance_item_refs": [],
+      "finding_refs": [],
+      "fixture_refs": [],
+      "default_retest_level": "NONE",
+      "focused_local_checks": "Check references and document/schema integrity as relevant.",
+      "hosted_retest_scope": "No product re-acceptance for ordinary documentation.",
+      "escalate_if": [
+        {
+          "condition": "Agent instructions or CI/deploy/contract generation policy changes",
+          "level": "CI_ONLY",
+          "scope": "Use the affected behavior or runtime mapping and deterministic checks appropriate to the change, including staging if runtime behavior changes."
+        }
+      ],
+      "usually_preserve": "Existing product PASS evidence for ordinary documentation."
+    }
+  ]
+}

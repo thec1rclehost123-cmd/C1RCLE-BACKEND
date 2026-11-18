@@ -1,0 +1,1057 @@
+{
+  "schema_version": 1,
+  "last_updated": "2026-11-18",
+  "metadata": {
+    "context": "docs/ai/C1RCLE_CONTEXT.md",
+    "status_values": {
+      "PASS": "Acceptance criteria met for the recorded scope.",
+      "FAIL": "An observed result violated the criteria.",
+      "PARTIAL": "Evidence covers only part of the criteria.",
+      "UNTESTED": "No qualifying acceptance run is recorded.",
+      "DEFERRED": "Explicitly set aside for later.",
+      "BLOCKED": "A prerequisite prevents the run.",
+      "IN_PROGRESS": "Investigation, remediation or verification underway."
+    },
+    "evidence_levels": {
+      "LOCAL": "Local tests, emulator, build or app.",
+      "CI": "Automated CI, contract/build/security checks or deployment verification jobs. Record scope.",
+      "STAGING_API": "Direct requests against deployed staging API.",
+      "STAGING_BROWSER": "Browser interaction against deployed staging.",
+      "PROVIDER": "External provider participated in the staging journey.",
+      "CROSS_ROLE": "Workflow exercised across product actors.",
+      "CROSS_SYSTEM": "Complete bounded workflow exercised across surfaces or systems."
+    },
+    "deployed_journey_priority": [
+      ["CROSS_SYSTEM", "PROVIDER", "CROSS_ROLE", "STAGING_BROWSER"],
+      ["STAGING_API"],
+      ["CI"],
+      ["LOCAL"]
+    ],
+    "interpretation": "Item status describes the stated acceptance scope. Each evidence record has its own result and provenance. Implementation, local tests, CI, rollout smoke and workflow acceptance prove different scopes. The priority applies to overlapping claims about deployed journeys. Preserve separate security and domain test requirements. Higher-quality contradictory evidence overrides lower-quality PASS evidence for the same scope. CI PASS plus hosted browser FAIL leaves the affected criterion failed or partial while the CI record stays intact.",
+    "revision_policy": "Record exact tested SHA(s), environment and test time when established. Null denotes unavailable or inapplicable provenance. Use full SHAs, and never infer deployment revisions from a PR merge. Keep historical evidence when invalidated and append the new result with its own provenance.",
+    "reuse_policy": {
+      "default": "Reuse scoped PASS evidence and skip unrelated retests. Evaluate the item's retest_if against the change. If provenance is unknown, keep the historical outcome and establish applicability before claiming a current-revision PASS.",
+      "exceptions": [
+        "Relevant implementation, contract or configuration changed.",
+        "Later hosted evidence contradicts the PASS.",
+        "The item expired or requires periodic verification.",
+        "The current task calls for full launch re-certification."
+      ]
+    },
+    "audit_modes": {
+      "TARGETED_REACCEPTANCE": "After a bounded fix, retest affected behavior and directly impacted boundaries.",
+      "COMPREHENSIVE_HOSTED_AUDIT": "Cover connected hosted journeys at roadmap and integration gates.",
+      "FINAL_LAUNCH_CERTIFICATION": "Adversarial cross-system re-certification, including deliberate re-exercise of previous PASS evidence."
+    },
+    "update_rule": "Use stable item IDs. Append scoped observations with source references and optional details, update item status, and record targeted re-acceptance scope while it is required. Existing finding IDs are informal until a dedicated finding ledger exists.",
+    "seed_summary": {
+      "guest_m1_m3": {
+        "status": "IN_PROGRESS",
+        "summary": "Bounded fixes for the four confirmed hosted regressions are merged in backend PR #202 and frontend PR #131; their CI passed. Staging deployment provenance and targeted hosted re-acceptance remain outstanding.",
+        "reported_severity_counts": {
+          "P0": 0,
+          "P1": 0
+        },
+        "source_refs": [
+          "guest_remediation",
+          "step2",
+          "guest_regression_be202_pr",
+          "guest_regression_fe131_pr",
+          "guest_regression_be202_ci",
+          "guest_regression_fe131_ci"
+        ]
+      },
+      "partner_m1_m2": {
+        "status": "IN_PROGRESS",
+        "summary": "Implemented and deployed to staging. Comprehensive hosted acceptance pending, with owner-observed Host availability and Venue slot-decision failures.",
+        "source_refs": [
+          "step2",
+          "partner_m1_fe",
+          "partner_m1_be",
+          "partner_m2_fe",
+          "partner_m2_be",
+          "fe_live_smoke",
+          "be_live_smoke"
+        ]
+      }
+    }
+  },
+  "sources": {
+    "step2": {
+      "type": "owner_report",
+      "locator": "Agent Harness Step 2, sections 12–13",
+      "note": "Owner-supplied acceptance summary and current Partner observations."
+    },
+    "guest_audit": {
+      "type": "audit_summary",
+      "locator": "~/.codex/attachments/59a1a378-3b2f-4137-b441-eca0d40b16bd/Pasted text.txt",
+      "note": "Hosted M1–M3 continuation brief. Section 8 records prior observations. Later checklists are instructions."
+    },
+    "guest_remediation": {
+      "type": "remediation_brief",
+      "locator": "~/.codex/attachments/4e1cc086-e00e-485c-929e-1027af8e37ea/Pasted text.txt",
+      "note": "Guest post-hosted regression brief. Sections 4, 8, 12 and 16 describe observed failures. Sections 22–28 record preservation evidence and debt."
+    },
+    "publish_hosted": {
+      "type": "hosted_report",
+      "locator": "~/Desktop/C1RCLE-PUBLISHING-HOSTED-VERIFICATION-20261116/HOSTED-VERIFICATION.md"
+    },
+    "hosted_1": {
+      "type": "hosted_report",
+      "locator": "~/Desktop/C1RCLE-HOSTED-ACCEPTANCE-20261111/ACCEPTANCE.md"
+    },
+    "local_product": {
+      "type": "local_report",
+      "locator": "C1RCLE-FRONTEND:LOCAL_PRODUCT_ACCEPTANCE_2026-11-13.md"
+    },
+    "guest_m1_pr": {
+      "type": "pull_request",
+      "locator": "https://github.com/thec1rclehost123-cmd/C1RCLE-FRONTEND/pull/124"
+    },
+    "guest_m3_pr": {
+      "type": "pull_request",
+      "locator": "https://github.com/thec1rclehost123-cmd/C1RCLE-FRONTEND/pull/127"
+    },
+    "partner_m1_fe": {
+      "type": "pull_request",
+      "locator": "https://github.com/thec1rclehost123-cmd/C1RCLE-FRONTEND/pull/126"
+    },
+    "partner_m1_be": {
+      "type": "pull_request",
+      "locator": "https://github.com/thec1rclehost123-cmd/C1RCLE-BACKEND/pull/196"
+    },
+    "partner_m2_fe": {
+      "type": "pull_request",
+      "locator": "https://github.com/thec1rclehost123-cmd/C1RCLE-FRONTEND/pull/130",
+      "note": "Frontend PR #130 adds the Venue operational Studio views. Merged into staging on 2026-11-17 at 8532a73cfee9512ac38f2617ed61b50f4da20e90; that commit is the first parent of frontend PR #131. Merge/CI evidence does not establish hosted acceptance."
+    },
+    "partner_m2_be": {
+      "type": "pull_request",
+      "locator": "https://github.com/thec1rclehost123-cmd/C1RCLE-BACKEND/pull/201",
+      "note": "Backend PR #201 provides the paired read-model contract. It is the previous backend staging baseline at 3802889f929e933b5312e9b3c17b5e22aeb9be6d, the first parent of backend PR #202. Merge evidence does not establish hosted acceptance."
+    },
+    "partner_m2_fe_ci": {
+      "type": "ci_run",
+      "locator": "https://github.com/thec1rclehost123-cmd/C1RCLE-FRONTEND/actions/runs/44168161480"
+    },
+    "partner_m2_be_ci": {
+      "type": "ci_run",
+      "locator": "https://github.com/thec1rclehost123-cmd/C1RCLE-BACKEND/actions/runs/44169527656"
+    },
+    "fe_live_smoke": {
+      "type": "ci_run",
+      "locator": "https://github.com/thec1rclehost123-cmd/C1RCLE-FRONTEND/actions/runs/44172916222/job/134359530720"
+    },
+    "be_live_smoke": {
+      "type": "ci_run",
+      "locator": "https://github.com/thec1rclehost123-cmd/C1RCLE-BACKEND/actions/runs/44171567589/job/134354832423"
+    },
+    "scanner_web": {
+      "type": "repository_doc",
+      "locator": "C1RCLE-FRONTEND:docs/scanner-app/web-deploy.md"
+    },
+    "context": {
+      "type": "repository_doc",
+      "locator": "docs/ai/C1RCLE_CONTEXT.md"
+    },
+    "guest_regression_be202_pr": {
+      "type": "pull_request",
+      "locator": "https://github.com/thec1rclehost123-cmd/C1RCLE-BACKEND/pull/202",
+      "note": "Merged into staging on 2026-11-18 at 1bdc6012bd047595cdbba3b5d3fc0f03171d0d2a. Merge proves source integration only, not deployment or hosted acceptance."
+    },
+    "guest_regression_fe131_pr": {
+      "type": "pull_request",
+      "locator": "https://github.com/thec1rclehost123-cmd/C1RCLE-FRONTEND/pull/131",
+      "note": "Merged into staging on 2026-11-18 at ea75713efe80ad5d3b1c00b36554cb3c3254758c. Merge proves source integration only, not deployment or hosted acceptance."
+    },
+    "guest_regression_be202_ci": {
+      "type": "ci_run",
+      "locator": "https://github.com/thec1rclehost123-cmd/C1RCLE-BACKEND/actions/runs/44203694773",
+      "note": "Backend PR #202 CI completed successfully for head e114fd2fef274c81ddadbac6d2c82cf198e49b05; does not establish hosted behavior."
+    },
+    "guest_regression_be202_security": {
+      "type": "ci_run",
+      "locator": "https://github.com/thec1rclehost123-cmd/C1RCLE-BACKEND/actions/runs/44203694825",
+      "note": "Backend PR #202 Security workflow completed successfully for head e114fd2fef274c81ddadbac6d2c82cf198e49b05."
+    },
+    "guest_regression_fe131_ci": {
+      "type": "ci_run",
+      "locator": "https://github.com/thec1rclehost123-cmd/C1RCLE-FRONTEND/actions/runs/44203734384",
+      "note": "Frontend PR #131 CI completed successfully for head 78bfb7c1f4739538f06fb74d4e6abbaabc3b72d5; does not establish hosted behavior."
+    }
+  },
+  "guest": [
+    {
+      "id": "guest.session",
+      "area": "auth",
+      "capability": "Server-managed session and logout",
+      "status": "PASS",
+      "summary": "Hosted security and logout behaviors passed for the audited session.",
+      "evidence": [
+        {
+          "status": "PASS",
+          "levels": ["STAGING_BROWSER"],
+          "environment": "staging",
+          "tested_at": null,
+          "frontend_sha": null,
+          "backend_sha": null,
+          "source_refs": ["guest_audit", "guest_remediation"],
+          "summary": "Observed HttpOnly, Secure and SameSite=Lax. No browser-readable bearer token in storage or response. Logout invalidated the other tab, API returned 401 and browser Back did not restore Tickets."
+        },
+        {
+          "status": "PASS",
+          "levels": ["LOCAL"],
+          "environment": "local",
+          "tested_at": null,
+          "frontend_sha": "de8034158fde049ece0f399f87a981ed109ba483",
+          "backend_sha": null,
+          "source_refs": ["guest_m1_pr"],
+          "summary": "Focused tokenless-session and contract regressions reported passed."
+        }
+      ],
+      "finding_refs": [],
+      "retest_if": "Auth/session code, Guest BFF, cookie/cache policy, or contradictory hosted security evidence.",
+      "targeted_reacceptance_required": false,
+      "targeted_reacceptance_scope": null
+    },
+    {
+      "id": "guest.auth-return",
+      "area": "auth",
+      "capability": "Protected-route and checkout return",
+      "status": "PASS",
+      "summary": "Prior hosted pass covers the exercised protected-route return. Fresh incomplete onboarding is separate.",
+      "evidence": [
+        {
+          "status": "PASS",
+          "levels": ["STAGING_BROWSER"],
+          "environment": "staging",
+          "tested_at": null,
+          "frontend_sha": null,
+          "backend_sha": null,
+          "source_refs": ["step2"],
+          "summary": "Owner reports protected-route return was exercised successfully."
+        }
+      ],
+      "finding_refs": [],
+      "retest_if": "Return URL validation, route guards, auth redirects, checkout intent, or hosted redirect regression.",
+      "targeted_reacceptance_required": false,
+      "targeted_reacceptance_scope": null
+    },
+    {
+      "id": "guest.onboarding",
+      "area": "onboarding",
+      "capability": "Incomplete-account verification and return",
+      "status": "BLOCKED",
+      "summary": "Account B is already onboarded. Fresh synthetic Account C required for the hosted incomplete-account journey.",
+      "evidence": [],
+      "finding_refs": [],
+      "retest_if": "Onboarding requirements, phone verification, account guard or return intent changes.",
+      "targeted_reacceptance_required": true,
+      "targeted_reacceptance_scope": "With a fresh approved synthetic Account C, verify hard gating, completion and restoration of the original Guest intent.",
+      "source_refs": ["guest_audit", "guest_remediation"]
+    },
+    {
+      "id": "guest.google-sign-in",
+      "area": "auth",
+      "capability": "Google Sign-In",
+      "status": "DEFERRED",
+      "summary": "Deferred by owner in the Guest audit and remediation brief.",
+      "evidence": [],
+      "finding_refs": [],
+      "retest_if": "Owner reopens Google Sign-In, or OAuth/session contracts change for a future pass.",
+      "targeted_reacceptance_required": false,
+      "targeted_reacceptance_scope": null,
+      "source_refs": ["guest_remediation"]
+    },
+    {
+      "id": "guest.discovery",
+      "area": "discovery",
+      "capability": "Explore and Search hosted rendering",
+      "status": "IN_PROGRESS",
+      "summary": "Confirmed hosted rendering failure is in bounded remediation Fixes are merged to staging; deployment verification and targeted hosted re-acceptance remain outstanding.",
+      "evidence": [
+        {
+          "status": "FAIL",
+          "levels": ["STAGING_BROWSER"],
+          "environment": "staging",
+          "tested_at": null,
+          "frontend_sha": null,
+          "backend_sha": null,
+          "source_refs": ["guest_remediation"],
+          "summary": "Explore and Search failed with production React Server Components error #441. Home/direct event entry remained reachable."
+        },
+        {
+          "status": "PASS",
+          "levels": ["CI"],
+          "environment": "GitHub Actions",
+          "tested_at": null,
+          "frontend_sha": "78bfb7c1f4739538f06fb74d4e6abbaabc3b72d5",
+          "backend_sha": "e114fd2fef274c81ddadbac6d2c82cf198e49b05",
+          "source_refs": [
+            "guest_regression_be202_pr",
+            "guest_regression_fe131_pr",
+            "guest_regression_be202_ci",
+            "guest_regression_fe131_ci"
+          ],
+          "summary": "Paired frontend/backend remediation PR CI passed. This is CI evidence only; staging deployment and browser re-acceptance are not established."
+        }
+      ],
+      "finding_refs": [],
+      "retest_if": "Discovery fetching, caching/rendering, public event shape, filters or shared price mapping.",
+      "targeted_reacceptance_required": true,
+      "targeted_reacceptance_scope": "Exercise deployed Explore and Search with representative mixed-tier data, filters and timeouts. Confirm both render or report an actionable error."
+    },
+    {
+      "id": "guest.event-price-cta",
+      "area": "event_detail",
+      "capability": "Mixed Free/Paid From price and CTA",
+      "status": "IN_PROGRESS",
+      "summary": "Confirmed inconsistent summaries and CTA wording are in bounded remediation Fixes are merged to staging; deployment verification and targeted hosted re-acceptance remain outstanding.",
+      "evidence": [
+        {
+          "status": "FAIL",
+          "levels": ["STAGING_BROWSER"],
+          "environment": "staging",
+          "tested_at": null,
+          "frontend_sha": null,
+          "backend_sha": null,
+          "source_refs": ["guest_remediation"],
+          "summary": "Mixed event had free and paid admission, inconsistent summaries and an RSVP-for-free CTA that obscured the paid options."
+        },
+        {
+          "status": "PASS",
+          "levels": ["CI"],
+          "environment": "GitHub Actions",
+          "tested_at": null,
+          "frontend_sha": "78bfb7c1f4739538f06fb74d4e6abbaabc3b72d5",
+          "backend_sha": "e114fd2fef274c81ddadbac6d2c82cf198e49b05",
+          "source_refs": [
+            "guest_regression_be202_pr",
+            "guest_regression_fe131_pr",
+            "guest_regression_be202_ci",
+            "guest_regression_fe131_ci"
+          ],
+          "summary": "Paired frontend/backend remediation PR CI passed. This is CI evidence only; staging deployment and browser re-acceptance are not established."
+        }
+      ],
+      "finding_refs": ["F1"],
+      "retest_if": "Current sellable price, phase/tier eligibility, event summary contract or CTA selection.",
+      "targeted_reacceptance_required": true,
+      "targeted_reacceptance_scope": "Compare Home, Explore, Search and Event Detail for free-only, paid-only, mixed and unavailable tiers. Verify From and CTA truth."
+    },
+    {
+      "id": "guest.event-lifecycle",
+      "area": "event_detail",
+      "capability": "Sale and ended-event presentation",
+      "status": "IN_PROGRESS",
+      "summary": "Confirmed lifecycle presentation regression is in bounded remediation Fixes are merged to staging; deployment verification and targeted hosted re-acceptance remain outstanding.",
+      "evidence": [
+        {
+          "status": "FAIL",
+          "levels": ["STAGING_BROWSER"],
+          "environment": "staging",
+          "tested_at": null,
+          "frontend_sha": null,
+          "backend_sha": null,
+          "source_refs": ["guest_remediation"],
+          "summary": "Ended online sales could render as generic temporary unavailability."
+        },
+        {
+          "status": "PASS",
+          "levels": ["CI"],
+          "environment": "GitHub Actions",
+          "tested_at": null,
+          "frontend_sha": "78bfb7c1f4739538f06fb74d4e6abbaabc3b72d5",
+          "backend_sha": "e114fd2fef274c81ddadbac6d2c82cf198e49b05",
+          "source_refs": [
+            "guest_regression_be202_pr",
+            "guest_regression_fe131_pr",
+            "guest_regression_be202_ci",
+            "guest_regression_fe131_ci"
+          ],
+          "summary": "Paired frontend/backend remediation PR CI passed. This is CI evidence only; staging deployment and browser re-acceptance are not established."
+        }
+      ],
+      "finding_refs": ["F2"],
+      "retest_if": "Event or sales lifecycle mapping, error handling, or historical Ticket event links.",
+      "targeted_reacceptance_required": true,
+      "targeted_reacceptance_scope": "Exercise upcoming, paused, sold-out and ended states, technical errors and historical ticket presentation."
+    },
+    {
+      "id": "guest.quote",
+      "area": "checkout",
+      "capability": "Canonical pricing and Review Order conservation",
+      "status": "PASS",
+      "summary": "The selected General Entry and promo reconciled exactly from quote to Review Order and paid booking.",
+      "evidence": [
+        {
+          "status": "PASS",
+          "levels": ["STAGING_BROWSER", "STAGING_API", "CROSS_ROLE"],
+          "environment": "staging",
+          "tested_at": "2026-11-16",
+          "frontend_sha": "672e8f796e2bcc4f67fe5d2eb38f26cf11435035",
+          "backend_sha": "7c181a07cf21c6dd9d9f6313a5f00f31b8b78d34",
+          "source_refs": ["publish_hosted"],
+          "summary": "Prior Host configuration, Venue review, public tier and Guest promo quote matched within the documented read scope."
+        },
+        {
+          "status": "PASS",
+          "levels": ["STAGING_BROWSER", "PROVIDER"],
+          "environment": "staging",
+          "tested_at": null,
+          "frontend_sha": null,
+          "backend_sha": null,
+          "source_refs": ["guest_remediation", "step2"],
+          "summary": "Current audit summary confirms quote, Review Order and paid total.",
+          "details": {
+            "event_slug": "c1rcle-staging-acceptance-001",
+            "tier": "General Entry",
+            "currency": "INR",
+            "amounts_paise": {
+              "base": 80000,
+              "active_early_bird": 65000,
+              "discount": 6500,
+              "admission_after_discount": 58500,
+              "platform_fee": 2925,
+              "payment_fee": 1463,
+              "tax": 790,
+              "total": 63678
+            },
+            "promo_code": "STAGE001"
+          }
+        },
+        {
+          "status": "PASS",
+          "levels": ["LOCAL"],
+          "environment": "local",
+          "tested_at": null,
+          "frontend_sha": "378f317d5b10bffff015564d0499bd63558a2cdb",
+          "backend_sha": null,
+          "source_refs": ["guest_m3_pr"],
+          "summary": "Focused checkout and Guest tests reported for the M3 frontend change."
+        }
+      ],
+      "finding_refs": [],
+      "retest_if": "Pricing service, quote/hold contract, active phase, promo, fees, tax or Review Order mapping.",
+      "targeted_reacceptance_required": false,
+      "targeted_reacceptance_scope": null
+    },
+    {
+      "id": "guest.promo",
+      "area": "checkout",
+      "capability": "Valid/invalid promo recovery",
+      "status": "PASS",
+      "summary": "The invalid promo returned useful feedback and valid STAGE001 restored the expected quote.",
+      "evidence": [
+        {
+          "status": "PASS",
+          "levels": ["STAGING_BROWSER"],
+          "environment": "staging",
+          "tested_at": null,
+          "frontend_sha": null,
+          "backend_sha": null,
+          "source_refs": ["guest_remediation"],
+          "summary": "Valid and invalid promo paths were exercised. Valid STAGE001 applied a ₹65 discount."
+        }
+      ],
+      "finding_refs": [],
+      "retest_if": "Promo validation, eligibility, redemption, quote math or error/recovery UI.",
+      "targeted_reacceptance_required": false,
+      "targeted_reacceptance_scope": null
+    },
+    {
+      "id": "guest.quantity",
+      "area": "checkout",
+      "capability": "Quantity enforcement at UI, quote and hold",
+      "status": "PASS",
+      "summary": "The audited four-per-order limit held for both UI and direct backend over-limit requests.",
+      "evidence": [
+        {
+          "status": "PASS",
+          "levels": ["STAGING_BROWSER", "STAGING_API"],
+          "environment": "staging",
+          "tested_at": null,
+          "frontend_sha": null,
+          "backend_sha": null,
+          "source_refs": ["guest_audit", "step2"],
+          "summary": "UI honored max four. Direct above-limit quote and hold attempts both returned HTTP 400.",
+          "details": {
+            "max_per_order": 4
+          }
+        }
+      ],
+      "finding_refs": [],
+      "retest_if": "Tier cap, inventory reservation, pricing-phase limits, quantity selection or quote/hold validation.",
+      "targeted_reacceptance_required": false,
+      "targeted_reacceptance_scope": null
+    },
+    {
+      "id": "guest.paid-fulfillment",
+      "area": "payment_and_wallet",
+      "capability": "Razorpay Test Mode checkout, wallet and inventory",
+      "status": "PASS",
+      "summary": "Canonical paid journey passed, including exactly-once inventory and repeat reads of the issued ticket.",
+      "evidence": [
+        {
+          "status": "PASS",
+          "levels": ["STAGING_BROWSER", "PROVIDER"],
+          "environment": "staging",
+          "tested_at": null,
+          "frontend_sha": null,
+          "backend_sha": null,
+          "source_refs": ["guest_remediation", "step2"],
+          "summary": "Owner manually authorized Razorpay Test Mode. Backend confirmed the booking and Wallet showed one issued ticket. Confirmation refresh and Wallet revisit produced no duplicate.",
+          "details": {
+            "event_slug": "c1rcle-staging-acceptance-001",
+            "total_paise": 63678,
+            "currency": "INR",
+            "booking_id": "C1-108A0-06F92-2CE57-9E2B9",
+            "payment_reference": "pay_U1P50xonmRdZtO",
+            "general_entry_inventory_before": 79,
+            "general_entry_inventory_after": 78
+          }
+        }
+      ],
+      "finding_refs": [],
+      "retest_if": "Hold/payment bindings, provider verification, order or fulfillment, inventory, or confirmation/wallet retry paths.",
+      "targeted_reacceptance_required": false,
+      "targeted_reacceptance_scope": null
+    },
+    {
+      "id": "guest.payment-recovery",
+      "area": "payment_and_wallet",
+      "capability": "Payment failure, abandoned hold, replay and refund",
+      "status": "UNTESTED",
+      "summary": "Independent evidence for payment failure, abandoned checkout and hold expiry, duplicate webhook/provider replay and refund execution is still owed.",
+      "evidence": [],
+      "finding_refs": [],
+      "retest_if": "Payment attempts, hold expiry, webhook reconciliation, retry or refund logic.",
+      "targeted_reacceptance_required": true,
+      "targeted_reacceptance_scope": "Use disposable Test Mode fixtures to exercise failed/cancelled payment, hold expiry and release, webhook replay idempotency and refund outcomes independently.",
+      "source_refs": ["guest_remediation"]
+    },
+    {
+      "id": "guest.rsvp",
+      "area": "rsvp",
+      "capability": "Free RSVP, cancel and legitimate re-RSVP",
+      "status": "IN_PROGRESS",
+      "summary": "The cancelled RSVP appeared in history, but the reported re-RSVP failed to restore admission. Bounded remediation is underway Fixes are merged to staging; deployment verification and targeted hosted re-acceptance remain outstanding.",
+      "evidence": [
+        {
+          "status": "FAIL",
+          "levels": ["STAGING_BROWSER"],
+          "environment": "staging",
+          "tested_at": null,
+          "frontend_sha": null,
+          "backend_sha": null,
+          "source_refs": ["guest_remediation"],
+          "summary": "Following a cancellation, the Guest saw an already-on-list response on the one re-RSVP attempt and no current pass."
+        },
+        {
+          "status": "PASS",
+          "levels": ["CI"],
+          "environment": "GitHub Actions",
+          "tested_at": null,
+          "frontend_sha": "78bfb7c1f4739538f06fb74d4e6abbaabc3b72d5",
+          "backend_sha": "e114fd2fef274c81ddadbac6d2c82cf198e49b05",
+          "source_refs": [
+            "guest_regression_be202_pr",
+            "guest_regression_fe131_pr",
+            "guest_regression_be202_ci",
+            "guest_regression_fe131_ci"
+          ],
+          "summary": "Paired frontend/backend remediation PR CI passed. This is CI evidence only; staging deployment and browser re-acceptance are not established."
+        }
+      ],
+      "finding_refs": ["F6"],
+      "retest_if": "RSVP/order identity, cancellation, entitlement state, free inventory or Wallet history.",
+      "targeted_reacceptance_required": true,
+      "targeted_reacceptance_scope": "RSVP → cancel → re-RSVP → exactly one active entitlement and truthful history."
+    },
+    {
+      "id": "guest.qr",
+      "area": "ticket_access",
+      "capability": "Server-side QR timing and visibility",
+      "status": "PASS",
+      "summary": "The hosted pass covers outside-window denial and UI visibility.",
+      "evidence": [
+        {
+          "status": "PASS",
+          "levels": ["STAGING_BROWSER", "STAGING_API"],
+          "environment": "staging",
+          "tested_at": null,
+          "frontend_sha": null,
+          "backend_sha": null,
+          "source_refs": ["guest_audit", "guest_remediation"],
+          "summary": "UI withheld QR material and the server returned HTTP 409 outside the audited 24-hour rule."
+        }
+      ],
+      "finding_refs": [],
+      "retest_if": "QR timing or signing, event time, entitlement status, route policy or Scanner admission rules.",
+      "targeted_reacceptance_required": false,
+      "targeted_reacceptance_scope": null
+    },
+    {
+      "id": "guest.privacy",
+      "area": "ticket_access",
+      "capability": "Cross-user order, ticket and QR isolation",
+      "status": "PARTIAL",
+      "summary": "Prior positive cross-user/session observations cover a limited scope. Full current endpoint matrix remains open.",
+      "evidence": [
+        {
+          "status": "PARTIAL",
+          "levels": ["STAGING_BROWSER"],
+          "environment": "staging",
+          "tested_at": null,
+          "frontend_sha": null,
+          "backend_sha": null,
+          "source_refs": ["guest_audit", "guest_remediation"],
+          "summary": "Prior audit reported positive cross-user behavior. Its summary does not establish a full endpoint matrix."
+        }
+      ],
+      "finding_refs": [],
+      "retest_if": "Ownership guards, ticket transfer, wallet/order reads, QR or session/cache policy.",
+      "targeted_reacceptance_required": true,
+      "targeted_reacceptance_scope": "Use two distinct synthetic Guests to verify denial of foreign orders, tickets and QR payloads through applicable hosted routes."
+    },
+    {
+      "id": "guest.mobile",
+      "area": "experience",
+      "capability": "Mobile discovery, detail and checkout",
+      "status": "PARTIAL",
+      "summary": "Earlier event-detail layout was observed. The recent checkout viewport override was inconclusive.",
+      "evidence": [
+        {
+          "status": "PARTIAL",
+          "levels": ["STAGING_BROWSER"],
+          "environment": "staging",
+          "tested_at": "2026-11-16",
+          "frontend_sha": "672e8f796e2bcc4f67fe5d2eb38f26cf11435035",
+          "backend_sha": "7c181a07cf21c6dd9d9f6313a5f00f31b8b78d34",
+          "source_refs": ["publish_hosted"],
+          "summary": "Canonical poster, event time and price displayed at a 393px viewport. Quantity interaction was interrupted."
+        },
+        {
+          "status": "PARTIAL",
+          "levels": ["STAGING_BROWSER"],
+          "environment": "staging",
+          "tested_at": null,
+          "frontend_sha": null,
+          "backend_sha": null,
+          "source_refs": ["guest_remediation"],
+          "summary": "Mobile checkout verification remained inconclusive."
+        }
+      ],
+      "finding_refs": ["F7"],
+      "retest_if": "Responsive checkout, wallets, responsive CTAs or device/browser targets.",
+      "targeted_reacceptance_required": true,
+      "targeted_reacceptance_scope": "Use a verified mobile viewport or device to exercise event detail, selector, Review Order, payment handoff and Wallet."
+    },
+    {
+      "id": "guest.tickets-performance",
+      "area": "experience",
+      "capability": "Tickets time to useful content",
+      "status": "DEFERRED",
+      "summary": "Hosted observations of approximately 11–14 seconds are recorded as performance debt outside current remediation.",
+      "evidence": [
+        {
+          "status": "PARTIAL",
+          "levels": ["STAGING_BROWSER"],
+          "environment": "staging",
+          "tested_at": null,
+          "frontend_sha": null,
+          "backend_sha": null,
+          "source_refs": ["guest_remediation"],
+          "summary": "Slow useful-content rendering was observed. A performance budget and a controlled baseline are still needed."
+        }
+      ],
+      "finding_refs": ["F3"],
+      "retest_if": "Wallet queries, request fanout, caching or the scheduled performance pass.",
+      "targeted_reacceptance_required": false,
+      "targeted_reacceptance_scope": null
+    }
+  ],
+  "partner": [
+    {
+      "id": "partner.host.availability",
+      "area": "host",
+      "capability": "Partnered Venue availability in Host Create Event",
+      "status": "FAIL",
+      "summary": "Owner observed available partnered-Venue windows could not be selected. Root cause remains open.",
+      "evidence": [
+        {
+          "status": "FAIL",
+          "levels": ["STAGING_BROWSER"],
+          "environment": "staging",
+          "tested_at": null,
+          "frontend_sha": null,
+          "backend_sha": null,
+          "source_refs": ["step2"],
+          "summary": "Host was shown “No free time remains this month” despite known available windows."
+        }
+      ],
+      "finding_refs": [],
+      "retest_if": "Availability service, partnership eligibility, time mapping, calendar/editor rendering or slot lifecycle.",
+      "targeted_reacceptance_required": true,
+      "targeted_reacceptance_scope": "Compare Venue-published test windows to Host calendar and editor. Select a legitimate window and submit a request, including IST boundaries."
+    },
+    {
+      "id": "partner.host.create-request",
+      "area": "host",
+      "capability": "Event creation, submission and withdrawal",
+      "status": "PARTIAL",
+      "summary": "Earlier hosted submission succeeded. The current end-to-end submission and withdrawal matrix remains open.",
+      "evidence": [
+        {
+          "status": "PARTIAL",
+          "levels": ["STAGING_BROWSER"],
+          "environment": "staging",
+          "tested_at": "2026-11-12",
+          "frontend_sha": null,
+          "backend_sha": null,
+          "source_refs": ["hosted_1"],
+          "summary": "A Host submitted a disposable draft and saw the pending Venue slot request. Withdrawal was not exercised."
+        },
+        {
+          "status": "PARTIAL",
+          "levels": ["LOCAL"],
+          "environment": "local_connected",
+          "tested_at": "2026-11-13",
+          "frontend_sha": null,
+          "backend_sha": null,
+          "source_refs": ["local_product"],
+          "summary": "Request history rendered. Valid time selection blocked the local event editor probe."
+        }
+      ],
+      "finding_refs": [],
+      "retest_if": "Draft/editor state, Host event creation, scheduling contract, request transitions or inventory reservation.",
+      "targeted_reacceptance_required": true,
+      "targeted_reacceptance_scope": "On current staging verify draft-to-request, accepted/rejected outcomes, pending withdrawal, slot release and refresh."
+    },
+    {
+      "id": "partner.venue.manage-availability",
+      "area": "venue",
+      "capability": "Venue availability and calendar management",
+      "status": "PARTIAL",
+      "summary": "Hosted calendar reads exist. Current publish, block and release behavior requires acceptance.",
+      "evidence": [
+        {
+          "status": "PARTIAL",
+          "levels": ["STAGING_BROWSER"],
+          "environment": "staging",
+          "tested_at": "2026-11-16",
+          "frontend_sha": "672e8f796e2bcc4f67fe5d2eb38f26cf11435035",
+          "backend_sha": "7c181a07cf21c6dd9d9f6313a5f00f31b8b78d34",
+          "source_refs": ["publish_hosted"],
+          "summary": "Venue and Guest time aligned on the documented event. This was a read walkthrough."
+        }
+      ],
+      "finding_refs": [],
+      "retest_if": "Availability mutations, calendar mapping, collision rules, slot state or IST boundaries.",
+      "targeted_reacceptance_required": true,
+      "targeted_reacceptance_scope": "Publish, block and release a disposable window. Confirm correct calendar and Host-facing state."
+    },
+    {
+      "id": "partner.venue.slot-decision",
+      "area": "venue",
+      "capability": "Accept and Decline Venue slot requests",
+      "status": "FAIL",
+      "summary": "Owner observed unreliable decisions, including a prior Decline 500. Root cause remains open.",
+      "evidence": [
+        {
+          "status": "FAIL",
+          "levels": ["STAGING_BROWSER"],
+          "environment": "staging",
+          "tested_at": null,
+          "frontend_sha": null,
+          "backend_sha": null,
+          "source_refs": ["step2"],
+          "summary": "Accept and Decline were unreliable on staging, including a Decline 500."
+        },
+        {
+          "status": "PARTIAL",
+          "levels": ["STAGING_BROWSER", "CROSS_ROLE"],
+          "environment": "staging",
+          "tested_at": "2026-11-12",
+          "frontend_sha": null,
+          "backend_sha": null,
+          "source_refs": ["hosted_1"],
+          "summary": "Historical Accept showed an error and later appeared approved. Host found a draft but the expected Promoter link was missing."
+        }
+      ],
+      "finding_refs": ["HA-035"],
+      "retest_if": "Slot decision commands, authorization, reservation/release, event handoff, linked promoter handling or idempotency.",
+      "targeted_reacceptance_required": true,
+      "targeted_reacceptance_scope": "Use fresh synthetic requests. Verify both decisions, clean user responses, persisted request and slot status, Host visibility and event/assignment consistency."
+    },
+    {
+      "id": "partner.venue.operational-studio",
+      "area": "venue",
+      "capability": "M2 Overview, Events, Calendar, Analytics and Search",
+      "status": "UNTESTED",
+      "summary": "M2 Venue-centric read models and views are implemented and deployed. Comprehensive hosted workflow remains untested on that deployment.",
+      "evidence": [
+        {
+          "status": "PASS",
+          "levels": ["CI"],
+          "environment": "github_actions",
+          "tested_at": "2026-11-17T20:30:00Z",
+          "frontend_sha": "a1b9f581df81791da06725e849ef77eae44f0c3c",
+          "backend_sha": null,
+          "source_refs": ["partner_m2_fe", "partner_m2_fe_ci"],
+          "summary": "Frontend CI OK, contract parity and lint/typecheck/test/build passed."
+        },
+        {
+          "status": "PASS",
+          "levels": ["CI"],
+          "environment": "github_actions",
+          "tested_at": "2026-11-17T20:32:42Z",
+          "frontend_sha": null,
+          "backend_sha": "3b943af4060be5c24de542c7668f5251b76fef09",
+          "source_refs": ["partner_m2_be", "partner_m2_be_ci"],
+          "summary": "Backend CI OK, contract parity, Docker build/scan and build/test/coverage passed in the later run."
+        }
+      ],
+      "finding_refs": [],
+      "retest_if": "Venue read models, operational classification, search/projections, stats or Partner route/navigation changes.",
+      "targeted_reacceptance_required": true,
+      "targeted_reacceptance_scope": "Across Overview, Events, Calendar, Analytics and Search, verify owned and associated event reachability and operational metrics. Check role projections and door entry points."
+    },
+    {
+      "id": "partner.venue.host-event-privacy",
+      "area": "venue",
+      "capability": "Associated Host event privacy and owner-control isolation",
+      "status": "UNTESTED",
+      "summary": "Current authenticated hosted boundary matrix remains open. Source and CI cover implementation separately.",
+      "evidence": [],
+      "finding_refs": [],
+      "retest_if": "Venue projections, finance/owner controls, search/analytics, door permissions or event association policy.",
+      "targeted_reacceptance_required": true,
+      "targeted_reacceptance_scope": "Verify an associated Venue sees permitted operational fields and door entry while Host finance, edit/publish and settlements stay restricted.",
+      "source_refs": ["partner_m2_be", "publish_hosted"]
+    },
+    {
+      "id": "partner.shared.tenant-isolation",
+      "area": "shared",
+      "capability": "Cross-Host and cross-Venue isolation",
+      "status": "UNTESTED",
+      "summary": "The current multi-organization hosted denial matrix is open.",
+      "evidence": [],
+      "finding_refs": [],
+      "retest_if": "Organization authorization, event/slot scoping, role membership, search, analytics or finance projection.",
+      "targeted_reacceptance_required": true,
+      "targeted_reacceptance_scope": "Use separate synthetic Hosts and Venues to verify scoped reads and writes and appropriate denial across organizations.",
+      "source_refs": ["publish_hosted"]
+    },
+    {
+      "id": "partner.shared.timezone",
+      "area": "shared",
+      "capability": "IST scheduling and display",
+      "status": "PARTIAL",
+      "summary": "Prior aligned timestamps cover the canonical event. Current scheduling boundary and round-trip coverage is incomplete.",
+      "evidence": [
+        {
+          "status": "PARTIAL",
+          "levels": ["STAGING_BROWSER", "STAGING_API", "CROSS_ROLE"],
+          "environment": "staging",
+          "tested_at": "2026-11-16",
+          "frontend_sha": "672e8f796e2bcc4f67fe5d2eb38f26cf11435035",
+          "backend_sha": "7c181a07cf21c6dd9d9f6313a5f00f31b8b78d34",
+          "source_refs": ["publish_hosted"],
+          "summary": "Venue and Guest displayed 18:00–22:00 IST and the published API instants aligned."
+        }
+      ],
+      "finding_refs": [],
+      "retest_if": "Product timezone constants, time conversion, calendar mapping or scheduling validation.",
+      "targeted_reacceptance_required": false,
+      "targeted_reacceptance_scope": null
+    },
+    {
+      "id": "partner.shared.session-performance",
+      "area": "shared",
+      "capability": "Partner workspace session and load behavior",
+      "status": "UNTESTED",
+      "summary": "Current hosted org switching, invalidation and representative load checks are outstanding.",
+      "evidence": [],
+      "finding_refs": [],
+      "retest_if": "Partner session, org selection, BFF, authorization cache or dashboard read paths.",
+      "targeted_reacceptance_required": false,
+      "targeted_reacceptance_scope": null
+    }
+  ],
+  "promoter": [
+    {
+      "id": "promoter.network-assignment",
+      "area": "distribution",
+      "capability": "Connections, agreement and event assignment",
+      "status": "PARTIAL",
+      "summary": "Earlier hosted studio and linked-event reads exist. Full current acceptance of agreement through assignment remains open.",
+      "evidence": [
+        {
+          "status": "PARTIAL",
+          "levels": ["STAGING_BROWSER"],
+          "environment": "staging",
+          "tested_at": "2026-11-12",
+          "frontend_sha": null,
+          "backend_sha": null,
+          "source_refs": ["hosted_1"],
+          "summary": "An authenticated Promoter checked partner and event views. Missing Venue detail and mismatched partner count were observed then."
+        }
+      ],
+      "finding_refs": ["HA-031", "HA-032"],
+      "retest_if": "Relationship, agreement, eligibility, assignment, or event projection changes.",
+      "targeted_reacceptance_required": false,
+      "targeted_reacceptance_scope": null
+    },
+    {
+      "id": "promoter.attribution-finance",
+      "area": "attribution",
+      "capability": "Tracked checkout and commission reconciliation",
+      "status": "UNTESTED",
+      "summary": "A complete hosted attributed Test Mode order and cross-role financial reconciliation remain open.",
+      "evidence": [],
+      "finding_refs": [],
+      "retest_if": "Referral tracking, checkout attribution, commission snapshots, finance projections or refund accounting.",
+      "targeted_reacceptance_required": true,
+      "targeted_reacceptance_scope": "Track a disposable referral into a Test Mode order and reconcile permitted Promoter and organizer totals.",
+      "source_refs": ["context"]
+    }
+  ],
+  "scanner": [
+    {
+      "id": "scanner.pairing-admission",
+      "area": "door",
+      "capability": "Staff access, pairing, validation and check-in",
+      "status": "UNTESTED",
+      "summary": "Staging web delivery is configured and the capability is implemented. A complete hosted shift/admission pass is still owed.",
+      "evidence": [],
+      "finding_refs": [],
+      "retest_if": "Scanner auth/role changes, pairing, ticket validation, session scope, device or web deployment.",
+      "targeted_reacceptance_required": true,
+      "targeted_reacceptance_scope": "Use a scoped staff account and staging event to verify pairing, a valid scan, invalid and duplicate rejection, and check-in visibility.",
+      "source_refs": ["scanner_web", "context"]
+    },
+    {
+      "id": "scanner.offline-sync",
+      "area": "door",
+      "capability": "Offline check-in and reconciliation",
+      "status": "UNTESTED",
+      "summary": "Current hosted/device offline and reconnect evidence remains open.",
+      "evidence": [],
+      "finding_refs": [],
+      "retest_if": "Offline credential format, sync rules, duplicate handling or device/session policy.",
+      "targeted_reacceptance_required": false,
+      "targeted_reacceptance_scope": null,
+      "source_refs": ["context"]
+    }
+  ],
+  "admin": [
+    {
+      "id": "admin.orders-tickets",
+      "area": "operations",
+      "capability": "Admin paid-order and ticket visibility",
+      "status": "PARTIAL",
+      "summary": "An earlier hosted paid-order read passed. Ticket loading and current desk-wide evidence remain open.",
+      "evidence": [
+        {
+          "status": "PARTIAL",
+          "levels": ["STAGING_BROWSER"],
+          "environment": "staging",
+          "tested_at": "2026-11-12",
+          "frontend_sha": null,
+          "backend_sha": null,
+          "source_refs": ["hosted_1"],
+          "summary": "Admin saw a paid test order. The Tickets desk showed persistent loading during that audit."
+        }
+      ],
+      "finding_refs": ["HA-033"],
+      "retest_if": "Order/ticket admin routes, operator scopes, status mappings, list queries or fulfillment projections.",
+      "targeted_reacceptance_required": false,
+      "targeted_reacceptance_scope": null
+    },
+    {
+      "id": "admin.operator-workflows",
+      "area": "operations",
+      "capability": "Operator permissions, onboarding, support and dual control",
+      "status": "UNTESTED",
+      "summary": "Implemented operator desks still require a current hosted permission and write-path matrix.",
+      "evidence": [],
+      "finding_refs": [],
+      "retest_if": "Admin role policy, KYC/support workflow, audit records or dual-control approval behavior.",
+      "targeted_reacceptance_required": false,
+      "targeted_reacceptance_scope": null,
+      "source_refs": ["context"]
+    }
+  ],
+  "cross_system": [
+    {
+      "id": "cross-system.staging-smoke",
+      "area": "deployment",
+      "capability": "Partner M2 staging rollout smoke",
+      "status": "PASS",
+      "summary": "Deployment verification passed for the recorded revisions and scope.",
+      "evidence": [
+        {
+          "status": "PASS",
+          "levels": ["CI"],
+          "environment": "staging",
+          "tested_at": "2026-11-17T20:53:35Z",
+          "frontend_sha": "8532a73cfee9512ac38f2617ed61b50f4da20e90",
+          "backend_sha": null,
+          "source_refs": ["fe_live_smoke"],
+          "summary": "GitHub post-deploy live URL smoke passed. Scope is deployment health."
+        },
+        {
+          "status": "PASS",
+          "levels": ["CI"],
+          "environment": "staging",
+          "tested_at": "2026-11-17T20:46:05Z",
+          "frontend_sha": null,
+          "backend_sha": "3802889f929e933b5312e9b3c17b5e22aeb9be6d",
+          "source_refs": ["be_live_smoke"],
+          "summary": "Render Deploy & verify passed for this staging merge revision. Scope is rollout verification."
+        }
+      ],
+      "finding_refs": [],
+      "retest_if": "Target deployment, hosting configuration, runtime dependencies or smoke contract.",
+      "targeted_reacceptance_required": false,
+      "targeted_reacceptance_scope": null
+    },
+    {
+      "id": "cross-system.publication-handoff",
+      "area": "host_venue_guest",
+      "capability": "Host to Venue to Guest publication handoff",
+      "status": "PARTIAL",
+      "summary": "Canonical event matched across scoped hosted reads at older revisions. Current request decisions and full publish workflow need acceptance.",
+      "evidence": [
+        {
+          "status": "PARTIAL",
+          "levels": ["STAGING_BROWSER", "STAGING_API", "CROSS_ROLE"],
+          "environment": "staging",
+          "tested_at": "2026-11-16",
+          "frontend_sha": "672e8f796e2bcc4f67fe5d2eb38f26cf11435035",
+          "backend_sha": "7c181a07cf21c6dd9d9f6313a5f00f31b8b78d34",
+          "source_refs": ["publish_hosted"],
+          "summary": "Verified prior approved request and matching canonical published event, timing and pricing. Report outcome was NOT READY for its broader scope."
+        }
+      ],
+      "finding_refs": [],
+      "retest_if": "Event publication, slot booking/decision, ownership, event pricing or public discovery changes.",
+      "targeted_reacceptance_required": true,
+      "targeted_reacceptance_scope": "Exercise a fresh Host request, Venue acceptance and Guest publication with current revisions. Confirm event identity, ownership and public state."
+    },
+    {
+      "id": "cross-system.launch-journey",
+      "area": "end_to_end",
+      "capability": "Publish, attribution, purchase, Scanner and analytics",
+      "status": "UNTESTED",
+      "summary": "The complete multi-role journey remains open. Use the scoped Guest paid fulfillment pass for that slice.",
+      "evidence": [],
+      "finding_refs": [],
+      "retest_if": "Any relevant publication, checkout, attribution, admission, reconciliation or authorization change.",
+      "targeted_reacceptance_required": true,
+      "targeted_reacceptance_scope": "Certify a fresh connected journey across Host, Venue, Promoter, Guest, Scanner, analytics and applicable Admin visibility.",
+      "source_refs": ["context"]
+    }
+  ]
+}

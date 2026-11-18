@@ -1,0 +1,491 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "C1RCLE Launch Certification state",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "certification_id",
+    "last_updated",
+    "certification_status",
+    "target",
+    "release_candidate",
+    "launch_scope",
+    "production_intended_configuration",
+    "certification_window",
+    "ownership",
+    "finding_review",
+    "readiness_prerequisites",
+    "domains",
+    "critical_journeys",
+    "finding_dispositions",
+    "rollback_readiness",
+    "hard_gate_policy_ref",
+    "report_view_ref"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "certification_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{5,79}$" },
+    "last_updated": { "type": "string", "format": "date" },
+    "certification_status": {
+      "enum": ["NOT_READY_FOR_CERTIFICATION", "IN_PROGRESS", "GO", "NO_GO"]
+    },
+    "target": { "const": "PRODUCTION_INTENDED_RELEASE_CANDIDATE" },
+    "release_candidate": { "$ref": "#/$defs/releaseCandidate" },
+    "launch_scope": { "$ref": "#/$defs/launchScope" },
+    "production_intended_configuration": { "$ref": "#/$defs/productionConfiguration" },
+    "certification_window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["started_at", "ended_at", "evidence_cutoff_at"],
+      "properties": {
+        "started_at": { "$ref": "#/$defs/nullableDateTime" },
+        "ended_at": { "$ref": "#/$defs/nullableDateTime" },
+        "evidence_cutoff_at": { "$ref": "#/$defs/nullableDateTime" }
+      }
+    },
+    "ownership": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "certification_owner_role_label",
+        "technical_approver_role_label",
+        "owner_launch_approver_role_label",
+        "owner_launch_approval",
+        "owner_launch_approved_at",
+        "owner_launch_approval_ref"
+      ],
+      "properties": {
+        "certification_owner_role_label": { "$ref": "#/$defs/nullableLabel" },
+        "technical_approver_role_label": { "$ref": "#/$defs/nullableLabel" },
+        "owner_launch_approver_role_label": { "$ref": "#/$defs/nullableLabel" },
+        "owner_launch_approval": {
+          "enum": ["NOT_REQUESTED", "PENDING", "APPROVED", "DENIED", "WITHDRAWN"]
+        },
+        "owner_launch_approved_at": { "$ref": "#/$defs/nullableDateTime" },
+        "owner_launch_approval_ref": { "$ref": "#/$defs/nullableString" }
+      }
+    },
+    "finding_review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_ref",
+        "source_updated_at",
+        "reviewed_for_candidate",
+        "initial_source_summary",
+        "notes"
+      ],
+      "properties": {
+        "source_ref": { "const": "FINDINGS.json" },
+        "source_updated_at": { "type": "string", "format": "date" },
+        "reviewed_for_candidate": { "type": "boolean" },
+        "initial_source_summary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["P0", "P1", "P2", "P3"],
+          "properties": {
+            "P0": { "type": "integer", "minimum": 0 },
+            "P1": { "type": "integer", "minimum": 0 },
+            "P2": { "type": "integer", "minimum": 0 },
+            "P3": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "notes": { "type": "string", "maxLength": 500 }
+      }
+    },
+    "readiness_prerequisites": { "type": "array", "items": { "$ref": "#/$defs/prerequisite" } },
+    "domains": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/domain" }
+    },
+    "critical_journeys": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/journey" }
+    },
+    "finding_dispositions": { "type": "array", "items": { "$ref": "#/$defs/findingDisposition" } },
+    "rollback_readiness": { "$ref": "#/$defs/rollback" },
+    "hard_gate_policy_ref": { "type": "string", "minLength": 1 },
+    "report_view_ref": { "type": "string", "minLength": 1 }
+  },
+  "$defs": {
+    "nullableString": { "type": ["string", "null"], "maxLength": 500 },
+    "nullableLabel": { "type": ["string", "null"], "maxLength": 120 },
+    "nullableDateTime": { "type": ["string", "null"], "format": "date-time" },
+    "nullableSha": {
+      "oneOf": [{ "type": "null" }, { "type": "string", "pattern": "^[a-fA-F0-9]{40}$" }]
+    },
+    "referenceList": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 160 }
+    },
+    "status": {
+      "enum": ["NOT_READY", "UNTESTED", "BLOCKED", "PARTIAL", "PASS", "FAIL", "DEFERRED"]
+    },
+    "applicability": { "enum": ["REQUIRED", "CONDITIONAL", "UNRESOLVED", "OUT_OF_SCOPE"] },
+    "rcApplicability": {
+      "enum": ["NOT_ASSESSED", "EXACT_RC", "HISTORICAL_SUPPORTING_ONLY", "NOT_APPLICABLE"]
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "candidate_ref",
+        "kind",
+        "applicability",
+        "environment",
+        "verified_at",
+        "verifier_role_label",
+        "note"
+      ],
+      "properties": {
+        "ref": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "candidate_ref": { "$ref": "#/$defs/nullableLabel" },
+        "kind": {
+          "enum": [
+            "ACCEPTANCE",
+            "DEPLOYMENT",
+            "CONFIGURATION",
+            "TEST_RUN",
+            "ROLLBACK",
+            "APPROVAL",
+            "OTHER"
+          ]
+        },
+        "applicability": { "$ref": "#/$defs/rcApplicability" },
+        "environment": { "$ref": "#/$defs/nullableLabel" },
+        "verified_at": { "$ref": "#/$defs/nullableDateTime" },
+        "verifier_role_label": { "$ref": "#/$defs/nullableLabel" },
+        "note": { "type": "string", "maxLength": 500 }
+      }
+    },
+    "waiver": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "finding_ref",
+            "domain_id",
+            "severity",
+            "status",
+            "owner_approval_role_label",
+            "rationale",
+            "bounded_exposure",
+            "mitigation",
+            "expires_or_review_point"
+          ],
+          "properties": {
+            "finding_ref": { "type": "string", "minLength": 1 },
+            "domain_id": { "type": "string", "minLength": 1 },
+            "severity": { "const": "P1" },
+            "status": { "enum": ["APPROVED", "REJECTED", "EXPIRED"] },
+            "owner_approval_role_label": { "type": "string", "minLength": 1, "maxLength": 120 },
+            "rationale": { "type": "string", "minLength": 1, "maxLength": 1000 },
+            "bounded_exposure": { "type": "string", "minLength": 1, "maxLength": 1000 },
+            "mitigation": { "type": "string", "minLength": 1, "maxLength": 1000 },
+            "expires_or_review_point": { "type": "string", "minLength": 1, "maxLength": 200 }
+          }
+        }
+      ]
+    },
+    "releaseCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_label",
+        "candidate_version",
+        "identity_status",
+        "environment",
+        "frontend_revisions",
+        "backend_revision",
+        "scanner_release",
+        "deployment_provenance"
+      ],
+      "properties": {
+        "candidate_label": { "$ref": "#/$defs/nullableLabel" },
+        "candidate_version": { "$ref": "#/$defs/nullableLabel" },
+        "identity_status": { "enum": ["NOT_ESTABLISHED", "ESTABLISHED", "INVALIDATED"] },
+        "environment": { "const": "PRODUCTION_INTENDED" },
+        "frontend_revisions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["surface", "sha", "deployment_ref", "provenance_ref"],
+            "properties": {
+              "surface": { "enum": ["guest", "partner", "admin", "scanner", "other"] },
+              "sha": { "$ref": "#/$defs/nullableSha" },
+              "deployment_ref": { "$ref": "#/$defs/nullableString" },
+              "provenance_ref": { "$ref": "#/$defs/nullableString" }
+            }
+          }
+        },
+        "backend_revision": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sha", "deployment_ref", "provenance_ref"],
+          "properties": {
+            "sha": { "$ref": "#/$defs/nullableSha" },
+            "deployment_ref": { "$ref": "#/$defs/nullableString" },
+            "provenance_ref": { "$ref": "#/$defs/nullableString" }
+          }
+        },
+        "scanner_release": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "applicability",
+            "build_version",
+            "revision",
+            "deployment_ref",
+            "provenance_ref"
+          ],
+          "properties": {
+            "applicability": { "enum": ["REQUIRED", "NOT_APPLICABLE", "UNRESOLVED"] },
+            "build_version": { "$ref": "#/$defs/nullableLabel" },
+            "revision": { "$ref": "#/$defs/nullableString" },
+            "deployment_ref": { "$ref": "#/$defs/nullableString" },
+            "provenance_ref": { "$ref": "#/$defs/nullableString" }
+          }
+        },
+        "deployment_provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "evidence_refs", "verified_by_role_label", "verified_at", "notes"],
+          "properties": {
+            "status": { "enum": ["UNVERIFIED", "VERIFIED", "CONFLICTING"] },
+            "evidence_refs": { "$ref": "#/$defs/referenceList" },
+            "verified_by_role_label": { "$ref": "#/$defs/nullableLabel" },
+            "verified_at": { "$ref": "#/$defs/nullableDateTime" },
+            "notes": { "type": "string", "maxLength": 500 }
+          }
+        }
+      }
+    },
+    "launchScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "approved_scope_ref",
+        "excluded_scope_ref",
+        "approved_by_role_label",
+        "approved_at",
+        "notes"
+      ],
+      "properties": {
+        "status": { "enum": ["UNRESOLVED", "APPROVED", "REJECTED"] },
+        "approved_scope_ref": { "$ref": "#/$defs/nullableString" },
+        "excluded_scope_ref": { "$ref": "#/$defs/nullableString" },
+        "approved_by_role_label": { "$ref": "#/$defs/nullableLabel" },
+        "approved_at": { "$ref": "#/$defs/nullableDateTime" },
+        "notes": { "type": "array", "items": { "type": "string", "maxLength": 500 } }
+      }
+    },
+    "productionConfiguration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "readiness_status",
+        "reference",
+        "fingerprint",
+        "fingerprint_method",
+        "captured_by_role_label",
+        "captured_at",
+        "checks"
+      ],
+      "properties": {
+        "readiness_status": { "enum": ["NOT_READY", "UNTESTED", "READY", "FAIL"] },
+        "reference": { "$ref": "#/$defs/nullableString" },
+        "fingerprint": { "$ref": "#/$defs/nullableString" },
+        "fingerprint_method": { "$ref": "#/$defs/nullableLabel" },
+        "captured_by_role_label": { "$ref": "#/$defs/nullableLabel" },
+        "captured_at": { "$ref": "#/$defs/nullableDateTime" },
+        "checks": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/configCheck" } }
+      }
+    },
+    "configCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "applies",
+        "status",
+        "evidence_refs",
+        "configuration_version_or_fingerprint",
+        "verified_by_role_label",
+        "verified_at",
+        "blocker",
+        "notes"
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{2,79}$" },
+        "applies": { "$ref": "#/$defs/applicability" },
+        "status": { "enum": ["UNTESTED", "READY", "BLOCKED", "FAIL", "DEFERRED"] },
+        "evidence_refs": { "$ref": "#/$defs/referenceList" },
+        "configuration_version_or_fingerprint": { "$ref": "#/$defs/nullableString" },
+        "verified_by_role_label": { "$ref": "#/$defs/nullableLabel" },
+        "verified_at": { "$ref": "#/$defs/nullableDateTime" },
+        "blocker": { "$ref": "#/$defs/nullableString" },
+        "notes": { "type": "array", "items": { "type": "string", "maxLength": 500 } }
+      }
+    },
+    "prerequisite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "status", "evidence_refs", "blocker"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{2,79}$" },
+        "status": { "$ref": "#/$defs/status" },
+        "evidence_refs": { "$ref": "#/$defs/referenceList" },
+        "blocker": { "$ref": "#/$defs/nullableString" }
+      }
+    },
+    "domain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "launch_scope",
+        "status",
+        "required_evidence",
+        "acceptance_refs",
+        "finding_refs",
+        "exact_rc_applicability",
+        "evidence_provenance",
+        "last_verified_at",
+        "blockers",
+        "waiver",
+        "notes"
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,79}$" },
+        "launch_scope": { "$ref": "#/$defs/applicability" },
+        "status": { "$ref": "#/$defs/status" },
+        "required_evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+        },
+        "acceptance_refs": { "$ref": "#/$defs/referenceList" },
+        "finding_refs": { "$ref": "#/$defs/referenceList" },
+        "exact_rc_applicability": { "$ref": "#/$defs/rcApplicability" },
+        "evidence_provenance": { "type": "array", "items": { "$ref": "#/$defs/provenance" } },
+        "last_verified_at": { "$ref": "#/$defs/nullableDateTime" },
+        "blockers": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 1000 }
+        },
+        "waiver": { "$ref": "#/$defs/waiver" },
+        "notes": { "type": "array", "items": { "type": "string", "maxLength": 500 } }
+      }
+    },
+    "journey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "launch_scope",
+        "status",
+        "same_object_identity",
+        "required_evidence",
+        "acceptance_refs",
+        "finding_refs",
+        "exact_rc_applicability",
+        "evidence_provenance",
+        "last_verified_at",
+        "blockers",
+        "notes"
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,99}$" },
+        "launch_scope": { "$ref": "#/$defs/applicability" },
+        "status": { "$ref": "#/$defs/status" },
+        "same_object_identity": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "required_evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+        },
+        "acceptance_refs": { "$ref": "#/$defs/referenceList" },
+        "finding_refs": { "$ref": "#/$defs/referenceList" },
+        "exact_rc_applicability": { "$ref": "#/$defs/rcApplicability" },
+        "evidence_provenance": { "type": "array", "items": { "$ref": "#/$defs/provenance" } },
+        "last_verified_at": { "$ref": "#/$defs/nullableDateTime" },
+        "blockers": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 1000 }
+        },
+        "notes": { "type": "array", "items": { "type": "string", "maxLength": 500 } }
+      }
+    },
+    "findingDisposition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "finding_ref",
+        "severity",
+        "launch_relevance",
+        "disposition",
+        "owner_approval_role_label",
+        "rationale",
+        "mitigation",
+        "review_or_expiry"
+      ],
+      "properties": {
+        "finding_ref": { "type": "string", "minLength": 1 },
+        "severity": { "enum": ["P1", "P2", "P3"] },
+        "launch_relevance": { "enum": ["RELEVANT", "NOT_RELEVANT", "UNASSESSED"] },
+        "disposition": {
+          "enum": [
+            "FIX_BEFORE_LAUNCH",
+            "ACCEPTED_LAUNCH_RISK",
+            "FEATURE_DISABLED",
+            "OPERATIONAL_MITIGATION",
+            "DEFERRED",
+            "NOT_LAUNCH_RELEVANT"
+          ]
+        },
+        "owner_approval_role_label": { "$ref": "#/$defs/nullableLabel" },
+        "rationale": { "$ref": "#/$defs/nullableString" },
+        "mitigation": { "$ref": "#/$defs/nullableString" },
+        "review_or_expiry": { "$ref": "#/$defs/nullableString" }
+      }
+    },
+    "rollback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "previous_frontend_release_refs",
+        "previous_backend_release_ref",
+        "procedure_ref",
+        "authorized_operator_role_label",
+        "data_migration_considerations_ref",
+        "provider_configuration_rollback_ref",
+        "evidence_refs",
+        "verified_at",
+        "blocker"
+      ],
+      "properties": {
+        "status": { "$ref": "#/$defs/status" },
+        "previous_frontend_release_refs": { "$ref": "#/$defs/referenceList" },
+        "previous_backend_release_ref": { "$ref": "#/$defs/nullableString" },
+        "procedure_ref": { "$ref": "#/$defs/nullableString" },
+        "authorized_operator_role_label": { "$ref": "#/$defs/nullableLabel" },
+        "data_migration_considerations_ref": { "$ref": "#/$defs/nullableString" },
+        "provider_configuration_rollback_ref": { "$ref": "#/$defs/nullableString" },
+        "evidence_refs": { "$ref": "#/$defs/referenceList" },
+        "verified_at": { "$ref": "#/$defs/nullableDateTime" },
+        "blocker": { "$ref": "#/$defs/nullableString" }
+      }
+    }
+  }
+}

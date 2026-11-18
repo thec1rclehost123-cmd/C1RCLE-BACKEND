@@ -1,0 +1,431 @@
+{
+  "schema_version": 1,
+  "last_updated": "2026-11-18",
+  "summary": {
+    "total": 7,
+    "by_status": {
+      "OPEN": 2,
+      "INVESTIGATING": 0,
+      "PLANNED": 0,
+      "FIXING": 0,
+      "PR_OPEN": 0,
+      "MERGED": 4,
+      "DEPLOYED": 0,
+      "REACCEPTANCE_REQUIRED": 0,
+      "CLOSED": 0,
+      "DEFERRED": 1,
+      "WONT_FIX": 0,
+      "REGRESSION": 0
+    },
+    "by_severity": {
+      "P0": 0,
+      "P1": 0,
+      "P2": 7,
+      "P3": 0
+    },
+    "by_area": {
+      "GUEST": 5,
+      "PARTNER": 2,
+      "PROMOTER": 0,
+      "SCANNER": 0,
+      "ADMIN": 0,
+      "CROSS": 0
+    }
+  },
+  "metadata": {
+    "status_values": {
+      "OPEN": "Observed and awaiting investigation.",
+      "INVESTIGATING": "Evidence or cause is under investigation.",
+      "PLANNED": "Remediation is scheduled.",
+      "FIXING": "Remediation is in progress.",
+      "PR_OPEN": "A fix PR is open.",
+      "MERGED": "The fix is merged.",
+      "DEPLOYED": "The fix is verified on its target deployment.",
+      "REACCEPTANCE_REQUIRED": "Targeted verification remains due after deployment.",
+      "CLOSED": "Closure criteria are met and recorded.",
+      "DEFERRED": "Scheduled outside the current scope.",
+      "WONT_FIX": "The owner explicitly accepts leaving the issue as is.",
+      "REGRESSION": "A previously closed defect has returned."
+    },
+    "severity_values": {
+      "P0": "Catastrophic launch blocker, including serious exposure, corruption or broad critical unavailability.",
+      "P1": "Critical workflow broken or unsafe. Launch is blocked until resolved.",
+      "P2": "Important issue normally addressed before launch or before the affected milestone closes.",
+      "P3": "Lower-risk defect, polish or debt that may be scheduled later."
+    },
+    "root_cause_status_values": {
+      "UNKNOWN": "No cause established.",
+      "SUSPECTED": "Plausible explanation supported by incomplete evidence.",
+      "CONFIRMED": "Evidence demonstrates the causal mechanism for the stated scope."
+    },
+    "acceptance_state": "ACCEPTANCE_STATE.json",
+    "evidence_taxonomy": "Use metadata.evidence_levels from ACCEPTANCE_STATE.json. Evidence levels describe observations and are separate from source type.",
+    "links": "Resolve acceptance_item_refs to item IDs in ACCEPTANCE_STATE.json. Resolve source_refs prefixed with acceptance: in its sources registry. Unprefixed refs resolve in this file. Legacy aliases identify the same finding. Related finding references preserve historical context without asserting equivalence.",
+    "scope": "Record observed findings. Keep untested capabilities and setup debt in Acceptance State. Seed severities are scoped to the available impact evidence.",
+    "lifecycle": "Keep IDs permanent. Append dated status/evidence transitions to history and regenerate summary counts after edits. Use null for unknown dates or revisions.",
+    "regression_rule": "If a closed defect recurs, use the same ID, set status to REGRESSION and append the new evidence. Preserve prior closure and re-acceptance history.",
+    "closure_rule": "For hosted defects, record the merged fix, verified deployed revision(s), successful targeted hosted re-acceptance and the absence of outstanding contradictory higher-quality evidence before closing. For local or CI defects use evidence appropriate to the original scope. Record result, provenance and why closure is valid.",
+    "history_entry_fields": ["at", "status", "source_refs", "note"],
+    "reacceptance_result_fields": [
+      "status",
+      "tested_at",
+      "environment",
+      "frontend_sha",
+      "backend_sha",
+      "evidence_levels",
+      "source_refs",
+      "summary"
+    ]
+  },
+  "sources": {
+    "step3": {
+      "type": "owner_report",
+      "locator": "~/.codex/attachments/fd703271-1b7e-457c-923b-024f8d6f8886/Pasted text.txt",
+      "note": "Agent Harness Step 3, section 11. Owner decisions and current diagnostic and staging observations."
+    }
+  },
+  "findings": [
+    {
+      "id": "GUEST-PRICING-001",
+      "area": "GUEST",
+      "domain": "PRICING",
+      "title": "Inconsistent From price and CTA on mixed Free/Paid events",
+      "severity": "P2",
+      "status": "MERGED",
+      "first_observed": null,
+      "environment": "staging",
+      "summary": "Public event surfaces disagreed about starting price and sometimes implied an RSVP-only event.",
+      "expected_behavior": "From equals the lowest currently available admission price, including zero. Mixed events retain discoverable paid tiers and a CTA that leads to ticket selection.",
+      "observed_behavior": "A mixed event showed conflicting price summaries and Event Detail could show RSVP for free despite paid tiers being available.",
+      "evidence_levels": ["STAGING_BROWSER"],
+      "source_refs": [
+        "acceptance:guest_remediation",
+        "step3",
+        "acceptance:guest_regression_be202_pr",
+        "acceptance:guest_regression_fe131_pr",
+        "acceptance:guest_regression_be202_ci",
+        "acceptance:guest_regression_fe131_ci"
+      ],
+      "acceptance_item_refs": ["guest.event-price-cta"],
+      "legacy_aliases": ["F1"],
+      "related_finding_refs": [],
+      "root_cause_status": "UNKNOWN",
+      "root_cause": null,
+      "owner_decision": "Apply the lowest currently available admission rule on all event surfaces. Include Free and keep paid options visible.",
+      "remediation": {
+        "summary": "The frontend remediation is merged in #131; paired backend #202 is also merged. CI passed. Staging deployment and targeted hosted re-acceptance remain unverified.",
+        "frontend_pr": "https://github.com/thec1rclehost123-cmd/C1RCLE-FRONTEND/pull/131",
+        "backend_pr": "https://github.com/thec1rclehost123-cmd/C1RCLE-BACKEND/pull/202",
+        "frontend_fix_sha": "78bfb7c1f4739538f06fb74d4e6abbaabc3b72d5",
+        "backend_fix_sha": "e114fd2fef274c81ddadbac6d2c82cf198e49b05",
+        "deployed_frontend_sha": null,
+        "deployed_backend_sha": null
+      },
+      "reacceptance": {
+        "required": true,
+        "scope": "On staging compare Home, Explore, Search and Event Detail for free-only, paid-only and mixed tiers. Check active phases, unavailable or exhausted cheap tiers, From Free and access to paid choices.",
+        "result": null
+      },
+      "closed_at": null,
+      "history": [
+        {
+          "at": "2026-11-18",
+          "status": "MERGED",
+          "source_refs": [
+            "acceptance:guest_regression_be202_pr",
+            "acceptance:guest_regression_fe131_pr",
+            "acceptance:guest_regression_be202_ci",
+            "acceptance:guest_regression_fe131_ci"
+          ],
+          "note": "Paired remediation merged into staging and CI passed. No staging deployment provenance or targeted hosted re-acceptance is recorded; finding remains open."
+        }
+      ],
+      "notes": null
+    },
+    {
+      "id": "GUEST-EVENT-001",
+      "area": "GUEST",
+      "domain": "EVENT",
+      "title": "Ended sale presented as temporary event unavailability",
+      "severity": "P2",
+      "status": "MERGED",
+      "first_observed": null,
+      "environment": "staging",
+      "summary": "A valid event lifecycle outcome was rendered as a generic outage.",
+      "expected_behavior": "Render the actual sale or event state and close purchase/RSVP where applicable. Keep legitimate ended events accessible by direct URL, Search, Wallet History and existing historical profile/account surfaces where visibility permits. Upcoming Explore can omit them. Handle removed, private and moderated events separately.",
+      "observed_behavior": "The backend reported ended online sales while Event Detail displayed Event temporarily unavailable.",
+      "evidence_levels": ["STAGING_BROWSER"],
+      "source_refs": [
+        "acceptance:guest_remediation",
+        "step3",
+        "acceptance:guest_regression_be202_pr",
+        "acceptance:guest_regression_fe131_pr",
+        "acceptance:guest_regression_be202_ci",
+        "acceptance:guest_regression_fe131_ci"
+      ],
+      "acceptance_item_refs": ["guest.event-lifecycle"],
+      "legacy_aliases": ["F2"],
+      "related_finding_refs": [],
+      "root_cause_status": "SUSPECTED",
+      "root_cause": "The reported shared API-client 409 boundary can lose the event_not_on_sale domain code. The referenced material does not trace that loss all the way to the observed render.",
+      "owner_decision": "Preserve visible historical events with closed admission and distinct access/visibility behavior.",
+      "remediation": {
+        "summary": "The paired remediation is merged in backend #202 and frontend #131. CI passed. Staging deployment and targeted hosted re-acceptance remain unverified.",
+        "frontend_pr": "https://github.com/thec1rclehost123-cmd/C1RCLE-FRONTEND/pull/131",
+        "backend_pr": "https://github.com/thec1rclehost123-cmd/C1RCLE-BACKEND/pull/202",
+        "frontend_fix_sha": "78bfb7c1f4739538f06fb74d4e6abbaabc3b72d5",
+        "backend_fix_sha": "e114fd2fef274c81ddadbac6d2c82cf198e49b05",
+        "deployed_frontend_sha": null,
+        "deployed_backend_sha": null
+      },
+      "reacceptance": {
+        "required": true,
+        "scope": "Verify upcoming, paused, sold-out and ended flows with precise messages, plus a genuine fetch failure. Follow ended-event links from Search, direct URL and Wallet History where permitted.",
+        "result": null
+      },
+      "closed_at": null,
+      "history": [
+        {
+          "at": "2026-11-18",
+          "status": "MERGED",
+          "source_refs": [
+            "acceptance:guest_regression_be202_pr",
+            "acceptance:guest_regression_fe131_pr",
+            "acceptance:guest_regression_be202_ci",
+            "acceptance:guest_regression_fe131_ci"
+          ],
+          "note": "Paired remediation merged into staging and CI passed. No staging deployment provenance or targeted hosted re-acceptance is recorded; finding remains open."
+        }
+      ],
+      "notes": null
+    },
+    {
+      "id": "GUEST-DISCOVERY-001",
+      "area": "GUEST",
+      "domain": "DISCOVERY",
+      "title": "Explore and Search fail when discovery exceeds the render budget",
+      "severity": "P2",
+      "status": "MERGED",
+      "first_observed": null,
+      "environment": "staging",
+      "summary": "Hosted Explore and Search produced a generic React Server Components failure.",
+      "expected_behavior": "Both pages render valid discovery data or present an actionable recoverable state if loading fails.",
+      "observed_behavior": "Hosted Explore and Search failed with React error #441 while Home/direct event entry remained reachable.",
+      "evidence_levels": ["STAGING_BROWSER"],
+      "source_refs": [
+        "acceptance:guest_remediation",
+        "step3",
+        "acceptance:guest_regression_be202_pr",
+        "acceptance:guest_regression_fe131_pr",
+        "acceptance:guest_regression_be202_ci",
+        "acceptance:guest_regression_fe131_ci"
+      ],
+      "acceptance_item_refs": ["guest.discovery"],
+      "legacy_aliases": [],
+      "related_finding_refs": [],
+      "root_cause_status": "CONFIRMED",
+      "root_cause": "The owner reports a reproduced request where public discovery took about 5.17 seconds against a 4-second loader budget. The abort produced the generic React failure. This establishes the crash mechanism for that reproduction.",
+      "owner_decision": null,
+      "remediation": {
+        "summary": "The paired remediation is merged in backend #202 and frontend #131. CI passed. Staging deployment and targeted hosted re-acceptance remain unverified.",
+        "frontend_pr": "https://github.com/thec1rclehost123-cmd/C1RCLE-FRONTEND/pull/131",
+        "backend_pr": "https://github.com/thec1rclehost123-cmd/C1RCLE-BACKEND/pull/202",
+        "frontend_fix_sha": "78bfb7c1f4739538f06fb74d4e6abbaabc3b72d5",
+        "backend_fix_sha": "e114fd2fef274c81ddadbac6d2c82cf198e49b05",
+        "deployed_frontend_sha": null,
+        "deployed_backend_sha": null
+      },
+      "reacceptance": {
+        "required": true,
+        "scope": "On staging exercise both pages with representative data and filters. Verify slow or timed-out discovery produces a recoverable state without a generic React crash.",
+        "result": null
+      },
+      "closed_at": null,
+      "history": [
+        {
+          "at": "2026-11-18",
+          "status": "MERGED",
+          "source_refs": [
+            "acceptance:guest_regression_be202_pr",
+            "acceptance:guest_regression_fe131_pr",
+            "acceptance:guest_regression_be202_ci",
+            "acceptance:guest_regression_fe131_ci"
+          ],
+          "note": "Paired remediation merged into staging and CI passed. No staging deployment provenance or targeted hosted re-acceptance is recorded; finding remains open."
+        }
+      ],
+      "notes": "Discovery latency needs separate performance evidence. A successful rendering retest establishes crash recovery only."
+    },
+    {
+      "id": "GUEST-RSVP-001",
+      "area": "GUEST",
+      "domain": "RSVP",
+      "title": "Cancelled Free RSVP blocks a legitimate re-RSVP",
+      "severity": "P2",
+      "status": "MERGED",
+      "first_observed": null,
+      "environment": "staging",
+      "summary": "The cancellation appeared in History, but a later claim restored no current admission.",
+      "expected_behavior": "An eligible Guest can claim again after cancellation, with one active entitlement, truthful cancellation history, correct capacity and idempotent retries.",
+      "observed_behavior": "Current Passes lost the cancelled RSVP and History showed it. One subsequent RSVP attempt reported already on the list, with no current pass restored.",
+      "evidence_levels": ["STAGING_BROWSER"],
+      "source_refs": [
+        "acceptance:guest_remediation",
+        "step3",
+        "acceptance:guest_regression_be202_pr",
+        "acceptance:guest_regression_fe131_pr",
+        "acceptance:guest_regression_be202_ci",
+        "acceptance:guest_regression_fe131_ci"
+      ],
+      "acceptance_item_refs": ["guest.rsvp"],
+      "legacy_aliases": ["F6"],
+      "related_finding_refs": [],
+      "root_cause_status": "SUSPECTED",
+      "root_cause": "The investigation implicates deterministic Guest/event RSVP identity and cancelled-state handling. The referenced material does not establish the exact branch or write that caused the result.",
+      "owner_decision": null,
+      "remediation": {
+        "summary": "The backend rebooking and frontend cancellation-route remediation are merged in #202 and #131. CI passed. Staging deployment and targeted hosted re-acceptance remain unverified.",
+        "frontend_pr": "https://github.com/thec1rclehost123-cmd/C1RCLE-FRONTEND/pull/131",
+        "backend_pr": "https://github.com/thec1rclehost123-cmd/C1RCLE-BACKEND/pull/202",
+        "frontend_fix_sha": "78bfb7c1f4739538f06fb74d4e6abbaabc3b72d5",
+        "backend_fix_sha": "e114fd2fef274c81ddadbac6d2c82cf198e49b05",
+        "deployed_frontend_sha": null,
+        "deployed_backend_sha": null
+      },
+      "reacceptance": {
+        "required": true,
+        "scope": "Run RSVP → cancel → re-RSVP. Verify exactly one active entitlement, truthful cancellation history, the expected capacity changes and safe repeat submissions.",
+        "result": null
+      },
+      "closed_at": null,
+      "history": [
+        {
+          "at": "2026-11-18",
+          "status": "MERGED",
+          "source_refs": [
+            "acceptance:guest_regression_be202_pr",
+            "acceptance:guest_regression_fe131_pr",
+            "acceptance:guest_regression_be202_ci",
+            "acceptance:guest_regression_fe131_ci"
+          ],
+          "note": "Paired remediation merged into staging and CI passed. No staging deployment provenance or targeted hosted re-acceptance is recorded; finding remains open."
+        }
+      ],
+      "notes": null
+    },
+    {
+      "id": "GUEST-WALLET-001",
+      "area": "GUEST",
+      "domain": "WALLET",
+      "title": "Tickets takes about 11–14 seconds to show useful content",
+      "severity": "P2",
+      "status": "DEFERRED",
+      "first_observed": null,
+      "environment": "staging",
+      "summary": "Hosted Tickets/Wallet loads were slow in some observed passes.",
+      "expected_behavior": "Ticket content is available promptly. Establish a measured baseline and performance target during the scheduled pass.",
+      "observed_behavior": "Some hosted passes took approximately 11–14 seconds to useful Tickets content.",
+      "evidence_levels": ["STAGING_BROWSER"],
+      "source_refs": ["acceptance:guest_remediation", "acceptance:guest_audit"],
+      "acceptance_item_refs": ["guest.tickets-performance"],
+      "legacy_aliases": ["F3"],
+      "related_finding_refs": [],
+      "root_cause_status": "UNKNOWN",
+      "root_cause": null,
+      "owner_decision": "Route to Guest M5 performance work, outside the current Guest correctness remediation.",
+      "remediation": {
+        "summary": null,
+        "frontend_pr": null,
+        "backend_pr": null,
+        "frontend_fix_sha": null,
+        "backend_fix_sha": null,
+        "deployed_frontend_sha": null,
+        "deployed_backend_sha": null
+      },
+      "reacceptance": {
+        "required": true,
+        "scope": "Measure time to useful Tickets content and request counts with representative staging wallets. Recheck after performance changes against the agreed target.",
+        "result": null
+      },
+      "closed_at": null,
+      "history": [],
+      "notes": null
+    },
+    {
+      "id": "PARTNER-AVAILABILITY-001",
+      "area": "PARTNER",
+      "domain": "AVAILABILITY",
+      "title": "Host cannot select known availability at a partnered Venue",
+      "severity": "P2",
+      "status": "OPEN",
+      "first_observed": null,
+      "environment": "staging",
+      "summary": "Host Create Event failed to expose an available partnered Venue window in the owner-observed staging case.",
+      "expected_behavior": "Eligible Hosts see and can select legitimate available windows for the partnered Venue and requested month.",
+      "observed_behavior": "Host Create Event showed No free time remains this month despite known legitimate available windows.",
+      "evidence_levels": ["STAGING_BROWSER"],
+      "source_refs": ["acceptance:step2", "step3"],
+      "acceptance_item_refs": ["partner.host.availability"],
+      "legacy_aliases": [],
+      "related_finding_refs": [],
+      "root_cause_status": "UNKNOWN",
+      "root_cause": null,
+      "owner_decision": "Investigate before Partner M3.",
+      "remediation": {
+        "summary": null,
+        "frontend_pr": null,
+        "backend_pr": null,
+        "frontend_fix_sha": null,
+        "backend_fix_sha": null,
+        "deployed_frontend_sha": null,
+        "deployed_backend_sha": null
+      },
+      "reacceptance": {
+        "required": true,
+        "scope": "Publish a disposable available window as the partnered Venue. Compare the Host calendar and editor in IST, select the window and submit the request.",
+        "result": null
+      },
+      "closed_at": null,
+      "history": [],
+      "notes": null
+    },
+    {
+      "id": "PARTNER-SLOT-001",
+      "area": "PARTNER",
+      "domain": "SLOT",
+      "title": "Venue Accept and Decline decisions are unreliable",
+      "severity": "P2",
+      "status": "OPEN",
+      "first_observed": null,
+      "environment": "staging",
+      "summary": "Owner-observed staging decisions were unreliable, including a prior server error on Decline.",
+      "expected_behavior": "An authorized Venue can accept or decline an eligible request with an accurate response, consistent persisted states and the correct downstream handoff.",
+      "observed_behavior": "The owner observed unreliable Accept and Decline actions. A prior Decline returned HTTP 500.",
+      "evidence_levels": ["STAGING_BROWSER"],
+      "source_refs": ["acceptance:step2", "acceptance:hosted_1", "step3"],
+      "acceptance_item_refs": ["partner.venue.slot-decision"],
+      "legacy_aliases": [],
+      "related_finding_refs": ["HA-035"],
+      "root_cause_status": "UNKNOWN",
+      "root_cause": null,
+      "owner_decision": "Investigate before Partner M3.",
+      "remediation": {
+        "summary": null,
+        "frontend_pr": null,
+        "backend_pr": null,
+        "frontend_fix_sha": null,
+        "backend_fix_sha": null,
+        "deployed_frontend_sha": null,
+        "deployed_backend_sha": null
+      },
+      "reacceptance": {
+        "required": true,
+        "scope": "Use separate disposable requests for Accept and Decline. Check response, persisted request/slot states, Host visibility, event and applicable assignment behavior, then refresh and retry safely.",
+        "result": null
+      },
+      "closed_at": null,
+      "history": [],
+      "notes": "HA-035 records a historical partial Accept commit involving a Promoter assignment. It is related historical evidence. A shared cause with the current Accept/Decline failures remains unverified."
+    }
+  ]
+}

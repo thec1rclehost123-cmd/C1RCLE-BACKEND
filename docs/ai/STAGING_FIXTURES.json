@@ -1,0 +1,962 @@
+{
+  "schema_version": 1,
+  "last_updated": "2026-11-17",
+  "environment": "staging",
+  "summary": {
+    "total": 28,
+    "fixture_count": 7,
+    "requirement_count": 21,
+    "fixture_health": {
+      "READY": 1,
+      "NEEDS_VERIFICATION": 6,
+      "CONSUMED": 0,
+      "STALE": 0,
+      "BROKEN": 0,
+      "RESERVED": 0
+    },
+    "by_mutability": {
+      "READ_ONLY": 10,
+      "REUSABLE": 2,
+      "DISPOSABLE": 15,
+      "CONSUMABLE": 1,
+      "UNKNOWN": 0
+    },
+    "by_area": {
+      "GUEST": 10,
+      "PARTNER": 10,
+      "PROMOTER": 2,
+      "SCANNER": 2,
+      "ADMIN": 1,
+      "CROSS_ROLE": 3
+    }
+  },
+  "metadata": {
+    "fixture_types": [
+      "EVENT",
+      "ACCOUNT",
+      "ORGANIZATION",
+      "RELATIONSHIP",
+      "AVAILABILITY",
+      "ORDER",
+      "PAYMENT_EVIDENCE",
+      "SCENARIO",
+      "CROSS_ROLE_SCENARIO"
+    ],
+    "mutability_values": {
+      "READ_ONLY": "Viewing and non-mutating reads only. Preserve historical state.",
+      "REUSABLE": "Use only approved actions that leave or restore known safe state. Verify after use.",
+      "DISPOSABLE": "Provision for authorized state-changing tests and replace after use.",
+      "CONSUMABLE": "One-time state. Mark consumed after use and select a fresh fixture.",
+      "UNKNOWN": "Mutation prohibited until the owner clarifies safety."
+    },
+    "health_values": {
+      "READY": "Suitable for its documented purpose and scope, including archived evidence.",
+      "NEEDS_VERIFICATION": "Locators, suitability or current staging state need verification. A requirement remains unprovisioned.",
+      "CONSUMED": "One-time or disposable state has been used.",
+      "STALE": "Known state no longer matches the documented test need.",
+      "BROKEN": "Fixture has a known blocking issue.",
+      "RESERVED": "Reserved for a named run. Consult reserved_for before use."
+    },
+    "kinds": {
+      "FIXTURE": "Known historical or current staging entity. Check its health before use.",
+      "HISTORICAL_EVIDENCE": "Preserved proof of an earlier journey for read-only inspection.",
+      "REQUIREMENT": "Unprepared or unbound scenario specification. Null locator means no usable staging record is established."
+    },
+    "selection_rule": [
+      "Search fixtures first for the scenario.",
+      "Use a matching READY fixture within its documented scope.",
+      "If only a matching NEEDS_VERIFICATION fixture exists, verify its current state before use.",
+      "If no suitable established fixture exists, consult requirements.",
+      "Use a requirement only after separate provisioning or binding, verification and promotion into fixtures.",
+      "Never invent a locator to satisfy a requirement.",
+      "Before use, check mutability, reservations and prior mutations. Before changing state, verify critical state and task authorization.",
+      "After the run, update health, provenance, reservations and known mutations."
+    ],
+    "fresh_fixture_rule": "When a test needs a clean state and current state is uncertain, use another approved synthetic fixture or prepare a fresh disposable fixture through normal product/API setup when separately authorized. Do not manually repair production-like records to force the expected state. Apply this to RSVP, slot decisions, invitations, claims, payments, transfers and refunds.",
+    "real_data_rule": "Use approved synthetic staging records for destructive acceptance. If only real customer or user data is available for the needed scenario, stop and ask the owner for authorization.",
+    "provider_rule": "Provider capability establishes suitability only. Payments, SMS, email and provider configuration changes require explicit task authorization.",
+    "provenance_rule": "Record the verification date and exact frontend/backend SHAs only when supported by evidence. Null means unavailable or inapplicable. A historical observation provides no assurance of current availability or sale state. Null reset_required means reset needs assessment.",
+    "links": "Resolve acceptance_item_refs in ACCEPTANCE_STATE.json and finding_refs in FINDINGS.json. Source refs prefixed with acceptance: resolve in the Acceptance State sources registry. Other source refs resolve below. fixture_refs link catalog dependencies across fixtures and requirements. Count the CROSS_ROLE area as the major integration scenarios.",
+    "promotion_rule": "After separate provisioning or binding and verification, promote the established record into fixtures. Keep the catalog ID where practical and preserve useful requirement or history references. Remove the superseded active requirement and keep dependency references resolvable."
+  },
+  "sources": {
+    "step4": {
+      "type": "owner_request",
+      "locator": "Agent Harness Step 4, sections 9–25",
+      "note": "Fixture policy, base requirements and owner-supplied historical fixture details."
+    }
+  },
+  "fixtures": [
+    {
+      "id": "guest_canonical_paid_event",
+      "area": "GUEST",
+      "type": "EVENT",
+      "kind": "FIXTURE",
+      "mutability": "READ_ONLY",
+      "health": "NEEDS_VERIFICATION",
+      "locator": {
+        "slug": "c1rcle-staging-acceptance-001",
+        "event_id": "ee1a67db-76f0-41e1-a193-30db88f0fd6c"
+      },
+      "purposes": [
+        "Canonical paid pricing and current-tier display",
+        "Read-only quantity display and promo quote comparison without a hold"
+      ],
+      "expected_state": {
+        "tier": "General Entry",
+        "currency": "INR",
+        "base_paise": 80000,
+        "observed_active_phase": "Early Bird",
+        "observed_active_price_paise": 65000,
+        "promo_code": "STAGE001",
+        "discount_paise": 6500,
+        "platform_fee_paise": 2925,
+        "payment_fee_paise": 1463,
+        "tax_paise": 790,
+        "total_paise": 63678,
+        "max_per_order": 4
+      },
+      "last_verified_at": "2026-11-16",
+      "last_verified_frontend_sha": "672e8f796e2bcc4f67fe5d2eb38f26cf11435035",
+      "last_verified_backend_sha": "7c181a07cf21c6dd9d9f6313a5f00f31b8b78d34",
+      "verification_source_refs": ["acceptance:publish_hosted"],
+      "source_refs": ["acceptance:publish_hosted", "acceptance:step2", "step4"],
+      "acceptance_item_refs": ["guest.quote", "guest.promo", "guest.quantity"],
+      "finding_refs": [],
+      "fixture_refs": ["guest_historical_paid_booking"],
+      "reserved_for": null,
+      "known_mutations": ["A prior authorized purchase consumed one General Entry unit."],
+      "reset_required": false,
+      "notes": "Prices and promotion reflect the verified acceptance quote. Recheck phase, promo and sellability before comparing current results. Holds and purchases can change canonical inventory. Use guest_disposable_paid_checkout for transactional acceptance."
+    },
+    {
+      "id": "guest_historical_paid_booking",
+      "area": "GUEST",
+      "type": "PAYMENT_EVIDENCE",
+      "kind": "HISTORICAL_EVIDENCE",
+      "mutability": "READ_ONLY",
+      "health": "READY",
+      "locator": {
+        "booking_id": "C1-108A0-06F92-2CE57-9E2B9",
+        "payment_reference": "pay_U1P50xonmRdZtO"
+      },
+      "purposes": [
+        "Reconcile the historical Razorpay Test Mode journey",
+        "Inspect recorded Wallet issuance and exact inventory movement with authorized read access"
+      ],
+      "expected_state": {
+        "provider": "Razorpay Test Mode",
+        "currency": "INR",
+        "total_paise": 63678,
+        "booking_confirmed": true,
+        "wallet_tickets_issued": 1,
+        "general_entry_inventory_before": 79,
+        "general_entry_inventory_after": 78
+      },
+      "last_verified_at": null,
+      "last_verified_frontend_sha": null,
+      "last_verified_backend_sha": null,
+      "verification_source_refs": ["acceptance:guest_remediation", "acceptance:step2"],
+      "source_refs": ["acceptance:guest_remediation", "acceptance:step2", "step4"],
+      "acceptance_item_refs": ["guest.paid-fulfillment"],
+      "finding_refs": [],
+      "fixture_refs": [],
+      "reserved_for": null,
+      "known_mutations": [
+        "Completed purchase issued one entitlement. Refresh and Wallet revisit did not duplicate it."
+      ],
+      "reset_required": false,
+      "notes": "READY applies to historical evidence. Preserve the booking, ticket and provider record. Cancellation, refund, replay and mutation are prohibited."
+    },
+    {
+      "id": "guest_ended_event",
+      "area": "GUEST",
+      "type": "EVENT",
+      "kind": "FIXTURE",
+      "mutability": "READ_ONLY",
+      "health": "NEEDS_VERIFICATION",
+      "locator": {
+        "slug": "halloween"
+      },
+      "purposes": [
+        "Ended-event direct URL",
+        "Closed sale presentation",
+        "Search and Wallet History linkage where permitted"
+      ],
+      "expected_state": {
+        "historical_lifecycle": "Previously ended November 14 per audit brief",
+        "visibility": "Recheck before testing current direct URL, search and history behavior"
+      },
+      "last_verified_at": null,
+      "last_verified_frontend_sha": null,
+      "last_verified_backend_sha": null,
+      "verification_source_refs": ["acceptance:guest_audit"],
+      "source_refs": ["acceptance:guest_audit", "step4"],
+      "acceptance_item_refs": ["guest.event-lifecycle"],
+      "finding_refs": ["GUEST-EVENT-001"],
+      "fixture_refs": [],
+      "reserved_for": null,
+      "known_mutations": [],
+      "reset_required": false,
+      "notes": "Verify current lifecycle and visibility before use. Preserve the historical event."
+    },
+    {
+      "id": "guest_rsvp_only_event",
+      "area": "GUEST",
+      "type": "EVENT",
+      "kind": "FIXTURE",
+      "mutability": "READ_ONLY",
+      "health": "NEEDS_VERIFICATION",
+      "locator": {
+        "slug": "qa-host-slot-03-rsvp-only"
+      },
+      "purposes": [
+        "Read-only Free RSVP event and capacity inspection",
+        "Locate historical RSVP lifecycle evidence"
+      ],
+      "expected_state": {
+        "historical_admission": "Free RSVP only",
+        "historical_capacity": 75
+      },
+      "last_verified_at": null,
+      "last_verified_frontend_sha": null,
+      "last_verified_backend_sha": null,
+      "verification_source_refs": ["acceptance:guest_audit"],
+      "source_refs": ["acceptance:guest_audit", "acceptance:guest_remediation", "step4"],
+      "acceptance_item_refs": ["guest.rsvp"],
+      "finding_refs": ["GUEST-RSVP-001"],
+      "fixture_refs": [],
+      "reserved_for": null,
+      "known_mutations": [
+        "Prior QA RSVP interactions changed account/event state. The hosted failure involved a cancelled RSVP in History followed by an unsuccessful re-RSVP."
+      ],
+      "reset_required": null,
+      "notes": "Existing event/account pairs may retain deterministic RSVP history. Treat this fixture as read-only. Use a fresh disposable pairing for clean lifecycle acceptance."
+    },
+    {
+      "id": "guest_complete_account",
+      "area": "GUEST",
+      "type": "ACCOUNT",
+      "kind": "FIXTURE",
+      "mutability": "REUSABLE",
+      "health": "NEEDS_VERIFICATION",
+      "locator": {
+        "label": "Guest Complete (Account A)",
+        "credential_ref": "C1RCLE_QA_GUEST_COMPLETE"
+      },
+      "purposes": [
+        "Normal authenticated Guest acceptance",
+        "Inspect owned orders, tickets and Wallet history"
+      ],
+      "expected_state": {
+        "synthetic": true,
+        "onboarding": "complete",
+        "account_profile": "Preserve established profile and verification state"
+      },
+      "last_verified_at": null,
+      "last_verified_frontend_sha": null,
+      "last_verified_backend_sha": null,
+      "verification_source_refs": ["acceptance:guest_audit"],
+      "source_refs": ["acceptance:guest_audit", "acceptance:guest_remediation", "step4"],
+      "acceptance_item_refs": ["guest.session", "guest.auth-return"],
+      "finding_refs": [],
+      "fixture_refs": [],
+      "reserved_for": null,
+      "known_mutations": [],
+      "reset_required": null,
+      "notes": "Credential reference is a logical lookup label. Verify approved access and current profile readiness before use. Keep order, RSVP and provider mutations on separately approved fixture state."
+    },
+    {
+      "id": "partner_historical_test_host",
+      "area": "PARTNER",
+      "type": "ORGANIZATION",
+      "kind": "FIXTURE",
+      "mutability": "READ_ONLY",
+      "health": "NEEDS_VERIFICATION",
+      "locator": {
+        "label": "Test Host",
+        "organization_id": "onboarding_485a79c6-cfe4-44c6-bd0e-441850a6732a"
+      },
+      "purposes": ["Historical canonical event ownership read"],
+      "expected_state": {
+        "role": "Host",
+        "relationship_to_event": "Owner in historical evidence"
+      },
+      "last_verified_at": "2026-11-16",
+      "last_verified_frontend_sha": "672e8f796e2bcc4f67fe5d2eb38f26cf11435035",
+      "last_verified_backend_sha": "7c181a07cf21c6dd9d9f6313a5f00f31b8b78d34",
+      "verification_source_refs": ["acceptance:publish_hosted"],
+      "source_refs": ["acceptance:publish_hosted"],
+      "acceptance_item_refs": ["cross-system.publication-handoff"],
+      "finding_refs": [],
+      "fixture_refs": ["guest_canonical_paid_event"],
+      "reserved_for": null,
+      "known_mutations": [],
+      "reset_required": false,
+      "notes": "Use as a historical read reference. Current membership, credentials and availability for Host A are independent requirements."
+    },
+    {
+      "id": "partner_historical_test_venue",
+      "area": "PARTNER",
+      "type": "ORGANIZATION",
+      "kind": "FIXTURE",
+      "mutability": "READ_ONLY",
+      "health": "NEEDS_VERIFICATION",
+      "locator": {
+        "label": "Test Venue",
+        "organization_id": "onboarding_venue_ffec3346-ccf1-47c1-a4a8-4eb2587f8349"
+      },
+      "purposes": ["Historical Venue association and matching event-read inspection"],
+      "expected_state": {
+        "role": "Venue",
+        "relationship_to_event": "Physical Venue association in historical evidence"
+      },
+      "last_verified_at": "2026-11-16",
+      "last_verified_frontend_sha": "672e8f796e2bcc4f67fe5d2eb38f26cf11435035",
+      "last_verified_backend_sha": "7c181a07cf21c6dd9d9f6313a5f00f31b8b78d34",
+      "verification_source_refs": ["acceptance:publish_hosted"],
+      "source_refs": ["acceptance:publish_hosted"],
+      "acceptance_item_refs": ["cross-system.publication-handoff"],
+      "finding_refs": [],
+      "fixture_refs": ["guest_canonical_paid_event"],
+      "reserved_for": null,
+      "known_mutations": [],
+      "reset_required": false,
+      "notes": "Use as a historical read reference. Current membership, credentials and new availability for Venue A require independent setup and verification."
+    }
+  ],
+  "requirements": [
+    {
+      "id": "guest_disposable_paid_checkout",
+      "area": "GUEST",
+      "type": "SCENARIO",
+      "kind": "REQUIREMENT",
+      "mutability": "DISPOSABLE",
+      "health": "NEEDS_VERIFICATION",
+      "locator": null,
+      "purposes": [
+        "Future authorized Razorpay Test Mode purchase",
+        "Reconcile order, inventory and Wallet fulfillment"
+      ],
+      "expected_state": {
+        "event": "Fresh synthetic event or purchase allocation approved for consuming inventory",
+        "account": "Approved complete synthetic Guest with clean purchase state",
+        "provider": "Razorpay Test Mode",
+        "baseline": "Known tier inventory and quote, with expected one-time decrement and one entitlement"
+      },
+      "last_verified_at": null,
+      "last_verified_frontend_sha": null,
+      "last_verified_backend_sha": null,
+      "verification_source_refs": [],
+      "source_refs": ["acceptance:step2", "step4"],
+      "acceptance_item_refs": ["guest.paid-fulfillment", "guest.payment-recovery"],
+      "finding_refs": [],
+      "fixture_refs": ["guest_complete_account"],
+      "reserved_for": null,
+      "known_mutations": [],
+      "reset_required": null,
+      "notes": "Prepare separate disposable state for retry, expiry, refund or replay scenarios. Provider actions require explicit authorization."
+    },
+    {
+      "id": "guest_fresh_rsvp_lifecycle",
+      "area": "GUEST",
+      "type": "SCENARIO",
+      "kind": "REQUIREMENT",
+      "mutability": "DISPOSABLE",
+      "health": "NEEDS_VERIFICATION",
+      "locator": null,
+      "purposes": ["Clean RSVP, cancel and re-RSVP acceptance"],
+      "expected_state": {
+        "event": "Disposable synthetic Free RSVP event with known available capacity",
+        "account": "Approved synthetic Guest with no RSVP, order or ticket history for this event",
+        "outcome": "One active entitlement after reclaim, truthful cancellation history and correct capacity under retry"
+      },
+      "last_verified_at": null,
+      "last_verified_frontend_sha": null,
+      "last_verified_backend_sha": null,
+      "verification_source_refs": [],
+      "source_refs": ["acceptance:guest_remediation", "step4"],
+      "acceptance_item_refs": ["guest.rsvp"],
+      "finding_refs": ["GUEST-RSVP-001"],
+      "fixture_refs": [],
+      "reserved_for": null,
+      "known_mutations": [],
+      "reset_required": null,
+      "notes": "Prepare an entirely fresh pairing under separate authorization. Prior RSVP history is part of the historical fixture and should be preserved."
+    },
+    {
+      "id": "guest_mixed_free_paid",
+      "area": "GUEST",
+      "type": "EVENT",
+      "kind": "REQUIREMENT",
+      "mutability": "DISPOSABLE",
+      "health": "NEEDS_VERIFICATION",
+      "locator": null,
+      "purposes": [
+        "From Free and mixed paid CTA truth",
+        "Mixed-ticket discovery, detail and quantity selection"
+      ],
+      "expected_state": {
+        "visibility": "Public synthetic QA event",
+        "tiers": "At least one currently available Free tier and one currently available paid tier",
+        "capacity": "Both tiers have enough sellable inventory for the planned checks"
+      },
+      "last_verified_at": null,
+      "last_verified_frontend_sha": null,
+      "last_verified_backend_sha": null,
+      "verification_source_refs": [],
+      "source_refs": ["acceptance:hosted_1", "acceptance:guest_remediation", "step4"],
+      "acceptance_item_refs": ["guest.event-price-cta", "guest.discovery"],
+      "finding_refs": ["GUEST-PRICING-001", "GUEST-DISCOVERY-001"],
+      "fixture_refs": [],
+      "reserved_for": null,
+      "known_mutations": [],
+      "reset_required": null,
+      "notes": "Historical candidate M15-CROSS-E2E-20261030 had Free RSVP and paid General Entry. Its stable slug/ID and current sellable state were not established in the reviewed evidence."
+    },
+    {
+      "id": "guest_couple_ticket",
+      "area": "GUEST",
+      "type": "EVENT",
+      "kind": "REQUIREMENT",
+      "mutability": "DISPOSABLE",
+      "health": "NEEDS_VERIFICATION",
+      "locator": null,
+      "purposes": ["Couple ticket selection, acknowledgement and door handoff"],
+      "expected_state": {
+        "event": "Approved synthetic event with a sellable Couple tier",
+        "admission": "One male and one female admission requirement",
+        "buyer_acknowledgement": true,
+        "profile_gender_authorizes_purchase": false,
+        "scanner": "Display and enforce the admission requirement according to current policy"
+      },
+      "last_verified_at": null,
+      "last_verified_frontend_sha": null,
+      "last_verified_backend_sha": null,
+      "verification_source_refs": [],
+      "source_refs": ["step4"],
+      "acceptance_item_refs": ["scanner.pairing-admission"],
+      "finding_refs": [],
+      "fixture_refs": [],
+      "reserved_for": null,
+      "known_mutations": [],
+      "reset_required": null,
+      "notes": "Prepare a fixture only when authorized. The reviewed evidence did not establish a stable synthetic Couple event."
+    },
+    {
+      "id": "guest_incomplete_account",
+      "area": "GUEST",
+      "type": "ACCOUNT",
+      "kind": "REQUIREMENT",
+      "mutability": "CONSUMABLE",
+      "health": "NEEDS_VERIFICATION",
+      "locator": null,
+      "purposes": ["Incomplete onboarding gate and intended destination restoration"],
+      "expected_state": {
+        "label": "Account C",
+        "synthetic": true,
+        "login": "Valid",
+        "email_verification": "Verified where required",
+        "onboarding": "Incomplete",
+        "outstanding": "Phone and/or profile completion",
+        "intended_destination": "An approved route available to resume after completion"
+      },
+      "last_verified_at": null,
+      "last_verified_frontend_sha": null,
+      "last_verified_backend_sha": null,
+      "verification_source_refs": [],
+      "source_refs": ["acceptance:guest_audit", "acceptance:guest_remediation", "step4"],
+      "acceptance_item_refs": ["guest.onboarding"],
+      "finding_refs": [],
+      "fixture_refs": [],
+      "reserved_for": null,
+      "known_mutations": [],
+      "reset_required": null,
+      "notes": "Account B is already onboarded. Preserve Accounts A and B. Mark Account C consumed after onboarding completion and use a new fixture for another clean run."
+    },
+    {
+      "id": "partner_host_a",
+      "area": "PARTNER",
+      "type": "ORGANIZATION",
+      "kind": "REQUIREMENT",
+      "mutability": "DISPOSABLE",
+      "health": "NEEDS_VERIFICATION",
+      "locator": null,
+      "purposes": [
+        "Create an owned event",
+        "Request a partnered Venue slot",
+        "Inspect Host-side lifecycle and ownership"
+      ],
+      "expected_state": {
+        "label": "Host A",
+        "synthetic": true,
+        "access": "Approved Host account with scoped organization membership",
+        "workspace": "Approved for disposable event and request creation"
+      },
+      "last_verified_at": null,
+      "last_verified_frontend_sha": null,
+      "last_verified_backend_sha": null,
+      "verification_source_refs": [],
+      "source_refs": ["step4"],
+      "acceptance_item_refs": ["partner.host.create-request", "partner.host.availability"],
+      "finding_refs": [],
+      "fixture_refs": [],
+      "reserved_for": null,
+      "known_mutations": [],
+      "reset_required": null,
+      "notes": null
+    },
+    {
+      "id": "partner_host_b",
+      "area": "PARTNER",
+      "type": "ORGANIZATION",
+      "kind": "REQUIREMENT",
+      "mutability": "READ_ONLY",
+      "health": "NEEDS_VERIFICATION",
+      "locator": null,
+      "purposes": ["Cross-Host authorization denial"],
+      "expected_state": {
+        "label": "Host B",
+        "synthetic": true,
+        "access": "Separate approved Host actor and organization without Host A membership or resource grants"
+      },
+      "last_verified_at": null,
+      "last_verified_frontend_sha": null,
+      "last_verified_backend_sha": null,
+      "verification_source_refs": [],
+      "source_refs": ["step4"],
+      "acceptance_item_refs": ["partner.shared.tenant-isolation"],
+      "finding_refs": [],
+      "fixture_refs": [],
+      "reserved_for": null,
+      "known_mutations": [],
+      "reset_required": null,
+      "notes": null
+    },
+    {
+      "id": "partner_venue_a",
+      "area": "PARTNER",
+      "type": "ORGANIZATION",
+      "kind": "REQUIREMENT",
+      "mutability": "DISPOSABLE",
+      "health": "NEEDS_VERIFICATION",
+      "locator": null,
+      "purposes": [
+        "Publish availability",
+        "Receive and decide slot requests",
+        "Inspect associated Host event and Venue M2 operations"
+      ],
+      "expected_state": {
+        "label": "Venue A",
+        "synthetic": true,
+        "access": "Approved Venue account with scoped organization membership",
+        "workspace": "Approved for disposable slots and decision scenarios"
+      },
+      "last_verified_at": null,
+      "last_verified_frontend_sha": null,
+      "last_verified_backend_sha": null,
+      "verification_source_refs": [],
+      "source_refs": ["step4"],
+      "acceptance_item_refs": [
+        "partner.venue.manage-availability",
+        "partner.venue.slot-decision",
+        "partner.venue.operational-studio"
+      ],
+      "finding_refs": [],
+      "fixture_refs": [],
+      "reserved_for": null,
+      "known_mutations": [],
+      "reset_required": null,
+      "notes": null
+    },
+    {
+      "id": "partner_venue_b",
+      "area": "PARTNER",
+      "type": "ORGANIZATION",
+      "kind": "REQUIREMENT",
+      "mutability": "READ_ONLY",
+      "health": "NEEDS_VERIFICATION",
+      "locator": null,
+      "purposes": ["Cross-Venue authorization denial"],
+      "expected_state": {
+        "label": "Venue B",
+        "synthetic": true,
+        "access": "Separate approved Venue actor and organization without Venue A membership or association with the tested Host A event"
+      },
+      "last_verified_at": null,
+      "last_verified_frontend_sha": null,
+      "last_verified_backend_sha": null,
+      "verification_source_refs": [],
+      "source_refs": ["step4"],
+      "acceptance_item_refs": [
+        "partner.shared.tenant-isolation",
+        "partner.venue.host-event-privacy"
+      ],
+      "finding_refs": [],
+      "fixture_refs": [],
+      "reserved_for": null,
+      "known_mutations": [],
+      "reset_required": null,
+      "notes": null
+    },
+    {
+      "id": "partner_host_venue_relationship",
+      "area": "PARTNER",
+      "type": "RELATIONSHIP",
+      "kind": "REQUIREMENT",
+      "mutability": "READ_ONLY",
+      "health": "NEEDS_VERIFICATION",
+      "locator": null,
+      "purposes": [
+        "Eligible partnered Host/Venue scheduling",
+        "Scope comparison with unassociated organizations"
+      ],
+      "expected_state": {
+        "relationship": "Active approved partnership between Host A and Venue A",
+        "boundary": "Independent Host B and Venue B actor scopes"
+      },
+      "last_verified_at": null,
+      "last_verified_frontend_sha": null,
+      "last_verified_backend_sha": null,
+      "verification_source_refs": [],
+      "source_refs": ["step4"],
+      "acceptance_item_refs": ["partner.host.availability", "partner.venue.host-event-privacy"],
+      "finding_refs": [],
+      "fixture_refs": ["partner_host_a", "partner_venue_a", "partner_host_b", "partner_venue_b"],
+      "reserved_for": null,
+      "known_mutations": [],
+      "reset_required": null,
+      "notes": null
+    },
+    {
+      "id": "partner_available_slot",
+      "area": "PARTNER",
+      "type": "AVAILABILITY",
+      "kind": "REQUIREMENT",
+      "mutability": "DISPOSABLE",
+      "health": "NEEDS_VERIFICATION",
+      "locator": null,
+      "purposes": ["Venue publishes → partnered Host sees and selects → Host submits request"],
+      "expected_state": {
+        "synthetic": true,
+        "timezone": "Asia/Kolkata",
+        "future_date_ist": null,
+        "start_time_ist": null,
+        "end_time_ist": null,
+        "window": "Set a known future IST date and explicit start/end when prepared",
+        "venue_state": "Published, unblocked and unbooked",
+        "host_state": "Same window visible and selectable by eligible Host A"
+      },
+      "last_verified_at": null,
+      "last_verified_frontend_sha": null,
+      "last_verified_backend_sha": null,
+      "verification_source_refs": [],
+      "source_refs": ["step4"],
+      "acceptance_item_refs": ["partner.host.availability", "partner.venue.manage-availability"],
+      "finding_refs": ["PARTNER-AVAILABILITY-001"],
+      "fixture_refs": ["partner_host_venue_relationship"],
+      "reserved_for": null,
+      "known_mutations": [],
+      "reset_required": null,
+      "notes": "Reserve a fresh availability window. Publication and request submission may change state. Confirm actual slot state and current Host visibility immediately before use."
+    },
+    {
+      "id": "partner_slot_accept",
+      "area": "PARTNER",
+      "type": "CROSS_ROLE_SCENARIO",
+      "kind": "REQUIREMENT",
+      "mutability": "DISPOSABLE",
+      "health": "NEEDS_VERIFICATION",
+      "locator": null,
+      "purposes": ["Venue accepts a dedicated Host request"],
+      "expected_state": {
+        "request_id": null,
+        "start_state": "Pending, eligible and owned by the intended Host/Venue relationship",
+        "decision": "ACCEPT",
+        "window": "Dedicated non-conflicting synthetic availability",
+        "outcome": "Consistent accepted request, booked slot and Host handoff"
+      },
+      "last_verified_at": null,
+      "last_verified_frontend_sha": null,
+      "last_verified_backend_sha": null,
+      "verification_source_refs": [],
+      "source_refs": ["step4"],
+      "acceptance_item_refs": ["partner.venue.slot-decision", "partner.host.create-request"],
+      "finding_refs": ["PARTNER-SLOT-001"],
+      "fixture_refs": ["partner_host_venue_relationship"],
+      "reserved_for": null,
+      "known_mutations": [],
+      "reset_required": null,
+      "notes": "Use a fresh request and slot with a distinct ID from the other decision fixture. Retire after the intended state transition."
+    },
+    {
+      "id": "partner_slot_decline",
+      "area": "PARTNER",
+      "type": "CROSS_ROLE_SCENARIO",
+      "kind": "REQUIREMENT",
+      "mutability": "DISPOSABLE",
+      "health": "NEEDS_VERIFICATION",
+      "locator": null,
+      "purposes": ["Venue declines a separate dedicated Host request"],
+      "expected_state": {
+        "request_id": null,
+        "start_state": "Pending, eligible and owned by the intended Host/Venue relationship",
+        "decision": "DECLINE",
+        "window": "Dedicated non-conflicting synthetic availability",
+        "outcome": "Consistent declined request, released slot and Host visibility"
+      },
+      "last_verified_at": null,
+      "last_verified_frontend_sha": null,
+      "last_verified_backend_sha": null,
+      "verification_source_refs": [],
+      "source_refs": ["step4"],
+      "acceptance_item_refs": ["partner.venue.slot-decision", "partner.host.create-request"],
+      "finding_refs": ["PARTNER-SLOT-001"],
+      "fixture_refs": ["partner_host_venue_relationship"],
+      "reserved_for": null,
+      "known_mutations": [],
+      "reset_required": null,
+      "notes": "Use a fresh request and slot with a distinct ID from the other decision fixture. Retire after the intended state transition."
+    },
+    {
+      "id": "promoter_synthetic",
+      "area": "PROMOTER",
+      "type": "ORGANIZATION",
+      "kind": "REQUIREMENT",
+      "mutability": "DISPOSABLE",
+      "health": "NEEDS_VERIFICATION",
+      "locator": null,
+      "purposes": ["Promoter agreement, assignment and attribution acceptance"],
+      "expected_state": {
+        "synthetic": true,
+        "access": "Approved Promoter credentials via the approved secret mechanism",
+        "eligibility": "Eligible to partner with the synthetic Host"
+      },
+      "last_verified_at": null,
+      "last_verified_frontend_sha": null,
+      "last_verified_backend_sha": null,
+      "verification_source_refs": [],
+      "source_refs": ["step4"],
+      "acceptance_item_refs": ["promoter.network-assignment"],
+      "finding_refs": [],
+      "fixture_refs": [],
+      "reserved_for": null,
+      "known_mutations": [],
+      "reset_required": null,
+      "notes": null
+    },
+    {
+      "id": "promoter_attribution_setup",
+      "area": "PROMOTER",
+      "type": "RELATIONSHIP",
+      "kind": "REQUIREMENT",
+      "mutability": "DISPOSABLE",
+      "health": "NEEDS_VERIFICATION",
+      "locator": null,
+      "purposes": [
+        "Eligible relationship and event assignment",
+        "Tracked referral link and attributed Test Mode order reconciliation"
+      ],
+      "expected_state": {
+        "relationship": "Eligible approved Host/Promoter relationship and applicable agreement",
+        "assignment": "Approved assignment for a synthetic sellable event",
+        "referral": "Tracked referral link bound to the assignment",
+        "order": "Fresh disposable attributed Test Mode order and expected attribution/commission snapshot"
+      },
+      "last_verified_at": null,
+      "last_verified_frontend_sha": null,
+      "last_verified_backend_sha": null,
+      "verification_source_refs": [],
+      "source_refs": ["step4"],
+      "acceptance_item_refs": ["promoter.network-assignment", "promoter.attribution-finance"],
+      "finding_refs": [],
+      "fixture_refs": ["promoter_synthetic", "partner_host_a", "guest_disposable_paid_checkout"],
+      "reserved_for": null,
+      "known_mutations": [],
+      "reset_required": null,
+      "notes": "Use synthetic or cleared disposable purchase state. Provider actions require explicit authorization."
+    },
+    {
+      "id": "scanner_authorized_staff",
+      "area": "SCANNER",
+      "type": "ACCOUNT",
+      "kind": "REQUIREMENT",
+      "mutability": "REUSABLE",
+      "health": "NEEDS_VERIFICATION",
+      "locator": null,
+      "purposes": ["Door role and pairing for staging acceptance"],
+      "expected_state": {
+        "synthetic": true,
+        "authorization": "Approved staff role and correctly scoped event/device access",
+        "credentials": "Supplied through the approved secret mechanism"
+      },
+      "last_verified_at": null,
+      "last_verified_frontend_sha": null,
+      "last_verified_backend_sha": null,
+      "verification_source_refs": [],
+      "source_refs": ["step4"],
+      "acceptance_item_refs": ["scanner.pairing-admission", "scanner.offline-sync"],
+      "finding_refs": [],
+      "fixture_refs": [],
+      "reserved_for": null,
+      "known_mutations": [],
+      "reset_required": null,
+      "notes": "Verify event access and stop or release the test session through the approved workflow before reuse."
+    },
+    {
+      "id": "scanner_admission_kit",
+      "area": "SCANNER",
+      "type": "SCENARIO",
+      "kind": "REQUIREMENT",
+      "mutability": "DISPOSABLE",
+      "health": "NEEDS_VERIFICATION",
+      "locator": null,
+      "purposes": [
+        "Valid admission, duplicate and foreign/invalid denial",
+        "QR timing window enforcement"
+      ],
+      "expected_state": {
+        "event": "Synthetic event approved for scans",
+        "valid_ticket": "Active unscanned entitlement with QR inside its valid window",
+        "duplicate_case": "Retry the same entitlement after a successful first scan",
+        "foreign_or_invalid": "Separate invalid or foreign-event ticket",
+        "outside_window": "Separate QR timing case where policy requires it",
+        "safety": "Record fixture use after stateful scans"
+      },
+      "last_verified_at": null,
+      "last_verified_frontend_sha": null,
+      "last_verified_backend_sha": null,
+      "verification_source_refs": [],
+      "source_refs": ["step4"],
+      "acceptance_item_refs": ["scanner.pairing-admission", "scanner.offline-sync", "guest.qr"],
+      "finding_refs": [],
+      "fixture_refs": ["scanner_authorized_staff"],
+      "reserved_for": null,
+      "known_mutations": [],
+      "reset_required": null,
+      "notes": null
+    },
+    {
+      "id": "admin_synthetic_order_read",
+      "area": "ADMIN",
+      "type": "ORDER",
+      "kind": "REQUIREMENT",
+      "mutability": "READ_ONLY",
+      "health": "NEEDS_VERIFICATION",
+      "locator": null,
+      "purposes": ["Admin Orders and Tickets desk acceptance"],
+      "expected_state": {
+        "order": "Approved synthetic paid order with exactly identified linked entitlement",
+        "access": "Approved scoped Admin session with read privileges",
+        "verification": "Both desks display consistent record and status"
+      },
+      "last_verified_at": null,
+      "last_verified_frontend_sha": null,
+      "last_verified_backend_sha": null,
+      "verification_source_refs": [],
+      "source_refs": ["acceptance:hosted_1", "step4"],
+      "acceptance_item_refs": ["admin.orders-tickets"],
+      "finding_refs": [],
+      "fixture_refs": [],
+      "reserved_for": null,
+      "known_mutations": [],
+      "reset_required": null,
+      "notes": "Existing payment evidence may be considered for read-only access after confirming the desk can inspect that specific synthetic order. Refunds or writes require separate authority and state."
+    },
+    {
+      "id": "publication_journey",
+      "area": "CROSS_ROLE",
+      "type": "CROSS_ROLE_SCENARIO",
+      "kind": "REQUIREMENT",
+      "mutability": "DISPOSABLE",
+      "health": "NEEDS_VERIFICATION",
+      "locator": null,
+      "purposes": ["Host → Venue → Guest publication acceptance"],
+      "expected_state": {
+        "setup": "Fresh synthetic Host and partnered Venue with a known future window",
+        "journey": "Host submits, Venue accepts, Guest sees the published event",
+        "verify": "Consistent event identity, ownership, timing and privacy"
+      },
+      "last_verified_at": null,
+      "last_verified_frontend_sha": null,
+      "last_verified_backend_sha": null,
+      "verification_source_refs": [],
+      "source_refs": ["step4"],
+      "acceptance_item_refs": ["cross-system.publication-handoff"],
+      "finding_refs": [],
+      "fixture_refs": [
+        "partner_host_venue_relationship",
+        "partner_available_slot",
+        "partner_slot_accept"
+      ],
+      "reserved_for": null,
+      "known_mutations": [],
+      "reset_required": null,
+      "notes": null
+    },
+    {
+      "id": "attributed_purchase_journey",
+      "area": "CROSS_ROLE",
+      "type": "CROSS_ROLE_SCENARIO",
+      "kind": "REQUIREMENT",
+      "mutability": "DISPOSABLE",
+      "health": "NEEDS_VERIFICATION",
+      "locator": null,
+      "purposes": [
+        "Host/Venue event → Promoter link → Guest → Razorpay Test Mode → attribution reconciliation"
+      ],
+      "expected_state": {
+        "event": "Fresh synthetic purchasable event with approved inventory",
+        "journey": "Guest opens tracked link, completes authorized Test Mode purchase and receives one entitlement",
+        "verify": "Attribution and allowed organizer/Promoter totals reconcile"
+      },
+      "last_verified_at": null,
+      "last_verified_frontend_sha": null,
+      "last_verified_backend_sha": null,
+      "verification_source_refs": [],
+      "source_refs": ["step4"],
+      "acceptance_item_refs": [
+        "guest.paid-fulfillment",
+        "promoter.attribution-finance",
+        "cross-system.launch-journey"
+      ],
+      "finding_refs": [],
+      "fixture_refs": ["promoter_attribution_setup", "guest_disposable_paid_checkout"],
+      "reserved_for": null,
+      "known_mutations": [],
+      "reset_required": null,
+      "notes": null
+    },
+    {
+      "id": "launch_journey",
+      "area": "CROSS_ROLE",
+      "type": "CROSS_ROLE_SCENARIO",
+      "kind": "REQUIREMENT",
+      "mutability": "DISPOSABLE",
+      "health": "NEEDS_VERIFICATION",
+      "locator": null,
+      "purposes": ["Full Host → Venue → Promoter → Guest → Scanner → Analytics/Admin journey"],
+      "expected_state": {
+        "setup": "Fresh coordinated synthetic data and authorized roles",
+        "verify": "Publication, attributed Test Mode purchase, single admission, analytics and permitted Admin visibility reconcile across applicable actors"
+      },
+      "last_verified_at": null,
+      "last_verified_frontend_sha": null,
+      "last_verified_backend_sha": null,
+      "verification_source_refs": [],
+      "source_refs": ["step4"],
+      "acceptance_item_refs": ["cross-system.launch-journey"],
+      "finding_refs": [],
+      "fixture_refs": [
+        "publication_journey",
+        "attributed_purchase_journey",
+        "scanner_admission_kit",
+        "admin_synthetic_order_read"
+      ],
+      "reserved_for": null,
+      "known_mutations": [],
+      "reset_required": null,
+      "notes": null
+    }
+  ]
+}
