@@ -1,0 +1,777 @@
+{
+  "schema_version": 1,
+  "certification_id": "c1rcle-launch-certification-active",
+  "last_updated": "2026-11-17",
+  "certification_status": "NOT_READY_FOR_CERTIFICATION",
+  "target": "PRODUCTION_INTENDED_RELEASE_CANDIDATE",
+  "release_candidate": {
+    "candidate_label": null,
+    "candidate_version": null,
+    "identity_status": "NOT_ESTABLISHED",
+    "environment": "PRODUCTION_INTENDED",
+    "frontend_revisions": [
+      { "surface": "guest", "sha": null, "deployment_ref": null, "provenance_ref": null },
+      { "surface": "partner", "sha": null, "deployment_ref": null, "provenance_ref": null },
+      { "surface": "admin", "sha": null, "deployment_ref": null, "provenance_ref": null },
+      { "surface": "scanner", "sha": null, "deployment_ref": null, "provenance_ref": null }
+    ],
+    "backend_revision": { "sha": null, "deployment_ref": null, "provenance_ref": null },
+    "scanner_release": {
+      "applicability": "UNRESOLVED",
+      "build_version": null,
+      "revision": null,
+      "deployment_ref": null,
+      "provenance_ref": null
+    },
+    "deployment_provenance": {
+      "status": "UNVERIFIED",
+      "evidence_refs": [],
+      "verified_by_role_label": null,
+      "verified_at": null,
+      "notes": "Do not infer deployed revisions from merge state."
+    }
+  },
+  "launch_scope": {
+    "status": "UNRESOLVED",
+    "approved_scope_ref": null,
+    "excluded_scope_ref": null,
+    "approved_by_role_label": null,
+    "approved_at": null,
+    "notes": [
+      "Certify only functionality in the owner-approved launch scope.",
+      "Do not infer inclusion of future Access/Tickets, Promoter, Scanner or Admin features from roadmap examples."
+    ]
+  },
+  "production_intended_configuration": {
+    "readiness_status": "NOT_READY",
+    "reference": null,
+    "fingerprint": null,
+    "fingerprint_method": null,
+    "captured_by_role_label": null,
+    "captured_at": null,
+    "checks": [
+      {
+        "id": "vercel_domains",
+        "applies": "REQUIRED",
+        "status": "UNTESTED",
+        "evidence_refs": [],
+        "configuration_version_or_fingerprint": null,
+        "verified_by_role_label": null,
+        "verified_at": null,
+        "blocker": null,
+        "notes": []
+      },
+      {
+        "id": "render_backend",
+        "applies": "REQUIRED",
+        "status": "UNTESTED",
+        "evidence_refs": [],
+        "configuration_version_or_fingerprint": null,
+        "verified_by_role_label": null,
+        "verified_at": null,
+        "blocker": null,
+        "notes": []
+      },
+      {
+        "id": "firebase_auth_domains",
+        "applies": "REQUIRED",
+        "status": "UNTESTED",
+        "evidence_refs": [],
+        "configuration_version_or_fingerprint": null,
+        "verified_by_role_label": null,
+        "verified_at": null,
+        "blocker": null,
+        "notes": []
+      },
+      {
+        "id": "firestore_rules_indexes",
+        "applies": "REQUIRED",
+        "status": "UNTESTED",
+        "evidence_refs": [],
+        "configuration_version_or_fingerprint": null,
+        "verified_by_role_label": null,
+        "verified_at": null,
+        "blocker": null,
+        "notes": []
+      },
+      {
+        "id": "razorpay_live_configuration",
+        "applies": "REQUIRED",
+        "status": "UNTESTED",
+        "evidence_refs": [],
+        "configuration_version_or_fingerprint": null,
+        "verified_by_role_label": null,
+        "verified_at": null,
+        "blocker": null,
+        "notes": [
+          "Verify production-intended readiness separately from Test Mode behavior; do not activate Live Mode during certification preparation."
+        ]
+      },
+      {
+        "id": "webhook_targets",
+        "applies": "REQUIRED",
+        "status": "UNTESTED",
+        "evidence_refs": [],
+        "configuration_version_or_fingerprint": null,
+        "verified_by_role_label": null,
+        "verified_at": null,
+        "blocker": null,
+        "notes": []
+      },
+      {
+        "id": "resend_sender_domain",
+        "applies": "REQUIRED",
+        "status": "UNTESTED",
+        "evidence_refs": [],
+        "configuration_version_or_fingerprint": null,
+        "verified_by_role_label": null,
+        "verified_at": null,
+        "blocker": null,
+        "notes": []
+      },
+      {
+        "id": "oauth_callbacks",
+        "applies": "REQUIRED",
+        "status": "UNTESTED",
+        "evidence_refs": [],
+        "configuration_version_or_fingerprint": null,
+        "verified_by_role_label": null,
+        "verified_at": null,
+        "blocker": null,
+        "notes": []
+      },
+      {
+        "id": "environment_secret_presence",
+        "applies": "REQUIRED",
+        "status": "UNTESTED",
+        "evidence_refs": [],
+        "configuration_version_or_fingerprint": null,
+        "verified_by_role_label": null,
+        "verified_at": null,
+        "blocker": null,
+        "notes": ["Record readiness and safe reference only. Never store secret values."]
+      },
+      {
+        "id": "monitoring_error_capture",
+        "applies": "REQUIRED",
+        "status": "UNTESTED",
+        "evidence_refs": [],
+        "configuration_version_or_fingerprint": null,
+        "verified_by_role_label": null,
+        "verified_at": null,
+        "blocker": null,
+        "notes": []
+      },
+      {
+        "id": "rate_limits",
+        "applies": "CONDITIONAL",
+        "status": "UNTESTED",
+        "evidence_refs": [],
+        "configuration_version_or_fingerprint": null,
+        "verified_by_role_label": null,
+        "verified_at": null,
+        "blocker": null,
+        "notes": ["Confirm applicability to the approved launch scope."]
+      },
+      {
+        "id": "backup_recovery",
+        "applies": "REQUIRED",
+        "status": "UNTESTED",
+        "evidence_refs": [],
+        "configuration_version_or_fingerprint": null,
+        "verified_by_role_label": null,
+        "verified_at": null,
+        "blocker": null,
+        "notes": []
+      },
+      {
+        "id": "rollback_capability",
+        "applies": "REQUIRED",
+        "status": "BLOCKED",
+        "evidence_refs": [],
+        "configuration_version_or_fingerprint": null,
+        "verified_by_role_label": null,
+        "verified_at": null,
+        "blocker": "Previous known-good releases and approved rollback procedure are not recorded.",
+        "notes": []
+      },
+      {
+        "id": "production_fee_policy",
+        "applies": "REQUIRED",
+        "status": "BLOCKED",
+        "evidence_refs": [],
+        "configuration_version_or_fingerprint": null,
+        "verified_by_role_label": null,
+        "verified_at": null,
+        "blocker": "Production fee policy approval is not recorded; approval is required before GO.",
+        "notes": []
+      },
+      {
+        "id": "settlement_payout_model",
+        "applies": "REQUIRED",
+        "status": "UNTESTED",
+        "evidence_refs": [],
+        "configuration_version_or_fingerprint": null,
+        "verified_by_role_label": null,
+        "verified_at": null,
+        "blocker": null,
+        "notes": [
+          "Verify the approved launch operating model. Do not infer automated payouts; if disabled/manual, verify safe disablement and documented handling."
+        ]
+      }
+    ]
+  },
+  "certification_window": {
+    "started_at": null,
+    "ended_at": null,
+    "evidence_cutoff_at": null
+  },
+  "ownership": {
+    "certification_owner_role_label": null,
+    "technical_approver_role_label": null,
+    "owner_launch_approver_role_label": null,
+    "owner_launch_approval": "NOT_REQUESTED",
+    "owner_launch_approved_at": null,
+    "owner_launch_approval_ref": null
+  },
+  "finding_review": {
+    "source_ref": "FINDINGS.json",
+    "source_updated_at": "2026-11-17",
+    "reviewed_for_candidate": false,
+    "initial_source_summary": { "P0": 0, "P1": 0, "P2": 7, "P3": 0 },
+    "notes": "Counts are only the source ledger summary at initialization. Refresh severity and launch relevance against the exact candidate before deciding."
+  },
+  "readiness_prerequisites": [
+    {
+      "id": "exact_release_candidate",
+      "status": "BLOCKED",
+      "evidence_refs": [],
+      "blocker": "Exact candidate label, frontend/backend revisions and deployment provenance are not established."
+    },
+    {
+      "id": "approved_launch_scope",
+      "status": "BLOCKED",
+      "evidence_refs": [],
+      "blocker": "Owner-approved launch scope and exclusions are not recorded."
+    },
+    {
+      "id": "guest_regression_closure",
+      "status": "NOT_READY",
+      "evidence_refs": [
+        "FINDINGS.json#GUEST-RSVP-001",
+        "FINDINGS.json#GUEST-PRICING-001",
+        "FINDINGS.json#GUEST-EVENT-001",
+        "FINDINGS.json#GUEST-DISCOVERY-001"
+      ],
+      "blocker": "Current Guest M1–M3 bounded remediation and targeted re-acceptance remain open in the harness."
+    },
+    {
+      "id": "partner_acceptance",
+      "status": "NOT_READY",
+      "evidence_refs": ["FINDINGS.json#PARTNER-AVAILABILITY-001", "FINDINGS.json#PARTNER-SLOT-001"],
+      "blocker": "Partner M1/M2 comprehensive hosted acceptance is pending; owner-observed availability and slot-decision behavior require investigation."
+    },
+    {
+      "id": "access_tickets_pass",
+      "status": "NOT_READY",
+      "evidence_refs": [],
+      "blocker": "Future Access/Tickets Pass is incomplete; certify only after approved scope is defined and implemented."
+    },
+    {
+      "id": "promoter_pass",
+      "status": "NOT_READY",
+      "evidence_refs": [
+        "ACCEPTANCE_STATE.json#promoter.network-assignment",
+        "ACCEPTANCE_STATE.json#promoter.attribution-finance"
+      ],
+      "blocker": "Dedicated Promoter Pass and complete hosted financial reconciliation are incomplete."
+    },
+    {
+      "id": "scanner_pass",
+      "status": "NOT_READY",
+      "evidence_refs": [
+        "ACCEPTANCE_STATE.json#scanner.pairing-admission",
+        "ACCEPTANCE_STATE.json#scanner.offline-sync"
+      ],
+      "blocker": "Full Scanner/Door acceptance and intended launch runtime scope are not certified."
+    },
+    {
+      "id": "broad_audits",
+      "status": "NOT_READY",
+      "evidence_refs": [],
+      "blocker": "Guest/Partner comprehensive audits and the later integrated/final adversarial audits have not been completed for a Release Candidate."
+    },
+    {
+      "id": "production_fee_policy",
+      "status": "BLOCKED",
+      "evidence_refs": [],
+      "blocker": "Production fee policy approval is not recorded."
+    },
+    {
+      "id": "production_configuration_and_operations",
+      "status": "NOT_READY",
+      "evidence_refs": [],
+      "blocker": "Production-intended configuration, monitoring and rollback readiness are not evidenced for an exact candidate."
+    }
+  ],
+  "domains": [
+    {
+      "id": "guest",
+      "launch_scope": "REQUIRED",
+      "status": "PARTIAL",
+      "required_evidence": [
+        "Exact-RC auth/session and onboarding",
+        "Discovery and event lifecycle",
+        "Approved paid/free access and RSVP flows",
+        "Order/ticket Wallet, QR eligibility and critical mobile journey"
+      ],
+      "acceptance_refs": [
+        "guest.session",
+        "guest.auth-return",
+        "guest.onboarding",
+        "guest.discovery",
+        "guest.event-price-cta",
+        "guest.event-lifecycle",
+        "guest.quote",
+        "guest.quantity",
+        "guest.paid-fulfillment",
+        "guest.payment-recovery",
+        "guest.rsvp",
+        "guest.qr",
+        "guest.privacy",
+        "guest.mobile",
+        "guest.tickets-performance"
+      ],
+      "finding_refs": [
+        "GUEST-PRICING-001",
+        "GUEST-EVENT-001",
+        "GUEST-DISCOVERY-001",
+        "GUEST-RSVP-001",
+        "GUEST-WALLET-001"
+      ],
+      "exact_rc_applicability": "NOT_ASSESSED",
+      "evidence_provenance": [],
+      "last_verified_at": null,
+      "blockers": [
+        "Substantial hosted M1–M3 evidence exists, but bounded regression remediation and targeted re-acceptance remain; no Level 7 exact-RC certification exists."
+      ],
+      "waiver": null,
+      "notes": []
+    },
+    {
+      "id": "partner",
+      "launch_scope": "REQUIRED",
+      "status": "PARTIAL",
+      "required_evidence": [
+        "Exact-RC role/org scope and privacy",
+        "Host event/request flow and Venue availability",
+        "Separate Venue Accept and Decline with persisted state",
+        "Same-event publication and Venue operational visibility"
+      ],
+      "acceptance_refs": [
+        "partner.host.availability",
+        "partner.host.create-request",
+        "partner.venue.manage-availability",
+        "partner.venue.slot-decision",
+        "partner.venue.operational-studio",
+        "partner.venue.host-event-privacy",
+        "partner.shared.tenant-isolation",
+        "partner.shared.timezone"
+      ],
+      "finding_refs": ["PARTNER-AVAILABILITY-001", "PARTNER-SLOT-001"],
+      "exact_rc_applicability": "NOT_ASSESSED",
+      "evidence_provenance": [],
+      "last_verified_at": null,
+      "blockers": [
+        "M1/M2 are implemented and deployed, but comprehensive hosted acceptance is pending and owner-observed availability/slot-decision behavior needs investigation."
+      ],
+      "waiver": null,
+      "notes": []
+    },
+    {
+      "id": "access-tickets",
+      "launch_scope": "UNRESOLVED",
+      "status": "NOT_READY",
+      "required_evidence": [
+        "Only owner-approved mechanisms: paid/free tickets, Guestlist, Free-before-X, request/profiling, forms, approval/waitlist/decline, claim links and approved invite/private flows",
+        "Entitlement, Wallet and Scanner consequences for included mechanisms"
+      ],
+      "acceptance_refs": ["guest.rsvp", "guest.paid-fulfillment", "guest.qr"],
+      "finding_refs": ["GUEST-RSVP-001", "GUEST-WALLET-001"],
+      "exact_rc_applicability": "NOT_ASSESSED",
+      "evidence_provenance": [],
+      "last_verified_at": null,
+      "blockers": [
+        "Future Access/Tickets Pass is incomplete and precise launch scope is unresolved; roadmap examples do not authorize feature inclusion."
+      ],
+      "waiver": null,
+      "notes": []
+    },
+    {
+      "id": "promoter",
+      "launch_scope": "UNRESOLVED",
+      "status": "PARTIAL",
+      "required_evidence": [
+        "Approved relationship/assignment and links",
+        "Guestlist/delegated access only if approved in scope",
+        "Same-order attribution and analytics",
+        "Commission/financial truth only if in approved scope"
+      ],
+      "acceptance_refs": ["promoter.network-assignment", "promoter.attribution-finance"],
+      "finding_refs": [],
+      "exact_rc_applicability": "NOT_ASSESSED",
+      "evidence_provenance": [],
+      "last_verified_at": null,
+      "blockers": [
+        "Dedicated Promoter Pass is incomplete; complete hosted attribution and financial reconciliation are pending."
+      ],
+      "waiver": null,
+      "notes": []
+    },
+    {
+      "id": "scanner-door",
+      "launch_scope": "UNRESOLVED",
+      "status": "UNTESTED",
+      "required_evidence": [
+        "Intended release build/runtime and pairing/auth",
+        "Valid, duplicate and denied admission",
+        "Offline/reconciliation and couple/category/door eligibility only where required by approved scope"
+      ],
+      "acceptance_refs": ["scanner.pairing-admission", "scanner.offline-sync"],
+      "finding_refs": [],
+      "exact_rc_applicability": "NOT_ASSESSED",
+      "evidence_provenance": [],
+      "last_verified_at": null,
+      "blockers": [
+        "Full hosted shift/device acceptance and launch runtime scope are not certified."
+      ],
+      "waiver": null,
+      "notes": []
+    },
+    {
+      "id": "admin",
+      "launch_scope": "CONDITIONAL",
+      "status": "PARTIAL",
+      "required_evidence": [
+        "Operator authorization and sensitive-action approval",
+        "KYC, order/ticket/refund operations only as included in launch scope",
+        "Cross-system visibility and auditability for included operations"
+      ],
+      "acceptance_refs": ["admin.orders-tickets", "admin.operator-workflows"],
+      "finding_refs": [],
+      "exact_rc_applicability": "NOT_ASSESSED",
+      "evidence_provenance": [],
+      "last_verified_at": null,
+      "blockers": [
+        "Current hosted certification for operator permissions, sensitive actions and cross-system outcomes is incomplete."
+      ],
+      "waiver": null,
+      "notes": []
+    },
+    {
+      "id": "payments-money-integrity",
+      "launch_scope": "REQUIRED",
+      "status": "BLOCKED",
+      "required_evidence": [
+        "Quote/fee/tax conservation, quantity, holds and inventory",
+        "Razorpay attempt, verification/webhook, idempotency and confirmed order",
+        "Entitlement and Wallet fulfillment; refund/settlement only if in approved scope",
+        "Separate Test Mode behavior from production Live configuration"
+      ],
+      "acceptance_refs": [
+        "guest.quote",
+        "guest.quantity",
+        "guest.paid-fulfillment",
+        "guest.payment-recovery",
+        "promoter.attribution-finance",
+        "admin.orders-tickets"
+      ],
+      "finding_refs": ["GUEST-PRICING-001", "GUEST-WALLET-001"],
+      "exact_rc_applicability": "NOT_ASSESSED",
+      "evidence_provenance": [
+        {
+          "ref": "ACCEPTANCE_STATE.json#guest.paid-fulfillment",
+          "candidate_ref": null,
+          "kind": "ACCEPTANCE",
+          "applicability": "HISTORICAL_SUPPORTING_ONLY",
+          "environment": "staging",
+          "verified_at": null,
+          "verifier_role_label": "owner-authorized hosted acceptance",
+          "note": "Prior Razorpay Test Mode journey supports behavior only; it does not certify the exact production RC or Live configuration."
+        }
+      ],
+      "last_verified_at": null,
+      "blockers": [
+        "Production fee policy approval is not recorded. Production Live configuration is unverified. Historical Test Mode PASS is not exact-RC/production certification."
+      ],
+      "waiver": null,
+      "notes": []
+    },
+    {
+      "id": "security-privacy",
+      "launch_scope": "REQUIRED",
+      "status": "NOT_READY",
+      "required_evidence": [
+        "Auth/session, IDOR and cross-org allowed/denied actors",
+        "Sensitive Guest data minimization and QR authorization",
+        "Payment verification and critical Admin authorization",
+        "Secret/provider handling on production-intended configuration"
+      ],
+      "acceptance_refs": [
+        "guest.privacy",
+        "partner.shared.tenant-isolation",
+        "admin.operator-workflows",
+        "scanner.pairing-admission"
+      ],
+      "finding_refs": [],
+      "exact_rc_applicability": "NOT_ASSESSED",
+      "evidence_provenance": [],
+      "last_verified_at": null,
+      "blockers": ["No Level 7 exact-RC security certification has been performed."],
+      "waiver": null,
+      "notes": []
+    },
+    {
+      "id": "cross-role-cross-system",
+      "launch_scope": "REQUIRED",
+      "status": "PARTIAL",
+      "required_evidence": [
+        "Named launch journeys follow the same event/request/order/ticket across roles",
+        "Persisted state reconciled at each handoff",
+        "Provider participation only where required and authorized"
+      ],
+      "acceptance_refs": [
+        "cross-system.staging-smoke",
+        "cross-system.publication-handoff",
+        "cross-system.launch-journey"
+      ],
+      "finding_refs": ["PARTNER-AVAILABILITY-001", "PARTNER-SLOT-001"],
+      "exact_rc_applicability": "NOT_ASSESSED",
+      "evidence_provenance": [
+        {
+          "ref": "ACCEPTANCE_STATE.json#cross-system.publication-handoff",
+          "candidate_ref": null,
+          "kind": "ACCEPTANCE",
+          "applicability": "HISTORICAL_SUPPORTING_ONLY",
+          "environment": "staging",
+          "verified_at": null,
+          "verifier_role_label": null,
+          "note": "Historical partial publication evidence; current decisions and full handoff remain unaccepted."
+        }
+      ],
+      "last_verified_at": null,
+      "blockers": [
+        "Full integrated cross-system journey and exact-RC evidence are not established; cross-system.launch-journey remains untested in the acceptance ledger."
+      ],
+      "waiver": null,
+      "notes": []
+    },
+    {
+      "id": "runtime-operations",
+      "launch_scope": "REQUIRED",
+      "status": "BLOCKED",
+      "required_evidence": [
+        "Production-intended deployment, domains, health/readiness and configuration",
+        "Sufficient error/payment/webhook/admission visibility and incident response",
+        "Previous known-good frontend/backend release identities and approved rollback procedure",
+        "Migration and provider/config rollback considerations"
+      ],
+      "acceptance_refs": ["cross-system.staging-smoke"],
+      "finding_refs": [],
+      "exact_rc_applicability": "NOT_ASSESSED",
+      "evidence_provenance": [],
+      "last_verified_at": null,
+      "blockers": [
+        "Exact production-intended configuration and previous known-good releases/rollback procedure are not recorded."
+      ],
+      "waiver": null,
+      "notes": []
+    },
+    {
+      "id": "critical-experience",
+      "launch_scope": "REQUIRED",
+      "status": "UNTESTED",
+      "required_evidence": [
+        "Critical Guest mobile journey on representative real mobile/runtime behavior",
+        "No unusable loading/error state on launch-critical paths",
+        "No repeated critical-flow timeouts, unusable checkout/Wallet, request storms or critical browser crashes",
+        "No misleading money/state presentation; critical actions remain usable and understandable"
+      ],
+      "acceptance_refs": [
+        "guest.mobile",
+        "guest.discovery",
+        "guest.tickets-performance",
+        "partner.venue.operational-studio"
+      ],
+      "finding_refs": ["GUEST-DISCOVERY-001", "GUEST-PRICING-001"],
+      "exact_rc_applicability": "NOT_ASSESSED",
+      "evidence_provenance": [],
+      "last_verified_at": null,
+      "blockers": [
+        "The approved Experience Quality audit and exact-RC critical UX acceptance have not been completed."
+      ],
+      "waiver": null,
+      "notes": [
+        "This domain is limited to launch-critical usability; it is not an aesthetic redesign gate."
+      ]
+    }
+  ],
+  "critical_journeys": [
+    {
+      "id": "paid-guest-to-admission",
+      "launch_scope": "REQUIRED",
+      "status": "PARTIAL",
+      "same_object_identity": "event → quote/attempt/order → inventory → entitlement/ticket → Wallet → QR → Scanner if applicable",
+      "required_evidence": [
+        "Exact-RC selection/quote and authorized provider evidence",
+        "Order, inventory and entitlement reconcile once",
+        "Wallet and QR eligibility match the same ticket",
+        "Scanner result if Scanner is in launch scope"
+      ],
+      "acceptance_refs": [
+        "guest.quote",
+        "guest.paid-fulfillment",
+        "guest.payment-recovery",
+        "guest.qr",
+        "scanner.pairing-admission"
+      ],
+      "finding_refs": ["GUEST-WALLET-001"],
+      "exact_rc_applicability": "NOT_ASSESSED",
+      "evidence_provenance": [
+        {
+          "ref": "ACCEPTANCE_STATE.json#guest.paid-fulfillment",
+          "candidate_ref": null,
+          "kind": "ACCEPTANCE",
+          "applicability": "HISTORICAL_SUPPORTING_ONLY",
+          "environment": "staging",
+          "verified_at": null,
+          "verifier_role_label": "owner-authorized hosted acceptance",
+          "note": "Historical Test Mode evidence; no production RC/config identity."
+        }
+      ],
+      "last_verified_at": null,
+      "blockers": [
+        "Must be freshly exercised against exact RC for critical launch paths; do not repeat a provider action without explicit authorization."
+      ],
+      "notes": []
+    },
+    {
+      "id": "host-venue-publication",
+      "launch_scope": "REQUIRED",
+      "status": "PARTIAL",
+      "same_object_identity": "Venue availability → Host request → Venue Accept → same event publication → Guest visibility/purchase eligibility",
+      "required_evidence": [
+        "Exact-RC Venue availability and Host request",
+        "Venue accepts; persisted request/slot state and Host view reconcile",
+        "Same event is published and correctly visible/actionable to Guest"
+      ],
+      "acceptance_refs": [
+        "partner.host.availability",
+        "partner.host.create-request",
+        "partner.venue.slot-decision",
+        "cross-system.publication-handoff"
+      ],
+      "finding_refs": ["PARTNER-AVAILABILITY-001", "PARTNER-SLOT-001"],
+      "exact_rc_applicability": "NOT_ASSESSED",
+      "evidence_provenance": [
+        {
+          "ref": "ACCEPTANCE_STATE.json#cross-system.publication-handoff",
+          "candidate_ref": null,
+          "kind": "ACCEPTANCE",
+          "applicability": "HISTORICAL_SUPPORTING_ONLY",
+          "environment": "staging",
+          "verified_at": null,
+          "verifier_role_label": null,
+          "note": "Historical partial state match; current request decisions/full publication journey not accepted."
+        }
+      ],
+      "last_verified_at": null,
+      "blockers": ["Partner hosted acceptance and current Accept/Decline reliability remain open."],
+      "notes": []
+    },
+    {
+      "id": "free-or-approved-access-to-admission",
+      "launch_scope": "UNRESOLVED",
+      "status": "NOT_READY",
+      "same_object_identity": "approved access mechanism → Guest action/application/claim → entitlement → Wallet → Scanner if applicable",
+      "required_evidence": [
+        "Owner-approved mechanism only",
+        "Correct authorization, capacity and resulting entitlement",
+        "Wallet/history and Scanner consequences for included paths"
+      ],
+      "acceptance_refs": ["guest.rsvp", "guest.qr", "scanner.pairing-admission"],
+      "finding_refs": ["GUEST-RSVP-001"],
+      "exact_rc_applicability": "NOT_ASSESSED",
+      "evidence_provenance": [],
+      "last_verified_at": null,
+      "blockers": [
+        "Launch scope is unresolved; current cancelled Free RSVP regression still needs targeted re-acceptance. Do not infer additional access features."
+      ],
+      "notes": []
+    },
+    {
+      "id": "promoter-attributed-order",
+      "launch_scope": "UNRESOLVED",
+      "status": "PARTIAL",
+      "same_object_identity": "event → Promoter relationship/assignment/link → Guest → same attributed order → commission/analytics if in scope",
+      "required_evidence": [
+        "Approved assignment/link authorization",
+        "Same order retains attribution",
+        "Financial/commission truth and analytics match approved operating model"
+      ],
+      "acceptance_refs": [
+        "promoter.network-assignment",
+        "promoter.attribution-finance",
+        "cross-system.launch-journey"
+      ],
+      "finding_refs": [],
+      "exact_rc_applicability": "NOT_ASSESSED",
+      "evidence_provenance": [],
+      "last_verified_at": null,
+      "blockers": [
+        "Dedicated Promoter Pass and attributed financial reconciliation are incomplete."
+      ],
+      "notes": []
+    },
+    {
+      "id": "cancellation-or-material-change",
+      "launch_scope": "UNRESOLVED",
+      "status": "UNTESTED",
+      "same_object_identity": "same event/order/ticket → approved cancellation or material change → Guest remedy → inventory/QR consequences",
+      "required_evidence": [
+        "Only cancellation/material-change paths included in approved scope",
+        "Guest-facing state/remedy is accurate",
+        "Order, entitlement, inventory and QR state reconcile safely"
+      ],
+      "acceptance_refs": [
+        "guest.event-lifecycle",
+        "guest.payment-recovery",
+        "guest.rsvp",
+        "guest.qr"
+      ],
+      "finding_refs": ["GUEST-EVENT-001", "GUEST-RSVP-001"],
+      "exact_rc_applicability": "NOT_ASSESSED",
+      "evidence_provenance": [],
+      "last_verified_at": null,
+      "blockers": [
+        "Included cancellation/material-change policies must be confirmed with launch scope before certifying this journey."
+      ],
+      "notes": []
+    }
+  ],
+  "finding_dispositions": [],
+  "rollback_readiness": {
+    "status": "BLOCKED",
+    "previous_frontend_release_refs": [],
+    "previous_backend_release_ref": null,
+    "procedure_ref": null,
+    "authorized_operator_role_label": null,
+    "data_migration_considerations_ref": null,
+    "provider_configuration_rollback_ref": null,
+    "evidence_refs": [],
+    "verified_at": null,
+    "blocker": "Known-good releases, responsible operator and rollback procedure are not recorded."
+  },
+  "hard_gate_policy_ref": "launch-certification/README.md#decision-rule",
+  "report_view_ref": "launch-certification/README.md#report-view"
+}
