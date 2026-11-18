@@ -17,9 +17,10 @@ export function eventAdmissionClosesAt(event: Pick<Event, 'startAt' | 'endAt'>):
 /** Returns a reason when a new online sale or entitlement must be rejected. */
 export function eventSalesUnavailableReason(event: Event, now: Date): string | null {
   if (!ACTIVE_SALE_STATUSES.has(event.status)) {
-    return event.status === 'postponed'
-      ? 'This event is postponed. A new date has not been announced.'
-      : 'This event is not on sale';
+    if (event.status === 'postponed')
+      return 'This event is postponed. A new date has not been announced.';
+    if (event.status === 'ended') return 'This event has ended.';
+    return 'This event is not on sale';
   }
   const start = Date.parse(event.startAt);
   const end = eventEffectiveEndAt(event);

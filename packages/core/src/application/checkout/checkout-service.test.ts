@@ -893,14 +893,15 @@ describe('M3 acquisition ownership and retry boundaries', () => {
     expect(await deps.inventory.getAvailableQuantity('evt_1', 'tier_1')).toBe(8);
   });
 
-  it('does not resurrect a cancelled RSVP through a deterministic acquisition retry', async () => {
+  it('issues a new deterministic RSVP attempt after cancellation without reviving the old pass', async () => {
     const { events, catalog, service, deps, outbox } = buildService();
     await seedPublishedFreeEvent(events);
     seedTier(catalog, { quantity: 1 });
     const command = { actor: actor('user_1'), eventId: 'evt_1', tierId: 'tier_1' };
     const first = await service.createRsvp(command);
     const cancelled = await service.cancelRsvp(first.order.id, actor('user_1'));
-    await expect(service.createRsvp(command)).rejects.toThrow();
+    const second = await service.createRsvp(command);
+    const replay = await service.createRsvp(command);
     await expect(service.cancelRsvp(first.order.id, actor(''))).rejects.toBeInstanceOf(
       UnauthorizedError,
     );
@@ -912,8 +913,20 @@ describe('M3 acquisition ownership and retry boundaries', () => {
     expect(
       await deps.repositories.entitlements.getById(first.entitlements[0]?.id ?? ''),
     ).toMatchObject({ status: 'void', credentialVersion: 2 });
-    expect(await deps.inventory.getAvailableQuantity('evt_1', 'tier_1')).toBe(1);
+    expect(second.order.id).toBe(rsvpOrderId('evt_1', 'user_1', 1));
+    expect(second.order.id).not.toBe(first.order.id);
+    expect(replay.order.id).toBe(second.order.id);
+    expect(await deps.repositories.orders.getById(second.order.id)).toMatchObject({
+      status: 'paid',
+    });
+    expect(
+      await deps.repositories.entitlements.getById(second.entitlements[0]?.id ?? ''),
+    ).toMatchObject({
+      status: 'valid',
+    });
+    expect(await deps.inventory.getAvailableQuantity('evt_1', 'tier_1')).toBe(0);
     expect(outbox.all().filter((row) => row.type === 'rsvp.cancelled')).toHaveLength(1);
+    expect(outbox.all().filter((row) => row.type === 'order.fulfilled')).toHaveLength(2);
   });
 
   it.each(['entered', 'refund-locked', 'invitation-pending'] as const)(

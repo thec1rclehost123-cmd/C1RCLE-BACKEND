@@ -163,8 +163,10 @@ export class MemoryEventRepository implements EventRepository {
     return serializeSlice(all, query);
   }
 
-  async listPublic(query: PaginationQuery): Promise<Page<Event>> {
-    const all = [...this.events.values()].filter((e) => e.isPublic);
+  async listPublic(query: PaginationQuery, includeHistorical = false): Promise<Page<Event>> {
+    const all = [...this.events.values()].filter(
+      (event) => event.isPublic || (includeHistorical && event.status === 'ended'),
+    );
     return serializeSlice(all, query);
   }
 

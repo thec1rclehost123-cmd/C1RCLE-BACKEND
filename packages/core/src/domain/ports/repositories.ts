@@ -390,7 +390,7 @@ export interface EventRepository {
   listByVenue(venueId: EntityId, query: PaginationQuery): Promise<Page<Event>>;
   /** Platform-wide event directory (admin events view) — global, includes non-public. */
   listAll(query: PaginationQuery): Promise<Page<Event>>;
-  listPublic(query: PaginationQuery): Promise<Page<Event>>;
+  listPublic(query: PaginationQuery, includeHistorical?: boolean): Promise<Page<Event>>;
   /** Upcoming public events, ordered by start time and bounded at the query. */
   listUpcomingPublic(startAtOrAfter: string, limit: number): Promise<Event[]>;
   save(event: Event, tx?: TxContext | null, outboxEvent?: DomainEvent): Promise<void>;

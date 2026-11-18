@@ -41,7 +41,7 @@ export default async function rsvpRoutes(fastify: FastifyInstance) {
       preHandler: [
         fastify.rateLimit('STANDARD_COMMAND'),
         fastify.validateV2({
-          params: z.object({ orderId: z.string().regex(/^RSVP-[a-f0-9]{32}$/) }),
+          params: z.object({ orderId: z.string().regex(/^RSVP-[a-f0-9]{32}(?:-[1-9]\d*)?$/) }),
         }),
       ],
     },

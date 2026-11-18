@@ -43,10 +43,11 @@ describe.runIf(EMULATOR)('M3 atomic RSVP (Firestore Emulator)', () => {
     await db.collection('v2_events').doc(event.id).set(event);
     await db.collection('v2_event_catalog_tiers').doc(tier.id).set(tier);
     const repo = new FirestoreOrderRepository(db);
-    const acquire = (userId: string) => {
+    const acquire = (userId: string, attempt = 0) => {
+      const orderId = rsvpOrderId(event.id, userId, attempt);
       const order: Order = {
         ...createOrder({
-          id: rsvpOrderId(event.id, userId),
+          id: orderId,
           eventId: event.id,
           organizationId: event.organizationId,
           userId,
@@ -55,7 +56,7 @@ describe.runIf(EMULATOR)('M3 atomic RSVP (Firestore Emulator)', () => {
           now,
         }),
         status: 'paid',
-        paymentId: rsvpOrderId(event.id, userId),
+        paymentId: orderId,
         paidAt: now.toISOString(),
       };
       return repo.acquireRsvp({
@@ -72,7 +73,9 @@ describe.runIf(EMULATOR)('M3 atomic RSVP (Firestore Emulator)', () => {
   it('commits exactly one order and ticket for simultaneous different accounts, and replays the winner', async () => {
     const { db, event, acquire } = await fixture();
     try {
-      const results = await Promise.allSettled(['guest-a', 'guest-b'].map(acquire));
+      const results = await Promise.allSettled(
+        ['guest-a', 'guest-b'].map((userId) => acquire(userId)),
+      );
       const winners = results.filter((result) => result.status === 'fulfilled');
       expect(winners).toHaveLength(1);
       const winner = winners[0]!;
@@ -87,6 +90,26 @@ describe.runIf(EMULATOR)('M3 atomic RSVP (Firestore Emulator)', () => {
       expect(
         (await db.collection('v2_entitlements').where('eventId', '==', event.id).get()).size,
       ).toBe(1);
+    } finally {
+      await db.terminate();
+    }
+  }, 30000);
+
+  it('converges simultaneous rebookings after cancellation on one new valid ticket', async () => {
+    const { db, event, repo, acquire, now } = await fixture();
+    try {
+      const first = await acquire('guest-a');
+      await repo.cancelRsvp(first.order.id, 'guest-a', now);
+      const [second, retry] = await Promise.all([acquire('guest-a', 1), acquire('guest-a', 1)]);
+      expect(second.order.id).not.toBe(first.order.id);
+      expect(retry.order.id).toBe(second.order.id);
+      expect(retry.entitlements.map((ticket) => ticket.id)).toEqual(
+        second.entitlements.map((ticket) => ticket.id),
+      );
+      const orders = await db.collection('v2_orders').where('eventId', '==', event.id).get();
+      expect(orders.docs.map((doc) => doc.data().status).sort()).toEqual(['cancelled', 'paid']);
+      const tickets = await db.collection('v2_entitlements').where('eventId', '==', event.id).get();
+      expect(tickets.docs.map((doc) => doc.data().status).sort()).toEqual(['valid', 'void']);
     } finally {
       await db.terminate();
     }

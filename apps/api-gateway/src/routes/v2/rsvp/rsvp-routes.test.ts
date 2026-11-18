@@ -390,6 +390,17 @@ describe('M3 RSVP cancellation HTTP acceptance', () => {
       expect(stored).toMatchObject({ status: 'void' });
       expect(stored?.pendingTransferId ?? null).toBeNull();
       expect(stored?.credentialVersion).toBeGreaterThan(ticket.credentialVersion ?? 1);
+      const rebooked = await rsvp(server, { eventId, tierId });
+      expect(rebooked.statusCode, rebooked.body).toBe(201);
+      const rebookedId = rebooked.json<{ order: { id: string } }>().order.id;
+      expect(rebookedId).not.toBe(body.order.id);
+      const replayedBooking = await rsvp(server, { eventId, tierId });
+      expect(replayedBooking.json()).toMatchObject({ order: { id: rebookedId } });
+      const cancelledReplacement = await server.inject({
+        method: 'POST',
+        url: `/rsvp/${rebookedId}/cancel`,
+      });
+      expect(cancelledReplacement.statusCode, cancelledReplacement.body).toBe(200);
       const replacement = await rsvp(server, { eventId, tierId }, 'user_2');
       expect(replacement.statusCode, replacement.body).toBe(201);
       const invalidId = await server.inject({ method: 'POST', url: '/rsvp/not-an-order/cancel' });

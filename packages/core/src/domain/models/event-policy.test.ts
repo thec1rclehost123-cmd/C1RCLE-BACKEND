@@ -46,6 +46,11 @@ describe('V1 event authority', () => {
       eventSalesUnavailableReason({ ...base, endAt: 'invalid' }, new Date(startAt)),
     ).not.toBeNull();
   });
+  it('keeps an ended event readable while returning a clear no-sales reason', () => {
+    expect(eventSalesUnavailableReason({ ...base, status: 'ended' }, new Date(startAt))).toBe(
+      'This event has ended.',
+    );
+  });
   it('opens QR exactly 24h before the current announced start', () => {
     expect(eventQrUnavailableReason(base, new Date('2026-11-09T19:59:59.999Z'))).not.toBeNull();
     expect(eventQrUnavailableReason(base, new Date('2026-11-09T20:00:00.000Z'))).toBeNull();

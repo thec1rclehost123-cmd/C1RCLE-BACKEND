@@ -1,3 +1,5 @@
+import { Filter } from 'firebase-admin/firestore';
+
 import { VersionConflictError } from '../../domain/errors.js';
 
 import { compareAndSet } from './compare-and-set.js';
@@ -57,8 +59,12 @@ export class FirestoreEventRepository implements EventRepository {
     return paginateQuery(this.collection, query, toEvent);
   }
 
-  async listPublic(query: PaginationQuery): Promise<Page<Event>> {
-    const base = this.collection.where('isPublic', '==', true);
+  async listPublic(query: PaginationQuery, includeHistorical = false): Promise<Page<Event>> {
+    const base = includeHistorical
+      ? this.collection.where(
+          Filter.or(Filter.where('isPublic', '==', true), Filter.where('status', '==', 'ended')),
+        )
+      : this.collection.where('isPublic', '==', true);
     return paginateQuery(base, query, toEvent);
   }
 
