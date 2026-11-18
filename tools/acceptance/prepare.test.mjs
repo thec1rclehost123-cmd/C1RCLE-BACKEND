@@ -27,7 +27,7 @@ test('established fixture and unprovisioned requirement remain distinct', () => 
   const requirement = summarizeRecord('guest_incomplete_account', harness);
   assert.equal(fixture.record_type, 'FIXTURE');
   assert.equal(fixture.locator.slug, 'c1rcle-staging-acceptance-001');
-  assert.equal(fixture.acceptance_ready, false);
+  assert.equal(fixture.acceptance_ready, true);
   assert.equal(requirement.record_type, 'REQUIREMENT');
   assert.equal(requirement.locator, null);
   assert.equal(requirement.acceptance_ready, false);
