@@ -3,26 +3,26 @@
   "last_updated": "2026-11-17",
   "environment": "staging",
   "summary": {
-    "total": 28,
-    "fixture_count": 7,
-    "requirement_count": 21,
+    "total": 30,
+    "fixture_count": 11,
+    "requirement_count": 19,
     "fixture_health": {
-      "READY": 1,
-      "NEEDS_VERIFICATION": 6,
+      "READY": 8,
+      "NEEDS_VERIFICATION": 3,
       "CONSUMED": 0,
       "STALE": 0,
       "BROKEN": 0,
       "RESERVED": 0
     },
     "by_mutability": {
-      "READ_ONLY": 10,
+      "READ_ONLY": 13,
       "REUSABLE": 2,
-      "DISPOSABLE": 15,
+      "DISPOSABLE": 14,
       "CONSUMABLE": 1,
       "UNKNOWN": 0
     },
     "by_area": {
-      "GUEST": 10,
+      "GUEST": 12,
       "PARTNER": 10,
       "PROMOTER": 2,
       "SCANNER": 2,
@@ -84,6 +84,16 @@
       "type": "owner_request",
       "locator": "Agent Harness Step 4, sections 9–25",
       "note": "Fixture policy, base requirements and owner-supplied historical fixture details."
+    },
+    "guest_audit_fixture_readback": {
+      "type": "staging_api",
+      "locator": "https://circle-v2-backend.onrender.com/api/v2/public/events/",
+      "note": "Read-only staging event and tier responses on November 17, 2026 Phoenix time. Backend provenance from staging Deploy & verify run 44237045209. Counts are snapshots and time-sensitive sale states must be rechecked before use."
+    },
+    "guest_fresh_rsvp_provisioning": {
+      "type": "staging_browser",
+      "locator": "https://guest.thec1rcle.com/event/qa-disposable-guest-rsvp-lifecycle",
+      "note": "Test Venue published one dedicated unlisted fixture. Venue Studio showed zero tickets and RSVPs. The signed-in Guest saw RSVP for free. My Orders Current Passes and History had no matching event. Public staging detail and tiers verified published/on_sale and all ten places available."
     }
   },
   "fixtures": [
@@ -93,7 +103,7 @@
       "type": "EVENT",
       "kind": "FIXTURE",
       "mutability": "READ_ONLY",
-      "health": "NEEDS_VERIFICATION",
+      "health": "READY",
       "locator": {
         "slug": "c1rcle-staging-acceptance-001",
         "event_id": "ee1a67db-76f0-41e1-a193-30db88f0fd6c"
@@ -116,10 +126,10 @@
         "total_paise": 63678,
         "max_per_order": 4
       },
-      "last_verified_at": "2026-11-16",
-      "last_verified_frontend_sha": "672e8f796e2bcc4f67fe5d2eb38f26cf11435035",
-      "last_verified_backend_sha": "7c181a07cf21c6dd9d9f6313a5f00f31b8b78d34",
-      "verification_source_refs": ["acceptance:publish_hosted"],
+      "last_verified_at": "2026-11-17",
+      "last_verified_frontend_sha": null,
+      "last_verified_backend_sha": "9ba38f2ecce5d165599372f0a68107d26289f598",
+      "verification_source_refs": ["acceptance:publish_hosted", "guest_audit_fixture_readback"],
       "source_refs": ["acceptance:publish_hosted", "acceptance:step2", "step4"],
       "acceptance_item_refs": ["guest.quote", "guest.promo", "guest.quantity"],
       "finding_refs": [],
@@ -127,7 +137,7 @@
       "reserved_for": null,
       "known_mutations": ["A prior authorized purchase consumed one General Entry unit."],
       "reset_required": false,
-      "notes": "Prices and promotion reflect the verified acceptance quote. Recheck phase, promo and sellability before comparing current results. Holds and purchases can change canonical inventory. Use guest_disposable_paid_checkout for transactional acceptance."
+      "notes": "Prices and promotion reflect the verified acceptance quote. Recheck phase, promo and sellability before comparing current results. Holds and purchases can change canonical inventory. Use guest_disposable_paid_checkout for transactional acceptance. Current read-back verified on-sale General Entry at 65000 paise (80000 base, 78 remaining) and VIP at 180000 paise (20 remaining). Quote, promo and quantity limits retain their historical evidence and were not freshly exercised."
     },
     {
       "id": "guest_historical_paid_booking",
@@ -174,9 +184,10 @@
       "type": "EVENT",
       "kind": "FIXTURE",
       "mutability": "READ_ONLY",
-      "health": "NEEDS_VERIFICATION",
+      "health": "READY",
       "locator": {
-        "slug": "halloween"
+        "slug": "halloween",
+        "event_id": "43edc2a2-24a3-46e4-ad9a-c5811dae6e9a"
       },
       "purposes": [
         "Ended-event direct URL",
@@ -187,10 +198,10 @@
         "historical_lifecycle": "Previously ended November 14 per audit brief",
         "visibility": "Recheck before testing current direct URL, search and history behavior"
       },
-      "last_verified_at": null,
+      "last_verified_at": "2026-11-17",
       "last_verified_frontend_sha": null,
-      "last_verified_backend_sha": null,
-      "verification_source_refs": ["acceptance:guest_audit"],
+      "last_verified_backend_sha": "9ba38f2ecce5d165599372f0a68107d26289f598",
+      "verification_source_refs": ["acceptance:guest_audit", "guest_audit_fixture_readback"],
       "source_refs": ["acceptance:guest_audit", "step4"],
       "acceptance_item_refs": ["guest.event-lifecycle"],
       "finding_refs": ["GUEST-EVENT-001"],
@@ -198,7 +209,7 @@
       "reserved_for": null,
       "known_mutations": [],
       "reset_required": false,
-      "notes": "Verify current lifecycle and visibility before use. Preserve the historical event."
+      "notes": "Verify current lifecycle and visibility before use. Preserve the historical event. Public detail is readable with salesStatus ended. Tier enumeration returns HTTP 409 event_not_on_sale. Wallet access remains account-dependent."
     },
     {
       "id": "guest_rsvp_only_event",
@@ -206,9 +217,10 @@
       "type": "EVENT",
       "kind": "FIXTURE",
       "mutability": "READ_ONLY",
-      "health": "NEEDS_VERIFICATION",
+      "health": "READY",
       "locator": {
-        "slug": "qa-host-slot-03-rsvp-only"
+        "slug": "qa-host-slot-03-rsvp-only",
+        "event_id": "c5b2d920-bd9b-41b2-ae9b-9c1e9dd38a2e"
       },
       "purposes": [
         "Read-only Free RSVP event and capacity inspection",
@@ -216,12 +228,13 @@
       ],
       "expected_state": {
         "historical_admission": "Free RSVP only",
-        "historical_capacity": 75
+        "historical_capacity": 75,
+        "observed_sellable_quantity": 75
       },
-      "last_verified_at": null,
+      "last_verified_at": "2026-11-17",
       "last_verified_frontend_sha": null,
-      "last_verified_backend_sha": null,
-      "verification_source_refs": ["acceptance:guest_audit"],
+      "last_verified_backend_sha": "9ba38f2ecce5d165599372f0a68107d26289f598",
+      "verification_source_refs": ["acceptance:guest_audit", "guest_audit_fixture_readback"],
       "source_refs": ["acceptance:guest_audit", "acceptance:guest_remediation", "step4"],
       "acceptance_item_refs": ["guest.rsvp"],
       "finding_refs": ["GUEST-RSVP-001"],
@@ -231,7 +244,7 @@
         "Prior QA RSVP interactions changed account/event state. The hosted failure involved a cancelled RSVP in History followed by an unsuccessful re-RSVP."
       ],
       "reset_required": null,
-      "notes": "Existing event/account pairs may retain deterministic RSVP history. Treat this fixture as read-only. Use a fresh disposable pairing for clean lifecycle acceptance."
+      "notes": "Existing event/account pairs may retain deterministic RSVP history. Treat this fixture as read-only. Use a fresh disposable pairing for clean lifecycle acceptance. Verified a single currently available zero-price tier. See this event only for free-only pricing and capacity reads."
     },
     {
       "id": "guest_complete_account",
@@ -323,6 +336,167 @@
       "known_mutations": [],
       "reset_required": false,
       "notes": "Use as a historical read reference. Current membership, credentials and new availability for Venue A require independent setup and verification."
+    },
+    {
+      "id": "guest_mixed_free_paid",
+      "area": "GUEST",
+      "type": "EVENT",
+      "kind": "FIXTURE",
+      "mutability": "READ_ONLY",
+      "health": "READY",
+      "locator": {
+        "slug": "qa-host-slot-02-mixed-ticket-types",
+        "event_id": "eb3346a3-33ca-42f0-b6ee-9221d5c2f609"
+      },
+      "purposes": [
+        "From Free and mixed paid CTA truth",
+        "Read-only mixed-ticket discovery, detail and tier selection without a claim or hold"
+      ],
+      "expected_state": {
+        "visibility": "Public synthetic QA event",
+        "tiers": "At least one currently available Free tier and one currently available paid tier",
+        "capacity": "Both tiers have enough sellable inventory for the planned checks",
+        "sales_status": "on_sale",
+        "sellable_tiers": [
+          {
+            "name": "Free Female",
+            "price_paise": 0,
+            "available_quantity": 50
+          },
+          {
+            "name": "General Entry",
+            "price_paise": 100000,
+            "available_quantity": 40
+          },
+          {
+            "name": "Late Entry",
+            "price_paise": 150000,
+            "available_quantity": 20
+          }
+        ]
+      },
+      "last_verified_at": "2026-11-17",
+      "last_verified_frontend_sha": null,
+      "last_verified_backend_sha": "9ba38f2ecce5d165599372f0a68107d26289f598",
+      "verification_source_refs": ["guest_audit_fixture_readback"],
+      "source_refs": ["acceptance:hosted_1", "acceptance:guest_remediation", "step4"],
+      "acceptance_item_refs": ["guest.event-price-cta", "guest.discovery"],
+      "finding_refs": ["GUEST-PRICING-001", "GUEST-DISCOVERY-001"],
+      "fixture_refs": [],
+      "reserved_for": null,
+      "known_mutations": [],
+      "reset_required": false,
+      "notes": "Existing synthetic staging event. Use anonymous or approved Guest read-only access. Free Female is the observed free tier; retain its eligibility rules. Check current sale state and tier inventory before use, and stop before claim, quote-to-hold or purchase."
+    },
+    {
+      "id": "guest_paused_event",
+      "area": "GUEST",
+      "type": "EVENT",
+      "kind": "FIXTURE",
+      "mutability": "READ_ONLY",
+      "health": "READY",
+      "locator": {
+        "slug": "qa-test-event-delete-me",
+        "event_id": "500946b8-fd91-4a59-999c-f7f10c2d891e"
+      },
+      "purposes": ["Verify the paused lifecycle presentation"],
+      "expected_state": {
+        "visibility": "public",
+        "sales_status": "sales_paused",
+        "tier_http_status": 409,
+        "tier_error": "event_not_on_sale"
+      },
+      "last_verified_at": "2026-11-17",
+      "last_verified_frontend_sha": null,
+      "last_verified_backend_sha": "9ba38f2ecce5d165599372f0a68107d26289f598",
+      "verification_source_refs": ["guest_audit_fixture_readback"],
+      "source_refs": ["guest_audit_fixture_readback"],
+      "acceptance_item_refs": ["guest.event-lifecycle"],
+      "finding_refs": ["GUEST-EVENT-001"],
+      "fixture_refs": [],
+      "reserved_for": null,
+      "known_mutations": [],
+      "reset_required": false,
+      "notes": "Existing staging QA event. Anonymous or approved Guest reads only. Recheck lifecycle before use."
+    },
+    {
+      "id": "guest_sold_out_event",
+      "area": "GUEST",
+      "type": "EVENT",
+      "kind": "FIXTURE",
+      "mutability": "READ_ONLY",
+      "health": "READY",
+      "locator": {
+        "slug": "m3-full-acceptance-20261023-0046-sold-out",
+        "event_id": "95e74c15-f523-4440-87bf-3d260406ece9"
+      },
+      "purposes": [
+        "Verify the sold out lifecycle presentation",
+        "Verify unavailable tier presentation"
+      ],
+      "expected_state": {
+        "visibility": "public",
+        "sales_status": "sold_out",
+        "tier": "Last RSVP",
+        "price_paise": 0,
+        "available_quantity": 0,
+        "tier_availability": "sold_out"
+      },
+      "last_verified_at": "2026-11-17",
+      "last_verified_frontend_sha": null,
+      "last_verified_backend_sha": "9ba38f2ecce5d165599372f0a68107d26289f598",
+      "verification_source_refs": ["guest_audit_fixture_readback"],
+      "source_refs": ["guest_audit_fixture_readback"],
+      "acceptance_item_refs": ["guest.event-lifecycle", "guest.event-price-cta"],
+      "finding_refs": ["GUEST-EVENT-001", "GUEST-PRICING-001"],
+      "fixture_refs": [],
+      "reserved_for": null,
+      "known_mutations": [],
+      "reset_required": false,
+      "notes": "Existing staging QA event. Anonymous or approved Guest reads only. Recheck lifecycle before use."
+    },
+    {
+      "id": "guest_fresh_rsvp_lifecycle",
+      "area": "GUEST",
+      "type": "SCENARIO",
+      "kind": "FIXTURE",
+      "mutability": "DISPOSABLE",
+      "health": "READY",
+      "locator": {
+        "slug": "qa-disposable-guest-rsvp-lifecycle",
+        "event_id": "8d4d716f-7c35-4c9b-9bb6-ad213b10b88b",
+        "tier_id": "0167630e-4aaa-442f-b790-f9f7b486db17",
+        "credential_ref": "C1RCLE_QA_GUEST_COMPLETE"
+      },
+      "purposes": ["Clean RSVP, cancel and re-RSVP acceptance"],
+      "expected_state": {
+        "event": "Disposable synthetic Free RSVP event with known available capacity",
+        "account": "Approved synthetic Guest with no RSVP, order or ticket history for this event",
+        "outcome": "One active entitlement after reclaim, truthful cancellation history and correct capacity under retry",
+        "sales_status": "on_sale",
+        "visibility": "unlisted",
+        "start_at": "2026-11-30T13:30:00.000Z",
+        "end_at": "2026-11-30T15:30:00.000Z",
+        "tier_name": "Free RSVP",
+        "price_paise": 0,
+        "starting_available_quantity": 10,
+        "max_per_order": 1,
+        "initial_guest_state": "No matching record in My Orders Current Passes or History, zero issued tickets or RSVPs in Venue Studio, and full inventory at provisioning."
+      },
+      "last_verified_at": "2026-11-17",
+      "last_verified_frontend_sha": "12d1c9a333217bb6d66a1bb7669d8121d81d8fc6",
+      "last_verified_backend_sha": "9ba38f2ecce5d165599372f0a68107d26289f598",
+      "verification_source_refs": ["guest_fresh_rsvp_provisioning"],
+      "source_refs": ["acceptance:guest_remediation", "step4", "guest_fresh_rsvp_provisioning"],
+      "acceptance_item_refs": ["guest.rsvp"],
+      "finding_refs": ["GUEST-RSVP-001"],
+      "fixture_refs": ["guest_complete_account"],
+      "reserved_for": null,
+      "known_mutations": [
+        "Test Venue created and published this event and its single Free RSVP tier. No Guest claim, cancellation or retry was submitted."
+      ],
+      "reset_required": false,
+      "notes": "Use the same owner-authenticated synthetic Guest session and the direct event link. Recheck registration history, sale state and all ten available places before use. Reserved for one lifecycle run. Mark consumed after the run and replace with a fresh pairing for any repeat."
     }
   ],
   "requirements": [
@@ -356,63 +530,6 @@
       "known_mutations": [],
       "reset_required": null,
       "notes": "Prepare separate disposable state for retry, expiry, refund or replay scenarios. Provider actions require explicit authorization."
-    },
-    {
-      "id": "guest_fresh_rsvp_lifecycle",
-      "area": "GUEST",
-      "type": "SCENARIO",
-      "kind": "REQUIREMENT",
-      "mutability": "DISPOSABLE",
-      "health": "NEEDS_VERIFICATION",
-      "locator": null,
-      "purposes": ["Clean RSVP, cancel and re-RSVP acceptance"],
-      "expected_state": {
-        "event": "Disposable synthetic Free RSVP event with known available capacity",
-        "account": "Approved synthetic Guest with no RSVP, order or ticket history for this event",
-        "outcome": "One active entitlement after reclaim, truthful cancellation history and correct capacity under retry"
-      },
-      "last_verified_at": null,
-      "last_verified_frontend_sha": null,
-      "last_verified_backend_sha": null,
-      "verification_source_refs": [],
-      "source_refs": ["acceptance:guest_remediation", "step4"],
-      "acceptance_item_refs": ["guest.rsvp"],
-      "finding_refs": ["GUEST-RSVP-001"],
-      "fixture_refs": [],
-      "reserved_for": null,
-      "known_mutations": [],
-      "reset_required": null,
-      "notes": "Prepare an entirely fresh pairing under separate authorization. Prior RSVP history is part of the historical fixture and should be preserved."
-    },
-    {
-      "id": "guest_mixed_free_paid",
-      "area": "GUEST",
-      "type": "EVENT",
-      "kind": "REQUIREMENT",
-      "mutability": "DISPOSABLE",
-      "health": "NEEDS_VERIFICATION",
-      "locator": null,
-      "purposes": [
-        "From Free and mixed paid CTA truth",
-        "Mixed-ticket discovery, detail and quantity selection"
-      ],
-      "expected_state": {
-        "visibility": "Public synthetic QA event",
-        "tiers": "At least one currently available Free tier and one currently available paid tier",
-        "capacity": "Both tiers have enough sellable inventory for the planned checks"
-      },
-      "last_verified_at": null,
-      "last_verified_frontend_sha": null,
-      "last_verified_backend_sha": null,
-      "verification_source_refs": [],
-      "source_refs": ["acceptance:hosted_1", "acceptance:guest_remediation", "step4"],
-      "acceptance_item_refs": ["guest.event-price-cta", "guest.discovery"],
-      "finding_refs": ["GUEST-PRICING-001", "GUEST-DISCOVERY-001"],
-      "fixture_refs": [],
-      "reserved_for": null,
-      "known_mutations": [],
-      "reset_required": null,
-      "notes": "Historical candidate M15-CROSS-E2E-20261030 had Free RSVP and paid General Entry. Its stable slug/ID and current sellable state were not established in the reviewed evidence."
     },
     {
       "id": "guest_couple_ticket",
